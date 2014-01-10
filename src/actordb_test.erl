@@ -637,7 +637,7 @@ start_slave(N) ->
 						{myactor,[{enabled,false}]},
 						{sasl,[{errlog_type,error}]}]])),
 	% file:write_file(?TESTPTH++Name++"/etc/actordb.cfg",io_lib:fwrite("~p.~n",[[{db_path,?TESTPTH++Name},{level_size,0}]])),
-	Param = " -eval \"application:start(actordb)\" -pa "++lists:flatten(butil:iolist_join(Paths," "))++
+	Param = " -eval \"application:start(actordb_core)\" -pa "++lists:flatten(butil:iolist_join(Paths," "))++
 			" -setcookie "++atom_to_list(Cookie)++
 			" -config "++?TESTPTH++Name++".config",
 	?debugFmt("startparam ~p~n",[Param]),
