@@ -2,7 +2,7 @@
 % License, v. 2.0. If a copy of the MPL was not distributed with this
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
--include_lib("../../actordb/src/actordb.hrl").
+-include_lib("actordb.hrl").
 
 -compile({parse_transform,lager_transform}).
 
