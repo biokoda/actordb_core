@@ -49,6 +49,21 @@ wait_distreg_procs() ->
 			wait_distreg_procs()
 	end.
 
+start_ready() ->
+	{ok, Port} = application:get_env(myactor,port),
+	Ulimit = actordb_local:ulimit(),
+	case ok of
+		_ when Ulimit =< 256 ->
+			MaxCon = 8;
+		_ when Ulimit =< 1024 ->
+			MaxCon = 64;
+		_  when Ulimit =< 1024*4 ->
+			MaxCon = 128;
+		_ ->
+			MaxCon = 1024
+	end,
+	{ok, _} = ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []).
+
 start() ->
 	?AINF("Starting actordb"),
 	application:start(actordb_core).

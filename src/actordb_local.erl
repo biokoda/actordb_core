@@ -5,7 +5,7 @@
 -module(actordb_local).
 -behaviour(gen_server).
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, 
-		terminate/2, code_change/3,print_info/0,whereis/0,killactors/0]).
+		terminate/2, code_change/3,print_info/0,whereis/0,killactors/0,ulimit/0]).
 % Multiupdaters
 -export([pick_mupdate/0,mupdate_busy/2,get_mupdaters_state/0,reg_mupdater/2,local_mupdaters/0]).
 % Actor activity
@@ -115,7 +115,8 @@ actor_activity(PrevNow) ->
 
 
 
-
+ulimit() ->
+	gen_server:call(?MODULE,ulimit).
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
 
@@ -139,6 +140,8 @@ handle_call({regupdater,Id,Pid},_,P) ->
 	{reply,ok,P#dp{mpids = [{Id,Pid}|lists:keydelete(Id,1,P#dp.mpids)]}};
 handle_call(mupdaters,_,P) ->
 	{reply,{ok,[{N,butil:ds_val(N,multiupdaters)} || N <- P#dp.mupdaters]},P};
+handle_call(ulimit,_,P) ->
+	{reply,P#dp.ulimit,P};
 handle_call(print_info,_,P) ->
 	io:format("~p~n",[?R2P(P)]),
 	{reply,ok,P};

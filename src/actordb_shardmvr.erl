@@ -105,6 +105,7 @@ deser_prop(P) ->
 	?P2R(P).
 
 handle_cast(can_start,P) ->
+	actordb_core:start_ready(),
 	case P#dp.allshards /= undefined of
 		true ->
 			handle_cast({local_shards_changed,P#dp.allshards,P#dp.localshards},P#dp{can_start = true, allshards = undefined, localshards = undefined});
