@@ -173,12 +173,17 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 			parse_statements(T,[{split_use(CurUse),IsWrite,lists:reverse(CurStatements)}|L],Use,[],false,GIsWrite)
 	end;
 parse_statements([],_L,undefined,CurStatements,_,_) ->
-	Lines = [string:to_lower(butil:tolist(N)) || N <- lists:reverse(CurStatements)],
-	case meta_call(Lines,[]) of
-		[] ->
-			Lines;
-		R ->
-			R
+	case is_tuple(CurStatements) of
+		true ->
+			"";
+		_ ->
+			Lines = [string:to_lower(butil:tolist(N)) || N <- lists:reverse(CurStatements)],
+			case meta_call(Lines,[]) of
+				[] ->
+					Lines;
+				R ->
+					R
+			end
 	end;
 parse_statements([],L,Use,S,IsWrite,GIsWrite) ->
 	{lists:reverse([{split_use(Use),IsWrite,lists:reverse(S)}|L]),GIsWrite}.

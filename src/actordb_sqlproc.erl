@@ -93,17 +93,8 @@ call(Name,Msg,Start) ->
 	end,
 	% If call returns redirect, this is slave node not master node.
 	case catch gen_server:call(Pid,Msg,infinity) of
-		% {redirect,Node} when is_atom(Node) ->
-		% 	?AINF("Redirect call ~p ~p ~p",[Node,Name,Msg]),
-		% 	actordb:rpc(Node,Name,{?MODULE,call,[Name,Msg,Start]});
-		% 	case lists:member(Node,nodes()) of
-		% 		true ->
-					
-		% 		false ->
-		% 			ok
-		% 	end;
 		{redirect,Node} when is_binary(Node) ->
-			?AINF("Redirect call ~p ~p ~p",[Node,Name,Msg]),
+			?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
 			actordb:rpc(Node,Name,{?MODULE,call,[Name,Msg,Start]});
 		{'EXIT',{noproc,_}} = _X  ->
 			?ADBG("noproc call again ~p",[_X]),
@@ -1308,7 +1299,7 @@ handle_info({check_inactivity,N}, P) ->
 						_ when P#dp.activity == 0 ->
 							case timer:now_diff(os:timestamp(),P#dp.start_time) > 60*5*1000000 of
 								true ->
-									?AINF("die after 5min"),
+									?ADBG("die after 5min"),
 									?DBLOG(P#dp.db,"die 0 after 5min",[]),
 									actordb_sqlite:stop(P#dp.db),
 									distreg:unreg(self()),
@@ -1336,7 +1327,7 @@ handle_info({check_inactivity,N}, P) ->
 						true ->
 							% case apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]) of
 							% 	true ->
-									?AINF("Die because moved"),
+									?ADBG("Die because moved"),
 									?DBLOG(P#dp.db,"die moved ",[]),
 									distreg:unreg(self()),
 									{stop,normal,P};
@@ -1373,7 +1364,7 @@ handle_info(stop,P) ->
 	handle_info({stop,normal},P);
 handle_info({stop,Reason},P) ->
 	distreg:unreg(self()),
-	?AINF("Actor stop with reason ~p",[Reason]),
+	?ADBG("Actor stop with reason ~p",[Reason]),
 	case Reason of
 		delete when P#dp.dbcopy_to /= [] ->
 			[Pid ! delete || {_,Pid,_,_} <- P#dp.dbcopy_to];
