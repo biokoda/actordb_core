@@ -55,7 +55,7 @@ check_rowid() ->
 	{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
 	case actordb_sqlite:exec(Db,"CREATE TABLE t (id TEXT PRIMARY KEY) WITHOUT ROWID;") of
 		ok ->
-			application:set_env(actordb,withoutrowid,<<"WITHOUT ROWID">>);
+			application:set_env(actordb_core,withoutrowid,<<"WITHOUT ROWID">>);
 		_ ->
-			application:set_env(actordb,withoutrowid,<<>>)
+			application:set_env(actordb_core,withoutrowid,<<>>)
 	end.

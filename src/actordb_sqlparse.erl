@@ -144,7 +144,7 @@ parse_statements(Bin) ->
 parse_statements([<<>>|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 	parse_statements(T,L,CurUse,CurStatements,IsWrite,GIsWrite);
 parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
-	case is_use(H) of
+	case is_actor(H) of
 		undefined ->
 			case is_write(H) of
 				{pragma,PragmaRem} ->
@@ -170,7 +170,7 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 			parse_statements(T,L,Use,[],IsWrite,GIsWrite);
 		% New block and there was a block before this one. Finish up that and start new.
 		Use when CurUse /= undefined ->
-			parse_statements(T,[{split_use(CurUse),IsWrite,lists:reverse(CurStatements)}|L],Use,[],false,GIsWrite)
+			parse_statements(T,[{split_actor(CurUse),IsWrite,lists:reverse(CurStatements)}|L],Use,[],false,GIsWrite)
 	end;
 parse_statements([],_L,undefined,CurStatements,_,_) ->
 	Lines = [string:to_lower(butil:tolist(N)) || N <- lists:reverse(CurStatements), is_binary(N) orelse is_list(N)],
@@ -181,7 +181,7 @@ parse_statements([],_L,undefined,CurStatements,_,_) ->
 			R
 	end;
 parse_statements([],L,Use,S,IsWrite,GIsWrite) ->
-	{lists:reverse([{split_use(Use),IsWrite,lists:reverse(S)}|L]),GIsWrite}.
+	{lists:reverse([{split_actor(Use),IsWrite,lists:reverse(S)}|L]),GIsWrite}.
 
 meta_call(["show schema;"|T],Out) ->
 	All = [begin
@@ -419,62 +419,64 @@ count_string(<<_,Rem/binary>>,N) ->
 count_string(<<>>,N) ->
 	N.
 
-is_use({Bin,_}) ->
-	is_use(Bin);
-is_use(Bin) ->
+is_actor({Bin,_}) ->
+	is_actor(Bin);
+is_actor(Bin) ->
 	case Bin of 
-		<<"use ",Rem/binary>> ->
+		<<"actor ",Rem/binary>> ->
 			Rem;
-		<<"USE ",Rem/binary>> ->
+		<<"ACTOR ",Rem/binary>> ->
 			Rem;
-		<<"Use ",Rem/binary>> ->
+		<<"Actor ",Rem/binary>> ->
 			Rem;
-		<<"uSe ",Rem/binary>> ->
-			Rem;
-		<<"usE ",Rem/binary>> ->
+		<<A,C,T,O,R," ",Rem/binary>>  when (A == $a orelse A == $A) andalso
+										(C == $c orelse C == $C) andalso
+										(T == $t orelse T == $T) andalso
+										(O == $o orelse O == $O) andalso
+										(R == $t orelse R == $T) ->
 			Rem;
 		_ ->
 			undefined
 	end.
 
-% actordb_sqlparse:split_use(<<"type(asdf,234,asdisfpsouf);">>).
-% actordb_sqlparse:split_use(<<"type(for X.column in RES);">>).
-split_use(Bin) ->
-	case split_use(Bin,<<>>,undefined,[]) of
+% actordb_sqlparse:split_actor(<<"type(asdf,234,asdisfpsouf);">>).
+% actordb_sqlparse:split_actor(<<"type(for X.column in RES);">>).
+split_actor(Bin) ->
+	case split_actor(Bin,<<>>,undefined,[]) of
 		{Type,[<<"*">>]} ->
 			{Type,$*};
 		Res ->
 			Res
 	end.
-split_use(<<" ",Bin/binary>>,Word,Type,L) ->
-	split_use(Bin,Word,Type,L);
-split_use(<<"(",Bin/binary>>,Word,_,L) ->
-	split_use(Bin,<<>>,Word,L);
-split_use(<<"'",Bin/binary>>,Word,T,L) ->
-	split_use(Bin,Word,T,L);
-split_use(<<"`",Bin/binary>>,Word,undefined,L) ->
-	split_use(Bin,Word,undefined,L);
-split_use(<<",",Bin/binary>>,Word,Type,L) ->
-	split_use(Bin,<<>>,Type,[Word|L]);
-split_use(<<")",_/binary>>,Word,Type,L) ->
+split_actor(<<" ",Bin/binary>>,Word,Type,L) ->
+	split_actor(Bin,Word,Type,L);
+split_actor(<<"(",Bin/binary>>,Word,_,L) ->
+	split_actor(Bin,<<>>,Word,L);
+split_actor(<<"'",Bin/binary>>,Word,T,L) ->
+	split_actor(Bin,Word,T,L);
+split_actor(<<"`",Bin/binary>>,Word,undefined,L) ->
+	split_actor(Bin,Word,undefined,L);
+split_actor(<<",",Bin/binary>>,Word,Type,L) ->
+	split_actor(Bin,<<>>,Type,[Word|L]);
+split_actor(<<")",_/binary>>,Word,Type,L) ->
 	{Type,[Word|L]};
-split_use(<<"for ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(<<"for ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var};
-split_use(<<"FOR ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(<<"FOR ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var};
-split_use(<<"foreach ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(<<"foreach ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var};
-split_use(<<"FOREACH ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(<<"FOREACH ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var};
-split_use(<<";",_/binary>>,Word,Type,L) ->
+split_actor(<<";",_/binary>>,Word,Type,L) ->
 	{Type,[Word|L]};
-split_use(<<C,Bin/binary>>,Word,Type,L) ->
-	split_use(Bin,<<Word/binary,C>>,Type,L);
-split_use(<<>>,Word,Type,L) ->
+split_actor(<<C,Bin/binary>>,Word,Type,L) ->
+	split_actor(Bin,<<Word/binary,C>>,Type,L);
+split_actor(<<>>,Word,Type,L) ->
 	{Type,[Word|L]}.
 
 split_foru(<<" in ",Bin/binary>>,Word,Var,undefined) ->

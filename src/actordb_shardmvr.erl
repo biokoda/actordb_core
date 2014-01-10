@@ -237,7 +237,7 @@ init([]) ->
 whereis() ->
 	case whereis(?MODULE) of
 		undefined ->
-			case butil:is_app_running(actordb) of
+			case butil:is_app_running(actordb_core) of
 				true ->
 					timer:sleep(10),
 					whereis();

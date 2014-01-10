@@ -645,7 +645,7 @@ schema(1,Idtype1) ->
 			Idtype = <<"TEXT">>,
 			% If sqlite is up-to-date it supports withoutrowid. This was checked
 			%  at actordb startup.
-			{ok,Id} = application:get_env(actordb,withoutrowid);
+			{ok,Id} = application:get_env(actordb_core,withoutrowid);
 		integer ->
 			Idtype = <<"INTEGER">>,
 			Id = <<>>

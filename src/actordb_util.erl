@@ -109,7 +109,7 @@ parse_cfg_schema(G1) ->
 		_ ->
 			Ids = [{Type,string} || Type <- Types]
 	end,
-	Out = [{types,Types}] ++ 
+	Out = [{types,Types}, {num,erlang:phash2(G1)}] ++ 
 	[{iskv,multihead,[{Type,true} || {Type,kv,_Sqls} <- G] ++ [{any,false}]}] ++
 	 [{ids,Ids}] ++
 	 [{Type,list_to_tuple([check_for_end(S) || S <- check_str(Sqls)])} || {Type,_,Sqls} <- G],

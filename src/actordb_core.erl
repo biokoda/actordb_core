@@ -9,7 +9,7 @@ stop() ->
 	actordb_backpressure:inc_callcount(1000000),
 	% Max wait 30s
 	wait_done_queries(30000),
-	application:stop(actordb).
+	application:stop(actordb_core).
 stop_complete()	 ->
 	case ets:info(bpcounters,size) == undefined of
 		true ->
@@ -50,19 +50,25 @@ wait_distreg_procs() ->
 	end.
 
 start_ready() ->
-	{ok, Port} = application:get_env(myactor,port),
-	Ulimit = actordb_local:ulimit(),
-	case ok of
-		_ when Ulimit =< 256 ->
-			MaxCon = 8;
-		_ when Ulimit =< 1024 ->
-			MaxCon = 64;
-		_  when Ulimit =< 1024*4 ->
-			MaxCon = 128;
-		_ ->
-			MaxCon = 1024
-	end,
-	{ok, _} = ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []).
+	{ok, Port} = application:get_env(actordb_core,mysql_protocol),
+	case Port > 0 of
+		true ->
+			Ulimit = actordb_local:ulimit(),
+			case ok of
+				_ when Ulimit =< 256 ->
+					MaxCon = 8;
+				_ when Ulimit =< 1024 ->
+					MaxCon = 64;
+				_  when Ulimit =< 1024*4 ->
+					MaxCon = 128;
+				_ ->
+					MaxCon = 1024
+			end,
+			{ok, _} = ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []),
+			ok;
+		false ->
+			ok
+	end.
 
 start() ->
 	?AINF("Starting actordb"),
@@ -91,7 +97,7 @@ start(_Type, _Args) ->
 				Cfgfile ->
 					case catch file:consult(Cfgfile) of
 						{ok,[L]} ->
-							ActorParam = butil:ds_val(actordb,L),
+							ActorParam = butil:ds_val(actordb_core,L),
 							[Main,Extra,Level,Journal,Sync] = butil:ds_vals([main_db_folder,extra_db_folders,level_size,
 																				journal_mode,sync],ActorParam,
 																			["db",[],0,wal,0]),
@@ -107,14 +113,14 @@ start(_Type, _Args) ->
 							end,
 							application:set_env(bkdcore,statepath,Statep),
 							% My proto config
-							MyActorCfg = butil:ds_val(myactor,L),
-							case butil:ds_val(enabled,MyActorCfg) of
-								MpEnabled when MpEnabled == false; MpEnabled == undefined ->
-									application:set_env(myactor,enabled,false);
-								MpEnabled ->
-									application:set_env(myactor,port,butil:ds_val(port,MyActorCfg,undefined)),
-									application:set_env(myactor,enabled,MpEnabled)
-							end,
+							% MyActorCfg = butil:ds_val(myactor,L),
+							% case butil:ds_val(enabled,MyActorCfg) of
+							% 	MpEnabled when MpEnabled == false; MpEnabled == undefined ->
+							% 		application:set_env(myactor,enabled,false);
+							% 	MpEnabled ->
+							% 		application:set_env(myactor,port,butil:ds_val(port,MyActorCfg,undefined)),
+							% 		application:set_env(myactor,enabled,MpEnabled)
+							% end,
 							actordb_util:createcfg(Main,Extra,Level,Journal,butil:tobin(Sync));
 						Err ->
 							?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
@@ -151,13 +157,6 @@ start(_Type, _Args) ->
 			ok
 	end,
 	Res = actordb_sup:start_link(),
-	case application:get_env(myactor,enabled) of
-		{ok,true} ->
-			?AINF("Starting myactor mysql server acceptor"),
-			application:start(myactor);
-		_ ->					
-			ok		
-	end,
 	Res.
 
 stop(_State) ->

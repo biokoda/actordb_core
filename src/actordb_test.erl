@@ -23,7 +23,7 @@ test_real() ->
 	% multiupdate_read().
 
 l(N) ->
-	D = <<"use type1(ac",(butil:tobin(1))/binary,");",
+	D = <<"actor type1(ac",(butil:tobin(1))/binary,");",
 			"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",
 			(binary:copy(<<"a">>,1024*1))/binary,"');">>,
 	Start = now(),
@@ -92,7 +92,7 @@ run(D,P,W,N) ->
 		 	_ ->
 		 		ok
 		 end,
-		% exec(<<"use type1(ac",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary,");",
+		% exec(<<"actor type1(ac",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary,");",
 		% 					"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>),
 		
 	run(D,P,W,N-1).
@@ -146,29 +146,29 @@ all_test_() ->
 
 test_parsing() ->
 	?assertMatch({<<"type">>,$*},
-								actordb_sqlparse:split_use(<<"type(*);">>)),
+								actordb_sqlparse:split_actor(<<"type(*);">>)),
 	?assertMatch({<<"type">>,<<"RES">>,<<"column">>,<<"X">>},
-								actordb_sqlparse:split_use(<<"type(foreach X.column in RES);">>)),
+								actordb_sqlparse:split_actor(<<"type(foreach X.column in RES);">>)),
 	?assertMatch({<<"type">>,[<<"asdisfpsouf">>,<<"234">>,<<"asdf">>]},
-								actordb_sqlparse:split_use(<<"type(asdf,234,asdisfpsouf);">>)),
+								actordb_sqlparse:split_actor(<<"type(asdf,234,asdisfpsouf);">>)),
 	?assertMatch({[{{<<"type1">>,<<"RES">>,<<"col">>,<<"X">>},
 									  false,
 									  [<<"select * from table;">>]}],false},
-								actordb_sqlparse:parse_statements(<<"use type1 ( foreach X.col in RES ) ;",
+								actordb_sqlparse:parse_statements(<<"actor type1 ( foreach X.col in RES ) ;",
 												"select * from table;">>)),
 
 	?assertMatch({[{{<<"user">>,[<<"denis">>]},
 						   false,
 						   [<<"SELECT * FROM todos;">>]}],
 						 false},
-						actordb_sqlparse:parse_statements(<<"USE user(denis); SELECT * FROM todos;">>)),
+						actordb_sqlparse:parse_statements(<<"actor user(denis); SELECT * FROM todos;">>)),
 	?assertMatch({[{{<<"type1">>,<<"RES">>,<<"col">>,<<"X">>},
 								   false,
 								   [[<<"select * from table where id=">>,
 								     {<<"X">>,<<"id">>},
 								     <<>>,59]]}],
 								 false},
-								actordb_sqlparse:parse_statements(<<"use type1 ( foreach X.col in RES );",
+								actordb_sqlparse:parse_statements(<<"actor type1 ( foreach X.col in RES );",
 														"select * from table where id={{X.id}};">>)),
 	?assertMatch({[{{<<"type1">>,<<"RES">>,<<"col">>,<<"X">>},
 							   false,
@@ -177,7 +177,7 @@ test_parsing() ->
 							      {<<"X">>,<<"id">>},
 							      <<>>,59]}]}],
 							 false},
-								actordb_sqlparse:parse_statements(<<"use type1(foreach X.col in RES);",
+								actordb_sqlparse:parse_statements(<<"actor type1(foreach X.col in RES);",
 												"{{ABBB}}select * from table where id={{X.id}};">>)),
 	ok.
 
@@ -227,7 +227,7 @@ basic_write() ->
 basic_write(Txt) ->
 	?debugFmt("Basic write",[]),
 	[begin
-		R = exec(<<"use type1(ac",(butil:tobin(N))/binary,"); insert into tab values (",
+		R = exec(<<"actor type1(ac",(butil:tobin(N))/binary,"); insert into tab values (",
 									(butil:tobin(butil:flatnow()))/binary,",'",Txt/binary,"',1);">>),
 		% ?debugFmt("~p",[R]),
 		?assertMatch({ok,_},R)
@@ -235,62 +235,62 @@ basic_write(Txt) ->
 	 || N <- lists:seq(1,numactors())].
 basic_read() ->
 	?debugFmt("Basic read",[]),
-	% ?debugFmt("~p",[exec(<<"use type1(ac",(butil:tobin(1))/binary,"); select * from tab1;">>)]),
+	% ?debugFmt("~p",[exec(<<"actor type1(ac",(butil:tobin(1))/binary,"); select * from tab1;">>)]),
 	[?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
-			exec(<<"use type1(ac",(butil:tobin(N))/binary,"); select * from tab;">>))
+			exec(<<"actor type1(ac",(butil:tobin(N))/binary,"); select * from tab;">>))
 	 || N <- lists:seq(1,numactors())].
 
 multiupdate_write() ->
 	?debugFmt("multiupdates",[]),
 	% Insert names of 2 actors in table tab2 of actor "all"
-	?assertMatch({ok,_},exec(["use type1(all);",
+	?assertMatch({ok,_},exec(["actor type1(all);",
 							  "insert into tab2 values (1,'a1');",
 							  "insert into tab2 values (2,'a2');"])),
 	
 	?debugFmt("multiupdate fail insert",[]),
 	% Fail test
-	?assertMatch(ok,exec(["use thread(first);",
+	?assertMatch(ok,exec(["actor thread(first);",
 							  "insert into thread values (1,'a1',10);",
-							  "use thread(second);",
+							  "actor thread(second);",
 							  "insert into thread values (1,'a1',10);"])),
 	?debugFmt("multiupdates fail",[]),
-	?assertMatch(abandoned,exec(["use thread(first);",
+	?assertMatch(abandoned,exec(["actor thread(first);",
 							  "update thread set msg='a3' where id=1;",
-							  "use thread(second);",
+							  "actor thread(second);",
 							  "update thread set msg='a3' where i=2;"])),
 	?debugFmt("multiupdates still old data",[]),
 	?assertMatch({ok,[{columns,{<<"id">>,<<"msg">>,<<"user">>}},
                       {rows,[{1,<<"a1">>,10}]}]},
-                 exec(["use thread(first);select * from thread;"])),
+                 exec(["actor thread(first);select * from thread;"])),
 	?assertMatch({ok,[{columns,{<<"id">>,<<"msg">>,<<"user">>}},
                       {rows,[{1,<<"a1">>,10}]}]},
-                 exec(["use thread(second);select * from thread;"])),
+                 exec(["actor thread(second);select * from thread;"])),
 	
 	?debugFmt("multiupdates foreach insert",[]),
 	% Select everything from tab2 for actor "all".
 	% Actorname is in .txt column, for every row take that actor and insert value with same unique integer id.
-	Res = exec(["use type1(all);",
+	Res = exec(["actor type1(all);",
 				"{{ACTORS}}SELECT * FROM tab2;",
-				"use type1(foreach X.txt in ACTORS);",
+				"actor type1(foreach X.txt in ACTORS);",
 				"insert into tab2 values ({{uniqid.s}},'{{X.txt}}');"]),
 	% ?debugFmt("Res ~p~n",[Res]),
 	?assertMatch(ok,Res),
 
 	?debugFmt("multiupdates delete actors",[]),
-	?assertMatch(ok,exec(["use type1(ac100,ac99,ac98,ac97,ac96,ac95);PRAGMA delete;"])),
+	?assertMatch(ok,exec(["actor type1(ac100,ac99,ac98,ac97,ac96,ac95);PRAGMA delete;"])),
 
 	?debugFmt("multiupdates creating thread",[]),
-	?assertMatch(ok,exec(["use thread(1);",
+	?assertMatch(ok,exec(["actor thread(1);",
 					"INSERT INTO thread VALUES (100,'message',10);",
 					"INSERT INTO thread VALUES (101,'secondmsg',20);",
-					"use user(10);",
+					"actor user(10);",
 					"INSERT INTO userinfo VALUES (1,'user1');",
-					"use user(20);",
+					"actor user(20);",
 					"INSERT INTO userinfo VALUES (1,'user2');"])),
 	ok.
 multiupdate_read() ->
 	?debugFmt("multiupdate read all type1",[]),
-	Res = exec(["use type1(*);",
+	Res = exec(["actor type1(*);",
 				"{{RESULT}}SELECT * FROM tab;"]),
 	?assertMatch({_,_},Res),
 	{Cols,Rows} = Res,
@@ -301,9 +301,9 @@ multiupdate_read() ->
 
 	?debugFmt("multiupdate read thread and user",[]),
 	% Add username column to result
-	ResForum = exec(["use thread(1);",
+	ResForum = exec(["actor thread(1);",
 				"{{RESULT}}SELECT * FROM thread;"
-				"use user(for X.user in RESULT);",
+				"actor user(for X.user in RESULT);",
 				"{{A}}SELECT * FROM userinfo WHERE id=1;",
 				"{{X.username=A.name}}"
 				]),
@@ -314,21 +314,21 @@ multiupdate_read() ->
 	ok.
 
 kv_readwrite() ->
-	?debugFmt("~p",[[iolist_to_binary(["use counters(id",butil:tolist(N),");",
+	?debugFmt("~p",[[iolist_to_binary(["actor counters(id",butil:tolist(N),");",
 		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",
 		 	butil:tolist(N),");"])|| N <- lists:seq(1,1)]]),
-	[?assertMatch({ok,_},exec(["use counters(id",butil:tolist(N),");",
+	[?assertMatch({ok,_},exec(["actor counters(id",butil:tolist(N),");",
 		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");"])) 
 				|| N <- lists:seq(1,numactors())],
 	[?assertMatch({ok,[{columns,_},{rows,[{_,_,N}]}]},
-					exec(["use counters(id",butil:tolist(N),");",
+					exec(["actor counters(id",butil:tolist(N),");",
 					 "select * from actors where id='id",butil:tolist(N),"';"])) || N <- lists:seq(1,numactors())],
-	ReadAll = ["use counters(*);",
+	ReadAll = ["actor counters(*);",
 	"{{RESULT}}SELECT * FROM actors;"],
 	All = exec(ReadAll),
 	?debugFmt("All counters ~p",[All]),
 	?debugFmt("Select first 5",[]),
-	ReadSome = ["use counters(id1,id2,id3,id4,id5);",
+	ReadSome = ["actor counters(id1,id2,id3,id4,id5);",
 	"{{RESULT}}SELECT * FROM actors where id='{{curactor}}';"],
 	?assertMatch({_,
 					[{<<"id5">>,_,5,<<"id5">>},
@@ -338,7 +338,7 @@ kv_readwrite() ->
 				  {<<"id1">>,_,1,<<"id1">>}]},
 			exec(ReadSome)),
 	?debugFmt("Increment first 5",[]),
-	?assertMatch(ok,exec(["use counters(id1,id2,id3,id4,id5);",
+	?assertMatch(ok,exec(["actor counters(id1,id2,id3,id4,id5);",
 					"UPDATE actors SET val = val+1 WHERE id='{{curactor}}';"])),
 	?debugFmt("Select first 5 again",[]),
 	?assertMatch({_,[{<<"id5">>,_,6,<<"id5">>},
@@ -349,14 +349,14 @@ kv_readwrite() ->
 			 exec(ReadSome)),
 	?debugFmt("delete 5 and 4",[]),
 	% Not the right way to delete but it works (not transactional)
-	?assertMatch(ok,exec(["use counters(id5,id4);PRAGMA delete;"])),
+	?assertMatch(ok,exec(["actor counters(id5,id4);PRAGMA delete;"])),
 	?assertMatch({_,[
 				  {<<"id3">>,_,4,<<"id3">>},
 				  {<<"id2">>,_,3,<<"id2">>},
 				  {<<"id1">>,_,2,<<"id1">>}]},
 			 exec(ReadSome)),
 	% the right way
-	?assertMatch(ok,exec(["use counters(id3,id2);DELETE FROM actors WHERE id='{{curactor}}';"])),
+	?assertMatch(ok,exec(["actor counters(id3,id2);DELETE FROM actors WHERE id='{{curactor}}';"])),
 	?assertMatch({_,[
 				  {<<"id1">>,_,2,<<"id1">>}]},
 			 exec(ReadSome)),
@@ -632,9 +632,8 @@ start_slave(N) ->
 			ok
 	end,
 	file:write_file(?TESTPTH++Name++".config",io_lib:fwrite("~p.~n",[[{bkdcore,Opts},
-						{actordb,[{main_db_folder,?TESTPTH++Name},{extra_db_folders,[]}]},
+						{actordb,[{main_db_folder,?TESTPTH++Name},{extra_db_folders,[]},{mysql_protocol,0}]},
 						{lager,[{handlers,setup_loging()}]},
-						{myactor,[{enabled,false}]},
 						{sasl,[{errlog_type,error}]}]])),
 	% file:write_file(?TESTPTH++Name++"/etc/actordb.cfg",io_lib:fwrite("~p.~n",[[{db_path,?TESTPTH++Name},{level_size,0}]])),
 	Param = " -eval \"application:start(actordb_core)\" -pa "++lists:flatten(butil:iolist_join(Paths," "))++
