@@ -8,10 +8,10 @@
   {modules, [
              actordb,actordb_sup,actordb_shard,actordb_shardmngr,actordb_sqlproc,
              actordb_sqlite,actordb_util,actordb_sqlparse,actordb_multiupdate,actordb_shardmvr,actordb_test,
-             actordb_local,actordb_cmd,actordb_actor
+             actordb_local,actordb_cmd,actordb_actor,actordb_core
             ]},
   {registered, [actordb_sup,actordb_shardmngr,actordb_shardmvr]},
-  {mod, {actordb, []}},
+  {mod, {actordb_core, []}},
   {applications, [kernel,stdlib]},
   {start_phases,[]}
  ]}.
