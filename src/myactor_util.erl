@@ -42,6 +42,28 @@ is_use(Bin) ->
             false
     end.
 
+%% @spec is_actor(binary()) -> true | false
+%% @doc  Detect if string/query starts with "actor" statement.
+is_actor({Bin,_}) ->
+    is_actor(Bin);
+is_actor(Bin) ->
+    case Bin of 
+        <<"actor ",Rem/binary>> ->
+            Rem;
+        <<"ACTOR ",Rem/binary>> ->
+            Rem;
+        <<"Actor ",Rem/binary>> ->
+            Rem;
+        <<A,C,T,O,R," ",Rem/binary>>  when (A == $a orelse A == $A) andalso
+                                        (C == $c orelse C == $C) andalso
+                                        (T == $t orelse T == $T) andalso
+                                        (O == $o orelse O == $O) andalso
+                                        (R == $t orelse R == $T) ->
+            Rem;
+        _ ->
+            undefined
+    end.
+
 %% @spec genhash() -> binary()
 %% @doc  Generate a random 20 byte long hash for password encryption.
 genhash() ->    % 20 bytes long id
@@ -81,6 +103,19 @@ read_lenenc_string(<<16#fc, Len:16/little, Bin:Len/binary, Rest/binary>>) -> {Bi
 read_lenenc_string(<<16#fd, Len:24/little, Bin:Len/binary, Rest/binary>>) -> {Bin, Rest};
 read_lenenc_string(<<16#fe, Len:64/little, Bin:Len/binary, Rest/binary>>) -> {Bin, Rest};
 read_lenenc_string(<<Len:8/little, Bin:Len/binary, Rest/binary>>) -> {Bin, Rest}.
+
+
+%% @spec build_ids(list()) -> binary()
+%% @doc  Converts a list of ActorIds (retrieved from myactor_sqlparse:parse_statements structure) to binary representation splitted with commas
+%%       Structure sample: {[{{_,<b>ActorIds</b>},false,[]}],false}
+build_idsbin([AId]) ->
+    butil:tobin(AId);
+build_idsbin(Ids) when is_list(Ids) ->
+    build_idsbin(Ids,<<>>).
+build_idsbin([],Bin) ->
+    Bin;
+build_idsbin([H|T],Bin) ->
+    build_idsbin(T,<<Bin/binary,$,,H/binary>>).
 
 %% @spec gen_doc() -> ok
 %% @doc  Generates this documentation.

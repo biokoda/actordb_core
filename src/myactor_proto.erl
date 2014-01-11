@@ -243,17 +243,8 @@ send_err(Cst,ErrorDescription) ->
 %% @doc  Decodes command from client, prepares and sends a response and returns a new state #cst{}<br/>
 %%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/text-protocol.html">Link</a><br/>
 %%       Important: Not all commands are implemented. 
-recv_command(Cst,<<?COM_INIT_DB,DbName/binary>>) ->
-    ?PROTO_DBG("use database (actor) = ~p",[butil:tolist(DbName)]),
-    case Cst#cst.queueing == true of
-        true ->
-            % we add use statement to queue and leave current actor intact while query queue is in progress
-            UseStmt = <<"use ">>,
-            Cst0 = queue_append(Cst,<<UseStmt/binary,DbName/binary>>),
-            send_ok(Cst0);   
-        false ->
-            send_ok(Cst#cst{current_actor=butil:tolist(DbName)})
-    end;    
+recv_command(Cst,<<?COM_INIT_DB,DbName/binary>>) ->    
+    send_ok(Cst);
 recv_command(Cst,<<?COM_QUIT>>) ->
     {Transport,Socket} = get_comm(Cst),
     Transport:close(Socket),
@@ -263,7 +254,7 @@ recv_command(Cst,<<?COM_PING>>) ->
 recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
     ?PROTO_DBG("got query (~s)",[Query]),
     Q0 = myactor_util:rem_spaces(Query),
-    HasUse = myactor_util:is_use(Q0),
+    HasActorCmd = myactor_util:is_use(Q0),
     case actordb_sqlparse:parse_statements(Query) of
         ["print state"++_] ->
             ?PROTO_DBG("current connection state: ~p",[Cst]),
@@ -322,17 +313,29 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
             ?PROTO_DBG("queue command = ~p",[Stmts0]),
             Cst0 = Cst#cst{query_queue = <<>>, queueing = false},
             execute_query(Cst0,Stmts0,QQ);
+        {[{{Actor,ActorIds},false,[]}],false} -> % parsed "actor <actor>(ids)" statement
+            ActorIdsBin = myactor_util:build_idsbin(ActorIds),
+            DbName = <<Actor/binary,$(,ActorIdsBin/binary,$)>>,
+            case Cst#cst.queueing == true of
+                true ->
+                    % we add use statement to queue and leave current actor intact while query queue is in progress
+                    ActorQCmd = <<"actor ">>,
+                    Cst0 = queue_append(Cst,<<ActorQCmd/binary,DbName/binary>>),
+                    send_ok(Cst0);   
+                false ->
+                    send_ok(Cst#cst{current_actor=butil:tolist(DbName)})
+            end;
         _Stmts when Cst#cst.queueing == true ->
             ?PROTO_DBG("queueing statement ~p",[Q0]),
             ?PROTO_DBG("queue = ~p",[Cst#cst.query_queue]),            
             case Cst#cst.query_queue of
                 <<>> ->
-                    case HasUse of
+                    case HasActorCmd of
                         true ->
                             Cst0 = queue_append(Cst,Q0),
                             send_ok(Cst0);
                         _ ->
-                            ?ERR_DESC(Cst,"First statement in a QUEUE has to be USE to define an ACTOR."), % = ErrDesc
+                            ?ERR_DESC(Cst,"First statement in a QUEUE has to be ACTOR to define an Actor."), % = ErrDesc
                             send_err(Cst,<<ErrDesc/binary>>)
                     end;
                 _ ->
@@ -341,12 +344,12 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
             end;            
         Stmts ->
             ?PROTO_DBG("stmts term = ~p",[Stmts]),
-            case HasUse of
+            case HasActorCmd of
                 true ->
                     Stmts0 = Stmts;
                 false when Cst#cst.current_actor =/= undefined ->
-                    UseActorQ = iolist_to_binary(["use ",Cst#cst.current_actor,";"]),
-                    Stmts0 = actordb_sqlparse:parse_statements(<<UseActorQ/binary,Query/binary>>);
+                    ActorQ = iolist_to_binary(["actor ",Cst#cst.current_actor,";"]),
+                    Stmts0 = actordb_sqlparse:parse_statements(<<ActorQ/binary,Query/binary>>);
                 false ->
                     Stmts0 = {error,no_actor_defined}
             end,
