@@ -1100,7 +1100,13 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 		% Should always be: {replication_failed,HasNodes,NeedsNodes}
 		Err ->
 			?DBLOG(P#dp.db,"commiterdown error ~p",[Err]),
-			ok = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+			{Sql,_EvNumNew,_CrcSql} = P#dp.replicate_sql,
+			case Sql of
+				<<"delete">> ->
+					ok;
+				_ ->
+					ok = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
+			end,
 			reply(P#dp.callfrom,{error,Err}),
 			handle_info(doqueue,P#dp{callfrom = undefined,commiter = undefined, transactionid = undefined, replicate_sql = undefined})
 	end;
