@@ -181,7 +181,7 @@ print_info(Pid) ->
 
 
 -record(dp,{db, actorname,actortype, evnum = 0,evcrc = 0, activity = 0, timerref, start_time,
-			page_size = 1024, activity_now,write_bytes = 0,
+			page_size = 1024, activity_now,write_bytes = 0,schemanum,
 			% locked is a list of pids.
 			% As long as these pids are in there, actor will not execute new writes.
 			locked = [],
@@ -1430,7 +1430,7 @@ init(#dp{} = P,_Why) ->
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue}]).
 init([_|_] = Opts) ->
-	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp()}),Opts) of
+	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), schemanum = actordb_schema:num()}),Opts) of
 		{registered,_Pid} ->
 			?ADBG("die already registered"),
 			% {stop,{registered,Pid}};

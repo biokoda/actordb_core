@@ -51,6 +51,8 @@ drive(Actor) ->
 
 type_schema(?MULTIUPDATE_TYPE,Vers) ->
 	actordb_multiupdate:get_schema(Vers);
+type_schema(?CLUSTEREVENTS_TYPE,Vers) ->
+	actordb_local:get_schema(Vers);
 type_schema(Type,0) ->
 	{tuple_size(apply(actordb_schema,Type,[])),tuple_to_list(apply(actordb_schema,Type,[]))};
 type_schema(Type,Version) ->

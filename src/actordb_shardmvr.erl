@@ -105,12 +105,16 @@ deser_prop(P) ->
 	?P2R(P).
 
 handle_cast(can_start,P) ->
-	actordb_core:start_ready(),
-	case P#dp.allshards /= undefined of
-		true ->
-			handle_cast({local_shards_changed,P#dp.allshards,P#dp.localshards},P#dp{can_start = true, allshards = undefined, localshards = undefined});
-		false ->
-			{noreply,P#dp{can_start = true}}
+	case actordb_core:start_ready() of
+		ok ->
+			case P#dp.allshards /= undefined of
+				true ->
+					handle_cast({local_shards_changed,P#dp.allshards,P#dp.localshards},P#dp{can_start = true, allshards = undefined, localshards = undefined});
+				false ->
+					{noreply,P#dp{can_start = true}}
+			end;
+		_ ->
+			{noreply,P}
 	end;
 handle_cast({local_shards_changed,A,L},#dp{can_start = false} = P) ->
 	{noreply,P#dp{allshards = A, localshards = L}};

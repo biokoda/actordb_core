@@ -111,6 +111,8 @@ cb_init(S,EvNum) ->
 	case ok of
 		_ when S#st.type == ?MULTIUPDATE_TYPE ->
 			ok;
+		_ when S#st.type == ?CLUSTEREVENTS_TYPE ->
+			ok;
 		_ when S#st.doreg /= undefined ->
 			ok = actordb_shard:reg_actor(S#st.doreg,S#st.name,S#st.type);
 		_ when EvNum == 0 ->

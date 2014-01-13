@@ -49,25 +49,33 @@ wait_distreg_procs() ->
 			wait_distreg_procs()
 	end.
 
+
 start_ready() ->
-	{ok, Port} = application:get_env(actordb_core,mysql_protocol),
-	case Port > 0 of
-		true ->
-			Ulimit = actordb_local:ulimit(),
-			case ok of
-				_ when Ulimit =< 256 ->
-					MaxCon = 8;
-				_ when Ulimit =< 1024 ->
-					MaxCon = 64;
-				_  when Ulimit =< 1024*4 ->
-					MaxCon = 128;
-				_ ->
-					MaxCon = 1024
-			end,
-			{ok, _} = ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []),
-			ok;
+	% Process any events this server might have missed if it was down.
+	% Once processed successfully initializiation is done.
+	case actordb_events:start_ready() of
+		ok ->
+			{ok, Port} = application:get_env(actordb_core,mysql_protocol),
+			case Port > 0 of
+				true ->
+					Ulimit = actordb_local:ulimit(),
+					case ok of
+						_ when Ulimit =< 256 ->
+							MaxCon = 8;
+						_ when Ulimit =< 1024 ->
+							MaxCon = 64;
+						_  when Ulimit =< 1024*4 ->
+							MaxCon = 128;
+						_ ->
+							MaxCon = 1024
+					end,
+					{ok, _} = ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []),
+					ok;
+				false ->
+					ok
+			end;
 		false ->
-			ok
+			false
 	end.
 
 start() ->
@@ -78,8 +86,8 @@ start(_Type, _Args) ->
 	application:ensure_started(os_mon),
 	application:ensure_started(yamerl),
 	?AINF("Starting actordb ~p",[_Args]),
-	case butil:is_app_running(bkdcore) of
-		false ->
+	% case butil:is_app_running(bkdcore) of
+	% 	false ->
 			Args = init:get_arguments(),
 			% application:set_env(bkdcore,startapps,[actordb]),
 			?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
@@ -111,7 +119,12 @@ start(_Type, _Args) ->
 								_ ->
 									ok
 							end,
-							application:set_env(bkdcore,statepath,Statep),
+							case application:get_env(bkdcore,statepath) of
+								{ok,_} ->
+									ok;
+								_ ->
+									application:set_env(bkdcore,statepath,Statep)
+							end,
 							% My proto config
 							% MyActorCfg = butil:ds_val(myactor,L),
 							% case butil:ds_val(enabled,MyActorCfg) of
@@ -152,10 +165,10 @@ start(_Type, _Args) ->
 												{preload,{actordb_util,parse_cfg_schema,[]}},
 												{onload,{actordb,schema_changed,[]}}]}
 						]),
-			butil:wait_for_app(bkdcore);
-		true ->
-			ok
-	end,
+			butil:wait_for_app(bkdcore),
+	% 	true ->
+	% 		ok
+	% end,
 	Res = actordb_sup:start_link(),
 	Res.
 

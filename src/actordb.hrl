@@ -6,6 +6,7 @@
 -define(MIN_SHARDS,3).
 -define(NAMESPACE_MAX,134217728).
 -define(MULTIUPDATE_TYPE,'__mupdate__').
+-define(CLUSTEREVENTS_TYPE,'__clusterevents__').
 -define(DEF_CACHE_PAGES,10).
 
 -define(ADBG(F),lager:debug(F)).

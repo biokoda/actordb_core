@@ -225,6 +225,8 @@ del_actor(ShardName,ActorName,Type) ->
 
 reg_actor(_,_,?MULTIUPDATE_TYPE) ->
 	ok;
+reg_actor(_,_,?CLUSTEREVENTS_TYPE) ->
+	ok;
 reg_actor(ShardName,ActorName,Type1) ->
 	Type = butil:toatom(Type1),
 	?ADBG("reg_actor ~p ~p ~p~n",[ShardName,ActorName,Type1]),
