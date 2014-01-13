@@ -47,7 +47,13 @@ init([]) ->
 			 permanent,
 			 100,
 			 worker,
-			[actordb_backpressure]}
+			[actordb_backpressure]},
+		{actordb_events,
+			{actordb_events, start, []},
+			 permanent,
+			 100,
+			 worker,
+			[actordb_events]}
 			]
 	}}.
 

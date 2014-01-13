@@ -12,6 +12,14 @@
 -include("actordb.hrl").
 -compile(export_all).
 
+is_ready() ->
+	case application:get_env(actordb_core,isready) of
+		{ok,true} ->
+			true;
+		_ ->
+			false
+	end.
+
 % Calls with backpressure.
 % Generally all calls to actordb should get executed with these functions.
 % Otherwise the node might get overloaded and crash.
