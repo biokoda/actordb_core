@@ -66,7 +66,7 @@ start(Name,Type1,Slave,Opt) ->
 	% #state will be provided with every callback from sqlproc.
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
-	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,Slave},{mod,?MODULE},
+	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,Slave},{mod,?MODULE},{create,true},
 										{state,#state{idtype = Idtype,name = Name,type = Type}},
 										{regname,{shard,Type,Name}}|Opt]),
 	{ok,Pid}.
@@ -87,7 +87,7 @@ start_steal(Nd,Name,Type1) ->
 				true ->
 					{ok,_Pid} = start(Name,Type,false,[{copyfrom,Nd},{copyreset,{?MODULE,start_steal_done,[Nd]}}]);
 				false ->
-					{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},
+					{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},{create,true},
 																	 {state,#state{idtype = Idtype, name = Name, 
 																	 				stealingfrom = Nd,type = Type}},
 																	 {regname,{shard,Type,Name}}]),
@@ -114,7 +114,7 @@ start_split(Name,Type1,SplitPoint) ->
 	?AINF("start_split ~p ~p ~p",[Name,SplitPoint,Type1]),
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
-	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},
+	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},{create,true},
 															 {state,#state{idtype = Idtype,split_point = SplitPoint, 
 															 				upperlimit = SplitPoint-1, 
 															 				name = Name, type = Type}},

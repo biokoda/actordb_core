@@ -19,13 +19,16 @@
 -define(ATYPE,<<"4">>).
 -define(COPYFROM,<<"5">>).
 -define(MOVEDTO,<<"6">>).
+-define(ANUM,<<"7">>).
 -define(EVNUMI,1).
 -define(EVCRCI,2).
 -define(SCHEMA_VERSI,3).
 -define(ATYPEI,4).
 -define(COPYFROMI,5).
 -define(MOVEDTOI,6).
+-define(ANUMI,7).
 -define(WLOG_LIMIT,1024*4).
+-define(FLAG_CREATE,1).
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
@@ -181,7 +184,7 @@ print_info(Pid) ->
 
 
 -record(dp,{db, actorname,actortype, evnum = 0,evcrc = 0, activity = 0, timerref, start_time,
-			page_size = 1024, activity_now,write_bytes = 0,schemanum,
+			page_size = 1024, activity_now,write_bytes = 0,schemanum,actornum,
 			% locked is a list of pids.
 			% As long as these pids are in there, actor will not execute new writes.
 			locked = [],
@@ -506,8 +509,10 @@ handle_call({read,Msg},_From,P) ->
 						Sql ->
 							{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1})}
 					end;
-				Sql ->
-					{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1})}
+				Sql when P#dp.db /= undefined ->
+					{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1})};
+				_ ->
+					{reply,{error,nocreate},P}
 			end;
 		_ ->
 			?DBG("redirect read ~p",[P#dp.masternode]),
@@ -648,6 +653,11 @@ semicolon(<<_/binary>> = Sql) ->
 	end;
 semicolon(S) ->
 	S.
+actornum(#dp{evnum = 0} = P) ->
+	ActorNum = erlang:phash2([{P#dp.actorname,P#dp.actortype,os:timestamp()}]),
+	<<"$INSERT OR REPLACE INTO __adb VALUES (",?ANUM/binary,",'",(butil:tobin(ActorNum))/binary,"');">>;
+actornum(_) ->
+	<<>>.
 
 nodes_for_replication(P) ->
 	ReplicatingTo = [Nd || {Nd,_,_,_} <- P#dp.dbcopy_to],
@@ -663,9 +673,9 @@ nodes_for_replication(P) ->
 write_call({MFA,Crc,Sql,Transaction},From,P) ->
 	?ADBG("writecall ~p ~p ~p",[MFA,Sql,Transaction]),
 	case MFA of
-		undefined ->
+		undefined when P#dp.db /= undefined ->
 			write_call(Crc,Sql,Transaction,From,P);
-		{Mod,Func,Args} ->
+		{Mod,Func,Args} when P#dp.db /= undefined ->
 			?DBLOG(P#dp.db,"writecall mfa ~p",[MFA]),
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
 				{reply,What,OutSql1,NS} ->
@@ -683,7 +693,9 @@ write_call({MFA,Crc,Sql,Transaction},From,P) ->
 				OutSql1 ->
 					OutSql = iolist_to_binary(OutSql1),
 					write_call(erlang:crc32(OutSql),OutSql,Transaction,From,P)
-			end
+			end;
+		_ ->
+			{error,nocreate}
 	end.
 write_call(Crc,Sql,undefined,From,P) ->
 	EvNum = P#dp.evnum+1,
@@ -702,7 +714,7 @@ write_call(Crc,Sql,undefined,From,P) ->
 		_ ->
 			ComplSql = 
 					[<<"$SAVEPOINT 'adb';">>,
-					 semicolon(Sql),
+					 semicolon(Sql),actornum(P),
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
 					 Tail
@@ -1430,12 +1442,12 @@ init(#dp{} = P,_Why) ->
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue}]).
 init([_|_] = Opts) ->
-	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), schemanum = actordb_schema:num()}),Opts) of
+	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), schemanum = actordb_schema:num()}),Opts,0) of
 		{registered,_Pid} ->
 			?ADBG("die already registered"),
 			% {stop,{registered,Pid}};
 			{stop,normal};
-		P ->
+		{P,Flags} ->
 			ClusterNodes = bkdcore:cluster_nodes(),
 			?ADBG("Actor start ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name()]),
@@ -1456,16 +1468,17 @@ init([_|_] = Opts) ->
 					RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
 					case ok of
 						_ when MovedToNode == undefined; RightCluster ->
-							{ok,Db,HaveSchema,PageSize} = actordb_sqlite:init(DbPath,JournalMode),
+							{ok,Db1,HaveSchema,PageSize} = actordb_sqlite:init(DbPath,JournalMode),
 							case HaveSchema of
 								true ->
+									Db = Db1,
 									?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
 									?DBLOG(Db,"init normal have schema",[]),
 									{ok,[[{columns,_},{rows,Transaction}],
 										[{columns,_},{rows,Rows}]]} = actordb_sqlite:exec(Db,
 											<<"SELECT * FROM __adb WHERE id in (",?EVNUM/binary,",",
 																				 ?SCHEMA_VERS/binary,",",
-																				 ?ATYPE/binary,",",?EVCRC/binary,",",?MOVEDTO/binary,");",
+																				 ?ATYPE/binary,",",?EVCRC/binary,",",?MOVEDTO/binary,",",?ANUM/binary,");",
 											  "SELECT * FROM __transactions;">>),
 									Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows)),
 									Evcrc = butil:toint(butil:ds_val(?EVCRCI,Rows)),
@@ -1497,11 +1510,12 @@ init([_|_] = Opts) ->
 											ReplSql = {MSql,Evnum+1,CrcSql},
 											Transid = {Tid,Updid,Node}
 									end;
-								false ->
+								false -> %when Flags band ?FLAG_CREATE ->
+									Db = Db1,
 									MovedToNode1 = undefined,
 									ReplSql = undefined,
 									Transid = undefined,
-									?ADBG("Opening NO schema ~p",[{P#dp.actorname,P#dp.actortype}]),
+									?ADBG("Opening NO schema create ~p",[{P#dp.actorname,P#dp.actortype}]),
 									Evnum = 0,
 									Evcrc = 0,
 									{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
@@ -1510,6 +1524,15 @@ init([_|_] = Opts) ->
 												 <<"COMMIT;">>],
 									{ok,_} = actordb_sqlite:exec(Db,CreateDb),
 									?DBLOG(Db,"init normal created schema",[])
+								% false ->
+								% 	actordb_sqlite:stop(Db1),
+								% 	Db = undefined,
+								% 	MovedToNode1 = undefined,
+								% 	ReplSql = undefined,
+								% 	Transid = undefined,
+								% 	?ADBG("Opening NO schema nocreate ~p",[{P#dp.actorname,P#dp.actortype}]),
+								% 	Evnum = 0,
+								% 	Evcrc = 0
 							end,
 							case ok of
 								_ when ClusterNodes == []; MovedToNode1 /= undefined ->
@@ -1632,43 +1655,45 @@ do_cb_init(P) ->
 			P#dp.cbstate
 	end.
 
-parse_opts(P,[H|T]) ->
+parse_opts(P,[H|T],Flags) ->
 	case H of
+		{create,true} ->
+			parse_opts(P,T,Flags bor ?FLAG_CREATE);
 		{actor,Name} ->
-			parse_opts(P#dp{actorname = Name},T);
+			parse_opts(P#dp{actorname = Name},T,Flags);
 		{type,Type} when is_atom(Type) ->
-			parse_opts(P#dp{actortype = Type},T);
+			parse_opts(P#dp{actortype = Type},T,Flags);
 		{mod,Mod} ->
-			parse_opts(P#dp{cbmod = Mod},T);
+			parse_opts(P#dp{cbmod = Mod},T,Flags);
 		{state,S} ->
-			parse_opts(P#dp{cbstate = S},T);
+			parse_opts(P#dp{cbstate = S},T,Flags);
 		{slave,true} ->
-			parse_opts(P#dp{mors = slave},T);
+			parse_opts(P#dp{mors = slave},T,Flags);
 		{slave,false} ->
-			parse_opts(P#dp{mors = master,masternode = bkdcore:node_name(),masternodedist = node()},T);
+			parse_opts(P#dp{mors = master,masternode = bkdcore:node_name(),masternodedist = node()},T,Flags);
 		{copyfrom,Node} ->
-			parse_opts(P#dp{copyfrom = Node},T);
+			parse_opts(P#dp{copyfrom = Node},T,Flags);
 		{copyreset,What} ->
 			case What of
 				false ->
-					parse_opts(P#dp{copyreset = false},T);
+					parse_opts(P#dp{copyreset = false},T,Flags);
 				true ->
-					parse_opts(P#dp{copyreset = <<>>},T);
+					parse_opts(P#dp{copyreset = <<>>},T,Flags);
 				Mod ->
-					parse_opts(P#dp{copyreset = Mod},T)
+					parse_opts(P#dp{copyreset = Mod},T,Flags)
 			end;
 		{regname,Name} ->
 			case distreg:reg(self(),Name) of
 				ok ->
-					parse_opts(P,T);
+					parse_opts(P,T,Flags);
 				name_exists ->
 					{registered,distreg:whereis(Name)}
 			end;
 		{queue,Q} ->
-			parse_opts(P#dp{callqueue = Q},T)
+			parse_opts(P#dp{callqueue = Q},T,Flags)
 	end;
-parse_opts(P,[]) ->
-	P.
+parse_opts(P,[],Flags) ->
+	{P,Flags}.
 
 
 delactorfile(P) ->
