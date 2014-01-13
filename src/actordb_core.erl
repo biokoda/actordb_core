@@ -55,24 +55,28 @@ start_ready() ->
 	case actordb_events:start_ready() of
 		ok ->
 			application:set_env(actordb_core,isready,true),
-			{ok, Port} = application:get_env(actordb_core,mysql_protocol),
-			case Port > 0 of
-				true ->
-					Ulimit = actordb_local:ulimit(),
-					case ok of
-						_ when Ulimit =< 256 ->
-							MaxCon = 8;
-						_ when Ulimit =< 1024 ->
-							MaxCon = 64;
-						_  when Ulimit =< 1024*4 ->
-							MaxCon = 128;
-						_ ->
-							MaxCon = 1024
-					end,
-					{ok, _} = ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []),
+			case application:get_env(actordb_core,mysql_protocol) of
+				undefined ->
 					ok;
-				false ->
-					ok
+				{ok, Port} ->
+					case Port > 0 of
+						true ->
+							Ulimit = actordb_local:ulimit(),
+							case ok of
+								_ when Ulimit =< 256 ->
+									MaxCon = 8;
+								_ when Ulimit =< 1024 ->
+									MaxCon = 64;
+								_  when Ulimit =< 1024*4 ->
+									MaxCon = 128;
+								_ ->
+									MaxCon = 1024
+							end,
+							{ok, _} = ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []),
+							ok;
+						false ->
+							ok
+					end
 			end;
 		false ->
 			false
