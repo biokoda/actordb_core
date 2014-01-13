@@ -19,6 +19,13 @@ is_ready() ->
 		_ ->
 			false
 	end.
+configfiles() ->
+	[
+		{cfg,"schema.yaml",[{autoload,true},
+							{mod,actordb_schema},
+							{preload,{actordb_util,parse_cfg_schema,[]}},
+							{onload,{actordb,schema_changed,[]}}]}
+	].
 
 % Calls with backpressure.
 % Generally all calls to actordb should get executed with these functions.

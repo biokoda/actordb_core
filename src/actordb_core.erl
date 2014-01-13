@@ -163,12 +163,7 @@ start(_Type, _Args) ->
 			% Start dependencies
 			application:start(esqlite),
 			application:start(lager),						
-			bkdcore:start([
-							{cfg,"schema.yaml",[{autoload,true},
-												{mod,actordb_schema},
-												{preload,{actordb_util,parse_cfg_schema,[]}},
-												{onload,{actordb,schema_changed,[]}}]}
-						]),
+			bkdcore:start(actordb:configfiles()),
 			butil:wait_for_app(bkdcore),
 	% 	true ->
 	% 		ok
