@@ -8,7 +8,7 @@
 % start/stop
 -export([schema_changed/0]).
 % Generally not to be called from outside actordb
--export([direct_call/3,actor_id_type/1]).
+-export([direct_call/6,actor_id_type/1]).
 -include("actordb.hrl").
 -compile(export_all).
 
@@ -96,17 +96,17 @@ exec(Sql) ->
 exec1(St) ->
 	case St of
 		% Actor and type, if does not exist will be created.
-		{[{{Type,[Actor]},IsWrite,Statements}],_} when is_binary(Type) ->
-			direct_call(Actor,Type,IsWrite,Statements,true);
+		{[{{Type,[Actor],Flags},IsWrite,Statements}],_} when is_binary(Type) ->
+			direct_call(Actor,Type,Flags,IsWrite,Statements,true);
 		% Single block, writes to more than one actor
-		{[{{_Type,[_,_|_]} = Actors,true,Statements}],_} ->
+		{[{{_Type,[_,_|_],_Flags} = Actors,true,Statements}],_} ->
 			actordb_multiupdate:exec([{Actors,true,Statements}]);
 		% Single block, lookup across multiple actors
-		{[{{_Type,[_,_|_]} = _Actors,false,_Statements}] = Multiread,_} ->
+		{[{{_Type,[_,_|_],_Flags} = _Actors,false,_Statements}] = Multiread,_} ->
 			actordb_multiupdate:multiread(Multiread);
-		{[{{_Type,$*},false,_Statements}] = Multiread,_} ->
+		{[{{_Type,$*,_Flags},false,_Statements}] = Multiread,_} ->
 			actordb_multiupdate:multiread(Multiread);
-		{[{{_Type,$*},true,_Statements}] = Multiblock,_} ->
+		{[{{_Type,$*,_Flags},true,_Statements}] = Multiblock,_} ->
 			actordb_multiupdate:exec(Multiblock);
 		% Multiple blocks, that change db
 		{[_,_|_] = Multiblock,true} ->
@@ -121,13 +121,13 @@ exec1(St) ->
 	end.
 
 
-direct_call({Actor,Type},IsWrite,Statements) ->
-	direct_call(Actor,Type,IsWrite,Statements,true);
-direct_call(Actor,IsWrite,Statements) ->
-	direct_call(Actor,undefined,IsWrite,Statements,true).
-direct_call(undefined,_,_,_,_) ->
+% direct_call({Actor,Type},IsWrite,Statements) ->
+% 	direct_call(Actor,Type,IsWrite,Statements,true);
+% direct_call(Actor,IsWrite,Statements) ->
+% 	direct_call(Actor,undefined,IsWrite,Statements,true).
+direct_call(undefined,_,_,_,_,_) ->
 	[];
-direct_call(Actor,Type1,IsWrite,Statements,DoRpc) ->
+direct_call(Actor,Type1,Flags,IsWrite,Statements,DoRpc) ->
 	Type = actordb_util:typeatom(Type1),
 	Where = actordb_shardmngr:find_local_shard(Actor,Type),
 	% ?AINF("direct_call ~p ~p ~p ~p",[Actor,Statements,Where,DoRpc]),
@@ -135,9 +135,9 @@ direct_call(Actor,Type1,IsWrite,Statements,DoRpc) ->
 	case Where of
 		undefined when DoRpc ->
 			{_,_,Node} = actordb_shardmngr:find_global_shard(Actor),
-			rpc(Node,Actor,{?MODULE,direct_call,[Actor,Type,IsWrite,Statements,false]});
+			rpc(Node,Actor,{?MODULE,direct_call,[Actor,Type,Flags,IsWrite,Statements,false]});
 		{redirect,_,Node} when DoRpc ->
-			rpc(Node,Actor,{?MODULE,direct_call,[Actor,Type,IsWrite,Statements,false]});
+			rpc(Node,Actor,{?MODULE,direct_call,[Actor,Type,Flags,IsWrite,Statements,false]});
 		_ ->
 			case Where of
 				undefined ->
@@ -147,9 +147,9 @@ direct_call(Actor,Type1,IsWrite,Statements,DoRpc) ->
 			end,
 			case IsWrite of
 				true ->
-					actordb_actor:write(Shard,{Actor,Type},Statements);
+					actordb_actor:write(Shard,{Actor,Type},Flags,Statements);
 				false ->
-					actordb_actor:read(Shard,{Actor,Type},Statements)
+					actordb_actor:read(Shard,{Actor,Type},Flags,Statements)
 			end
 	end.
 

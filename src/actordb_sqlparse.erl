@@ -458,26 +458,44 @@ split_actor(<<"`",Bin/binary>>,Word,undefined,L) ->
 	split_actor(Bin,Word,undefined,L);
 split_actor(<<",",Bin/binary>>,Word,Type,L) ->
 	split_actor(Bin,<<>>,Type,[Word|L]);
-split_actor(<<")",_/binary>>,Word,Type,L) ->
-	{Type,[Word|L]};
+split_actor(<<")",FlagsBin/binary>>,Word,Type,L) ->
+	{Type,[Word|L],check_flags(FlagsBin,[])};
 split_actor(<<"for ",Bin/binary>>,<<>>,Type,[]) ->
-	{Var,Col,Global} = split_foru(Bin,<<>>,undefined,undefined),
-	{Type,Global,Col,Var};
+	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
+	{Type,Global,Col,Var,Flags};
 split_actor(<<"FOR ",Bin/binary>>,<<>>,Type,[]) ->
-	{Var,Col,Global} = split_foru(Bin,<<>>,undefined,undefined),
-	{Type,Global,Col,Var};
+	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
+	{Type,Global,Col,Var,Flags};
+split_actor(<<"For ",Bin/binary>>,<<>>,Type,[]) ->
+	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
+	{Type,Global,Col,Var,Flags};
 split_actor(<<"foreach ",Bin/binary>>,<<>>,Type,[]) ->
-	{Var,Col,Global} = split_foru(Bin,<<>>,undefined,undefined),
-	{Type,Global,Col,Var};
+	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
+	{Type,Global,Col,Var,Flags};
 split_actor(<<"FOREACH ",Bin/binary>>,<<>>,Type,[]) ->
-	{Var,Col,Global} = split_foru(Bin,<<>>,undefined,undefined),
-	{Type,Global,Col,Var};
+	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
+	{Type,Global,Col,Var,Flags};
 split_actor(<<";",_/binary>>,Word,Type,L) ->
-	{Type,[Word|L]};
+	{Type,[Word|L],[]};
 split_actor(<<C,Bin/binary>>,Word,Type,L) ->
 	split_actor(Bin,<<Word/binary,C>>,Type,L);
 split_actor(<<>>,Word,Type,L) ->
-	{Type,[Word|L]}.
+	{Type,[Word|L],[]}.
+
+check_flags(<<" ",Rem/binary>>,L) ->
+	check_flags(Rem,L);
+check_flags(<<",",Rem/binary>>,L) ->
+	check_flags(Rem,L);
+check_flags(<<"create",Rem/binary>>,L) ->
+	check_flags(Rem,[{create,true}|L]);
+check_flags(<<"CREATE",Rem/binary>>,L) ->
+	check_flags(Rem,[{create,true}|L]);
+check_flags(<<";">>,L) ->
+	L;
+check_flags(<<>>,L) ->
+	L;
+check_flags(<<_,Rem/binary>>,L) ->
+	check_flags(Rem,L).
 
 split_foru(<<" in ",Bin/binary>>,Word,Var,undefined) ->
 	split_foru(Bin,<<>>,Var,Word);
@@ -496,10 +514,10 @@ split_foru(<<" ",Bin/binary>>,Word,Var,Col) ->
 	end;
 split_foru(<<".",Bin/binary>>,Word,undefined,undefined) ->
 	split_foru(Bin,<<>>,Word,undefined);
-split_foru(<<")",_/binary>>,Word,Var,Col) ->
-	{Var,Col,Word};
+split_foru(<<")",FlagsBin/binary>>,Word,Var,Col) ->
+	{Var,Col,Word,check_flags(FlagsBin,[])};
 split_foru(<<";",_/binary>>,Word,Var,Col) ->
-	{Var,Col,Word};
+	{Var,Col,Word,[]};
 split_foru(<<C,Bin/binary>>,Word,Var,Col) ->
 	split_foru(Bin,<<Word/binary,C>>,Var,Col).
 

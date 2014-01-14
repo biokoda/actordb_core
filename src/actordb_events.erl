@@ -30,7 +30,8 @@ newevent(Info) ->
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 start_ready() ->
-	gen_server:call(?MODULE,start_ready).
+	% gen_server:call(?MODULE,start_ready).
+	ok.
 
 
 start() ->

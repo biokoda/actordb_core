@@ -13,13 +13,14 @@
 
 start({Name,Type}) ->
 	start(Name,Type).
+start({Name,Type},Flags) ->
+	start(Name,Type,Flags);
 start(Name,Type) ->
 	start(Name,Type,[]).
 start(Name,Type1,Opt) ->
 	Type = actordb_util:typeatom(Type1),
-	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},
-									  {state,#st{name = Name,type = Type}},{regname,{Name,Type}}|Opt]),
-	{ok,Pid}.
+	actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},
+							  {state,#st{name = Name,type = Type}},{regname,{Name,Type}}|Opt]).
 
 start_steal(Name,Type1,Node,ShardName) ->
 	Type = actordb_util:typeatom(Type1),
@@ -29,25 +30,25 @@ start_steal(Name,Type1,Node,ShardName) ->
 	{ok,Pid}.
 
 
-read(Shard,{Name,Type} = Actor,Sql) ->
+read(Shard,{Name,Type} = Actor,Flags,Sql) ->
 	case actordb_schema:iskv(Type) of
 		true ->
 			actordb_shard:kvread(Shard,Name,Type,Sql);
 		_ ->
-			read(Actor,Sql)
+			read(Actor,Flags,Sql)
 	end.
-read(Actor,Sql) ->
-	actordb_sqlproc:read(Actor,Sql,?MODULE).
+read(Actor,Flags,Sql) ->
+	actordb_sqlproc:read(Actor,Flags,Sql,?MODULE).
 
-write(Shard,{Name,Type} = Actor,Sql) ->
+write(Shard,{Name,Type} = Actor,Flags,Sql) ->
 	case actordb_schema:iskv(Type) of
 		true ->
 			actordb_shard:kvwrite(Shard,Name,Type,Sql);
 		_ ->
-			write(Actor,Sql)
+			write(Actor,Flags,Sql)
 	end.
-write(Actor,Sql) ->
-	actordb_sqlproc:write(Actor,Sql,?MODULE).
+write(Actor,Flags,Sql) ->
+	actordb_sqlproc:write(Actor,Flags,Sql,?MODULE).
 
 
 
@@ -73,7 +74,7 @@ cb_slave_pid(Name,Type) ->
 	Actor = {Name,Type},
 	case distreg:whereis(Actor) of
 		undefined ->
-			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},{regname,Actor}]),
+			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},{regname,Actor},{create,true}]),
 			{ok,Pid};
 		Pid ->
 			{ok,Pid}

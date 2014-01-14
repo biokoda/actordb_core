@@ -7,7 +7,7 @@
 -define(LAGERDBG,true).
 -export([start/1, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/1]).
--export([read/3,write/3,call/3,diepls/2]).
+-export([read/4,write/4,call/4,diepls/2]).
 -export([call_slave/4,call_master/4]).
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -55,42 +55,42 @@
 % and reads file up to that point. 
 
 
-read(Name,[delete],Start) ->
-	call(Name,{write,{undefined,0,delete,undefined}},Start);
-read(Name,Sql,Start) ->
-	call(Name,{read,Sql},Start).
+read(Name,Flags,[delete],Start) ->
+	call(Name,Flags,{write,{undefined,0,delete,undefined}},Start);
+read(Name,Flags,Sql,Start) ->
+	call(Name,Flags,{read,Sql},Start).
 
-write(Name,{{_,_,_} = TransactionId,Sql},Start) ->
-	write(Name,{undefined,TransactionId,Sql},Start);
-write(Name,{MFA,TransactionId,Sql},Start) ->
+write(Name,Flags,{{_,_,_} = TransactionId,Sql},Start) ->
+	write(Name,Flags,{undefined,TransactionId,Sql},Start);
+write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 	case TransactionId of
 		{_,_,_} ->
 			case Sql of
 				commit ->
-					call(Name,{commit,true,TransactionId},Start);
+					call(Name,Flags,{commit,true,TransactionId},Start);
 				abort ->
-					call(Name,{commit,false,TransactionId},Start);
+					call(Name,Flags,{commit,false,TransactionId},Start);
 				[delete] ->
-					call(Name,{write,{MFA,0,delete,TransactionId}},Start);
+					call(Name,Flags,{write,{MFA,0,delete,TransactionId}},Start);
 				_ ->
-					call(Name,{write,{MFA,erlang:crc32(Sql),iolist_to_binary(Sql),TransactionId}},Start)
+					call(Name,Flags,{write,{MFA,erlang:crc32(Sql),iolist_to_binary(Sql),TransactionId}},Start)
 			end;
 		_ when Sql == undefined ->
-			call(Name,{write,{MFA,0,undefined,undefined}},Start);
+			call(Name,Flags,{write,{MFA,0,undefined,undefined}},Start);
 		_ ->
-			call(Name,{write,{MFA,erlang:crc32(Sql),iolist_to_binary(Sql),undefined}},Start)
+			call(Name,Flags,{write,{MFA,erlang:crc32(Sql),iolist_to_binary(Sql),undefined}},Start)
 	end;
-write(Name,[delete],Start) ->
-	call(Name,{write,{undefined,0,delete,undefined}},Start);
-write(Name,Sql,Start) ->
-	call(Name,{write,{undefined,erlang:crc32(Sql),iolist_to_binary(Sql),undefined}},Start).
+write(Name,Flags,[delete],Start) ->
+	call(Name,Flags,{write,{undefined,0,delete,undefined}},Start);
+write(Name,Flags,Sql,Start) ->
+	call(Name,Flags,{write,{undefined,erlang:crc32(Sql),iolist_to_binary(Sql),undefined}},Start).
 % write(Pid,Sql) ->
 % 	gen_server:call(Pid,{write,{erlang:crc32(Sql),Sql}},infinity).
 
-call(Name,Msg,Start) ->
+call(Name,Flags,Msg,Start) ->
 	case distreg:whereis(Name) of
 		undefined ->
-			{ok,Pid} = startactor(Name,Start);
+			{ok,Pid} = startactor(Name,Start,Flags);
 		Pid ->
 			ok
 	end,
@@ -101,21 +101,21 @@ call(Name,Msg,Start) ->
 			actordb:rpc(Node,Name,{?MODULE,call,[Name,Msg,Start]});
 		{'EXIT',{noproc,_}} = _X  ->
 			?ADBG("noproc call again ~p",[_X]),
-			call(Name,Msg,Start);
+			call(Name,Flags,Msg,Start);
 		{'EXIT',{normal,_}} ->
 			?ADBG("died normal"),
-			call(Name,Msg,Start);
+			call(Name,Flags,Msg,Start);
 		Res ->
 			Res
 	end.
-startactor(Name,Start) ->
+startactor(Name,Start,Flags) ->
 	case Start of
 		{Mod,Func,Args} ->
 			apply(Mod,Func,[Name|Args]);
 		undefined ->
 			{ok,undefined};
 		_ ->
-			apply(Start,start,[Name])
+			apply(Start,start,[Name,Flags])
 	end.
 
 call_master(Cb,Actor,Type,Msg) ->
@@ -163,11 +163,22 @@ diepls(Pid,Reason) ->
 %  {inactivity_timeout,SecondsOrInfinity},{slave,true/false},{copyfrom,NodeName},{copyreset,true/false}]
 start(Opts) ->
 	?ADBG("Starting ~p ~p",[butil:ds_val(regname,Opts),butil:ds_val(slave,Opts)]),
-	case gen_server:start(?MODULE, Opts, []) of
+	Ref = make_ref(),
+	case gen_server:start(?MODULE, [{start_from,{self(),Ref}}|Opts], []) of
 		{ok,Pid} ->
 			{ok,Pid};
 		{error,normal} ->
-			{ok,distreg:whereis(butil:ds_val(regname,Opts))};
+			case distreg:whereis(butil:ds_val(regname,Opts)) of
+				undefined ->
+					receive
+						{Ref,nocreate} ->
+							{error,nocreate}
+						after 0 ->
+							{error,cantstart}
+					end;
+				Pid ->
+					{ok,Pid}
+			end;
 		% {error,{registered,Pid}} ->
 		% 	{ok,Pid};
 		Err ->
@@ -1535,7 +1546,7 @@ init([_|_] = Opts) ->
 								% 	Evcrc = 0
 							end,
 							case ok of
-								_ when ClusterNodes == []; MovedToNode1 /= undefined ->
+								_ when ClusterNodes == []; MovedToNode1 /= undefined; Db == undefined ->
 									Verifypid = undefined,
 									Verified = true;
 								_ ->
@@ -1605,6 +1616,10 @@ init([_|_] = Opts) ->
 			case NP#dp.verified of
 				true when NP#dp.db /= undefined ->
 					{ok,NP#dp{cbstate = do_cb_init(NP), activity_now = TimeStart}};
+				true ->
+					{From,FromRef} = lists:keyfind(start_from,Opts),
+					From ! {FromRef,nocreate},
+					{stop,normal};
 				_ ->
 					{ok,NP#dp{activity_now = TimeStart}}
 			end
@@ -1690,7 +1705,9 @@ parse_opts(P,[H|T],Flags) ->
 					{registered,distreg:whereis(Name)}
 			end;
 		{queue,Q} ->
-			parse_opts(P#dp{callqueue = Q},T,Flags)
+			parse_opts(P#dp{callqueue = Q},T,Flags);
+		_ ->
+			parse_opts(P,T,Flags)
 	end;
 parse_opts(P,[],Flags) ->
 	{P,Flags}.

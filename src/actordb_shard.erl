@@ -57,6 +57,8 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 start({shard,Type,ShardName}) ->
 	start(ShardName,Type).
+start({shard,Type,Name},Flags) ->
+	start(Name,Type,false,Flags);
 start(Name,Type1) ->
 	start(Name,Type1,false).
 start(Name,Type1,Slave) ->
