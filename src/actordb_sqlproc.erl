@@ -1521,7 +1521,7 @@ init([_|_] = Opts) ->
 											ReplSql = {MSql,Evnum+1,CrcSql},
 											Transid = {Tid,Updid,Node}
 									end;
-								false -> %when Flags band ?FLAG_CREATE ->
+								false when (Flags band ?FLAG_CREATE) > 0 ->
 									Db = Db1,
 									MovedToNode1 = undefined,
 									ReplSql = undefined,
@@ -1534,16 +1534,16 @@ init([_|_] = Opts) ->
 												 Schema,
 												 <<"COMMIT;">>],
 									{ok,_} = actordb_sqlite:exec(Db,CreateDb),
-									?DBLOG(Db,"init normal created schema",[])
-								% false ->
-								% 	actordb_sqlite:stop(Db1),
-								% 	Db = undefined,
-								% 	MovedToNode1 = undefined,
-								% 	ReplSql = undefined,
-								% 	Transid = undefined,
-								% 	?ADBG("Opening NO schema nocreate ~p",[{P#dp.actorname,P#dp.actortype}]),
-								% 	Evnum = 0,
-								% 	Evcrc = 0
+									?DBLOG(Db,"init normal created schema",[]);
+								false ->
+									actordb_sqlite:stop(Db1),
+									Db = undefined,
+									MovedToNode1 = undefined,
+									ReplSql = undefined,
+									Transid = undefined,
+									?ADBG("Opening NO schema nocreate ~p",[{P#dp.actorname,P#dp.actortype}]),
+									Evnum = 0,
+									Evcrc = 0
 							end,
 							case ok of
 								_ when ClusterNodes == []; MovedToNode1 /= undefined; Db == undefined ->
@@ -1617,8 +1617,8 @@ init([_|_] = Opts) ->
 				true when NP#dp.db /= undefined ->
 					{ok,NP#dp{cbstate = do_cb_init(NP), activity_now = TimeStart}};
 				true ->
-					{From,FromRef} = lists:keyfind(start_from,Opts),
-					From ! {FromRef,nocreate},
+					{_,{FromPid,FromRef}} = lists:keyfind(start_from,1,Opts),
+					FromPid ! {FromRef,nocreate},
 					{stop,normal};
 				_ ->
 					{ok,NP#dp{activity_now = TimeStart}}

@@ -135,13 +135,13 @@ all_test_() ->
 	[
 		fun test_creating_shards/0,
 		fun test_parsing/0,
-		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1},
+		{setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
 		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1},
 		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1},
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1},
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
-		{setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
+		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
 	].
 
 test_parsing() ->
@@ -229,7 +229,7 @@ basic_write() ->
 basic_write(Txt) ->
 	?debugFmt("Basic write",[]),
 	[begin
-		R = exec(<<"actor type1(ac",(butil:tobin(N))/binary,"); insert into tab values (",
+		R = exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; insert into tab values (",
 									(butil:tobin(butil:flatnow()))/binary,",'",Txt/binary,"',1);">>),
 		% ?debugFmt("~p",[R]),
 		?assertMatch({ok,_},R)
@@ -239,26 +239,26 @@ basic_read() ->
 	?debugFmt("Basic read",[]),
 	% ?debugFmt("~p",[exec(<<"actor type1(ac",(butil:tobin(1))/binary,"); select * from tab1;">>)]),
 	[?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
-			exec(<<"actor type1(ac",(butil:tobin(N))/binary,"); select * from tab;">>))
+			exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; select * from tab;">>))
 	 || N <- lists:seq(1,numactors())].
 
 multiupdate_write() ->
 	?debugFmt("multiupdates",[]),
 	% Insert names of 2 actors in table tab2 of actor "all"
-	?assertMatch({ok,_},exec(["actor type1(all);",
+	?assertMatch({ok,_},exec(["actor type1(all) create;",
 							  "insert into tab2 values (1,'a1');",
 							  "insert into tab2 values (2,'a2');"])),
 	
 	?debugFmt("multiupdate fail insert",[]),
 	% Fail test
-	?assertMatch(ok,exec(["actor thread(first);",
+	?assertMatch(ok,exec(["actor thread(first) create;",
 							  "insert into thread values (1,'a1',10);",
-							  "actor thread(second);",
+							  "actor thread(second) create;",
 							  "insert into thread values (1,'a1',10);"])),
 	?debugFmt("multiupdates fail",[]),
-	?assertMatch(abandoned,exec(["actor thread(first);",
+	?assertMatch(abandoned,exec(["actor thread(first) create;",
 							  "update thread set msg='a3' where id=1;",
-							  "actor thread(second);",
+							  "actor thread(second) create;",
 							  "update thread set msg='a3' where i=2;"])),
 	?debugFmt("multiupdates still old data",[]),
 	?assertMatch({ok,[{columns,{<<"id">>,<<"msg">>,<<"user">>}},
@@ -273,7 +273,7 @@ multiupdate_write() ->
 	% Actorname is in .txt column, for every row take that actor and insert value with same unique integer id.
 	Res = exec(["actor type1(all);",
 				"{{ACTORS}}SELECT * FROM tab2;",
-				"actor type1(foreach X.txt in ACTORS);",
+				"actor type1(foreach X.txt in ACTORS) create;",
 				"insert into tab2 values ({{uniqid.s}},'{{X.txt}}');"]),
 	% ?debugFmt("Res ~p~n",[Res]),
 	?assertMatch(ok,Res),
@@ -282,12 +282,12 @@ multiupdate_write() ->
 	?assertMatch(ok,exec(["actor type1(ac100,ac99,ac98,ac97,ac96,ac95);PRAGMA delete;"])),
 
 	?debugFmt("multiupdates creating thread",[]),
-	?assertMatch(ok,exec(["actor thread(1);",
+	?assertMatch(ok,exec(["actor thread(1) create;",
 					"INSERT INTO thread VALUES (100,'message',10);",
 					"INSERT INTO thread VALUES (101,'secondmsg',20);",
-					"actor user(10);",
+					"actor user(10) create;",
 					"INSERT INTO userinfo VALUES (1,'user1');",
-					"actor user(20);",
+					"actor user(20) create;",
 					"INSERT INTO userinfo VALUES (1,'user2');"])),
 	ok.
 multiupdate_read() ->
