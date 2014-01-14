@@ -29,6 +29,7 @@
 -define(ANUMI,7).
 -define(WLOG_LIMIT,1024*4).
 -define(FLAG_CREATE,1).
+-define(FLAG_ACTORNUM,2).
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
@@ -84,8 +85,7 @@ write(Name,Flags,[delete],Start) ->
 	call(Name,Flags,{write,{undefined,0,delete,undefined}},Start);
 write(Name,Flags,Sql,Start) ->
 	call(Name,Flags,{write,{undefined,erlang:crc32(Sql),iolist_to_binary(Sql),undefined}},Start).
-% write(Pid,Sql) ->
-% 	gen_server:call(Pid,{write,{erlang:crc32(Sql),Sql}},infinity).
+
 
 call(Name,Flags,Msg,Start) ->
 	case distreg:whereis(Name) of
@@ -133,12 +133,6 @@ call_master(Cb,Actor,Type,Msg) ->
 	end.
 
 call_slave(Cb,Actor,Type,Msg) ->
-	% case ok of
-	% 	_ when element(1,Msg) /= db_chunk ->
-	% 		?AINF("Calling slave ~p ~p",[Actor,Msg]);
-	% 	_ ->
-	% 		ok
-	% end,
 	case apply(Cb,cb_slave_pid,[Actor,Type]) of
 		{ok,Pid} ->
 			ok;
@@ -168,19 +162,15 @@ start(Opts) ->
 		{ok,Pid} ->
 			{ok,Pid};
 		{error,normal} ->
-			case distreg:whereis(butil:ds_val(regname,Opts)) of
-				undefined ->
-					receive
-						{Ref,nocreate} ->
-							{error,nocreate}
-						after 0 ->
-							{error,cantstart}
-					end;
-				Pid ->
-					{ok,Pid}
+			% Init failed gracefully. It should have sent an explanation. 
+			receive
+				{Ref,nocreate} ->
+					{error,nocreate};
+				{Ref,registered} ->
+					{ok,distreg:whereis(butil:ds_val(regname,Opts))}
+				after 0 ->
+					{error,cantstart}
 			end;
-		% {error,{registered,Pid}} ->
-		% 	{ok,Pid};
 		Err ->
 			?AERR("start sqlproc error ~p",[Err]),
 			Err
@@ -520,10 +510,8 @@ handle_call({read,Msg},_From,P) ->
 						Sql ->
 							{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1})}
 					end;
-				Sql when P#dp.db /= undefined ->
-					{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1})};
-				_ ->
-					{reply,{error,nocreate},P}
+				Sql ->
+					{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1})}
 			end;
 		_ ->
 			?DBG("redirect read ~p",[P#dp.masternode]),
@@ -684,14 +672,13 @@ nodes_for_replication(P) ->
 write_call({MFA,Crc,Sql,Transaction},From,P) ->
 	?ADBG("writecall ~p ~p ~p",[MFA,Sql,Transaction]),
 	case MFA of
-		undefined when P#dp.db /= undefined ->
+		undefined ->
 			write_call(Crc,Sql,Transaction,From,P);
 		{Mod,Func,Args} when P#dp.db /= undefined ->
 			?DBLOG(P#dp.db,"writecall mfa ~p",[MFA]),
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
 				{reply,What,OutSql1,NS} ->
 					gen_server:reply(From,What),
-					% {reply,{What},P#dp{cbstate = NS}};
 					OutSql = iolist_to_binary(OutSql1),
 					write_call(erlang:crc32(OutSql),OutSql,Transaction,undefined,P#dp{cbstate = NS});
 				{reply,What,NS} ->
@@ -704,9 +691,7 @@ write_call({MFA,Crc,Sql,Transaction},From,P) ->
 				OutSql1 ->
 					OutSql = iolist_to_binary(OutSql1),
 					write_call(erlang:crc32(OutSql),OutSql,Transaction,From,P)
-			end;
-		_ ->
-			{error,nocreate}
+			end
 	end.
 write_call(Crc,Sql,undefined,From,P) ->
 	EvNum = P#dp.evnum+1,
@@ -733,7 +718,7 @@ write_call(Crc,Sql,undefined,From,P) ->
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql)
 	end,
 	% ConnectedNodes = bkdcore:cluster_nodes_connected(),
-	?DBG("Replicating write ~p    ~p     connected ~p",[Sql,?R2P(P), ConnectedNodes]),
+	?DBG("Replicating write ~p    connected ~p",[Sql,ConnectedNodes]),
 	case okornot(Res) of
 		ok ->
 			?DBG("Write result ~p",[Res]),
@@ -783,7 +768,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,P) ->
 						_ ->
 							ComplSql = 
 								[<<"$SAVEPOINT 'adb';">>,
-								 semicolon(Sql1),
+								 semicolon(Sql1),actornum(P),
 								 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 								 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>
 								 ],
@@ -1163,7 +1148,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 				{ok,State} when State == 0; State == 1 ->
 					ComplSql = 
 						[<<"$SAVEPOINT 'adb';">>,
-						 semicolon(Sql),
+						 semicolon(Sql),actornum(P),
 						 <<"$DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary,
 						 		" AND updater=",(butil:tobin(Updid))/binary,";">>,
 						 <<"$UPDATE __adb SET val='">>,butil:tolist(Evnum),<<"' WHERE id=",?EVNUM/binary,";">>,
@@ -1456,7 +1441,10 @@ init([_|_] = Opts) ->
 	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), schemanum = actordb_schema:num()}),Opts,0) of
 		{registered,_Pid} ->
 			?ADBG("die already registered"),
-			% {stop,{registered,Pid}};
+			explain(registered,Opts),
+			{stop,normal};
+		{P,Flags} when (Flags band ?FLAG_ACTORNUM) > 0 ->
+			explain(deleted,Opts),
 			{stop,normal};
 		{P,Flags} ->
 			ClusterNodes = bkdcore:cluster_nodes(),
@@ -1617,8 +1605,7 @@ init([_|_] = Opts) ->
 				true when NP#dp.db /= undefined ->
 					{ok,NP#dp{cbstate = do_cb_init(NP), activity_now = TimeStart}};
 				true ->
-					{_,{FromPid,FromRef}} = lists:keyfind(start_from,1,Opts),
-					FromPid ! {FromRef,nocreate},
+					explain(nocreate,Opts),
 					{stop,normal};
 				_ ->
 					{ok,NP#dp{activity_now = TimeStart}}
@@ -1626,6 +1613,14 @@ init([_|_] = Opts) ->
 	end;
 init(#dp{} = P) ->
 	init(P,noreason).
+
+explain(What,Opts) ->
+	case lists:keyfind(start_from,1,Opts) of
+		{_,{FromPid,FromRef}} ->
+			FromPid ! {FromRef,What};
+		_ ->
+			ok
+	end.
 
 base_schema(SchemaVers,Type) ->
 	base_schema(SchemaVers,Type,undefined).
@@ -1672,8 +1667,6 @@ do_cb_init(P) ->
 
 parse_opts(P,[H|T],Flags) ->
 	case H of
-		{create,true} ->
-			parse_opts(P,T,Flags bor ?FLAG_CREATE);
 		{actor,Name} ->
 			parse_opts(P#dp{actorname = Name},T,Flags);
 		{type,Type} when is_atom(Type) ->
@@ -1706,6 +1699,12 @@ parse_opts(P,[H|T],Flags) ->
 			end;
 		{queue,Q} ->
 			parse_opts(P#dp{callqueue = Q},T,Flags);
+		{create,true} ->
+			parse_opts(P,T,Flags bor ?FLAG_CREATE);
+		create ->
+			parse_opts(P,T,Flags bor ?FLAG_CREATE);
+		actornum ->
+			parse_opts(P,T,Flags bor ?FLAG_ACTORNUM);
 		_ ->
 			parse_opts(P,T,Flags)
 	end;

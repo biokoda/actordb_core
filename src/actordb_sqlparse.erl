@@ -487,9 +487,9 @@ check_flags(<<" ",Rem/binary>>,L) ->
 check_flags(<<",",Rem/binary>>,L) ->
 	check_flags(Rem,L);
 check_flags(<<"create",Rem/binary>>,L) ->
-	check_flags(Rem,[{create,true}|L]);
+	check_flags(Rem,[create|L]);
 check_flags(<<"CREATE",Rem/binary>>,L) ->
-	check_flags(Rem,[{create,true}|L]);
+	check_flags(Rem,[create|L]);
 check_flags(<<";">>,L) ->
 	L;
 check_flags(<<>>,L) ->

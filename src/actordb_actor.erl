@@ -74,7 +74,7 @@ cb_slave_pid(Name,Type) ->
 	Actor = {Name,Type},
 	case distreg:whereis(Actor) of
 		undefined ->
-			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},{regname,Actor},{create,true}]),
+			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},{regname,Actor},create]),
 			{ok,Pid};
 		Pid ->
 			{ok,Pid}
