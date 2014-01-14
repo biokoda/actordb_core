@@ -98,7 +98,7 @@ call(Name,Flags,Msg,Start) ->
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
 			?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
-			actordb:rpc(Node,Name,{?MODULE,call,[Name,Msg,Start]});
+			actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start]});
 		{'EXIT',{noproc,_}} = _X  ->
 			?ADBG("noproc call again ~p",[_X]),
 			call(Name,Flags,Msg,Start);

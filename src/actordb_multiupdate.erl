@@ -72,7 +72,7 @@ sqlname(P) ->
 	{P#dp.name,?MULTIUPDATE_TYPE}.
 
 handle_call({transaction_state,Id},_From,P) ->
-	case actordb_actor:read(sqlname(P),<<"SELECT * FROM transactions WHERE id=",(butil:tobin(Id))/binary,";">>) of
+	case actordb_actor:read(sqlname(P),[{create,true}],<<"SELECT * FROM transactions WHERE id=",(butil:tobin(Id))/binary,";">>) of
 		{ok,[{columns,_},{rows,[{_,Commited}]}]} ->
 			{reply,{ok,Commited},P};
 		{ok,[_,{rows,[]}]} ->
@@ -84,7 +84,7 @@ handle_call({transaction_state,Id},_From,P) ->
 handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
 
-	{ok,{rowid,Num}} = actordb_actor:write(sqlname(P),<<"INSERT INTO transactions (commited) VALUES (0);">>),
+	{ok,{rowid,Num}} = actordb_actor:write(sqlname(P),[{create,true}],<<"INSERT INTO transactions (commited) VALUES (0);">>),
 
 	{Pid,_} = spawn_monitor(fun() -> 
 		% Send sql
@@ -96,7 +96,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% If any node goes down, actors will check back to this updater process
 				%  if transaction is set to commited or not. If commited is set and they have not commited, they will execute their sql
 				%  which they have saved locally.
-				ok = actordb_actor:write(sqlname(P),<<"UPDATE transactions SET commited=1 WHERE id=",(butil:tobin(Num))/binary,
+				ok = actordb_actor:write(sqlname(P),[{create,true}],<<"UPDATE transactions SET commited=1 WHERE id=",(butil:tobin(Num))/binary,
 														" AND (commited=0 OR commited=1);">>),
 				% Inform all actors that they should commit.
 				case catch do_multiupdate(P#dp{currow = Num, confirming = true},S) of
@@ -118,7 +118,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.
 				% Once commited is set to 1 or -1 it is final.
-				ok = actordb_actor:write(sqlname(P),abandon_sql(Num)),
+				ok = actordb_actor:write(sqlname(P),[{create,true}],abandon_sql(Num)),
 				exit(abandoned)
 		end
 	end),
@@ -149,7 +149,7 @@ handle_info({'DOWN',_Monitor,_Ref,PID,Result}, #dp{execproc = PID} = P) ->
 		abandoned ->
 			ok;
 		_ ->
-			ok = actordb_actor:write(sqlname(P),abandon_sql(P#dp.curnum))
+			ok = actordb_actor:write(sqlname(P),[{create,true}],abandon_sql(P#dp.curnum))
 	end,
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
@@ -191,9 +191,9 @@ init(Name1) ->
 			{ok,_} = actordb_actor:start(P#dp.name,?MULTIUPDATE_TYPE,[{create,true}]),
 			ok = actordb_local:reg_mupdater(P#dp.name,self()),
 			erlang:send_after(1000,self(),timeout),
-			case actordb_actor:read(sqlname(P),<<"SELECT max(id),commited FROM transactions;">>) of
+			case actordb_actor:read(sqlname(P),[{create,true}],<<"SELECT max(id),commited FROM transactions;">>) of
 				{ok,[{columns,_},{rows,[{Id,0}]}]} ->
-					ok = actordb_actor:write(sqlname(P),abandon_sql(Id));
+					ok = actordb_actor:write(sqlname(P),[{create,true}],abandon_sql(Id));
 				{ok,_} ->
 					ok
 			end,
@@ -448,15 +448,15 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 			?ADBG("do_actor write ~p ~p",[Actor,Statements]),
 			case P#dp.confirming of
 				undefined ->
-					Res = actordb:direct_call(Actor,Type,IsWrite,Statements,true);
+					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,Statements,true);
 				true ->
-					Res = actordb:direct_call(Actor,Type,IsWrite,{{P#dp.currow,P#dp.name,bkdcore:node_name()},commit},true);
+					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,{{P#dp.currow,P#dp.name,bkdcore:node_name()},commit},true);
 				false ->
-					Res = actordb:direct_call(Actor,Type,IsWrite,{{P#dp.currow,P#dp.name,bkdcore:node_name()},abort},true)
+					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,{{P#dp.currow,P#dp.name,bkdcore:node_name()},abort},true)
 			end;
 		_ ->
 			?ADBG("do_actor read ~p ~p",[Actor,Statements1]),
-			Res = actordb:direct_call(Actor,Type,IsWrite,Statements1,true)
+			Res = actordb:direct_call(Actor,Type,Flags,IsWrite,Statements1,true)
 	end,
 	?ADBG("do_actor varlist ~p",[Varlist]),
 	case Res of

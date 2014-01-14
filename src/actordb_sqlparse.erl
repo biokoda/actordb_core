@@ -443,8 +443,8 @@ is_actor(Bin) ->
 % actordb_sqlparse:split_actor(<<"type(for X.column in RES);">>).
 split_actor(Bin) ->
 	case split_actor(Bin,<<>>,undefined,[]) of
-		{Type,[<<"*">>]} ->
-			{Type,$*};
+		{Type,[<<"*">>],Flags} ->
+			{Type,$*,Flags};
 		Res ->
 			Res
 	end.
@@ -508,7 +508,7 @@ split_foru(<<" ",Bin/binary>>,Word,Var,Col) ->
 			split_foru(Bin,<<>>,Var,Word);
 		% This is end of global var name
 		_ when Var /= undefined, byte_size(Word) > 0, Col /= undefined ->
-			{Var,Col,Word};
+			{Var,Col,Word,check_flags(Bin,[])};
 		_ ->
 			split_foru(Bin,Word,Var,Col)
 	end;

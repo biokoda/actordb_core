@@ -52,7 +52,7 @@ sqlname() ->
 	{<<"events">>,?CLUSTEREVENTS_TYPE}.
 
 handle_call({newevent,Info},_,P) ->
-	case actordb_sqlproc:write(sqlname(),{{?MODULE,newevent,[Info]},undefined,undefined},actordb_actor) of
+	case actordb_sqlproc:write(sqlname(),[],{{?MODULE,newevent,[Info]},undefined,undefined},actordb_actor) of
 		{ok,_} ->
 			{reply,ok,P};
 		_ ->
