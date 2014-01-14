@@ -470,6 +470,8 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 			ok;
 		ok ->
 			ok;
+		{error,nocreate} ->
+			ok;
 		_ ->
 			exit(Res)
 	end,
