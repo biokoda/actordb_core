@@ -52,7 +52,7 @@ sqlname() ->
 	{<<"events">>,?CLUSTEREVENTS_TYPE}.
 
 handle_call({newevent,Info},_,P) ->
-	case actordb_sqlproc:write(sqlname(),[{create,true}],{{?MODULE,newevent,[Info]},undefined,undefined},actordb_actor) of
+	case actordb_sqlproc:write(sqlname(),[create],{{?MODULE,newevent,[Info]},undefined,undefined},actordb_actor) of
 		{ok,_} ->
 			{reply,ok,P};
 		_ ->
@@ -116,7 +116,7 @@ process_ev() ->
 			Evnum = 0,
 			exit(nostate)
 	end,
-	case actordb_sqlproc:read(sqlname(),[{create,true}],<<"SELECT FROM events WHERE id > ",(butil:tobin(Evnum))/binary," LIMIT 100;">>,actordb_actor) of
+	case actordb_sqlproc:read(sqlname(),[create],<<"SELECT FROM events WHERE id > ",(butil:tobin(Evnum))/binary," LIMIT 100;">>,actordb_actor) of
 		{ok,[{columns,_},{rows,[]}]} ->
 			exit(ok);
 		{ok,[{columns,_},{rows,Rows}]} ->
