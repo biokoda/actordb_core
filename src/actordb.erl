@@ -95,7 +95,6 @@ exec(Sql) ->
 	exec1(actordb_sqlparse:parse_statements(Sql)).
 exec1(St) ->
 	case St of
-		% Actor and type, if does not exist will be created.
 		{[{{Type,[Actor],Flags},IsWrite,Statements}],_} when is_binary(Type) ->
 			direct_call(Actor,Type,Flags,IsWrite,Statements,true);
 		% Single block, writes to more than one actor

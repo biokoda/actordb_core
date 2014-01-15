@@ -69,12 +69,11 @@ is_write(Bin) ->
 		% <<"Set ",_Rem/binary>> ->
 		% 	ignore;
 		% If you write sql like a moron then you get to these slow parts.
-		<<C,R,E,A,T,EE," ",_/binary>> when (C == $c orelse C == $C) andalso 
+		<<C,R,E,A,T,E," ",_/binary>> when (C == $c orelse C == $C) andalso 
 											(R == $r orelse R == $R) andalso
 											(E == $e orelse E == $E) andalso
 											(A == $a orelse A == $A) andalso
-											(T == $t orelse T == $T) andalso
-											(EE == $e orelse EE == $E) ->
+											(T == $t orelse T == $T) ->
 			true;
 		<<I,N,S,E,R,T," ",_/binary>> when (I == $i orelse I == $I) andalso 
 											(N == $n orelse N == $N) andalso
@@ -90,27 +89,23 @@ is_write(Bin) ->
 											(T == $t orelse T == $T) andalso
 											(E == $e orelse E == $E) ->
 			true;	
-		<<D,E,L,E1,T,E2," ",_/binary>> when (D == $d orelse D == $D) andalso 
+		<<D,E,L,E,T,E," ",_/binary>> when (D == $d orelse D == $D) andalso 
 											(E == $e orelse E == $E) andalso
 											(L == $l orelse L == $L) andalso
-											(E1 == $e orelse E1 == $E) andalso
-											(T == $t orelse T == $T) andalso
-											(E2 == $e orelse E2 == $E) ->
+											(T == $t orelse T == $T)  ->
 			true;
-		<<R,E,P,L,A,C,E1," ",_/binary>> when (R == $r orelse R == $R) andalso 
+		<<R,E,P,L,A,C,E," ",_/binary>> when (R == $r orelse R == $R) andalso 
 											(E == $e orelse E == $E) andalso
 											(P == $p orelse P == $P) andalso
 											(L == $l orelse L == $L) andalso
 											(A == $a orelse A == $A) andalso
-											(C == $c orelse C == $C) andalso
-											(E1 == $e orelse E1 == $E) ->
+											(C == $c orelse C == $C) ->
 			true;
-		<<P,R,A,G,M,A1," ",Rem/binary>> when (P == $p orelse P == $P) andalso 
+		<<P,R,A,G,M,A," ",Rem/binary>> when (P == $p orelse P == $P) andalso 
 											(R == $r orelse R == $R) andalso
 											(A == $a orelse A == $A) andalso
 											(G == $g orelse G == $G) andalso
-											(M == $m orelse M == $M) andalso
-											(A1 == $a orelse A1 == $A) ->
+											(M == $m orelse M == $M) ->
 			{pragma,Rem};
 		<<S,H,O,W," ",Rem/binary>> when (S == $s orelse S == $S) andalso
 										(H == $h orelse H == $H) andalso
@@ -150,7 +145,15 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 				{pragma,PragmaRem} ->
 					case parse_pragma(PragmaRem) of
 						delete ->
-							parse_statements(T,L,CurUse,[delete],true, true)
+							parse_statements(T,L,CurUse,[delete],true, true);
+						exists ->
+							case split_actor(CurUse) of
+								{Type,Actors,Flags} ->
+									NewUse = {Type,Actors,butil:lists_add(exists,Flags)};
+								{Type,Global,Col,Var,Flags} ->
+									NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
+							end,
+							parse_statements(T,L,NewUse,[exists],IsWrite, GIsWrite)
 					end;
 				{show,ShowRem} ->
 					case parse_show(ShowRem) of
@@ -210,13 +213,23 @@ parse_pragma(Bin) ->
 			delete;
 		<<"Delete",_/binary>> ->
 			delete;
-		<<D,E,L,E1,T,E2,_/binary>> when (D == $d orelse D == $D) andalso 
+		<<"exists",_/binary>> ->
+			exists;
+		<<"Exists",_/binary>> ->
+			exists;
+		<<"EXISTS",_/binary>> ->
+			exists;
+		<<D,E,L,E,T,E,_/binary>> when (D == $d orelse D == $D) andalso 
 										(E == $e orelse E == $E) andalso
 										(L == $l orelse L == $L) andalso
-										(E1 == $e orelse E1 == $E) andalso
-										(T == $t orelse T == $T) andalso
-										(E2 == $e orelse E2 == $E) ->
+										(T == $t orelse T == $T) ->
 			delete;
+		<<E,X,I,S,T,S,_/binary>> when (E == $e orelse E == $E) andalso
+									  (X == $x orelse X == $X) andalso
+									  (I == $i orelse I == $I) andalso
+									  (S == $s orelse S == $S) andalso
+									  (T == $t orelse T == $T) ->
+			exists;
 		_ ->
 			undefined
 	end.
@@ -441,6 +454,10 @@ is_actor(Bin) ->
 
 % actordb_sqlparse:split_actor(<<"type(asdf,234,asdisfpsouf);">>).
 % actordb_sqlparse:split_actor(<<"type(for X.column in RES);">>).
+split_actor({_,_,_} = A) ->
+	A;
+split_actor({_,__,_,_} = A) ->
+	A;
 split_actor(Bin) ->
 	case split_actor(Bin,<<>>,undefined,[]) of
 		{Type,[<<"*">>],Flags} ->

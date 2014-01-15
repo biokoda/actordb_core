@@ -30,6 +30,7 @@
 -define(WLOG_LIMIT,1024*4).
 -define(FLAG_CREATE,1).
 -define(FLAG_ACTORNUM,2).
+-define(FLAG_EXISTS,4).
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
@@ -91,32 +92,30 @@ call(Name,Flags,Msg,Start) ->
 	case distreg:whereis(Name) of
 		undefined ->
 			case startactor(Name,Start,Flags) of
-				{ok,Pid} ->
-					ok;
+				{ok,Pid} when is_pid(Pid) ->
+					call(Name,Flags,Msg,Start,Pid);
 				{error,nocreate} ->
-					Pid = nocreate
-			end;
-		Pid ->
-			ok
-	end,
-	case Pid of
-		nocreate ->
-			{error,nocreate};
-		_ ->
-			% If call returns redirect, this is slave node not master node.
-			case catch gen_server:call(Pid,Msg,infinity) of
-				{redirect,Node} when is_binary(Node) ->
-					?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
-					actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start]});
-				{'EXIT',{noproc,_}} = _X  ->
-					?ADBG("noproc call again ~p",[_X]),
-					call(Name,Flags,Msg,Start);
-				{'EXIT',{normal,_}} ->
-					?ADBG("died normal"),
-					call(Name,Flags,Msg,Start);
+					{error,nocreate};
 				Res ->
 					Res
-			end
+			end;
+		Pid ->
+			call(Name,Flags,Msg,Start,Pid)
+	end.
+call(Name,Flags,Msg,Start,Pid) ->
+	% If call returns redirect, this is slave node not master node.
+	case catch gen_server:call(Pid,Msg,infinity) of
+		{redirect,Node} when is_binary(Node) ->
+			?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
+			actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start]});
+		{'EXIT',{noproc,_}} = _X  ->
+			?ADBG("noproc call again ~p",[_X]),
+			call(Name,Flags,Msg,Start);
+		{'EXIT',{normal,_}} ->
+			?ADBG("died normal"),
+			call(Name,Flags,Msg,Start);
+		Res ->
+			Res
 	end.
 startactor(Name,Start,Flags) ->
 	case Start of
@@ -179,7 +178,9 @@ start(Opts) ->
 				{Ref,registered} ->
 					{ok,distreg:whereis(butil:ds_val(regname,Opts))};
 				{Ref,{actornum,Path,Num}} ->
-					{ok,Path,Num}
+					{ok,Path,Num};
+				{Ref,{ok,[{columns,_},_]} = Res} ->
+					Res
 				after 0 ->
 					{error,cantstart}
 			end;
@@ -512,6 +513,8 @@ handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; 
 	end;
 handle_call({read,Msg},From,P) ->
 	case P#dp.mors of
+		master when Msg == [exists] ->
+			{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
 		master ->
 			case check_schema(P,[]) of
 				ok ->
@@ -1519,6 +1522,11 @@ init([_|_] = Opts) ->
 		{P,Flags} when (Flags band ?FLAG_ACTORNUM) > 0 ->
 			explain({actornum,P#dp.dbpath,read_num(P)},Opts),
 			{stop,normal};
+		{P,Flags} when (Flags band ?FLAG_EXISTS) > 0 ->
+			{ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,actordb_conf:journal_mode()),
+			actordb_sqlite:stop(Db),
+			explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(HaveSchema)}]}]},Opts),
+			{stop,normal};
 		{P,Flags} ->
 			ClusterNodes = bkdcore:cluster_nodes(),
 			?ADBG("Actor start ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
@@ -1688,7 +1696,7 @@ init(#dp{} = P) ->
 read_num(P) ->
 	case P#dp.db of
 		undefined ->
-			{ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,<<"off">>);
+			{ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,actordb_conf:journal_mode());
 		Db ->
 			HaveSchema = true
 	end,
@@ -1800,6 +1808,8 @@ parse_opts(P,[H|T],Flags) ->
 			parse_opts(P,T,Flags bor ?FLAG_CREATE);
 		actornum ->
 			parse_opts(P,T,Flags bor ?FLAG_ACTORNUM);
+		exists ->
+			parse_opts(P,T,Flags bor ?FLAG_EXISTS);
 		_ ->
 			parse_opts(P,T,Flags)
 	end;
