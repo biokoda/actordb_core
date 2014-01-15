@@ -313,6 +313,8 @@ multiupdate_read() ->
 			       {rows,[{101,<<"secondmsg">>,20,<<"user1">>},
 		  			      {100,<<"message">>,10,<<"user1">>}]}],
         ResForum),
+	{ok,[{columns,_},{rows,Rows1}]} = exec(["actor type1(*);pragma list;"]),
+	?assertEqual((numactors()-6+3),length(Rows1)),
 	ok.
 
 kv_readwrite() ->
