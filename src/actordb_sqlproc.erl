@@ -717,6 +717,7 @@ check_schema(P,Sql) ->
 				{_,[]} ->
 					ok;
 				{NewVers,SchemaUpdate} ->
+					?ADBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
 					{NewVers,iolist_to_binary([SchemaUpdate,
 						<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,"' WHERE id=",?SCHEMA_VERS/binary,";">>,Sql])}
 			end
@@ -795,7 +796,7 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 						_ ->
 							ok
 					end,
-					{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = Crc}};
+					{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = Crc, schemavers = NewVers}};
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
 					Commiter = commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,NewVers),
 					{noreply,P#dp{callfrom = From,callres = Res, commiter = Commiter, activity = P#dp.activity + 1,
@@ -843,7 +844,8 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			case okornot(Res) of
 				ok ->
 					?ADBG("Transaction ok"),
-					{reply, Res, P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = EvCrc, transactionid = TransactionId,
+					{reply, Res, P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = EvCrc,
+								 transactionid = TransactionId, schemavers = NewVers,
 								transactioncheckref = CheckRef,replicate_sql = {ComplSql,EvNum,EvCrc,NewVers}}};
 				_Err ->
 					ok = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
@@ -2046,6 +2048,8 @@ okornot(Res) ->
 		{ok,_} ->
 			ok;
 		{sql_error,Err,_Sql} ->
+			{sql_error,Err};
+		{sql_error,Err} ->
 			{sql_error,Err}
 	end.
 

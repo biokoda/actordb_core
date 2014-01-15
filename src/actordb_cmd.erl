@@ -191,7 +191,7 @@ compare_nodes([],Out) ->
  
 % Move over existing tyes of actors. 
 % For every type check if it exists in new schema and if any sql statements added.
-compare_schema([Type|T],New,Out) when Type == ids; Type == types; Type == iskv ->
+compare_schema([Type|T],New,Out) when Type == ids; Type == types; Type == iskv; Type == num ->
 	compare_schema(T,New,Out);
 compare_schema([Type|T],New,Out) ->
 	case lists:keyfind(Type,1,New) of
@@ -216,7 +216,7 @@ compare_schema([Type|T],New,Out) ->
 			compare_schema(T,lists:keydelete(Type,1,New),Out1)
 	end;
 compare_schema([],New,O) ->
-	case lists:keydelete(ids,1,lists:keydelete(types,1,lists:keydelete(iskv,1,New))) of
+	case lists:keydelete(ids,1,lists:keydelete(types,1,lists:keydelete(iskv,1,lists:keydelete(num,1,New)))) of
 		[] ->
 			{ok,O};
 		NewTypes ->
