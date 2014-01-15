@@ -78,7 +78,8 @@ start_ready() ->
 							ok
 					end
 			end;
-		false ->
+		E ->
+			?ADBG("Not ready yet ~p",[E]),
 			false
 	end.
 

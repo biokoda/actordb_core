@@ -90,23 +90,33 @@ write(Name,Flags,Sql,Start) ->
 call(Name,Flags,Msg,Start) ->
 	case distreg:whereis(Name) of
 		undefined ->
-			{ok,Pid} = startactor(Name,Start,Flags);
+			case startactor(Name,Start,Flags) of
+				{ok,Pid} ->
+					ok;
+				{error,nocreate} ->
+					Pid = nocreate
+			end;
 		Pid ->
 			ok
 	end,
-	% If call returns redirect, this is slave node not master node.
-	case catch gen_server:call(Pid,Msg,infinity) of
-		{redirect,Node} when is_binary(Node) ->
-			?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
-			actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start]});
-		{'EXIT',{noproc,_}} = _X  ->
-			?ADBG("noproc call again ~p",[_X]),
-			call(Name,Flags,Msg,Start);
-		{'EXIT',{normal,_}} ->
-			?ADBG("died normal"),
-			call(Name,Flags,Msg,Start);
-		Res ->
-			Res
+	case Pid of
+		nocreate ->
+			{error,nocreate};
+		_ ->
+			% If call returns redirect, this is slave node not master node.
+			case catch gen_server:call(Pid,Msg,infinity) of
+				{redirect,Node} when is_binary(Node) ->
+					?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
+					actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start]});
+				{'EXIT',{noproc,_}} = _X  ->
+					?ADBG("noproc call again ~p",[_X]),
+					call(Name,Flags,Msg,Start);
+				{'EXIT',{normal,_}} ->
+					?ADBG("died normal"),
+					call(Name,Flags,Msg,Start);
+				Res ->
+					Res
+			end
 	end.
 startactor(Name,Start,Flags) ->
 	case Start of
@@ -167,7 +177,9 @@ start(Opts) ->
 				{Ref,nocreate} ->
 					{error,nocreate};
 				{Ref,registered} ->
-					{ok,distreg:whereis(butil:ds_val(regname,Opts))}
+					{ok,distreg:whereis(butil:ds_val(regname,Opts))};
+				{Ref,{actornum,Path,Num}} ->
+					{ok,Path,Num}
 				after 0 ->
 					{error,cantstart}
 			end;
@@ -185,7 +197,7 @@ print_info(Pid) ->
 
 
 -record(dp,{db, actorname,actortype, evnum = 0,evcrc = 0, activity = 0, timerref, start_time,
-			page_size = 1024, activity_now,write_bytes = 0,schemanum,actornum,
+			page_size = 1024, activity_now,write_bytes = 0,schemanum,
 			% locked is a list of pids.
 			% As long as these pids are in there, actor will not execute new writes.
 			locked = [],
@@ -426,8 +438,13 @@ handle_call({dbcopy_op,From,What,Data},_,P) ->
 					{reply,{[P#dp.dbpath,"-wal"],Size},P}
 			end
 	end;
-handle_call(getinfo,_,P) ->
-	{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,P#dp.mors},P};
+handle_call({getinfo,What},_,P) ->
+	case What of
+		verifyinfo ->
+			{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,P#dp.mors},P};
+		actornum ->
+			{reply,{ok,P#dp.dbpath,read_num(P)},P}
+	end;
 handle_call({commit,Doit,Id},From, P) ->
 	?ADBG("Commit ~p ~p ~p",[Doit,Id,P#dp.transactionid]),
 	case P#dp.transactionid == Id of
@@ -629,6 +646,7 @@ delete_actor(P) ->
 		Shard ->
 			ok = actordb_shard:del_actor(Shard,P#dp.actorname,P#dp.actortype)
 	end,
+	actordb_events:actor_deleted(P#dp.actorname,P#dp.actortype,read_num(P)),
 	empty_queue(P#dp.callqueue,{error,deleted}),
 	actordb_sqlite:stop(P#dp.db),
 	delactorfile(P).
@@ -652,8 +670,11 @@ semicolon(<<_/binary>> = Sql) ->
 	end;
 semicolon(S) ->
 	S.
+% Set on firt write and not changed after. This is used to prevent a case of an actor
+% getting deleted, but later created new. A server that was offline during delete missed
+% the delete call and relies on actordb_events.
 actornum(#dp{evnum = 0} = P) ->
-	ActorNum = erlang:phash2([{P#dp.actorname,P#dp.actortype,os:timestamp()}]),
+	ActorNum = butil:md5(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
 	<<"$INSERT OR REPLACE INTO __adb VALUES (",?ANUM/binary,",'",(butil:tobin(ActorNum))/binary,"');">>;
 actornum(_) ->
 	<<>>.
@@ -1438,21 +1459,20 @@ init(#dp{} = P,_Why) ->
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue}]).
 init([_|_] = Opts) ->
-	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), schemanum = actordb_schema:num()}),Opts,0) of
+	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
+									schemanum = actordb_schema:num()}),Opts,0) of
 		{registered,_Pid} ->
 			?ADBG("die already registered"),
 			explain(registered,Opts),
 			{stop,normal};
 		{P,Flags} when (Flags band ?FLAG_ACTORNUM) > 0 ->
-			explain(deleted,Opts),
+			explain({actornum,P#dp.dbpath,read_num(P)},Opts),
 			{stop,normal};
 		{P,Flags} ->
 			ClusterNodes = bkdcore:cluster_nodes(),
-			?ADBG("Actor start ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,queue:is_empty(P#dp.callqueue),ClusterNodes,
+			?ADBG("Actor start ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
+													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name()]),
-			DbPath = lists:flatten(apply(P#dp.cbmod,cb_path,
-											[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
-											butil:tolist(P#dp.actorname)++"."++butil:tolist(P#dp.actortype),
 			case P#dp.mors of
 				master when ClusterNodes == [] ->
 					JournalMode = actordb_conf:journal_mode();
@@ -1467,7 +1487,7 @@ init([_|_] = Opts) ->
 					RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
 					case ok of
 						_ when MovedToNode == undefined; RightCluster ->
-							{ok,Db1,HaveSchema,PageSize} = actordb_sqlite:init(DbPath,JournalMode),
+							{ok,Db1,HaveSchema,PageSize} = actordb_sqlite:init(P#dp.dbpath,JournalMode),
 							case HaveSchema of
 								true ->
 									Db = Db1,
@@ -1476,8 +1496,8 @@ init([_|_] = Opts) ->
 									{ok,[[{columns,_},{rows,Transaction}],
 										[{columns,_},{rows,Rows}]]} = actordb_sqlite:exec(Db,
 											<<"SELECT * FROM __adb WHERE id in (",?EVNUM/binary,",",
-																				 ?SCHEMA_VERS/binary,",",
-																				 ?ATYPE/binary,",",?EVCRC/binary,",",?MOVEDTO/binary,",",?ANUM/binary,");",
+												?SCHEMA_VERS/binary,",",
+												?ATYPE/binary,",",?EVCRC/binary,",",?MOVEDTO/binary,",",?ANUM/binary,");",
 											  "SELECT * FROM __transactions;">>),
 									Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows)),
 									Evcrc = butil:toint(butil:ds_val(?EVCRCI,Rows)),
@@ -1546,12 +1566,12 @@ init([_|_] = Opts) ->
 							end,
 							NP = P#dp{evnum = Evnum, evcrc = Evcrc, db = Db, verified = Verified, verifypid = Verifypid,%cbstate = NS,
 								   			journal_mode = JournalMode, replicate_sql = ReplSql, transactionid = Transid,
-								   			def_journal_mode = JournalMode, dbpath = DbPath, movedtonode = MovedToNode1,
+								   			def_journal_mode = JournalMode, movedtonode = MovedToNode1,
 								   			page_size = PageSize};
 						_ ->
 							?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 							NP = P#dp{verified = true, movedtonode = MovedToNode,
-										dbpath = DbPath,journal_mode = JournalMode}
+										journal_mode = JournalMode}
 					end;
 				_ when is_binary(P#dp.copyfrom) ->
 					?ADBG("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
@@ -1560,11 +1580,11 @@ init([_|_] = Opts) ->
 														undefined,master,P#dp.cbmod,true,P#dp.evnum,P#dp.evcrc) 
 													end),
 					NP = P#dp{verified = false, verifypid = Verifypid, 
-										dbpath = DbPath,journal_mode = JournalMode};
+								journal_mode = JournalMode};
 				% This creates a copy of an actor with a different name. IsMove = false which means origin db will not be deleted.
 				_ when is_tuple(P#dp.copyfrom) ->
 					?ADBG("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
-					case actordb_sqlite:init(DbPath,JournalMode) of
+					case actordb_sqlite:init(P#dp.dbpath,JournalMode) of
 						{ok,Db,true,_PageSize} ->
 							?DBLOG(P#dp.db,"init copyfrom ~p",[P#dp.copyfrom]),
 							case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"]) of
@@ -1598,7 +1618,7 @@ init([_|_] = Opts) ->
 							end
 					end,
 					NP = P#dp{verified = false, verifypid = Verifypid, 
-										dbpath = DbPath,journal_mode = JournalMode}
+								journal_mode = JournalMode}
 			end,
 			TimeStart = actordb_local:actor_started(NP#dp.actorname,NP#dp.actortype,NP#dp.page_size*?DEF_CACHE_PAGES+?WLOG_LIMIT),
 			case NP#dp.verified of
@@ -1613,6 +1633,30 @@ init([_|_] = Opts) ->
 	end;
 init(#dp{} = P) ->
 	init(P,noreason).
+
+read_num(P) ->
+	case P#dp.db of
+		undefined ->
+			{ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,<<"off">>);
+		Db ->
+			HaveSchema = true
+	end,
+	case HaveSchema of
+		false ->
+			<<>>;
+		_ ->
+			Res = actordb_sqlite:exec(Db,
+						<<"SELECT * FROM __adb WHERE id=",?ANUM/binary,";">>),
+			case Res of
+				{ok,[{columns,_},{rows,[]}]} ->
+					<<>>;
+				{ok,[{columns,_},{rows,[{_,Num}]}]} ->
+					Num;
+				{sql_error,{"exec_script",sqlite_error,"no such table: __adb"}} ->
+					<<>>
+			end
+	end.
+
 
 explain(What,Opts) ->
 	case lists:keyfind(start_from,1,Opts) of
@@ -1709,7 +1753,10 @@ parse_opts(P,[H|T],Flags) ->
 			parse_opts(P,T,Flags)
 	end;
 parse_opts(P,[],Flags) ->
-	{P,Flags}.
+	DbPath = lists:flatten(apply(P#dp.cbmod,cb_path,
+									[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
+									butil:tolist(P#dp.actorname)++"."++butil:tolist(P#dp.actortype),
+	{P#dp{dbpath = DbPath},Flags}.
 
 
 delactorfile(P) ->
@@ -1757,7 +1804,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb) ->
 	ClusterNodes = bkdcore:cluster_nodes(),
 	LenCluster = length(ClusterNodes),
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
-	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,getinfo]),
+	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo}]),
 	?ADBG("verify from others ~p",[Results]),
 	checkfail(3,GetFailed),
 	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
