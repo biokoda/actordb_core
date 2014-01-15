@@ -242,7 +242,7 @@ multiread(L) ->
 				Cols ->
 					Rows = read_mr_rows(get({<<"RESULT">>,nrows})-1,[]),
 					erase(),
-					{Cols,Rows}
+					{ok,[{columns,Cols},{rows,Rows}]}
 			end;
 		Err ->
 			?AERR("Error multiread ~p",[Err])
@@ -271,7 +271,6 @@ do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
 			case get({Gvar,cols}) of
 				undefined ->
 					?AERR("global var columns not found ~p",[Gvar]),
-					% TODO: error
 					do_multiupdate(P,[]);
 				Columns ->
 					case findpos(1,Column,Columns) of
@@ -289,7 +288,6 @@ do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
 			Type = actordb_util:typeatom(Type1),
 			case statements_to_binary(undefined,Statements,<<>>,[]) of
 				undefined ->
-					% TODO: return exec sql error
 					do_multiupdate(P,[]);
 				curactor ->
 					case Actors of
@@ -397,9 +395,27 @@ move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,
 					end
 			end
 	end;
-move_over_shard_actors(Nd,Type,Flags,Shard,[{Actor}|T],CountNow,CountAll,P,IsWrite,StBin,Varlist,Next) ->
-	do_actor(P,true,Type,Flags,Actor,IsWrite,StBin,Varlist),
-	move_over_shard_actors(Nd,Type,Flags,Shard,T,CountNow+1,CountAll+1,P,IsWrite,StBin,Varlist,Next).
+move_over_shard_actors(Nd,Type,Flags,Shard,Actors,CountNow,CountAll,P,IsWrite,[list],Varlist,Next) ->
+	case get({<<"RESULT">>,cols}) of
+		undefined ->
+			put({<<"RESULT">>,cols},{<<"actor">>}),
+			put({<<"RESULT">>,nrows},0);
+		_ ->
+			ok
+	end,
+	CurNRows = get({<<"RESULT">>,nrows}),
+	Count = lists:foldl(fun({Actor},Cnt) -> 
+				put({<<"RESULT">>,CurNRows+Cnt},{Actor}),
+				Cnt+1
+			end,0,Actors),
+	put({<<"RESULT">>,nrows},CurNRows+Count),
+	move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow+Count,CountAll+Count,P,IsWrite,[list],Varlist,Next);
+move_over_shard_actors(Nd,Type,Flags,Shard,Actors,CountNow,CountAll,P,IsWrite,StBin,Varlist,Next) ->
+	Count = lists:foldl(fun({Actor},Cnt) -> 
+				do_actor(P,true,Type,Flags,Actor,IsWrite,StBin,Varlist),
+				Cnt+1
+			end,0,Actors),
+	move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow+Count,CountAll+Count,P,IsWrite,StBin,Varlist,Next).
 
 % 
 % 			TYPE 2 - looping over a list with for
@@ -549,7 +565,8 @@ store_rows(_IsMulti,_Actor,Varname,N,[]) ->
 	put({Varname,nrows},N),
 	ok.
 
-% Takes a block of sql statements and creates a single binary, filling in any {{..}} variables. Also returns a list of result variables ({{Var}}SELECT * ....)
+% Takes a block of sql statements and creates a single binary, filling in any {{..}} variables. 
+% Also returns a list of result variables ({{Var}}SELECT * ....)
 % Statement with no result variables or statement variables. 
 statements_to_binary(CurActor,[<<_/binary>> = B|T],Out,VarList) ->
 	statements_to_binary(CurActor,T,<<Out/binary,"$",B/binary>>,VarList);

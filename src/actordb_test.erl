@@ -294,8 +294,8 @@ multiupdate_read() ->
 	?debugFmt("multiupdate read all type1",[]),
 	Res = exec(["actor type1(*);",
 				"{{RESULT}}SELECT * FROM tab;"]),
-	?assertMatch({_,_},Res),
-	{Cols,Rows} = Res,
+	?assertMatch({ok,[_,_]},Res),
+	{ok,[{columns,Cols},{rows,Rows}]} = Res,
 	?debugFmt("Result all actors ~p",[{Cols,lists:keysort(3,Rows)}]),
 	?assertEqual({<<"id">>,<<"txt">>,<<"i">>,<<"actor">>},Cols),
 	% 6 actors were deleted, 2 were added
@@ -303,15 +303,15 @@ multiupdate_read() ->
 
 	?debugFmt("multiupdate read thread and user",[]),
 	% Add username column to result
-	ResForum = exec(["actor thread(1);",
+	{ok,ResForum} = exec(["actor thread(1);",
 				"{{RESULT}}SELECT * FROM thread;"
 				"actor user(for X.user in RESULT);",
 				"{{A}}SELECT * FROM userinfo WHERE id=1;",
 				"{{X.username=A.name}}"
 				]),
-	?assertMatch({{<<"id">>,<<"msg">>,<<"user">>,<<"username">>},
-			       [{101,<<"secondmsg">>,20,<<"user1">>},
-			        {100,<<"message">>,10,<<"user1">>}]},
+	?assertMatch([{columns,{<<"id">>,<<"msg">>,<<"user">>,<<"username">>}},
+			       {rows,[{101,<<"secondmsg">>,20,<<"user1">>},
+		  			      {100,<<"message">>,10,<<"user1">>}]}],
         ResForum),
 	ok.
 
@@ -332,37 +332,38 @@ kv_readwrite() ->
 	?debugFmt("Select first 5",[]),
 	ReadSome = ["actor counters(id1,id2,id3,id4,id5);",
 	"{{RESULT}}SELECT * FROM actors where id='{{curactor}}';"],
-	?assertMatch({_,
-					[{<<"id5">>,_,5,<<"id5">>},
-				  {<<"id4">>,_,4,<<"id4">>},
-				  {<<"id3">>,_,3,<<"id3">>},
-				  {<<"id2">>,_,2,<<"id2">>},
-				  {<<"id1">>,_,1,<<"id1">>}]},
+	?assertMatch({ok,[{columns,_},
+					  {rows,[{<<"id5">>,_,5,<<"id5">>},
+					  		  {<<"id4">>,_,4,<<"id4">>},
+					  		  {<<"id3">>,_,3,<<"id3">>},
+					  		  {<<"id2">>,_,2,<<"id2">>},
+					  		  {<<"id1">>,_,1,<<"id1">>}]}]},
 			exec(ReadSome)),
 	?debugFmt("Increment first 5",[]),
 	?assertMatch(ok,exec(["actor counters(id1,id2,id3,id4,id5);",
 					"UPDATE actors SET val = val+1 WHERE id='{{curactor}}';"])),
 	?debugFmt("Select first 5 again",[]),
-	?assertMatch({_,[{<<"id5">>,_,6,<<"id5">>},
-				  {<<"id4">>,_,5,<<"id4">>},
-				  {<<"id3">>,_,4,<<"id3">>},
-				  {<<"id2">>,_,3,<<"id2">>},
-				  {<<"id1">>,_,2,<<"id1">>}]},
+	?assertMatch({ok,[{columns,_},
+						{rows,[{<<"id5">>,_,6,<<"id5">>},
+						  {<<"id4">>,_,5,<<"id4">>},
+						  {<<"id3">>,_,4,<<"id3">>},
+						  {<<"id2">>,_,3,<<"id2">>},
+						  {<<"id1">>,_,2,<<"id1">>}]}]},
 			 exec(ReadSome)),
 	?debugFmt("delete 5 and 4",[]),
 	% Not the right way to delete but it works (not transactional)
 	?assertMatch(ok,exec(["actor counters(id5,id4);PRAGMA delete;"])),
-	?assertMatch({_,[
-				  {<<"id3">>,_,4,<<"id3">>},
-				  {<<"id2">>,_,3,<<"id2">>},
-				  {<<"id1">>,_,2,<<"id1">>}]},
+	?assertMatch({ok,[{columns,_},
+					  {rows,[{<<"id3">>,_,4,<<"id3">>},
+						  {<<"id2">>,_,3,<<"id2">>},
+						  {<<"id1">>,_,2,<<"id1">>}]}]},
 			 exec(ReadSome)),
 	% the right way
 	?assertMatch(ok,exec(["actor counters(id3,id2);DELETE FROM actors WHERE id='{{curactor}}';"])),
-	?assertMatch({_,[
-				  {<<"id1">>,_,2,<<"id1">>}]},
+	?assertMatch({ok,[{columns,_},
+					  {rows,[{<<"id1">>,_,2,<<"id1">>}]}]},
 			 exec(ReadSome)),
-	?assertMatch({_,_},All),
+	?assertMatch({ok,[{columns,_},{rows,_}]},All),
 	ok.
 
 

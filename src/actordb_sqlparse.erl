@@ -153,7 +153,15 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 								{Type,Global,Col,Var,Flags} ->
 									NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
 							end,
-							parse_statements(T,L,NewUse,[exists],IsWrite, GIsWrite)
+							parse_statements(T,L,NewUse,[exists],IsWrite, GIsWrite);
+						list ->
+							case split_actor(CurUse) of
+								{Type,_Actors,_Flags} ->
+									ok;
+								{Type,_Global,_Col,_Var,_Flags} ->
+									ok
+							end,
+							parse_statements(T,L,{Type,$*,[]},[list],false,false)
 					end;
 				{show,ShowRem} ->
 					case parse_show(ShowRem) of
@@ -219,6 +227,12 @@ parse_pragma(Bin) ->
 			exists;
 		<<"EXISTS",_/binary>> ->
 			exists;
+		<<"list",_/binary>> ->
+			list;
+		<<"List",_/binary>> ->
+			list;
+		<<"LIST",_/binary>> ->
+			list;
 		<<D,E,L,E,T,E,_/binary>> when (D == $d orelse D == $D) andalso 
 										(E == $e orelse E == $E) andalso
 										(L == $l orelse L == $L) andalso
@@ -230,6 +244,11 @@ parse_pragma(Bin) ->
 									  (S == $s orelse S == $S) andalso
 									  (T == $t orelse T == $T) ->
 			exists;
+		<<L,I,S,T,_/binary>> when (L == $l orelse L == $L) andalso
+								  (I == $i orelse I == $I) andalso
+								  (S == $s orelse S == $S) andalso
+								  (T == $t orelse T == $T) ->
+			list;
 		_ ->
 			undefined
 	end.
