@@ -200,20 +200,38 @@ compare_schema([Type|T],New,Out) ->
 		{_,SqlNew} ->
 			case apply(actordb_schema,Type,[]) of
 				SqlNew ->
-					Out1 = Out;
+					compare_schema(T,lists:keydelete(Type,1,New),Out);
 				SqlCur ->
 					SizeCur = tuple_size(SqlCur),
 					SizeNew = tuple_size(SqlNew),
-					case ok of
-						_ when SizeCur < SizeNew ->
-							Lines = [binary_to_list(iolist_to_binary(element(N,SqlNew))) || N <- lists:seq(SizeCur+1,SizeNew)],
-							Out1 = Out ++ io_lib:fwrite("Update type ~p:"++?DELIMITER,
-																			[Type,Lines]);
+					{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
+					EntireNew = iolist_to_binary([element(N,SqlNew) || N <- lists:seq(1,SizeNew)]),
+					ValidCheck = case actordb_sqlite:exec(Db,["BEGIN;",EntireNew,"COMMIT;"]) of
+						ok ->
+							ok;
+						{ok,_} ->
+							ok;
+						{sql_error,E,_E1} ->
+							{error,io_lib:fwrite("SQL Error for type \"~p\"~n~p~n",[Type,E])};
+						{error,E} ->
+							{error,io_lib:fwrite("SQL Error for type ~p, ~p~n",[Type,E])}
+					end,
+					actordb_sqlite:stop(Db),
+					case ValidCheck of
+						ok ->
+							case ok of
+								_ when SizeCur < SizeNew ->
+									Lines = [binary_to_list(iolist_to_binary(element(N,SqlNew))) || N <- lists:seq(SizeCur+1,SizeNew)],
+									Out1 = Out ++ io_lib:fwrite("Update type ~p:"++?DELIMITER,
+																					[Type,Lines]);
+								_ ->
+									Out1 = Out
+							end,
+							compare_schema(T,lists:keydelete(Type,1,New),Out1);
 						_ ->
-							Out1 = Out
+							ValidCheck
 					end
-			end,
-			compare_schema(T,lists:keydelete(Type,1,New),Out1)
+			end
 	end;
 compare_schema([],New,O) ->
 	case lists:keydelete(ids,1,lists:keydelete(types,1,lists:keydelete(iskv,1,lists:keydelete(num,1,New)))) of
