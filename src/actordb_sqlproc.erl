@@ -32,6 +32,7 @@
 -define(FLAG_ACTORNUM,2).
 -define(FLAG_EXISTS,4).
 -define(FLAG_NOVERIFY,8).
+-define(FLAG_TEST,16).
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
@@ -658,17 +659,21 @@ check_timer(P) ->
 
 delete_actor(P) ->
 	?ADBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
-	self() ! {stop,delete},
-	case actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype) of
-		{redirect,Shard,Node} ->
-			actordb:rpc(Node,P#dp.actorname,{actordb_shard,del_actor,[Shard,P#dp.actorname,P#dp.actortype]});
-		undefined ->
-			{Shard,_,Node} = actordb_shardmngr:find_global_shard(P#dp.actorname),
-			actordb:rpc(Node,P#dp.actorname,{actordb_shard,del_actor,[Shard,P#dp.actorname,P#dp.actortype]});
-		Shard ->
-			ok = actordb_shard:del_actor(Shard,P#dp.actorname,P#dp.actortype)
+	case (P#dp.flags band ?FLAG_TEST == 0) of
+		true ->
+			case actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype) of
+				{redirect,Shard,Node} ->
+					actordb:rpc(Node,P#dp.actorname,{actordb_shard,del_actor,[Shard,P#dp.actorname,P#dp.actortype]});
+				undefined ->
+					{Shard,_,Node} = actordb_shardmngr:find_global_shard(P#dp.actorname),
+					actordb:rpc(Node,P#dp.actorname,{actordb_shard,del_actor,[Shard,P#dp.actorname,P#dp.actortype]});
+				Shard ->
+					ok = actordb_shard:del_actor(Shard,P#dp.actorname,P#dp.actortype)
+			end,
+			actordb_events:actor_deleted(P#dp.actorname,P#dp.actortype,read_num(P));
+		_ ->
+			ok
 	end,
-	actordb_events:actor_deleted(P#dp.actorname,P#dp.actortype,read_num(P)),
 	empty_queue(P#dp.callqueue,{error,deleted}),
 	actordb_sqlite:stop(P#dp.db),
 	delactorfile(P).
@@ -1072,16 +1077,6 @@ handle_cast(_Msg,P) ->
 	?AINF("sqlproc ~p unhandled cast ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
 
-
-% is_temporary(Mors,Name) ->
-% 	case Mors of
-% 		master ->
-% 			% Master and is local shard, it is not temporary.
-% 			not actordb_shardmngr:is_local_shard(Name);
-% 		slave ->
-% 			% Slave and is local shard, it is temporary. 
-% 			actordb_shardmngr:is_local_shard(Name)
-% 	end.
 
 reply(undefined,_Msg) ->
 	ok;
@@ -1813,6 +1808,8 @@ parse_opts(P,[H|T]) ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_EXISTS},T);
 		noverify ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOVERIFY},T);
+		test ->
+			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_TEST},T);
 		_ ->
 			parse_opts(P,T)
 	end;
