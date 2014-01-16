@@ -1150,7 +1150,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 					{Tid,Updaterid,_} = P#dp.transactionid,
 					case Sql of
 						<<"delete">> ->
-							ReplicateSql = {<<"delete">>,EvNumNew,CrcSql},
+							ReplicateSql = {<<"delete">>,EvNumNew,CrcSql,NewVers},
 							reply(P#dp.callfrom,ok);
 						_ ->
 							NewSql = <<Sql/binary,"$DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary,
@@ -1165,7 +1165,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 							Res = actordb_sqlite:exec(P#dp.db,ComplSql),
 							reply(P#dp.callfrom,Res),
 							% Store sql for later execution on slave nodes.
-							ReplicateSql = {NewSql,EvNumNew,CrcSql},
+							ReplicateSql = {NewSql,EvNumNew,CrcSql,NewVers},
 							case okornot(Res) of
 								ok ->
 									ok;
@@ -1529,7 +1529,7 @@ init([_|_] = Opts) ->
 			{stop,normal};
 		{P,Flags} ->
 			ClusterNodes = bkdcore:cluster_nodes(),
-			?AINF("Actor start ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
+			?ADBG("Actor start ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name()]),
 			case P#dp.mors of
