@@ -152,7 +152,6 @@ direct_call(Actor,Type1,Flags,IsWrite,Statements,DoRpc) ->
 			end
 	end.
 
-
 % First call node that should handle request.
 % If node not working, check cluster nodes and pick one by consistent hashing.
 rpc(undefined,Actor,MFA) ->

@@ -92,7 +92,7 @@ write(Name,Flags,Sql,Start) ->
 call(Name,Flags,Msg,Start) ->
 	case distreg:whereis(Name) of
 		undefined ->
-			case startactor(Name,Start,[Flags]) of %{startreason,Msg}
+			case startactor(Name,Start,Flags) of %{startreason,Msg}
 				{ok,Pid} when is_pid(Pid) ->
 					call(Name,Flags,Msg,Start,Pid);
 				{error,nocreate} ->
@@ -145,7 +145,7 @@ call_master(Cb,Actor,Type,Msg) ->
 call_slave(Cb,Actor,Type,Msg) ->
 	call_slave(Cb,Actor,Type,Msg,[]).
 call_slave(Cb,Actor,Type,Msg,Flags) ->
-	case apply(Cb,cb_slave_pid,[Actor,Type,[Flags]]) of %{startreason,Msg}
+	case apply(Cb,cb_slave_pid,[Actor,Type,Flags]) of %{startreason,Msg}
 		{ok,Pid} ->
 			ok;
 		Pid when is_pid(Pid) ->
@@ -502,7 +502,7 @@ handle_call({commit,Doit,Id},From, P) ->
 			{reply,ok,P}
 	end;
 handle_call({delete,Moved},From,P) ->
-	?AINF("deleting actor from node ~p ~p",[P#dp.actorname,P#dp.actortype]),
+	?ADBG("deleting actor from node ~p ~p",[P#dp.actorname,P#dp.actortype]),
 	actordb_sqlite:stop(P#dp.db),
 	delactorfile(P#dp{movedtonode = Moved}),
 	distreg:unreg(self()),

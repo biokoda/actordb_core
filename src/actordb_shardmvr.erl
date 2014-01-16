@@ -146,7 +146,7 @@ can_start() ->
 	case catch actordb_shardtree:local() of
 		{'EXIT',_} ->
 			ok;
-		_ ->
+		_X ->
 			[spawn_monitor(fun() ->  
 							case bkdcore:rpc(Nd,{actordb_shardtree,local,[]}) of
 								{'EXIT',_} ->
