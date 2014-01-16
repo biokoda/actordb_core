@@ -4,12 +4,12 @@
 
 -module(actordb_shard).
 -define(LAGERDBG,true).
--export([start/1,start/2,start_steal/2,start_steal/3,start_split/2,start_split/3,
+-export([start/1,start/2,start/3,start/4,start_steal/2,start_steal/3,start_split/2,start_split/3,
 		 whereis/2,try_whereis/2,reg_actor/3, %get_actors/2,
 		top_actor/2,actor_stolen/4,print_info/2,get_upper_limit/2,list_actors/4,del_actor/3,
 		kvread/4,kvwrite/4,kv_schema_check/1,get_schema_vers/2]). 
 -export([cb_set_upper_limit/2, cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/4,cb_schema/3,cb_path/3,
-		 cb_slave_pid/2,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
+		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 split_other_done/3,start_steal_done/2,cb_candie/4,cb_checkmoved/2,cb_startstate/2]).
 -include_lib("actordb.hrl").
 -define(META_UPPER_LIMIT,$1).
@@ -61,7 +61,9 @@ start({shard,Type,Name},Flags) ->
 	start(Name,Type,false,Flags);
 start(Name,Type1) ->
 	start(Name,Type1,false).
-start(Name,Type1,Slave) ->
+start(Name,Type,Opt) when is_list(Opt) ->
+	start(Name,Type,false,Opt);
+start(Name,Type1,Slave) when is_atom(Slave) ->
 	start(Name,Type1,Slave,[]).
 start(Name,Type1,Slave,Opt) ->
 	?ADBG("shard start ~p ~p ~p",[Name,Type1,Opt]),
@@ -603,9 +605,11 @@ cb_init(S,_EvNum,{ok,[{columns,_},{rows,Rows}]}) ->
 
 
 cb_slave_pid(Name,Type) ->
+	cb_slave_pid(Name,Type,[]).
+cb_slave_pid(Name,Type,Opt) ->
 	case try_whereis(Name,Type) of
 		undefined ->
-			start(Name,Type,true);
+			start(Name,Type,true,Opt);
 		Pid ->
 			{ok,Pid}
 	end.
