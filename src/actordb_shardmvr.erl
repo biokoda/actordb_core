@@ -143,19 +143,24 @@ handle_cast(_, P) ->
 
 
 can_start() ->
-	[spawn_monitor(fun() ->  
-					case bkdcore:rpc(Nd,{actordb_shardtree,local,[]}) of
-						{'EXIT',_} ->
-							exit(false);
-						_ ->
-							exit(true)
-					end
-			   end) || Nd <- bkdcore:cluster_nodes()],
-	case gather_concluded(length(bkdcore:cluster_nodes())) of
-		true ->
-			gen_server:cast(?MODULE,can_start);
-		false ->
-			ok
+	case catch actordb_shardtree:local() of
+		{'EXIT',_} ->
+			ok;
+		_ ->
+			[spawn_monitor(fun() ->  
+							case bkdcore:rpc(Nd,{actordb_shardtree,local,[]}) of
+								{'EXIT',_} ->
+									exit(false);
+								_ ->
+									exit(true)
+							end
+					   end) || Nd <- bkdcore:cluster_nodes()],
+			case gather_concluded(length(bkdcore:cluster_nodes())) of
+				true ->
+					gen_server:cast(?MODULE,can_start);
+				false ->
+					ok
+			end
 	end.
 gather_concluded(0) ->
 	true;

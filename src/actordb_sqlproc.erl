@@ -1381,7 +1381,7 @@ handle_info({check_inactivity,N}, P) ->
 				undefined ->
 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
 						true ->
-							?AINF("Die because temporary ~p ~p",[P#dp.actorname,P#dp.actortype]),
+							?ADBG("Die because temporary ~p ~p",[P#dp.actorname,P#dp.actortype]),
 							distreg:unreg(self()),
 							?DBLOG(P#dp.db,"die temporary ",[]),
 							{stop,normal,P};
@@ -1529,7 +1529,7 @@ init([_|_] = Opts) ->
 			{stop,normal};
 		{P,Flags} ->
 			ClusterNodes = bkdcore:cluster_nodes(),
-			?ADBG("Actor start ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
+			?AINF("Actor start ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name()]),
 			case P#dp.mors of
