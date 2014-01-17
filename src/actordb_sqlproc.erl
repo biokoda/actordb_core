@@ -60,12 +60,24 @@
 
 
 read(Name,Flags,[{copy,CopyFrom}],Start) ->
-	case call(Name,Flags,{read,<<"select * from __adb limit 1;">>},Start) of
-		{ok,_} ->
-			{ok,[{columns,{<<"status">>}},{row,{<<"ok">>}}]};
-		_E ->
-			?AERR("Unable to copy actor ~p to ~p",[CopyFrom,Name]),
-			{ok,[{columns,{<<"status">>}},{row,{<<"failed">>}}]}
+	case distreg:whereis(Name) of
+		undefined ->
+			case call(Name,Flags,{read,<<"select * from __adb limit 1;">>},Start) of
+				{ok,_} ->
+					{ok,[{columns,{<<"status">>}},{row,{<<"ok">>}}]};
+				_E ->
+					?AERR("Unable to copy actor ~p to ~p",[CopyFrom,Name]),
+					{ok,[{columns,{<<"status">>}},{row,{<<"failed">>}}]}
+			end;
+		Pid ->
+			diepls(Pid,overwrite),
+			Ref = erlang:monitor(process,Pid),
+			receive
+				{'DOWN',Ref,_,_Pid,_} ->
+					read(Name,Flags,[{copy,CopyFrom}],Start)
+				after 2000 ->
+					{ok,[{columns,{<<"status">>}},{row,{<<"failed_running">>}}]}
+			end
 	end;
 read(Name,Flags,[delete],Start) ->
 	call(Name,Flags,{write,{undefined,0,delete,undefined}},Start);
