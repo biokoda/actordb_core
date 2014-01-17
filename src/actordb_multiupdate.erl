@@ -354,6 +354,24 @@ move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,{Shard,_UpperLimit,Nd,Left,R
 % Next = shard that is splitting (integer type), or name of node where shard is moving
 move_over_shard_actors(Nd,Type,Flags,Shard,[],1000,CountAll,P,IsWrite,StBin,Varlist,NextShard) when NextShard /= undefined ->
 	move_over_shard_actors(Nd,Type,Flags,Shard,[],1000,CountAll,P,IsWrite,StBin,Varlist,undefined);
+move_over_shard_actors(Nd,Type,_Flags,Shard,[],_CountNow,_CountAll,_P,_IsWrite,[count],_Varlist,_NextShard) ->
+	case get({<<"RESULT">>,cols}) of
+		undefined ->
+			put({<<"RESULT">>,cols},{<<"count">>}),
+			put({<<"RESULT">>,0},{0}),
+			put({<<"RESULT">>,nrows},1);
+		_ ->
+			ok
+	end,
+	{CurCount} = get({<<"RESULT">>,0}),
+	case bkdcore:node_name() == Nd of
+		true ->
+			Count = actordb_shard:count_actors(Shard,Type);
+		false ->
+			Count = actordb:rpc(Nd,Shard,{actordb_shard,count_actors,[Shard,Type]})
+	end,
+	put({<<"RESULT">>,0},{CurCount+Count}),
+	ok;
 move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,Varlist,NextShard) ->
 	Iskv = actordb_schema:iskv(Type),
 	case ok of

@@ -5,8 +5,8 @@
 -module(actordb_shard).
 -define(LAGERDBG,true).
 -export([start/1,start/2,start/3,start/4,start_steal/2,start_steal/3,start_split/2,start_split/3,
-		 whereis/2,try_whereis/2,reg_actor/3, %get_actors/2,
-		top_actor/2,actor_stolen/4,print_info/2,get_upper_limit/2,list_actors/4,del_actor/3,
+		 whereis/2,try_whereis/2,reg_actor/3, 
+		top_actor/2,actor_stolen/4,print_info/2,get_upper_limit/2,list_actors/4,count_actors/2,del_actor/3,
 		kvread/4,kvwrite/4,kv_schema_check/1,get_schema_vers/2]). 
 -export([cb_set_upper_limit/2, cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/4,cb_schema/3,cb_path/3,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
@@ -245,6 +245,12 @@ reg_actor(ShardName,ActorName,Type1) ->
 		{ok,_} ->
 			ok
 	end.
+
+count_actors(ShardName,Type1) ->
+	Type = butil:toatom(Type1),
+	{ok,[{columns,_},{rows,[{C}]}]} = actordb_sqlproc:read({shard,Type,ShardName},[create],<<"SELECT count(*) FROM actors;">>,?MODULE),
+	C.
+
 
 list_actors(ShardName,Type1,From,Limit) ->
 	Type = butil:toatom(Type1),

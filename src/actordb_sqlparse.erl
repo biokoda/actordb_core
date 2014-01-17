@@ -154,14 +154,14 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 									NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
 							end,
 							parse_statements(T,L,NewUse,[exists],IsWrite, GIsWrite);
-						list ->
+						Pragma when Pragma == list; Pragma == count ->
 							case split_actor(CurUse) of
 								{Type,_Actors,_Flags} ->
 									ok;
 								{Type,_Global,_Col,_Var,_Flags} ->
 									ok
 							end,
-							parse_statements(T,L,{Type,$*,[]},[list],false,false)
+							parse_statements(T,L,{Type,$*,[]},[Pragma],false,false)
 					end;
 				{show,ShowRem} ->
 					case parse_show(ShowRem) of
@@ -233,6 +233,15 @@ parse_pragma(Bin) ->
 			list;
 		<<"LIST",_/binary>> ->
 			list;
+		<<"count",_/binary>> ->
+			count;
+		<<"COUNT",_/binary>> ->
+			count;
+		<<"Count",_/binary>> ->
+			count;
+		<<"copy",R/binary>> ->
+			<<"=",Aname/binary>> = rem_spaces(R),
+			{copy,Aname};
 		<<D,E,L,E,T,E,_/binary>> when (D == $d orelse D == $D) andalso 
 										(E == $e orelse E == $E) andalso
 										(L == $l orelse L == $L) andalso
@@ -249,6 +258,18 @@ parse_pragma(Bin) ->
 								  (S == $s orelse S == $S) andalso
 								  (T == $t orelse T == $T) ->
 			list;
+		<<C,O,U,N,T,_/binary>> when (C == $c orelse C == $C) andalso
+								  (O == $o orelse O == $O) andalso
+								  (U == $u orelse U == $U) andalso
+								  (N == $n orelse N == $N) andalso
+								  (T == $t orelse T == $T) ->
+			count;
+		<<C,O,P,Y,R/binary>> when (C == $c orelse C == $C) andalso
+								  (O == $o orelse O == $O) andalso
+								  (P == $p orelse P == $P) andalso
+								  (Y == $y orelse Y == $Y) ->
+			<<"=",Aname/binary>> = rem_spaces(R),
+			{copy,Aname};
 		_ ->
 			undefined
 	end.
