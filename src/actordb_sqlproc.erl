@@ -12,7 +12,7 @@
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 % since sqlproc gets called so much, logging from here often makes it more difficult to find a bug.
--define(NOLOG,1).
+% -define(NOLOG,1).
 -define(EVNUM,<<"1">>).
 -define(EVCRC,<<"2">>).
 -define(SCHEMA_VERS,<<"3">>).
@@ -59,6 +59,14 @@
 % and reads file up to that point. 
 
 
+read(Name,Flags,[{copy,CopyFrom}],Start) ->
+	case call(Name,Flags,{read,<<"select * from __adb limit 1;">>},Start) of
+		{ok,_} ->
+			{ok,[{columns,{<<"status">>}},{row,{<<"ok">>}}]};
+		_E ->
+			?AERR("Unable to copy actor ~p to ~p",[CopyFrom,Name]),
+			{ok,[{columns,{<<"status">>}},{row,{<<"failed">>}}]}
+	end;
 read(Name,Flags,[delete],Start) ->
 	call(Name,Flags,{write,{undefined,0,delete,undefined}},Start);
 read(Name,Flags,Sql,Start) ->
@@ -439,7 +447,7 @@ handle_call({dbcopy_op,From,What,Data},_,P) ->
 				true ->
 					{reply,{[P#dp.dbpath,"-wal"],Size},P#dp{locked = butil:lists_add(From,P#dp.locked)}};
 				false ->
-					?DBG("wal_size ~p",[{_Replicator,_Offset,Size}]), 
+					?DBG("wal_size ~p",[{From,What,Data}]), 
 					{reply,{[P#dp.dbpath,"-wal"],Size},P}
 			end
 	end;
@@ -1493,7 +1501,7 @@ init(#dp{} = P,_Why) ->
 				Sql when is_list(Sql); is_binary(Sql) ->
 					ok
 			end,
-			?DBG("Opening ~p copied from ~p ~p ~p",[P#dp.dbpath,P#dp.copyfrom,butil:md5(Bin),byte_size(Bin)]),
+			?DBG("Opening ~p copied from ~p",[P#dp.dbpath,P#dp.copyfrom]),
 			{ok,Db,true,_PageSize} = actordb_sqlite:init(P#dp.dbpath,P#dp.journal_mode),
 			ComplSql = <<"INSERT OR REPLACE INTO __adb VALUES (",?EVNUM/binary,",1);",
 						 	"INSERT OR REPLACE INTO __adb VALUES (",?EVCRC/binary,",0);",

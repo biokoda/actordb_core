@@ -154,6 +154,10 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 									NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
 							end,
 							parse_statements(T,L,NewUse,[exists],IsWrite, GIsWrite);
+						{copy,Name} ->
+							{Type,[Actor],Flags} = split_actor(CurUse),
+							{_,_,Node} = actordb_shardmngr:find_global_shard(Name),
+							parse_statements(T,L,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
 						Pragma when Pragma == list; Pragma == count ->
 							case split_actor(CurUse) of
 								{Type,_Actors,_Flags} ->
@@ -241,7 +245,7 @@ parse_pragma(Bin) ->
 			count;
 		<<"copy",R/binary>> ->
 			<<"=",Aname/binary>> = rem_spaces(R),
-			{copy,Aname};
+			{copy,get_name(Aname)};
 		<<D,E,L,E,T,E,_/binary>> when (D == $d orelse D == $D) andalso 
 										(E == $e orelse E == $E) andalso
 										(L == $l orelse L == $L) andalso
@@ -269,7 +273,7 @@ parse_pragma(Bin) ->
 								  (P == $p orelse P == $P) andalso
 								  (Y == $y orelse Y == $Y) ->
 			<<"=",Aname/binary>> = rem_spaces(R),
-			{copy,Aname};
+			{copy,get_name(Aname)};
 		_ ->
 			undefined
 	end.
@@ -462,6 +466,23 @@ count_param(<<>>,_) ->
 	undefined;
 count_param(_,_) ->
 	undefined.
+
+
+get_name(Bin) ->
+	Count = count_name(rem_spaces(Bin),0),
+	<<Name:Count/binary,_/binary>> = Bin,
+	Name.
+count_name(<<C,Rem/binary>>,N) when C >= $a, C =< z; 
+									 C >= $A, C =< $Z; 
+									 C >= $0, C =< $9;
+									 C == $.; C == $_ ->
+	count_name(Rem,N+1);
+count_name(<<>>,N) ->
+	N;
+count_name(<<" ">>,N) ->
+	N;
+count_name(<<";",_/binary>>,N) ->
+	N.
 
 count_string(<<"''",Rem/binary>>,N) ->
 	count_string(Rem,N+2);
