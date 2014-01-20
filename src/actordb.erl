@@ -27,6 +27,13 @@ configfiles() ->
 							{onload,{actordb,schema_changed,[]}}]}
 	].
 
+start() ->
+	actordb_core:start().
+stop() ->
+	actordb_core:stop().
+stop_complete() ->
+	actordb_core:stop_complete().
+
 % Calls with backpressure.
 % Generally all calls to actordb should get executed with these functions.
 % Otherwise the node might get overloaded and crash.

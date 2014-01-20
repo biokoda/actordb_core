@@ -80,7 +80,7 @@ run(D,_P,_W,0) ->
 	D;
 run(D,P,W,N) ->
 	% butil:tobin(random:uniform(100000))
-		Sql = {[{{<<"type1">>,[<<"ac.",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary>>]},
+		Sql = {[{{<<"type1">>,[<<"ac.",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary>>],[create]},
 		   true,
 		   [<<"insert into tab values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>]}],
 		 true},
