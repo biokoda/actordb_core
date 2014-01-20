@@ -9,7 +9,7 @@
 cmd(init,parse,Etc) ->
 	try case readnodes(Etc++"/nodes.yaml") of
 		{Nodes,Groups} ->
-			case yamerl_constr:file(Etc++"/schema.yaml") of
+			case catch yamerl_constr:file(Etc++"/schema.yaml") of
 				[_Schema] ->
 					case bkdcore:nodelist() of
 						[] ->
@@ -18,16 +18,18 @@ cmd(init,parse,Etc) ->
 											compare_nodes(Nodes,[])),
 							ok;
 						_ ->
-							throw(io_lib:fwrite("ActorDB already initialized."))
+							{error,"ActorDB already initialized."}
 					end;
 				X ->
-					throw(io_lib:fwrite("Error parsing schema.yaml ~p",[X]))
+					throw(io_lib:fwrite("Error parsing schema.yaml~n~p",[X]))
 			end;
 		X ->
 			throw(io_lib:fwrite("Error parsing nodes.yaml: ~p",[X]))
 	end of
 		ok ->
-			{ok,"Start new cluster?"}
+			{ok,"Start new cluster?"};
+		{error,E} ->
+			{error,E}
 	catch
 		throw:Str when is_list(Str) ->
 			{error,io_lib:fwrite("~s~n",[Str])};
@@ -130,16 +132,20 @@ cmd(_,_,_) ->
 
 readnodes(Pth) ->
 	{ok,_} = file:read_file_info(Pth),
-	[[A1,A2]] = yamerl_constr:file(Pth),
-	case A1 of
-		{"nodes",Nodes} ->
-			{"groups",Groups} = A2,
-			{Nodes,Groups};
-		{"groups",Groups} ->
-			{"nodes",Nodes} = A2,
-			{Nodes,Groups};
-		_ ->
-			throw("Invalid nodes.yaml. First object is neither nodes nor groups")
+	case catch yamerl_constr:file(Pth) of
+		[[A1,A2]] ->
+			case A1 of
+				{"nodes",Nodes} ->
+					{"groups",Groups} = A2,
+					{Nodes,Groups};
+				{"groups",Groups} ->
+					{"nodes",Nodes} = A2,
+					{Nodes,Groups};
+				_ ->
+					throw("Invalid nodes.yaml. First object is neither nodes nor groups")
+			end;
+		Err ->
+			throw(io_lib:fwrite("Invalid nodes.yaml ~n~p~n",[Err]))
 	end.
 
 nodes_to_names(Nodes) ->

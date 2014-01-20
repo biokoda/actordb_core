@@ -445,7 +445,6 @@ handle_call({send_db,Node,Ref,IsMove,RemoteEvNum,RemoteEvCrc,ActornameToCopyto} 
 					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 				_ ->
 					?ADBG("redirect not master node"),
-					% {reply,{redirect,P#dp.masternodedist},P}
 					redirect_master(P)
 			end;
 		false ->
@@ -580,14 +579,12 @@ handle_call({read,Msg},From,P) ->
 			end;
 		_ ->
 			?DBG("redirect read ~p",[P#dp.masternode]),
-			% {reply,{redirect,P#dp.masternodedist},P}
 			redirect_master(P)
 	end;
 handle_call({write,Msg},From, #dp{mors = master} = P) ->
 	write_call(Msg,From,P);
 handle_call({write,_},_,#dp{mors = slave} = P) ->
 	?DBG("Redirect not master ~p",[P#dp.masternode]),
-	% {reply,{redirect,P#dp.masternodedist},P};
 	redirect_master(P);
 % Called from master
 handle_call({replicate_start,_Ref,_Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers},From,P) ->
@@ -1104,7 +1101,7 @@ reply(undefined,_Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
-handle_info(doqueue, P) when P#dp.callfrom == undefined andalso P#dp.verified /= false andalso P#dp.transactionid == undefined ->
+handle_info(doqueue, P) when P#dp.callfrom == undefined, P#dp.verified /= false, P#dp.transactionid == undefined ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
 			?DBG("doqueue empty"),
@@ -1872,9 +1869,9 @@ verified_response(MeMors,MasterNode) ->
 	?ADBG("verified_response ~p ~p",[MeMors,MasterNode]),
 	Me = bkdcore:node_name(),
 	case ok of
-		_ when MeMors == master andalso MasterNode == undefined ->
+		_ when MeMors == master, MasterNode == undefined ->
 			exit({verified,master,Me});
-		_ when MeMors == master andalso MasterNode /= Me andalso MasterNode /= undefined ->
+		_ when MeMors == master, MasterNode /= Me, MasterNode /= undefined ->
 			exit({verified,slave,MasterNode});
 		_ when MasterNode /= undefined ->
 			exit({verified,MeMors,MasterNode});
