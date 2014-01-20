@@ -36,7 +36,7 @@
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
-% -define(DODBLOG,1).
+-define(DODBLOG,1).
 % -compile(export_all).
 
 % For every actor, sqlproc is running on every node in cluster (1 master, other slaves). 
