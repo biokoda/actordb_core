@@ -36,7 +36,7 @@
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
--define(DODBLOG,1).
+% -define(DODBLOG,1).
 % -compile(export_all).
 
 % For every actor, sqlproc is running on every node in cluster (1 master, other slaves). 
@@ -790,7 +790,7 @@ write_call({MFA,Crc,Sql,Transaction},From,P) ->
 	end.
 write_call(Crc,Sql,undefined,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
-	?DBLOG(P#dp.db,"writecall ~p ~p ~p",[EvNum,Crc,P#dp.dbcopy_to]),
+	?DBLOG(P#dp.db,"writecall ~p ~p ~p ~p ~p",[EvNum,Crc,P#dp.dbcopy_to,From,Sql]),
 	{ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
 	case LenCluster of
 		0 -> 
@@ -1070,16 +1070,17 @@ trim_wlog(<<_Evnum:64,_Crc:32,Size:32/unsigned,_Sql:Size/binary,Rem/binary>>) ->
 handle_cast({diepls,Reason},P) ->
 	case handle_info(check_inactivity,P) of
 		{noreply,_,hibernate} ->
-			case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
-				true ->
+			% case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
+			% 	true ->
 					?DBLOG(P#dp.db,"reqdie",[]),
 					actordb_sqlite:stop(P#dp.db),
 					distreg:unreg(self()),
 					?ADBG("req die ~p ~p ~p",[P#dp.actorname,P#dp.actortype,Reason]),
 					{stop,normal,P};
-				false ->
-					{noreply,P}
-			end;
+			% 	false ->
+			% 		?AINF("NOPE ~p",[P#dp.actorname]),
+			% 		{noreply,P}
+			% end;
 		R ->
 			R
 	end;

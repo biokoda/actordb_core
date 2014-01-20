@@ -201,7 +201,8 @@ handle_call({shard_moved,Shard,Type,_Node},From,P) ->
 					{reply,ok,P#dp{shardsbeingtaken = SBT}}
 			end;
 		false ->
-			?AERR("Unknown shard moved?!"),
+			?AERR("Unknown shard moved?! shard ~p, tonode ~p, myshards ~p beingtaken ~p",
+					[Shard,_Node,P#dp.localshards,P#dp.shardsbeingtaken]),
 			{reply,false,P}
 	end;
 % Remote node wants to take shard from this node.

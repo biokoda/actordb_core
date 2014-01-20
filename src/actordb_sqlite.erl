@@ -13,7 +13,8 @@ init(Path,JournalMode) ->
 init(Path,JournalMode,Thread) ->
 	Sql = <<"select name, sql from sqlite_master where type='table';",
 			"PRAGMA page_size;"
-			"$PRAGMA locking_mode=EXCLUSIVE;",
+			% Exclusive locking is faster but unrealiable. 
+			% "$PRAGMA locking_mode=EXCLUSIVE;",
 			"$PRAGMA synchronous=",(actordb_conf:sync())/binary,";",
 			"$PRAGMA cache_size=",(butil:tobin(?DEF_CACHE_PAGES))/binary,";",
 			"$PRAGMA journal_mode=",(butil:tobin(JournalMode))/binary,";",
@@ -88,7 +89,7 @@ stop(Db) ->
 set_pragmas(Db,JournalMode) ->
 	set_pragmas(Db,JournalMode,actordb_conf:sync()).
 set_pragmas(Db,JournalMode,Sync) ->
-	_Setpragma = exec(Db,<<"PRAGMA locking_mode=EXCLUSIVE;",
+	_Setpragma = exec(Db,<<%"PRAGMA locking_mode=EXCLUSIVE;",
 						 "PRAGMA synchronous=",(butil:tobin(Sync))/binary,";",
 						"PRAGMA journal_mode=",(butil:tobin(JournalMode))/binary,";",
 						"PRAGMA journal_size_limit=0;">>),

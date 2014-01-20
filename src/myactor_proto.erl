@@ -313,9 +313,14 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
             ?PROTO_DBG("queue command = ~p",[Stmts0]),
             Cst0 = Cst#cst{query_queue = <<>>, queueing = false},
             execute_query(Cst0,Stmts0,QQ);
-        {[{{Actor,ActorIds},false,[]}],false} -> % parsed "actor <actor>(ids)" statement
+        {[{{Actor,ActorIds,Flags},false,[]}],false} -> % parsed "actor <actor>(ids)" statement
             ActorIdsBin = myactor_util:build_idsbin(ActorIds),
-            DbName = <<Actor/binary,$(,ActorIdsBin/binary,$)>>,
+            case lists:member(create,Flags) of
+                true ->
+                    DbName = <<Actor/binary,$(,ActorIdsBin/binary,$)," create">>;
+                _ ->
+                    DbName = <<Actor/binary,$(,ActorIdsBin/binary,$)>>
+            end,
             case Cst#cst.queueing == true of
                 true ->
                     % we add use statement to queue and leave current actor intact while query queue is in progress
