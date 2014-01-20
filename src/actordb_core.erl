@@ -72,7 +72,14 @@ start_ready() ->
 								_ ->
 									MaxCon = 1024
 							end,
-							{ok, _} = ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []),
+							case ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []) of
+								{ok, _} ->
+									ok;
+								{error,already_started} ->
+									ok;
+								Err ->
+									?AERR("Unable to start ranch ~p",[Err])
+							end,
 							ok;
 						false ->
 							ok
