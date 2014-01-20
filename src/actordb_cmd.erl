@@ -11,10 +11,15 @@ cmd(init,parse,Etc) ->
 		{Nodes,Groups} ->
 			case yamerl_constr:file(Etc++"/schema.yaml") of
 				[_Schema] ->
-					[_|_] = compare_groups(nodes_to_names(Nodes),
+					case bkdcore:nodelist() of
+						[] ->
+							[_|_] = compare_groups(nodes_to_names(Nodes),
 											bkdcore_changecheck:parse_yaml_groups(Groups),
 											compare_nodes(Nodes,[])),
-					ok;
+							ok;
+						_ ->
+							throw(io_lib:fwrite("ActorDB already initialized."))
+					end;
 				X ->
 					throw(io_lib:fwrite("Error parsing schema.yaml ~p",[X]))
 			end;

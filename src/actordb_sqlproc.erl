@@ -274,7 +274,7 @@ print_info(Pid) ->
   movedtonode,
   % Will cause actor not to do any DB initialization, but will take the db from another node
   copyfrom,copyreset = false}). 
--define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
+-define(R2P(Record), butil:rec2prop(Record#dp{writelog = byte_size(P#dp.writelog)}, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
 -ifndef(NOLOG).
