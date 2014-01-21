@@ -182,8 +182,8 @@ reload() ->
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
 % Shard has been completely moved over to another node.
-handle_call({shard_moved,Shard,Type,_Node},From,P) ->
-	?AINF("Shard moved ~p ~p ~p~n~p",[Shard,Type,_Node,P#dp.shardsbeingtaken]),
+handle_call({shard_moved,Shard,Type,Node},From,P) ->
+	?AINF("Shard moved ~p ~p ~p~n~p",[Shard,Type,Node,P#dp.shardsbeingtaken]),
 	% Have all types for shard been moved?
 	% If yes, tell global master shard Node is in charge of shard now.
 	case lists:keyfind(Shard,1,P#dp.shardsbeingtaken) of
@@ -201,9 +201,14 @@ handle_call({shard_moved,Shard,Type,_Node},From,P) ->
 					{reply,ok,P#dp{shardsbeingtaken = SBT}}
 			end;
 		false ->
-			?AERR("Unknown shard moved?! shard ~p, tonode ~p, myshards ~p beingtaken ~p",
-					[Shard,_Node,P#dp.localshards,P#dp.shardsbeingtaken]),
-			{reply,false,P}
+			case find_global_shard(Shard,Shard) of
+				{Shard,_,Node} ->
+					{reply,ok,P};
+				Existing ->
+					?AERR("Unknown shard moved?! shard ~p, tonode ~p, myshards ~p beingtaken ~p, current pos ~p",
+							[Shard,Node,P#dp.localshards,P#dp.shardsbeingtaken,Existing]),
+					{reply,false,P}
+			end
 	end;
 % Remote node wants to take shard from this node.
 handle_call({steal_shard,Nd,Shard,NdToTakeFrom},_From,P) ->

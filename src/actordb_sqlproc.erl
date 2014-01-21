@@ -36,7 +36,7 @@
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
-% -define(DODBLOG,1).
+-define(DODBLOG,1).
 % -compile(export_all).
 
 % For every actor, sqlproc is running on every node in cluster (1 master, other slaves). 
@@ -123,6 +123,7 @@ call(Name,Flags,Msg,Start) ->
 			end;
 		Pid ->
 			call(Name,Flags,Msg,Start,Pid)
+
 	end.
 call(Name,Flags,Msg,Start,Pid) ->
 	% If call returns redirect, this is slave node not master node.
@@ -1449,7 +1450,12 @@ handle_info({check_inactivity,N}, P) ->
 					end
 			end;
 		_ when P#dp.verifypid == undefined, P#dp.verified /= true ->
-			?AERR("verify fail ~p",[?R2P(P)]),
+			case P#dp.verified of
+				failed ->
+					?AERR("verify fail ~p",[?R2P(P)]);
+				_ ->
+					ok
+			end,
 			case timer:now_diff(os:timestamp(),P#dp.start_time) > 20*1000000 of
 				true ->
 					{stop,verifyfail,P};
@@ -1495,7 +1501,7 @@ code_change(_, P, _) ->
 	{ok, P}.
 % {Actor,ActorType1,MasterOrSlave}
 init(#dp{} = P,_Why) ->
-	?ADBG("Reinit because ~p, ~p",[_Why,?R2P(P)]),
+	?AINF("Reinit because ~p, ~p",[_Why,?R2P(P)]),
 	case P#dp.copyfrom /= undefined andalso P#dp.copyreset /= false of
 		true ->
 			case P#dp.copyreset of
@@ -1527,6 +1533,7 @@ init(#dp{} = P,_Why) ->
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 init([_|_] = Opts) ->
+	?AINF("Start ~p",[Opts]),
 	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
 									schemanum = actordb_schema:num()}),Opts) of
 		{registered,_Pid} ->
@@ -1543,7 +1550,7 @@ init([_|_] = Opts) ->
 			{stop,normal};
 		P ->
 			ClusterNodes = bkdcore:cluster_nodes(),
-			?ADBG("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
+			?AINF("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name(),butil:ds_val(startreason,Opts)]),
 			case P#dp.mors of
