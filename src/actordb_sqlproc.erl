@@ -36,7 +36,7 @@
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
--define(DODBLOG,1).
+% -define(DODBLOG,1).
 % -compile(export_all).
 
 % For every actor, sqlproc is running on every node in cluster (1 master, other slaves). 
@@ -1501,7 +1501,7 @@ code_change(_, P, _) ->
 	{ok, P}.
 % {Actor,ActorType1,MasterOrSlave}
 init(#dp{} = P,_Why) ->
-	?AINF("Reinit because ~p, ~p",[_Why,?R2P(P)]),
+	?ADBG("Reinit because ~p, ~p",[_Why,?R2P(P)]),
 	case P#dp.copyfrom /= undefined andalso P#dp.copyreset /= false of
 		true ->
 			case P#dp.copyreset of
@@ -1533,7 +1533,6 @@ init(#dp{} = P,_Why) ->
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 init([_|_] = Opts) ->
-	?AINF("Start ~p",[Opts]),
 	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
 									schemanum = actordb_schema:num()}),Opts) of
 		{registered,_Pid} ->
@@ -1550,7 +1549,7 @@ init([_|_] = Opts) ->
 			{stop,normal};
 		P ->
 			ClusterNodes = bkdcore:cluster_nodes(),
-			?AINF("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
+			?ADBG("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name(),butil:ds_val(startreason,Opts)]),
 			case P#dp.mors of
