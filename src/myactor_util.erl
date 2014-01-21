@@ -108,6 +108,8 @@ read_lenenc_string(<<Len:8/little, Bin:Len/binary, Rest/binary>>) -> {Bin, Rest}
 %% @spec build_ids(list()) -> binary()
 %% @doc  Converts a list of ActorIds (retrieved from myactor_sqlparse:parse_statements structure) to binary representation splitted with commas
 %%       Structure sample: {[{{_,<b>ActorIds</b>},false,[]}],false}
+build_idsbin($*) ->
+    butil:tobin(<<"*">>);
 build_idsbin([AId]) ->
     butil:tobin(AId);
 build_idsbin(Ids) when is_list(Ids) ->

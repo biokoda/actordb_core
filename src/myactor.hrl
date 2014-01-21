@@ -147,6 +147,7 @@
 				sequenceid = 0 :: integer() , 
 				capabilities = [] :: list() , 
 				current_actor = undefined :: list() , 
+                                current_actor_flags = [] :: list() , 
 				bp_action = undefined :: #bp_action{} ,  
 				queueing = false :: boolean(), 
 				query_queue = <<>> :: binary() }).

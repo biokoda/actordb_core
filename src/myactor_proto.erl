@@ -314,13 +314,9 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
             Cst0 = Cst#cst{query_queue = <<>>, queueing = false},
             execute_query(Cst0,Stmts0,QQ);
         {[{{Actor,ActorIds,Flags},false,[]}],false} -> % parsed "actor <actor>(ids)" statement
+            ?PROTO_DBG("actor statement for ~p (~p) with flags ~p",[Actor,ActorIds,Flags]),
             ActorIdsBin = myactor_util:build_idsbin(ActorIds),
-            case lists:member(create,Flags) of
-                true ->
-                    DbName = <<Actor/binary,$(,ActorIdsBin/binary,$)," create">>;
-                _ ->
-                    DbName = <<Actor/binary,$(,ActorIdsBin/binary,$)>>
-            end,
+            DbName = <<Actor/binary,$(,ActorIdsBin/binary,$)>>,
             case Cst#cst.queueing == true of
                 true ->
                     % we add use statement to queue and leave current actor intact while query queue is in progress
@@ -328,7 +324,7 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
                     Cst0 = queue_append(Cst,<<ActorQCmd/binary,DbName/binary>>),
                     send_ok(Cst0);   
                 false ->
-                    send_ok(Cst#cst{current_actor=butil:tolist(DbName)})
+                    send_ok(Cst#cst{current_actor=butil:tolist(DbName),current_actor_flags=Flags})
             end;
         _Stmts when Cst#cst.queueing == true ->
             ?PROTO_DBG("queueing statement ~p",[Q0]),
@@ -353,7 +349,13 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
                 true ->
                     Stmts0 = Stmts;
                 false when Cst#cst.current_actor =/= undefined ->
-                    ActorQ = iolist_to_binary(["actor ",Cst#cst.current_actor,";"]),
+                    case lists:member(create,Cst#cst.current_actor_flags) of
+                        true ->
+                            Flags = " create";
+                        _ ->
+                            Flags = ""
+                    end,
+                    ActorQ = iolist_to_binary(["actor ",Cst#cst.current_actor,Flags,";"]),
                     Stmts0 = actordb_sqlparse:parse_statements(<<ActorQ/binary,Query/binary>>);
                 false ->
                     Stmts0 = {error,no_actor_defined}
