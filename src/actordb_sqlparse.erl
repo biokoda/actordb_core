@@ -143,29 +143,34 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 		undefined ->
 			case is_write(H) of
 				{pragma,PragmaRem} ->
-					case parse_pragma(PragmaRem) of
-						delete ->
-							parse_statements(T,L,CurUse,[delete],true, true);
-						exists ->
-							case split_actor(CurUse) of
-								{Type,Actors,Flags} ->
-									NewUse = {Type,Actors,butil:lists_add(exists,Flags)};
-								{Type,Global,Col,Var,Flags} ->
-									NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
-							end,
-							parse_statements(T,L,NewUse,[exists],IsWrite, GIsWrite);
-						{copy,Name} ->
-							{Type,[Actor],Flags} = split_actor(CurUse),
-							{_,_,Node} = actordb_shardmngr:find_global_shard(Name),
-							parse_statements(T,L,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
-						Pragma when Pragma == list; Pragma == count ->
-							case split_actor(CurUse) of
-								{Type,_Actors,_Flags} ->
-									ok;
-								{Type,_Global,_Col,_Var,_Flags} ->
-									ok
-							end,
-							parse_statements(T,L,{Type,$*,[]},[Pragma],false,false)
+					case CurUse of
+						undefined ->
+							[];
+						_ ->
+							case parse_pragma(PragmaRem) of
+								delete ->
+									parse_statements(T,L,CurUse,[delete],true, true);
+								exists ->
+									case split_actor(CurUse) of
+										{Type,Actors,Flags} ->
+											NewUse = {Type,Actors,butil:lists_add(exists,Flags)};
+										{Type,Global,Col,Var,Flags} ->
+											NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
+									end,
+									parse_statements(T,L,NewUse,[exists],IsWrite, GIsWrite);
+								{copy,Name} ->
+									{Type,[Actor],Flags} = split_actor(CurUse),
+									{_,_,Node} = actordb_shardmngr:find_global_shard(Name),
+									parse_statements(T,L,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
+								Pragma when Pragma == list; Pragma == count ->
+									case split_actor(CurUse) of
+										{Type,_Actors,_Flags} ->
+											ok;
+										{Type,_Global,_Col,_Var,_Flags} ->
+											ok
+									end,
+									parse_statements(T,L,{Type,$*,[]},[Pragma],false,false)
+							end
 					end;
 				{show,ShowRem} ->
 					case parse_show(ShowRem) of
