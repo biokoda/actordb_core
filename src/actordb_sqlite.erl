@@ -37,8 +37,6 @@ init(Path,JournalMode,Thread) ->
 							{ok,Db1,true,Size}
 					end
 			end;
-		% {error,{"exec_script",sqlite_error,"database is locked"}} ->
-			
 		% Unable to open sqlite file.
 		% Crash if file permission problem.
 		% If file corrupted, move to trash folder (one or two levels above current folder) and open again.
@@ -98,9 +96,7 @@ set_pragmas(Db,JournalMode,Sync) ->
 exec(undefined,_) ->
 	ok;
 exec(Db,Sql) ->
-	% actordb_local:incexec(),
 	Res = esqlite3:exec_script(Sql,Db),
-	% actordb_local:decexec(),
 	case Res of
 		{ok,[[{columns,_},_] = Res1]} ->
 			{ok,Res1};

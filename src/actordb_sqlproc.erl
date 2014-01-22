@@ -588,13 +588,13 @@ handle_call({write,_},_,#dp{mors = slave} = P) ->
 	?DBG("Redirect not master ~p",[P#dp.masternode]),
 	redirect_master(P);
 % Called from master
-handle_call({replicate_start,_Ref,_Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers},From,P) ->
+handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers},From,P) ->
 	?ADBG("Replicate start ~p ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,Sql]),
 	?DBLOG(P#dp.db,"replicatestart ~p ~p ~p ~p",[_Ref,butil:encode_percent(_Node),EvNum,Crc]),
-	case P#dp.evnum == PrevEvnum andalso P#dp.evcrc == PrevCrc orelse Sql == <<"delete">> of
-		true ->
+	case ok of
+		_ when P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.evnum == PrevEvnum, P#dp.evcrc == PrevCrc; Sql == <<"delete">> ->
 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
-		false ->
+		_ ->
 			?DBLOG(P#dp.db,"replicate conflict!!! ~p ~p in ~p ~p, cur ~p ~p",[_Ref,_Node,EvNum,Crc,P#dp.evnum,P#dp.evcrc]),
 			?AERR("Replicate conflict!!!!! ~p ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc]),
 			actordb_sqlite:stop(P#dp.db),
