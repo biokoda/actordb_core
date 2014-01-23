@@ -80,8 +80,10 @@ loop(Socket, Transport, State0) ->
             Buff0 = State0#cst.buf,
             State1 = State0#cst{buf = <<Buff0/binary, Data/binary>>},  % append to buffer until complete packet is combined
             case State1#cst.buf of
-                <<PacketLength:24/little,SequenceId:8/big, ClientPayload/binary>> ->  % The sequence-id is incremented with each packet and may wrap around. It starts at 0 and is reset to 0 when a new command begins in the Command Phase.
-                    ?PROTO_DBG("received ~p bytes, packet length = ~p bytes; sequenceid = ~p ; client payload size = ~p bytes => ~p (process: ~p)",[size(Data),PacketLength,SequenceId,size(ClientPayload),ClientPayload,self()]),
+                <<PacketLength:24/little,SequenceId:8/big, ClientPayload/binary>> ->  % The sequence-id is incremented with each packet and may wrap around. 
+                                                                                      % It starts at 0 and is reset to 0 when a new command begins in the Command Phase.
+                    ?PROTO_DBG("received ~p bytes, packet length = ~p bytes; sequenceid = ~p ; client payload size = ~p bytes => ~p (process: ~p)",
+                        [size(Data),PacketLength,SequenceId,size(ClientPayload),ClientPayload,self()]),
                     case size(ClientPayload) of
                         PacketLength ->
                             ?PROTO_DBG("packet received, processing on phase ~p",[State1#cst.phase]),
@@ -219,7 +221,8 @@ recv_handshake(Data) ->
         _ ->
             ?PROTO_WARN("recv_handshake | client sent connect attrs, not handled yet")
     end,
-    ?PROTO_DBG("recv_handshake | client handshake, capabilities = ~p, max packet size = ~p, username = ~p, password = ~p, plugin_auth = ~p",[Caps,_MaxPacketSize,Username,Password,PluginAuth]),    
+    ?PROTO_DBG("recv_handshake | client handshake, capabilities = ~p, max packet size = ~p, username = ~p, password = ~p, plugin_auth = ~p",
+                [Caps,_MaxPacketSize,Username,Password,PluginAuth]),    
     [{username,Username},{password,Password},{charset,Charset},{dbname,DbName},{plugin_auth,PluginAuth},{capabilities,Caps}].
 
 %% @spec send_ok(#cst{}) -> send_packet()
@@ -464,7 +467,8 @@ multirow_response(Cst,Cols,Rows) ->
     Cst0 = Cst#cst{sequenceid=1}, % field num packet sequence id
     FieldNumPack = create_packet(Cst0,NumColsLenEnc),       % length = 1, packet num = 1, number of columns = ColumnCount (length encoded integer)
     % column definitions packets    
-    CstDf0 = multirow_columndefs_prep(Cst0,Cols),   % we only set new "current state" but keep the old one so we can build the header once the types are known in a later phase
+    CstDf0 = multirow_columndefs_prep(Cst0,Cols),   % we only set new "current state" but keep the old one 
+                                                    % so we can build the header once the types are known in a later phase
     % eof marker before row responses    
     Warnings = 0,
     ServerStatus = 16#0022,
@@ -492,7 +496,8 @@ multirow_response(Cst,Cols,Rows) ->
 
 %% @spec multirow_columndefs_prep(#cst{},term()) -> #cst{}
 %% @doc  Calculate a new after "column-definitions" state. We need this since we detect types while we build the request.<br/>
-%%       This way we ensure that sequenceid's of the packets following the column definition packet are correct since we create the column definition packet before we are sending data to the socket.
+%%       This way we ensure that sequenceid's of the packets following the column definition packet are correct since 
+%%       we create the column definition packet before we are sending data to the socket.
 multirow_columndefs_prep(Cst,Cols) ->    
     Cst#cst{sequenceid=Cst#cst.sequenceid+size(Cols)}.    
 
@@ -597,7 +602,8 @@ multirow_encoderow0(Row,RowLength,DataIdx,Bin,BinSize,ColTypes) ->
     multirow_encoderow0(Row,RowLength,DataIdx-1,[BinPacket|Bin],BinSize+size(BinPacket),ColTypes0).
 
 %% @spec set_type(#coltypes{},integer(),binary()|integer()|float()) -> #coltypes{}
-%% @doc  Sets a type for a column where a value is defined. If a value is unknown we skip setting this column's type. When all types are known we skip further type setting.
+%% @doc  Sets a type for a column where a value is defined. If a value is unknown we skip setting this column's type. 
+%% When all types are known we skip further type setting.
 set_type(#coltypes{defined=true} = ColTypes ,_,_) ->
     ?PROTO_DBG("notice skippping, all is known"),
     ColTypes;

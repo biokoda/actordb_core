@@ -7,7 +7,7 @@
 -define(LAGERDBG,true).
 -export([start/1, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/1]).
--export([read/4,write/4,call/4,diepls/2]).
+-export([read/4,write/4,call/4,call/5,diepls/2]).
 -export([call_slave/4,call_slave/5,call_master/4]).
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -111,26 +111,44 @@ write(Name,Flags,Sql,Start) ->
 
 
 call(Name,Flags,Msg,Start) ->
+	call(Name,Flags,Msg,Start,false).
+call(Name,Flags,Msg,Start,IsRedirect) ->
 	case distreg:whereis(Name) of
 		undefined ->
 			case startactor(Name,Start,Flags) of %{startreason,Msg}
 				{ok,Pid} when is_pid(Pid) ->
-					call(Name,Flags,Msg,Start,Pid);
+					call(Name,Flags,Msg,Start,IsRedirect,Pid);
 				{error,nocreate} ->
 					{error,nocreate};
 				Res ->
 					Res
 			end;
 		Pid ->
-			call(Name,Flags,Msg,Start,Pid)
+			call(Name,Flags,Msg,Start,IsRedirect,Pid)
 
 	end.
-call(Name,Flags,Msg,Start,Pid) ->
+call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	% If call returns redirect, this is slave node not master node.
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
-			?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
-			actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start]});
+			case lists:member(Node,bkdcore:cluster_nodes()) of
+				true ->
+					case IsRedirect of
+						true ->
+							double_redirect;
+						false ->
+							?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
+							case actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start,true]}) of
+								double_redirect ->
+									diepls(Pid,nomaster),
+									call(Name,Flags,Msg,Start);
+								Res ->
+									Res
+							end
+					end;
+				false ->
+					actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start,false]})
+			end;
 		{'EXIT',{noproc,_}} = _X  ->
 			?ADBG("noproc call again ~p",[_X]),
 			call(Name,Flags,Msg,Start);
@@ -399,14 +417,12 @@ handle_call({send_db,Node,Ref,IsMove,RemoteEvNum,RemoteEvCrc,ActornameToCopyto} 
 							?DBG("senddb from ~p, myname ~p, remotename ~p info ~p",[bkdcore:node_name(),P#dp.actorname,ActornameToCopyto,
 																						{Node,Ref,IsMove,I#file_info.size}]),
 							?DBLOG(P#dp.db,"senddb to ~p ~p",[ActornameToCopyto,Node]),
-							% case P#dp.journal_mode of
-							% 	wal ->
-							% 		actordb_sqlite:set_pragmas(P#dp.db,wal,"normal"),
-							% 		actordb_sqlite:checkpoint(P#dp.db);
-							% 	_ ->
-							% 		actordb_sqlite:set_pragmas(P#dp.db,wal,"normal"),
-							% 		ok
-							% end,
+							case P#dp.journal_mode of
+								wal ->
+									ok;
+								_ ->
+									actordb_sqlite:set_pragmas(P#dp.db,wal)
+							end,
 							Me = self(),
 							case lists:keymember(Node,1,P#dp.dbcopy_to) of
 								false ->
@@ -466,9 +482,11 @@ handle_call({dbcopy_op,From,What,Data},_,P) ->
 handle_call({getinfo,What},_,P) ->
 	case What of
 		verifyinfo ->
-			{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,P#dp.mors},P};
+			{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,{P#dp.mors,P#dp.verified}},P};
 		actornum ->
-			{reply,{ok,P#dp.dbpath,read_num(P)},P}
+			{reply,{ok,P#dp.dbpath,read_num(P)},P};
+		conflicted ->
+			{stop,conflicted,P}
 	end;
 handle_call({commit,Doit,Id},From, P) ->
 	?ADBG("Commit ~p ~p ~p",[Doit,Id,P#dp.transactionid]),
@@ -1066,21 +1084,29 @@ trim_wlog(<<_Evnum:64,_Crc:32,Size:32/unsigned,_Sql:Size/binary,Rem/binary>>) ->
 
 
 handle_cast({diepls,Reason},P) ->
-	case handle_info(check_inactivity,P) of
-		{noreply,_,hibernate} ->
-			% case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
-			% 	true ->
-					?DBLOG(P#dp.db,"reqdie",[]),
-					actordb_sqlite:stop(P#dp.db),
-					distreg:unreg(self()),
-					?ADBG("req die ~p ~p ~p",[P#dp.actorname,P#dp.actortype,Reason]),
-					{stop,normal,P};
-			% 	false ->
-			% 		?AINF("NOPE ~p",[P#dp.actorname]),
-			% 		{noreply,P}
-			% end;
-		R ->
-			R
+	case Reason of
+		nomaster ->
+			?AERR("Die because nomaster"),
+			actordb_sqlite:stop(P#dp.db),
+			distreg:unreg(self()),
+			{stop,normal,P};
+		_ ->
+			case handle_info(check_inactivity,P) of
+				{noreply,_,hibernate} ->
+					% case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
+					% 	true ->
+							?DBLOG(P#dp.db,"reqdie",[]),
+							actordb_sqlite:stop(P#dp.db),
+							distreg:unreg(self()),
+							?ADBG("req die ~p ~p ~p",[P#dp.actorname,P#dp.actortype,Reason]),
+							{stop,normal,P};
+					% 	false ->
+					% 		?AINF("NOPE ~p",[P#dp.actorname]),
+					% 		{noreply,P}
+					% end;
+				R ->
+					R
+			end
 	end;
 handle_cast(print_info,P) ->
 	?AINF("~p~n",[?R2P(P#dp{writelog = byte_size(P#dp.writelog)})]),
@@ -1894,32 +1920,65 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo},[{flags,Flags}]]),
 	?ADBG("verify from others ~p",[Results]),
 	checkfail(3,GetFailed),
+	Me = bkdcore:node_name(),
 	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
-	{Yes,MasterNode} = lists:foldl(
+	{Yes,Masters} = lists:foldl(
 			fun({redirect,Nd},_) -> 
 				exit({redirect,Nd});
-			 ({ok,Node,NodeCrc,NodeEvnum,NodeMors},{YesVotes,MasterNode}) -> 
-				case NodeMors of
-					master ->
-						MNode = Node;
-					_ ->
-						MNode = MasterNode
-				end,
+			 ({ok,Node,NodeCrc,NodeEvnum,NodeMors},{YesVotes,Masters}) -> 
+			 	case NodeMors of
+			 		{master,true} ->
+			 			Masters1 = [{Node,true}|Masters];
+			 		{master,false} ->
+			 			Masters1 = [{Node,false}|Masters];
+			 		{slave,_} ->
+			 			Masters1 = Masters;
+			 		master ->
+			 			Masters1 = [{Node,true}|Masters];
+			 		slave ->
+			 			Masters1 = Masters
+			 	end,
 				case Evcrc == NodeCrc andalso Evnum == NodeEvnum of
 					true ->
-						{YesVotes+1,MNode};
+						{YesVotes+1,Masters1};
 					false ->
-						{YesVotes,MNode}
+						{YesVotes,Masters1}
 				end;
-			(_,{YesVotes,MasterNode}) ->
-				{YesVotes,MasterNode}
+			(_,{YesVotes,Masters}) ->
+				{YesVotes,Masters}
 			end,
-			{0,undefined},Results),
-	case MasterNode of
-		undefined when MeMors /= master ->
-			?AERR("No master node set ~p ~p ~p",[{Actor,Type},MeMors,Results]);
-		_ ->
-			ok
+			{0,[]},Results),
+	case Masters of
+		[] when MeMors == master ->
+			MasterNode = bkdcore:node_name();
+		[] ->
+			?AERR("No master node set ~p ~p ~p",[{Actor,Type},MeMors,Results]),
+			MasterNode = undefined,
+			exit(nomaster);
+		[{MasterNode,true}] ->
+			ok;
+		[{MasterNode1,_}] when MeMors == master, Me < MasterNode1 ->
+			MasterNode = Me;
+		[{MasterNode,_}] ->
+			ok;
+		[_,_|_] ->
+			case [MN || {MN,true} <- Masters] of
+				[MasterNode] ->
+					ok;
+				% This should not be possible, kill all actors on all nodes
+				[_,_|_] ->
+					?AERR("Received multiple confirmed masters?? ~p ~p",[{Actor,Type},Results]),
+					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,conflicted},[{flags,Flags}]]),
+					MasterNode = undefined,
+					exit(nomaster);
+				[] ->
+					case MeMors of
+						master ->
+							[MasterNode|_] = lists:sort([Me|[MN || {MN,_} <- Masters]]);
+						_ ->
+							[MasterNode|_] = lists:sort([MN || {MN,_} <- Masters])
+					end
+			end
 	end,
 	% This node is in majority group.
 	case (Yes+1)*2 > (LenCluster+1) of
@@ -1954,15 +2013,10 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 					% There is a group with a majority of nodes, if it has a node running set as master, 
 					% 		then local node must be slave
 					% If it does not have master and no master found, master for local node is unchanged.
-					case butil:findtrue(fun({ok,_Node,_,_,Mors}) -> Mors == master end,MajorityGroup) of
+					case butil:findtrue(fun({ok,Node,_,_,_}) -> Node == MasterNode end,MajorityGroup) of
 						false ->
 							[{ok,Oknode,_,_,_}|_]  = MajorityGroup,
-							case MasterNode of
-								undefined ->
-									verify_getdb(Actor,Type,Oknode,MasterNode,MeMors,Cb,false,Evnum,Evcrc);
-								_ ->
-									verify_getdb(Actor,Type,Oknode,MasterNode,slave,Cb,false,Evnum,Evcrc)
-							end;
+							verify_getdb(Actor,Type,Oknode,MasterNode,slave,Cb,false,Evnum,Evcrc);
 						{ok,MasterNode,_,_,_} ->
 							verify_getdb(Actor,Type,MasterNode,MasterNode,slave,Cb,false,Evnum,Evcrc)
 					end;

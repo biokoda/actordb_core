@@ -199,13 +199,16 @@ actor_id_type(Type) ->
 			undefined
 	end.
 
+hash_pick(Val) ->
+	hash_pick(Val,bkdcore:nodelist(bkdcore:cluster_group())).
+
 hash_pick(_,[]) ->
 	undefined;
 % Nodes are taken from bkdcore:nodelist, nodes from there are always sorted by name.
 hash_pick(Val,L) ->
 	ValInt = actordb_util:hash({Val,"asdf"}),
 	Len = length(L),
-	Step = 134217728 div Len,
+	Step = ?NAMESPACE_MAX div Len,
 	Index = ValInt div Step,
 	lists:nth(Index+1,L).
 

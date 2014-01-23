@@ -261,13 +261,6 @@ handle_call({steal_shard,Nd,Shard,NdToTakeFrom},_From,P) ->
 		{Shard,_,_XNode} ->
 			{reply, shard_moved,P}
 	end;
-% handle_call(split_shards,_,P) ->
-% 	case P#dp.shardsbeingtaken of
-% 		[] when length(P#dp.localshards) =< ?MIN_SHARDS ->
-% 			{reply,ok,P#dp{shardsbeingsplit = [{From,actordb_util:actor_types()} || {From,_,_} <- P#dp.localshards]}};
-% 		_ ->
-% 			{reply,false,P}
-% 	end;
 % Change list of all shards. Shard has switched node.
 handle_call({change_shard_node,Shard,Node},_,P) ->
 	?AINF("Change shard node ~p ~p ~p~n",[Shard,Node,P#dp.shardsbeingtaken]),

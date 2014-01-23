@@ -193,14 +193,6 @@ handle_info({bkdcore_sharedstate,Nd,State},P) ->
 			ok
 	end,
 	{noreply,P};
-% handle_info({'DOWN',_Monitor,_,PID,Reason},P) ->
-% 	case lists:keyfind(PID,1,P#dp.shardstogetpid) of
-% 		false ->
-% 			{noreply,P};
-% 		{PID,_From,_To,_Nd,_Type} ->
-% 			?ADBG("Shard down ~p, reason ~p",[_From,Reason]),
-% 			{noreply,P#dp{shardstogetpid = lists:keydelete(PID,1,P#dp.shardstogetpid), badstop = Reason /= normal}}
-% 	end;
 handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
 	{noreply,P};
 handle_info({bkdcore_sharedstate,global_state_change},P) ->
@@ -275,30 +267,7 @@ start_shards(P) ->
 		[actordb_shard:start_steal(Nd,From,Type) || Type <- Types] 
 		|| {From,_To,Nd,Types} <- P#dp.shardstoget
 	],
-	% butil:sparsemap(fun({From,To,Nd,Types}) ->
-	% 		?AINF("start_stealshard ~p ~p ~p",[From,To,Nd]),
-	% 	 	X = butil:sparsemap(fun(Type) -> 
-	% 				case actordb_shard:start_steal(Nd,From,Type) of
-	% 					{ok,_Pid} ->
-	% 						% erlang:monitor(process,Pid),
-	% 				 		{{Type,From},To,Nd};
-	% 					_E ->
-	% 						?AERR("Start steal error ~p",[_E]),
-	% 						undefined
-	% 				end
-	% 		% 	Pid ->
-	% 		% 		{Pid,From,To,Nd,Type}
-	% 		% end
-	% 	end,actordb_util:actor_types()),
-	% 	case X of
-	% 		[] ->
-	% 			undefined;
-	% 		_L ->
-	% 			% L
-	% 			undefined
-	% 	end
-	% 		end,P#dp.shardstoget),
-		P.
+	P.
 
 
 

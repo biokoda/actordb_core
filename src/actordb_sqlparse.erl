@@ -62,12 +62,6 @@ is_write(Bin) ->
 			{show,Rem};
 		<<"SHOW ",Rem/binary>> ->
 			{show,Rem};
-		% <<"SET ",_Rem/binary>> ->
-		% 	ignore;
-		% <<"set ",_Rem/binary>> ->
-		% 	ignore;
-		% <<"Set ",_Rem/binary>> ->
-		% 	ignore;
 		% If you write sql like a moron then you get to these slow parts.
 		<<C,R,E,A,T,E," ",_/binary>> when (C == $c orelse C == $C) andalso 
 											(R == $r orelse R == $R) andalso
@@ -112,18 +106,14 @@ is_write(Bin) ->
 										(O == $o orelse O == $O) andalso
 										(W == $w orelse W == $W) ->
 			{show,Rem};
-		% <<S,E,T," ",_Rem/binary>> when (S == $s orelse S == $S) andalso
-		% 															(E == $e orelse E == $E) andalso
-		% 															(T == $t orelse T == $T) ->
-		% 	ignore;
 		_ ->
 			false
 	end.
 
 % Returns: {[{Actors,IsWrite,Statements},..],IsWrite}
-% Actors: {Type,[Actor1,Actor2,Actor3,...]} |
-% 				{Type,$*} |
-% 				{Type,GlobalVarName,Column,BlockVarName}
+% Actors: {Type,[Actor1,Actor2,Actor3,...],[Flag1,Flag2]} |
+% 		  {Type,$*,[Flag1,Flag2]} |
+% 		  {Type,GlobalVarName,Column,BlockVarName,[Flag1,Flag2]}
 % IsWrite - boolean if any of the statements in the block change the db
 % Statements: [Statement]
 % Statement: {ResultGlobalVarName,SqlStatement]} |
@@ -132,7 +122,7 @@ is_write(Bin) ->
 % Actors:
 % 1. Fixed list of actors
 % 2. all actors of some type 
-%	3. actors as a result of a query preceing current block
+% 3. actors as a result of a query preceing current block
 parse_statements(Bin) ->
 	L = split_statements(rem_spaces(Bin)),
 	parse_statements(L,[],undefined,[],false,false).
@@ -380,57 +370,6 @@ remove_comment(<<"*/",Rem/binary>>) ->
 remove_comment(<<_,Rem/binary>>) ->
 	remove_comment(Rem).
 
-% find_ending(Bin,Offset,Prev,Instring) ->
-% 	case Bin of
-% 		<<_SkippingBin:Offset/binary,"'",_Rem/binary>> ->
-% 			find_ending(Bin,Offset+1,Prev,not Instring);
-% 		<<SkippingBin:Offset/binary,"{{",Rem/binary>> ->
-% 				case count_param(Rem,0) of
-% 					undefined ->
-% 						find_ending(Bin,Offset+2,Prev,Instring);
-% 					Paramlen ->
-% 						<<Param:Paramlen/binary,"}}",After/binary>> = Rem,
-% 						case Param of
-% 							<<"hash(",Hashid1/binary>> ->
-% 								HSize = byte_size(Hashid1)-1,
-% 								<<Hashid:HSize/binary,")">> = Hashid1,
-% 								find_ending(After,0,[butil:tobin(actordb_util:hash(Hashid)),SkippingBin|Prev],Instring);
-% 							<<"uniqid">> ->
-% 								find_ending(After,0,[uniqid,SkippingBin|Prev],Instring);
-% 							<<"uniqueid">> ->
-% 								find_ending(After,0,[uniqid,SkippingBin|Prev],Instring);
-% 							_ ->
-% 								case split_param(Param,<<>>,[]) of
-% 									[<<"uniqueid">>,Column] ->
-% 										find_ending(After,0,[{uniqid,Column},SkippingBin|Prev],Instring);
-% 									[<<"uniqid">>,Column] ->
-% 										find_ending(After,0,[{uniqid,Column},SkippingBin|Prev],Instring);
-% 									[Actor,Column] ->
-% 										find_ending(After,0,[{Actor,Column},SkippingBin|Prev],Instring);
-% 									{A1,C1,A2,C2} ->
-% 										find_ending(After,0,[{A1,C1,A2,C2},SkippingBin|Prev],Instring);
-% 									_X ->
-% 										find_ending(Bin,Offset+2,Prev,Instring)
-% 								end
-% 						end
-% 				end;
-% 		<<SkippingBin:Offset/binary,";",Rem/binary>> when Instring == false ->
-% 			case Prev of
-% 				[] ->
-% 					Offset+1;
-% 				_ ->
-% 					{[$;,SkippingBin|Prev],Rem}
-% 			end;
-% 		<<_Skip:Offset/binary,_,_/binary>> ->
-% 			find_ending(Bin,Offset+1,Prev,Instring);
-% 		_ ->
-% 			case Prev of
-% 				[] ->
-% 					Offset;
-% 				_ ->
-% 					{[Bin|Prev],<<>>}
-% 			end
-% 	end.
 
 % {{X.column=A.column}}
 split_param(<<"=",Rem/binary>>,Column,Words) ->
