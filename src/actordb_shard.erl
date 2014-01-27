@@ -233,17 +233,22 @@ reg_actor(_,_,?CLUSTEREVENTS_TYPE) ->
 	ok;
 reg_actor(ShardName,ActorName,Type1) ->
 	Type = butil:toatom(Type1),
-	?ADBG("reg_actor ~p ~p ~p~n",[ShardName,ActorName,Type1]),
-	% Call sqlproc gen_server. It will call cb_reg_actor function in this module, which will return SQL statement to be executed.
-	case actordb_sqlproc:write({shard,Type,ShardName},[create],{{?MODULE,cb_reg_actor,[ActorName]},undefined,undefined},?MODULE) of
-		{redirect_shard,Node} when is_binary(Node) ->
-			actordb:rpc(Node,ShardName,{?MODULE,reg_actor,[ShardName,ActorName,Type]});
-		{redirect_shard,Shard} when is_integer(Shard) ->
-			reg_actor(Shard,ActorName,Type);
-		ok ->
+	case actordb_schema:iskv(Type) of
+		true ->
 			ok;
-		{ok,_} ->
-			ok
+		_ ->
+			?ADBG("reg_actor ~p ~p ~p~n",[ShardName,ActorName,Type1]),
+			% Call sqlproc gen_server. It will call cb_reg_actor function in this module, which will return SQL statement to be executed.
+			case actordb_sqlproc:write({shard,Type,ShardName},[create],{{?MODULE,cb_reg_actor,[ActorName]},undefined,undefined},?MODULE) of
+				{redirect_shard,Node} when is_binary(Node) ->
+					actordb:rpc(Node,ShardName,{?MODULE,reg_actor,[ShardName,ActorName,Type]});
+				{redirect_shard,Shard} when is_integer(Shard) ->
+					reg_actor(Shard,ActorName,Type);
+				ok ->
+					ok;
+				{ok,_} ->
+					ok
+			end
 	end.
 
 count_actors(ShardName,Type1) ->

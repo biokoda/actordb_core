@@ -347,7 +347,8 @@ callback_unlock(P) ->
 			ok
 	end,
 	% Unlock database on source side
-	case actordb:rpc(Node,P#dp.actorname,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{dbcopy_op,undefined,unlock,P#dp.dbcopyref}]}) of
+	case actordb:rpc(Node,P#dp.actorname,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,
+								P#dp.actortype,{dbcopy_op,undefined,unlock,P#dp.dbcopyref}]}) of
 		ok ->
 			{ok,NP} = init(P,copy),
 			{noreply,NP};
@@ -402,7 +403,7 @@ handle_call({db_chunk,Ref,Bin,Status,PacketNum},From, P) ->
 							{stop,normal,P};
 						true ->
 							{ok,_} = actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
-													'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset})))/binary,"');">>),
+											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,P#dp.copyreset})))/binary,"');">>),
 							gen_server:reply(From,ok),
 							callback_unlock(P#dp{db = undefined})
 					end;
@@ -460,7 +461,8 @@ handle_call({send_db,Node,Ref,IsMove,RemoteEvNum,RemoteEvCrc,ActornameToCopyto} 
 									Db = P#dp.db,
 									{Pid,_} = spawn_monitor(fun() -> 
 											dbcopy(Me,ActornameToCopyto,P#dp.actortype,P#dp.dbpath,Node,P#dp.cbmod,Ref) end),
-									{reply,{ok,Ref},check_timer(P#dp{db = Db,journal_mode = wal, dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
+									{reply,{ok,Ref},check_timer(P#dp{db = Db,journal_mode = wal, 
+																		dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
 																		activity = P#dp.activity + 1})};
 								{Node,_Pid,Ref,IsMove} ->
 									?ERR("senddb already exists with same ref!!"),
@@ -1106,7 +1108,8 @@ commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 					case (LenCommited+1)*2 > LenCluster+1 of
 						true ->
 							WLog = <<(trim_wlog(P#dp.writelog))/binary,
-												EvNum:64/unsigned,Crc:32/unsigned,(iolist_size(Sql)):32/unsigned,(iolist_to_binary(Sql))/binary>>,
+												EvNum:64/unsigned,Crc:32/unsigned,(iolist_size(Sql)):32/unsigned,
+													(iolist_to_binary(Sql))/binary>>,
 							exit({ok, EvNum, Crc, WLog});
 						false ->
 							CommitOkOn = lists:subtract(NodesToCommit,CommitFailedOn),
@@ -1380,7 +1383,8 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 		{update_from,_Node,Mors,MasterNode,Ref} ->
 			?ADBG("Verify down ~p ~p update db from ~p, i am ~p",[PID,Reason,MasterNode,bkdcore:node_name()]),
 			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
-			{noreply,P#dp{verifypid = undefined, verified = false, mors = Mors, masternode = MasterNode,masternodedist = bkdcore:dist_name(MasterNode),dbcopyref = Ref}};
+			{noreply,P#dp{verifypid = undefined, verified = false, mors = Mors, masternode = MasterNode,
+							masternodedist = bkdcore:dist_name(MasterNode),dbcopyref = Ref}};
 		{update_direct,Mors,Bin} ->
 			?ADBG("Verify down update direct ~p ~p ~p",[Mors,P#dp.actorname,P#dp.actortype]),
 			actordb_sqlite:stop(P#dp.db),
@@ -1537,7 +1541,8 @@ handle_info({check_inactivity,N}, P) ->
 						_ ->
 							actordb_sqlite:stop(P#dp.db),
 							delactorfile(P),
-							[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{delete,P#dp.movedtonode},[{flags,P#dp.flags}]]) 
+							[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+																	{delete,P#dp.movedtonode},[{flags,P#dp.flags}]]) 
 									|| Nd <- bkdcore:cluster_nodes_connected()]
 					end,
 					case timer:now_diff(os:timestamp(),P#dp.start_time) > 30*1000000 of
@@ -1635,7 +1640,8 @@ init(#dp{} = P,_Why) ->
 	% 		{ok,Db,true,_PageSize} = actordb_sqlite:init(P#dp.dbpath,P#dp.journal_mode),
 	% 		ComplSql = <<"INSERT OR REPLACE INTO __adb VALUES (",?EVNUM/binary,",1);",
 	% 					 	"INSERT OR REPLACE INTO __adb VALUES (",?EVCRC/binary,",0);",
-	% 					 	% "INSERT OR REPLACE INTO __adb VALUES (",?COPYFROM/binary,",'",(base64:encode(term_to_binary(P#dp.copyfrom)))/binary,"');",
+	% 					 	% "INSERT OR REPLACE INTO __adb VALUES (",?COPYFROM/binary,",'",
+			% (base64:encode(term_to_binary(P#dp.copyfrom)))/binary,"');",
 	% 								 	(butil:tobin(Sql))/binary>>,
 	% 		{ok,_} = actordb_sqlite:exec(Db,ComplSql),
 	% 		actordb_sqlite:stop(Db);
@@ -1700,33 +1706,20 @@ init([_|_] = Opts) ->
 									case Transaction of
 										[] when CopyFrom /= undefined ->
 											case binary_to_term(base64:decode(CopyFrom)) of
-												{{move,_NewShard,Node},_CopyReset} ->
-													case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{getinfo,verifyinfo}]}) of
+												{{move,NewShard,Node},_CopyReset,_CopyState} ->
+													case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+																					{getinfo,verifyinfo}]}) of
 														{redirect,SomeNode} ->
 															case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
 																true ->
-																	ok
-															end;
-														_ ->
-															ok
+																	ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype)
+															end
 													end,
 													ResetSql = <<>>;
 												{_,false} ->
 													ResetSql = <<>>;
-												{_,CopyReset} ->
-													case P#dp.copyreset of
-														{Mod,Func,Args} ->
-															case apply(Mod,Func,[P#dp.cbstate|Args]) of
-																ok ->
-																	ResetSql = <<>>;
-																ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
-																	ok
-															end;
-														ok ->
-															ResetSql = <<>>;
-														ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
-															ok
-													end
+												{_,CopyReset,CopyState} ->
+													ResetSql = do_copy_reset(CopyReset,CopyState)
 											end,
 											case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
 																		  ResetSql,"COMMIT;">>) of
@@ -1758,7 +1751,8 @@ init([_|_] = Opts) ->
 											end,
 											ReplSql = {MSql,Evnum+1,CrcSql,SchemaVers},
 											Transid = {Tid,Updid,Node},
-											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, replicate_sql = ReplSql, transactionid = Transid, 
+											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, replicate_sql = ReplSql, 
+															transactionid = Transid, 
 															movedtonode = MovedToNode1,
 															schemavers = SchemaVers})}
 									end;
@@ -1777,46 +1771,13 @@ init([_|_] = Opts) ->
 									explain(nocreate,Opts),
 									{stop,normal}
 							end;
-							% case ok of
-							% 	_ when ClusterNodes == []; MovedToNode1 /= undefined; Db == undefined ->
-							% 		Verifypid = undefined,
-							% 		Verified = true;
-							% 	_ ->
-							% 		% NS = P#dp.cbstate,
-									% {Verifypid,_} = spawn_monitor(fun() -> 
-									% 					verifydb(P#dp.actorname,P#dp.actortype,Evcrc,Evnum,P#dp.mors,P#dp.cbmod,P#dp.flags) 
-									% 				end),
-							% 		Verified = false
-							% end,
-							% NP = P#dp{evnum = Evnum, evcrc = Evcrc, db = Db, verified = Verified, verifypid = Verifypid,%cbstate = NS,
-							% 	   			journal_mode = JournalMode, replicate_sql = ReplSql, transactionid = Transid,
-							% 	   			def_journal_mode = JournalMode, movedtonode = MovedToNode1,
-							% 	   			page_size = PageSize, schemavers = SchemaVers},
-							% case NP#dp.verified of
-							% 	true when NP#dp.db /= undefined ->
-							% 		{ok,NP#dp{cbstate = do_cb_init(NP), activity_now = actor_start(NP)}};
-							% 	true ->
-							% 		explain(nocreate,Opts),
-							% 		{stop,normal};
-							% 	_ ->
-							% 		{ok,NP#dp{activity_now = actor_start(NP)}}
-							% end;
 						_ ->
 							?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 							{ok, P#dp{verified = true, movedtonode = MovedToNode,
 										journal_mode = JournalMode, activity_now = actor_start(P)}}
 					end;
-				_ when element(1,P#dp.copyfrom) == move ->
-					{move,_NewShardName,CopyfromNode} = P#dp.copyfrom,
-					?ADBG("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
-					{Verifypid,_} = spawn_monitor(fun() -> 
-													verify_getdb(P#dp.actorname,P#dp.actortype,CopyfromNode,
-														undefined,master,P#dp.cbmod,true,P#dp.evnum,P#dp.evcrc) 
-													end),
-					{ok,P#dp{verified = false, verifypid = Verifypid, 
-								journal_mode = JournalMode, activity_now = actor_start(P)}};
 				% This creates a copy of an actor with a different name. IsMove = false which means origin db will not be deleted.
-				_ when tuple_size(P#dp.copyfrom) == 2 ->
+				_ ->
 					?ADBG("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
 					case actordb_sqlite:init(P#dp.dbpath,JournalMode) of
 						{ok,Db,true,_PageSize} ->
@@ -1824,39 +1785,82 @@ init([_|_] = Opts) ->
 							case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"]) of
 								{ok,[{columns,_},{rows,[]}]} ->
 									Doit = true;
-								{ok,[{columns,_},{rows,[{_,Copyf}]}]} ->
-									Doit = binary_to_term(base64:decode(Copyf)) /= P#dp.copyfrom
-							end,
-							actordb_sqlite:stop(Db);
+								{ok,[{columns,_},{rows,[{_,_Copyf}]}]} ->
+									Doit = false
+							end;
 						{ok,Db,false,_PageSize} ->
 							actordb_sqlite:stop(Db),
 							Doit = true;
 						_ ->
+							Db = undefined,
 							Doit = true
 					end,
 					case Doit of
 						true ->
 							{Verifypid,_} = spawn_monitor(fun() -> 
 														verify_getdb(P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
-															undefined,master,P#dp.cbmod,false,P#dp.evnum,P#dp.evcrc) 
-													end);
+															undefined,master,P#dp.cbmod,P#dp.evnum,P#dp.evcrc) 
+													end),
+							{ok,P#dp{verified = false, verifypid = Verifypid, 
+								journal_mode = JournalMode, activity_now = actor_start(P)}};
 						false ->
 							?ADBG("Started for copy but copy already done ~p ~p",[P#dp.actorname,P#dp.actortype]),
-							self() ! stop,
-							Verifypid = 1,
-							case P#dp.copyreset of
-								{Mod,Func,Args} ->
-									apply(Mod,Func,[P#dp.cbstate|Args]);
+							case P#dp.copyfrom of
+								{{move,NewShard,Node},_CopyReset,_CopyState} ->
+									case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+																	{getinfo,verifyinfo}]}) of
+										{redirect,SomeNode} ->
+											case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
+												true ->
+													ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype),
+													IsOk = true
+											end;
+										_ ->
+											IsOk = false
+									end;
 								_ ->
-									ok
+									IsOk = true
+							end,
+							case IsOk of
+								true ->
+									ResetSql = do_copy_reset(P#dp.copyreset,P#dp.cbstate),
+									case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
+																		  ResetSql,"COMMIT;">>) of
+										{ok,_} ->
+											ok;
+										ok ->
+											ok
+									end,
+									actordb_sqlite:stop(Db),
+									init(P#dp{copyfrom = undefined, copyreset = false},cleanup_copymove);
+								false ->
+									file:delete(P#dp.dbpath),
+									file:delete(P#dp.dbpath++"-wal"),
+									file:delete(P#dp.dbpath++"-shm"),
+									{stop,{error,failed}}
 							end
-					end,
-					{ok,P#dp{verified = false, verifypid = Verifypid, 
-								journal_mode = JournalMode, activity_now = actor_start(P)}}
+					end
 			end
 	end;
 init(#dp{} = P) ->
 	init(P,noreason).
+
+
+do_copy_reset(Copyreset,State) ->
+	case Copyreset of
+		{Mod,Func,Args} ->
+			case apply(Mod,Func,[State|Args]) of
+				ok ->
+					ResetSql = <<>>;
+				ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
+					ok
+			end;
+		ok ->
+			ResetSql = <<>>;
+		ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
+			ok
+	end,
+	ResetSql.
 
 start_verify(P) ->
 	ClusterNodes = bkdcore:cluster_nodes(),
@@ -2127,7 +2131,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 							% Majority has evnum 0, but there is more than one group.
 							% This is an exception. In this case highest evnum db is the right one.
 							[{ok,Oknode,_,_,_}|_] = lists:reverse(lists:keysort(4,Results)),
-							verify_getdb(Actor,Type,Oknode,MasterNode,MeMors,Cb,false,Evnum,Evcrc)
+							verify_getdb(Actor,Type,Oknode,MasterNode,MeMors,Cb,Evnum,Evcrc)
 					end;
 				_ ->
 					verified_response(MeMors,MasterNode)
@@ -2151,9 +2155,9 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 					case butil:findtrue(fun({ok,Node,_,_,_}) -> Node == MasterNode end,MajorityGroup) of
 						false ->
 							[{ok,Oknode,_,_,_}|_]  = MajorityGroup,
-							verify_getdb(Actor,Type,Oknode,MasterNode,slave,Cb,false,Evnum,Evcrc);
+							verify_getdb(Actor,Type,Oknode,MasterNode,slave,Cb,Evnum,Evcrc);
 						{ok,MasterNode,_,_,_} ->
-							verify_getdb(Actor,Type,MasterNode,MasterNode,slave,Cb,false,Evnum,Evcrc)
+							verify_getdb(Actor,Type,MasterNode,MasterNode,slave,Cb,Evnum,Evcrc)
 					end;
 				% No clear majority or majority has no writes.
 				_ ->
@@ -2168,7 +2172,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 								{_,_ZeroGroup} when Evnum == 0 ->
 									[{_,OtherGroup}] = lists:keydelete({0,0},1,Grouped),
 									[{ok,Oknode,_,_,_}|_]  = OtherGroup,
-									verify_getdb(Actor,Type,Oknode,MasterNode,MeMors,Cb,false,Evnum,Evcrc);
+									verify_getdb(Actor,Type,Oknode,MasterNode,MeMors,Cb,Evnum,Evcrc);
 								{_,_ZeroGroup} ->
 									verified_response(MeMors,MasterNode)
 							end;
@@ -2177,7 +2181,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 					end
 			end
 	end.
-verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,IsMove,Evnum,Evcrc) ->
+verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 	Ref = make_ref(),
 	case MasterNode of
 		undefined ->
@@ -2188,10 +2192,10 @@ verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,IsMove,Evnum,Evcrc) ->
 	case Node1 of
 		{Node,ActorFrom} ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,ActorFrom,Type,
-											{send_db,bkdcore:node_name(),Ref,IsMove,Evnum,Evcrc,Actor}]});
-		Node ->
+											{send_db,bkdcore:node_name(),Ref,false,Evnum,Evcrc,Actor}]});
+		{move,_NewShard,Node} ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,Actor,Type,
-											{send_db,bkdcore:node_name(),Ref,IsMove,Evnum,Evcrc,Actor}]})
+											{send_db,bkdcore:node_name(),Ref,true,Evnum,Evcrc,Actor}]})
 	end,
 	?ADBG("Verify getdb ~p ~p ~p ~p ~p",[Actor,Type,Node1,MasterNode,{element(1,RpcRes),butil:type(element(2,RpcRes))}]),
 	case RpcRes of
@@ -2208,7 +2212,7 @@ verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,IsMove,Evnum,Evcrc) ->
 		{redirect,RNode} when RNode /= Node ->
 			case is_atom(RNode) andalso bkdcore:name_from_dist_name(RNode) /= Node of
 				true ->
-					verify_getdb(Actor,Type,RNode,MasterNode,MeMors,Cb,IsMove,Evnum,Evcrc);
+					verify_getdb(Actor,Type,RNode,MasterNode,MeMors,Cb,Evnum,Evcrc);
 				false ->
 					exit({redirect,RNode})
 			end
