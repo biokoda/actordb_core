@@ -26,7 +26,7 @@ start_steal(Name,Type1,Node,ShardName) ->
 	Type = actordb_util:typeatom(Type1),
 	?ADBG("Start steal ~p ~p",[Name,Type]),
 	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{state,#st{name = Name,type = Type,doreg = ShardName}},
-									  {regname,{Name,Type}},{copyfrom,Node},{startreason,{steal,Node}}]),
+									  {regname,{Name,Type}},{copyfrom,{move,ShardName,Node}},{startreason,{steal,Node}}]),
 	{ok,Pid}.
 
 

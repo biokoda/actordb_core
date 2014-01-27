@@ -89,7 +89,7 @@ start_steal(Nd,Name,Type1) ->
 			% regular shards that hold the list of actors, require an actor-by-actor copy.
 			case actordb_schema:iskv(Type) of
 				true ->
-					{ok,_Pid} = start(Name,Type,false,[{copyfrom,Nd},{copyreset,{?MODULE,start_steal_done,[Nd]}}]);
+					{ok,_Pid} = start(Name,Type,false,[{copyfrom,{move,undefined,Nd}},{copyreset,{?MODULE,start_steal_done,[Nd]}}]);
 				false ->
 					{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,
 																	 {state,#state{idtype = Idtype, name = Name, 

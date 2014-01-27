@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -module(actordb_sqlite).
--export([init/1,init/2,init/3,exec/2,set_pragmas/2,set_pragmas/3,stop/1,checkpoint/1,move_to_trash/1,copy_to_trash/1]). 
+-export([init/1,init/2,init/3,exec/2,set_pragmas/2,set_pragmas/3,stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1]). 
 -include("actordb.hrl").
 
 init(Path) ->
@@ -77,6 +77,8 @@ copy_to_trash(Path) ->
 checkpoint(Db) ->
 	exec(Db,<<"PRAGMA wal_checkpoint;">>).
 
+close(Db) ->
+	stop(Db).
 stop(undefined) ->
 	ok;
 stop(Db) ->
