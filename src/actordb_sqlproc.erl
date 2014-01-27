@@ -242,8 +242,7 @@ print_info(Pid) ->
 
 -record(dp,{db, actorname,actortype, evnum = 0,evcrc = 0, activity = 0, timerref, start_time,
 			page_size = 1024, activity_now,write_bytes = 0,schemanum,schemavers,flags = 0,
-			% locked is a list of pids.
-			% As long as these pids are in there, actor will not execute new writes.
+			% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
 			locked = [],
 	% Multiupdate id, set to {Multiupdateid,TransactionNum} if in the middle of a distributed transaction
 	transactionid, transactioncheckref,
@@ -377,7 +376,7 @@ handle_call({db_chunk,Ref,Bin,Status,PacketNum},From, P) ->
 			end,
 			case Status of
 				done ->
-					?COPYTRASH,
+					
 					{ok,NP} = init(P,copy_by_chunk_done),
 					?DBLOG(NP#dp.db,"dbcopy done ~p",[P#dp.copyfrom]),
 					case queue:is_empty(P#dp.callqueue) of
@@ -467,7 +466,7 @@ handle_call({send_db,Node,Ref,IsMove,RemoteEvNum,RemoteEvCrc,ActornameToCopyto} 
 		false ->
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}}
 	end;
-handle_call({dbcopy_op,From,What,Data},_,P) ->
+handle_call({dbcopy_op,From,What,Data},CallFrom,P) ->
 	case What of
 		wal_read ->
 			Size = filelib:file_size([P#dp.dbpath,"-wal"]),
@@ -477,6 +476,19 @@ handle_call({dbcopy_op,From,What,Data},_,P) ->
 				false ->
 					?DBG("wal_size ~p",[{From,What,Data}]), 
 					{reply,{[P#dp.dbpath,"-wal"],Size},P}
+			end;
+		% For unlock data = copyref
+		unlock ->
+			case lists:keyfind(Data,2,P#dp.locked) of
+				false ->
+					{reply,false,P};
+				{wait_copy,Data,IsMove,Node,_TimeOfLock} ->
+					case IsMove of
+						true ->
+							write_call({moved,Node},CallFrom,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)});
+						false ->
+							{reply,ok,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)}}
+					end
 			end
 	end;
 handle_call({getinfo,What},_,P) ->
@@ -609,8 +621,16 @@ handle_call({write,_},_,#dp{mors = slave} = P) ->
 handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers},From,P) ->
 	?ADBG("Replicate start ~p ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,Sql]),
 	?DBLOG(P#dp.db,"replicatestart ~p ~p ~p ~p",[_Ref,butil:encode_percent(_Node),EvNum,Crc]),
+	case Sql of
+		<<"delete">> ->
+			Trump = true;
+		<<"moved,",_/binary>> ->
+			Trump = true;
+		_ ->
+			Trump = false
+	end,
 	case ok of
-		_ when P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.evnum == PrevEvnum, P#dp.evcrc == PrevCrc; Sql == <<"delete">> ->
+		_ when Trump; P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.evnum == PrevEvnum, P#dp.evcrc == PrevCrc ->
 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
 		_ ->
 			?DBLOG(P#dp.db,"replicate conflict!!! ~p ~p in ~p ~p, cur ~p ~p",[_Ref,_Node,EvNum,Crc,P#dp.evnum,P#dp.evcrc]),
@@ -635,6 +655,11 @@ handle_call(replicate_commit,From,P) ->
 				<<"delete">> ->
 					actordb_sqlite:stop(P#dp.db),
 					delactorfile(P),
+					reply(From,ok),
+					{stop,normal,P};
+				<<"moved,",MovedTo/binary>> ->
+					actordb_sqlite:stop(P#dp.db),
+					delactorfile(P#dp{movedtonode = MovedTo}),
 					reply(From,ok),
 					{stop,normal,P};
 				_ ->
@@ -818,6 +843,9 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 		delete ->
 			ComplSql = <<"delete">>,
 			Res = ok;
+		{moved,Node} ->
+			ComplSql = <<"moved,",Node/binary>>,
+			Res = ok;
 		_ ->
 			ComplSql = 
 					[<<"$SAVEPOINT 'adb';">>,
@@ -838,6 +866,9 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 					case Sql of
 						delete ->
 							delete_actor(P);
+						{moved,MovedTo} ->
+							actordb_sqlite:stop(P#dp.db),
+							delactorfile(P#dp{movedtonode = MovedTo});
 						_ ->
 							ok
 					end,
@@ -1177,11 +1208,17 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 				<<"delete">> ->
 					case P#dp.transactionid == undefined of
 						true ->
+							Die = true,
 							delete_actor(P);
 						false ->
-							ok
+							Die = false
 					end;
+				<<"moved,",MovedTo/binary>> ->
+					Die = true,
+					actordb_sqlite:stop(P#dp.db),
+					delactorfile(P#dp{movedtonode = MovedTo});
 				_ ->
+					Die = false,
 					actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)
 			end,
 			case P#dp.transactionid of
@@ -1218,7 +1255,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 					end
 			end,
 			case ok of
-				_ when Sql == <<"delete">>, P#dp.transactionid == undefined ->
+				_ when Die ->
 					{stop,normal,P};
 				_ ->
 					handle_info(doqueue,check_timer(P#dp{commiter = undefined,callres = undefined, 
@@ -1377,7 +1414,7 @@ handle_info({'DOWN',Ref,_,_PID,Reason},#dp{transactioncheckref = Ref} = P) ->
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
-		{Node,PID,_Ref,IsMove} ->
+		{Node,PID,Ref,IsMove} ->
 			?DBG("Down copyto proc ~p",[Reason]),
 			case lists:keydelete(PID,2,P#dp.dbcopy_to) of
 				[] ->
@@ -1390,7 +1427,8 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 							Moved = undefined
 					end,
 					NP = P#dp{dbcopy_to = [], journal_mode = P#dp.def_journal_mode, 
-								locked = lists:delete(PID,P#dp.locked),
+								% Remove first stage of lock, add second stage of lock
+								locked = [{wait_copy,Ref,IsMove,Node,os:timestamp()}|lists:delete(PID,P#dp.locked)],
 								activity = P#dp.activity + 1,  movedtonode = Moved},
 					case queue:is_empty(P#dp.callqueue) of
 						true ->
@@ -1461,15 +1499,10 @@ handle_info({check_inactivity,N}, P) ->
 					end,
 					case timer:now_diff(os:timestamp(),P#dp.start_time) > 30*1000000 of
 						true ->
-							% case apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]) of
-							% 	true ->
-									?ADBG("Die because moved"),
-									?DBLOG(P#dp.db,"die moved ",[]),
-									distreg:unreg(self()),
-									{stop,normal,P};
-								% false ->
-								% 	{}
-
+							?ADBG("Die because moved"),
+							?DBLOG(P#dp.db,"die moved ",[]),
+							distreg:unreg(self()),
+							{stop,normal,P};
 						false ->
 							Now = actordb_local:actor_activity(P#dp.activity_now),
 							{noreply,check_timer(P#dp{activity_now = Now, db = undefined})}
@@ -1497,7 +1530,7 @@ handle_info({check_inactivity,N}, P) ->
 				_ ->
 					WB = P#dp.write_bytes
 			end,
-			{noreply,check_timer(P#dp{activity_now = Now, write_bytes = WB})}
+			{noreply,check_timer(P#dp{activity_now = Now, write_bytes = WB, locked = abandon_locks(P#dp.locked,[])})}
 	end;
 handle_info(check_inactivity,P) ->
 	handle_info({check_inactivity,P#dp.activity+1},P#dp{activity = P#dp.activity + 1});
@@ -1519,6 +1552,18 @@ handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 handle_info(_Msg,P) ->
 	?DBG("sqlproc ~p unhandled info ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
+
+abandon_locks([{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
+	case timer:now_diff(os:timestamp(),TimeOfLock) > 3000000 of
+		true ->
+			abandon_locks(T,L);
+		false ->
+			abandon_locks(T,[H|L])
+	end;
+abandon_locks([H|T],L) ->
+	abandon_locks(T,[H|L]);
+abandon_locks([],L) ->
+	L.
 
 
 terminate(_, _) ->
