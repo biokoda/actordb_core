@@ -49,19 +49,19 @@ is_actor({Bin,_}) ->
 is_actor(Bin) ->
     case Bin of 
         <<"actor ",Rem/binary>> ->
-            Rem;
+            true;
         <<"ACTOR ",Rem/binary>> ->
-            Rem;
+            true;
         <<"Actor ",Rem/binary>> ->
-            Rem;
+            true;
         <<A,C,T,O,R," ",Rem/binary>>  when (A == $a orelse A == $A) andalso
                                         (C == $c orelse C == $C) andalso
                                         (T == $t orelse T == $T) andalso
                                         (O == $o orelse O == $O) andalso
                                         (R == $t orelse R == $T) ->
-            Rem;
+            true;
         _ ->
-            undefined
+            false
     end.
 
 %% @spec genhash() -> binary()
