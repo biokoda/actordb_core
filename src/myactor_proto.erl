@@ -240,13 +240,13 @@ send_ok(Cst) ->
 send_err(Cst,ErrorDescription) ->
     Cst0 = Cst#cst{sequenceid=Cst#cst.sequenceid+1},
     % 16#23 = # sql state marker
-    send_packet(Cst0,<<?ERR_HEADER,16#00,16#00,16#23,$H,$Y,$0,$0,$0,ErrorDescription/binary>>).         
+    send_packet(Cst0,<<?ERR_HEADER,16#01,16#00,16#23,$H,$Y,$0,$0,$0,ErrorDescription/binary>>).
 
 %% @spec recv_command(#cst{},binary()) -> #cst{}
 %% @doc  Decodes command from client, prepares and sends a response and returns a new state #cst{}<br/>
 %%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/text-protocol.html">Link</a><br/>
 %%       Important: Not all commands are implemented. 
-recv_command(Cst,<<?COM_INIT_DB,DbName/binary>>) ->    
+recv_command(Cst,<<?COM_INIT_DB,_DbName/binary>>) ->    
     send_ok(Cst);
 recv_command(Cst,<<?COM_QUIT>>) ->
     {Transport,Socket} = get_comm(Cst),
@@ -257,7 +257,7 @@ recv_command(Cst,<<?COM_PING>>) ->
 recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
     ?PROTO_DBG("got query (~s)",[Query]),
     Q0 = myactor_util:rem_spaces(Query),
-    HasActorCmd = myactor_util:is_use(Q0),
+    HasActorCmd = myactor_util:is_actor(Q0),
     case actordb_sqlparse:parse_statements(Query) of
         ["print state"++_] ->
             ?PROTO_DBG("current connection state: ~p",[Cst]),
