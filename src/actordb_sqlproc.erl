@@ -291,7 +291,7 @@ print_info(Pid) ->
   % Once this has been set, db files will be deleted on process timeout.
   movedtonode,
   % Will cause actor not to do any DB initialization, but will take the db from another node
-  copyfrom,copyreset = false}). 
+  copyfrom,copyreset = false,copyproc}). 
 -define(R2P(Record), butil:rec2prop(Record#dp{writelog = byte_size(P#dp.writelog)}, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
@@ -342,17 +342,21 @@ redirect_master(P) ->
 callback_unlock(P) ->
 	case P#dp.copyfrom of
 		{move,_NewShard,Node} ->
+			ActorName = P#dp.actorname;
+		{Node,ActorName} ->
 			ok;
-		{Node,_OldShard} ->
-			ok
+		Node when is_binary(Node) ->
+			true = Node /= bkdcore:node_name(),
+			ActorName = P#dp.actorname
 	end,
 	% Unlock database on source side
-	case actordb:rpc(Node,P#dp.actorname,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,
+	case actordb:rpc(Node,ActorName,{?MODULE,call_master,[P#dp.cbmod,ActorName,
 								P#dp.actortype,{dbcopy_op,undefined,unlock,P#dp.dbcopyref}]}) of
 		ok ->
 			{ok,NP} = init(P,copy),
 			{noreply,NP};
-		_ ->
+		Err ->
+			?AERR("Failed to execute dbunlock ~p",[Err]),
 			% Fail. Stop and wait for outside event to restart process.
 			{stop,normal,P}
 	end.
@@ -395,7 +399,6 @@ handle_call({db_chunk,Ref,Bin,Status,PacketNum},From, P) ->
 			case Status of
 				done ->
 					{ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-					actordb_sqlite:stop(Db),
 					case HaveSchema of
 						false ->
 							?AERR("DB open after move without schema? ~p ~p",[P#dp.actorname,P#dp.actortype]),
@@ -403,19 +406,11 @@ handle_call({db_chunk,Ref,Bin,Status,PacketNum},From, P) ->
 							{stop,normal,P};
 						true ->
 							{ok,_} = actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
-											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,P#dp.copyreset})))/binary,"');">>),
+											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,P#dp.cbstate})))/binary,"');">>),
+							actordb_sqlite:stop(Db),
 							gen_server:reply(From,ok),
-							callback_unlock(P#dp{db = undefined})
+							callback_unlock(P#dp{db = undefined,activity = P#dp.activity + 1})
 					end;
-					% {ok,NP} = init(P,copy_by_chunk_done),
-					% ?DBLOG(NP#dp.db,"dbcopy done ~p",[P#dp.copyfrom]),
-					% case queue:is_empty(P#dp.callqueue) of
-					% 	true ->
-					% 		{reply,ok,NP#dp{callqueue = P#dp.callqueue,activity = P#dp.activity + 1}};
-					% 	false ->
-					% 		{noreply,NP1} = handle_info(doqueue,NP#dp{callqueue = P#dp.callqueue}),
-					% 		{reply,ok,NP1#dp{activity = P#dp.activity + 1}}
-					% end;
 				_ ->
 					{reply,ok,P#dp{activity = P#dp.activity + 1, db = undefined}}
 			end;
@@ -497,17 +492,18 @@ handle_call({send_db,Node,Ref,IsMove,RemoteEvNum,RemoteEvCrc,ActornameToCopyto} 
 		false ->
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}}
 	end;
-handle_call({dbcopy_op,From,What,Data},CallFrom,P) ->
+handle_call({dbcopy_op,From1,What,Data},CallFrom,P) ->
 	case What of
 		wal_read ->
+			{FromPid,Ref} = From1,
 			Size = filelib:file_size([P#dp.dbpath,"-wal"]),
 			case Size =< Data of
 				true when P#dp.transactionid == undefined ->
-					{reply,{[P#dp.dbpath,"-wal"],Size},P#dp{locked = butil:lists_add(From,P#dp.locked)}};
+					{reply,{[P#dp.dbpath,"-wal"],Size},P#dp{locked = butil:lists_add({FromPid,Ref},P#dp.locked)}};
 				true ->
-					{noreply,P#dp{callqueue = queue:in_r({From,{dbcopy_op,CallFrom,What,Data}},P#dp.callqueue)}};
+					{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy_op,From1,What,Data}},P#dp.callqueue)}};
 				false ->
-					?DBG("wal_size ~p",[{From,What,Data}]), 
+					?DBG("wal_size ~p",[{From1,What,Data}]), 
 					{reply,{[P#dp.dbpath,"-wal"],Size},P}
 			end;
 		% For unlock data = copyref
@@ -521,7 +517,10 @@ handle_call({dbcopy_op,From,What,Data},CallFrom,P) ->
 							write_call({moved,Node},CallFrom,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)});
 						false ->
 							{reply,ok,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)}}
-					end
+					end;
+				{_FromPid,Data} ->
+					erlang:send_after(100,self(),doqueue),
+					{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy_op,From1,What,Data}},P#dp.callqueue)}}
 			end
 	end;
 handle_call({getinfo,What},_,P) ->
@@ -1020,7 +1019,7 @@ dbcopy(Home,Actor,Type,Path,Node,Cb,Ref) ->
 	dbcopy(Home,Actor,Type,F,Node,db,Cb,Ref,0).
 dbcopy(Home,Actor,Type,Offset,Node,wal,Cb,Ref,Count) ->
 	still_alive(Home,Actor,Type,Node,Cb,Ref,Count),
-	case gen_server:call(Home,{dbcopy_op,self(),wal_read,Offset}) of
+	case gen_server:call(Home,{dbcopy_op,{self(),Ref},wal_read,Offset}) of
 		{_Walname,Offset} ->
 			?ADBG("dbsend done ",[]),
 			case rpc(Node,{?MODULE,call_slave,[Cb,Actor,Type,{db_chunk,Ref,<<>>,done,Count}]}) of
@@ -1063,6 +1062,30 @@ dbcopy(Home,Actor,Type,F,Node,db,Cb,Ref,Count) ->
 			file:close(F),
 			dbcopy(Home,Actor,Type,0,Node,wal,Cb,Ref,0)
 	end.
+
+-record(cprec,{name,type,ref,copyfrom,packetnum = 0,path}).
+
+start_copyrec(Name,Type,Path,Ref,Copyfrom) ->
+	StartRef = make_ref(),
+	Home = self(),
+	Pid = spawn(fun() ->
+		case distreg:reg(self(),{copyproc,Ref}) of
+			ok ->
+				Home ! {StartRef,self()},
+				dbcopy_receive(#cprec{name = Name, type = Type, ref = Ref, copyfrom = Copyfrom, path = Path});
+			name_exists ->
+				Home ! {StartRef,distreg:whereis({copyproc,Ref})}
+		end
+	end),
+	receive
+		{StartRef,Pid} ->
+			{ok,Pid}
+	after 2000 ->
+		exit(dbcopy_receive_error)
+	end.
+
+dbcopy_receive(P) ->
+	ok.
 
 still_alive(Home,Actor,Type,Node,Cb,Ref,Count) ->
 	case erlang:is_process_alive(Home) of
@@ -1380,11 +1403,19 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 				_Err ->
 					exit({error,{unable_to_verify_transaction,_Err}})
 			end;
-		{update_from,_Node,Mors,MasterNode,Ref} ->
-			?ADBG("Verify down ~p ~p update db from ~p, i am ~p",[PID,Reason,MasterNode,bkdcore:node_name()]),
+		{update_from,Node,Mors,MasterNode,Ref} ->
+			?AINF("Verify down ~p ~p master ~p, update from ~p",[PID,Reason,MasterNode,Node]),
 			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
+			case P#dp.copyfrom of
+				undefined ->
+					Copyfrom = Node;
+				Copyfrom ->
+					ok
+			end,
+			{ok,RecvPid} = start_copyrec(P#dp.actorname,P#dp.actortype,P#dp.dbpath,Ref,Copyfrom),
+			erlang:monitor(process,RecvPid),
 			{noreply,P#dp{verifypid = undefined, verified = false, mors = Mors, masternode = MasterNode,
-							masternodedist = bkdcore:dist_name(MasterNode),dbcopyref = Ref}};
+							masternodedist = bkdcore:dist_name(MasterNode),dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}};
 		{update_direct,Mors,Bin} ->
 			?ADBG("Verify down update direct ~p ~p ~p",[Mors,P#dp.actorname,P#dp.actortype]),
 			actordb_sqlite:stop(P#dp.db),
@@ -1459,6 +1490,21 @@ handle_info({'DOWN',Ref,_,_PID,Reason},#dp{transactioncheckref = Ref} = P) ->
 		_ ->
 			{noreply,P#dp{transactioncheckref = undefined}}
 	end;
+handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,#dp{copyproc = PID} = P) ->
+	% {ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+	% case HaveSchema of
+	% 	false ->
+	% 		?AERR("DB open after move without schema? ~p ~p",[P#dp.actorname,P#dp.actortype]),
+	% 		gen_server:reply(From,false),
+	% 		{stop,normal,P};
+	% 	true ->
+	% 		{ok,_} = actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
+	% 						'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,P#dp.cbstate})))/binary,"');">>),
+	% 		actordb_sqlite:stop(Db),
+	% 		gen_server:reply(From,ok),
+	% 		callback_unlock(P#dp{db = undefined,activity = P#dp.activity + 1})
+	% end;
+	{noreply,P};
 handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
 		{Node,PID,Ref,IsMove} ->
@@ -1475,7 +1521,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 					end,
 					NP = P#dp{dbcopy_to = [], journal_mode = P#dp.def_journal_mode, 
 								% Remove first stage of lock, add second stage of lock
-								locked = [{wait_copy,Ref,IsMove,Node,os:timestamp()}|lists:delete(PID,P#dp.locked)],
+								locked = [{wait_copy,Ref,IsMove,Node,os:timestamp()}|lists:keydelete(PID,1,P#dp.locked)],
 								activity = P#dp.activity + 1,  movedtonode = Moved},
 					case queue:is_empty(P#dp.callqueue) of
 						true ->
@@ -1621,35 +1667,6 @@ code_change(_, P, _) ->
 % {Actor,ActorType1,MasterOrSlave}
 init(#dp{} = P,_Why) ->
 	?ADBG("Reinit because ~p, ~p",[_Why,?R2P(P)]),
-	% case P#dp.copyfrom /= undefined andalso P#dp.copyreset /= false of
-	% 	true ->
-	% 		case P#dp.copyreset of
-	% 			{Mod,Func,Args} ->
-	% 				case apply(Mod,Func,[P#dp.cbstate|Args]) of
-	% 					ok ->
-	% 						Sql = <<>>;
-	% 					Sql when is_list(Sql); is_binary(Sql) ->
-	% 						ok
-	% 				end;
-	% 			ok ->
-	% 				Sql = <<>>;
-	% 			Sql when is_list(Sql); is_binary(Sql) ->
-	% 				ok
-	% 		end,
-	% 		?DBG("Opening ~p copied from ~p",[P#dp.dbpath,P#dp.copyfrom]),
-	% 		{ok,Db,true,_PageSize} = actordb_sqlite:init(P#dp.dbpath,P#dp.journal_mode),
-	% 		ComplSql = <<"INSERT OR REPLACE INTO __adb VALUES (",?EVNUM/binary,",1);",
-	% 					 	"INSERT OR REPLACE INTO __adb VALUES (",?EVCRC/binary,",0);",
-	% 					 	% "INSERT OR REPLACE INTO __adb VALUES (",?COPYFROM/binary,",'",
-			% (base64:encode(term_to_binary(P#dp.copyfrom)))/binary,"');",
-	% 								 	(butil:tobin(Sql))/binary>>,
-	% 		{ok,_} = actordb_sqlite:exec(Db,ComplSql),
-	% 		actordb_sqlite:stop(Db);
-	% 	false ->
-	% 		ok
-	% end,
-	?DBLOG(P#dp.db,"reinit",[]),
-	?ADBG("reinit actor ~p queue empty ~p",[P#dp.actorname,queue:is_empty(P#dp.callqueue)]),
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 init([_|_] = Opts) ->
@@ -1669,7 +1686,7 @@ init([_|_] = Opts) ->
 			{stop,normal};
 		P ->
 			ClusterNodes = bkdcore:cluster_nodes(),
-			?ADBG("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
+			?AINF("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name(),butil:ds_val(startreason,Opts)]),
 			case P#dp.mors of
@@ -1716,13 +1733,14 @@ init([_|_] = Opts) ->
 															end
 													end,
 													ResetSql = <<>>;
-												{_,false} ->
+												{_,false,_} ->
 													ResetSql = <<>>;
 												{_,CopyReset,CopyState} ->
-													ResetSql = do_copy_reset(CopyReset,CopyState)
+													?AINF("Copyreset ~p ~p",[CopyReset,CopyState]),
+													ResetSql = do_copy_reset(false,CopyReset,CopyState)
 											end,
 											case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
-																		  ResetSql,"COMMIT;">>) of
+																		  ResetSql/binary,"COMMIT;">>) of
 												{ok,_} ->
 													ok;
 												ok ->
@@ -1776,15 +1794,22 @@ init([_|_] = Opts) ->
 							{ok, P#dp{verified = true, movedtonode = MovedToNode,
 										journal_mode = JournalMode, activity_now = actor_start(P)}}
 					end;
-				% This creates a copy of an actor with a different name. IsMove = false which means origin db will not be deleted.
+				% Either create a copy of an actor or move an actor from one cluster to another.
 				_ ->
-					?ADBG("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
+					?AINF("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
+					IsMove = element(1,P#dp.copyfrom) == move,
+					% First check if movement is already done.
 					case actordb_sqlite:init(P#dp.dbpath,JournalMode) of
 						{ok,Db,true,_PageSize} ->
 							?DBLOG(P#dp.db,"init copyfrom ~p",[P#dp.copyfrom]),
 							case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"]) of
 								{ok,[{columns,_},{rows,[]}]} ->
-									Doit = true;
+									case IsMove of
+										true ->
+											Doit = check;
+										false ->
+											Doit = true
+									end;
 								{ok,[{columns,_},{rows,[{_,_Copyf}]}]} ->
 									Doit = false
 							end;
@@ -1796,48 +1821,39 @@ init([_|_] = Opts) ->
 							Doit = true
 					end,
 					case Doit of
-						true ->
+						true  ->
+							?AINF("Copyfrom getdb"),
 							{Verifypid,_} = spawn_monitor(fun() -> 
 														verify_getdb(P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 															undefined,master,P#dp.cbmod,P#dp.evnum,P#dp.evcrc) 
 													end),
-							{ok,P#dp{verified = false, verifypid = Verifypid, 
+							{ok,P#dp{verified = false, verifypid = Verifypid, mors = master,
 								journal_mode = JournalMode, activity_now = actor_start(P)}};
-						false ->
-							?ADBG("Started for copy but copy already done ~p ~p",[P#dp.actorname,P#dp.actortype]),
-							case P#dp.copyfrom of
-								{{move,NewShard,Node},_CopyReset,_CopyState} ->
-									case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-																	{getinfo,verifyinfo}]}) of
-										{redirect,SomeNode} ->
-											case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
-												true ->
-													ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype),
-													IsOk = true
-											end;
+						_ ->
+							?AINF("Started for copy but copy already done or need check ~p ~p ~p",[Doit,P#dp.actorname,P#dp.actortype]),
+							case check_redirect(P,P#dp.copyfrom) of
+								false ->
+									file:delete(P#dp.dbpath),
+									file:delete(P#dp.dbpath++"-wal"),
+									file:delete(P#dp.dbpath++"-shm"),
+									{stop,{error,failed}};
+								Red  ->
+									case Red of
+										{true,NewShard} ->
+											ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
 										_ ->
-											IsOk = false
-									end;
-								_ ->
-									IsOk = true
-							end,
-							case IsOk of
-								true ->
-									ResetSql = do_copy_reset(P#dp.copyreset,P#dp.cbstate),
+											ok
+									end,
+									ResetSql = do_copy_reset(IsMove,P#dp.copyreset,P#dp.cbstate),
 									case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
-																		  ResetSql,"COMMIT;">>) of
+																		  ResetSql/binary,"COMMIT;">>) of
 										{ok,_} ->
 											ok;
 										ok ->
 											ok
 									end,
 									actordb_sqlite:stop(Db),
-									init(P#dp{copyfrom = undefined, copyreset = false},cleanup_copymove);
-								false ->
-									file:delete(P#dp.dbpath),
-									file:delete(P#dp.dbpath++"-wal"),
-									file:delete(P#dp.dbpath++"-shm"),
-									{stop,{error,failed}}
+									init(P#dp{copyfrom = undefined, copyreset = false, mors = master},cleanup_copymove)
 							end
 					end
 			end
@@ -1846,7 +1862,29 @@ init(#dp{} = P) ->
 	init(P,noreason).
 
 
-do_copy_reset(Copyreset,State) ->
+check_redirect(P,Copyfrom) ->
+	case Copyfrom of
+		{move,NewShard,Node} ->
+			case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+											{getinfo,verifyinfo}]}) of
+				{redirect,SomeNode} ->
+					case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
+						true ->
+							{true,NewShard}
+					end;
+				_ ->
+					false
+			end;
+		{Copyf1,_,_} when is_tuple(Copyf1) ->
+			check_redirect(P,Copyf1);
+		_ ->
+			copy
+	end.
+
+
+do_copy_reset(true,_,_) ->
+	<<>>;
+do_copy_reset(_IsMove,Copyreset,State) ->
 	case Copyreset of
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[State|Args]) of
@@ -1860,6 +1898,8 @@ do_copy_reset(Copyreset,State) ->
 		ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
 			ok
 	end,
+	% <<ResetSql/binary,"INSERT OR REPLACE INTO __adb VALUES (",?EVNUM/binary,",1);",
+	% 			 	"INSERT OR REPLACE INTO __adb VALUES (",?EVCRC/binary,",0);">>.
 	ResetSql.
 
 start_verify(P) ->
@@ -2033,9 +2073,6 @@ delactorfile(P) ->
 			file:delete(P#dp.dbpath++"-shm")
 	end.
 
-% forcemaster(Actor,Type,Cb,Master) ->
-% 	exit({verified,master,bkdcore:node_name()}).
-
 verified_response(MeMors,MasterNode) ->
 	?ADBG("verified_response ~p ~p",[MeMors,MasterNode]),
 	Me = bkdcore:node_name(),
@@ -2057,7 +2094,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 	LenCluster = length(ClusterNodes),
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo},[{flags,Flags}]]),
-	?ADBG("verify from others ~p",[Results]),
+	?AINF("verify from others ~p",[Results]),
 	checkfail(3,GetFailed),
 	Me = bkdcore:node_name(),
 	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
@@ -2195,7 +2232,10 @@ verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 											{send_db,bkdcore:node_name(),Ref,false,Evnum,Evcrc,Actor}]});
 		{move,_NewShard,Node} ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,Actor,Type,
-											{send_db,bkdcore:node_name(),Ref,true,Evnum,Evcrc,Actor}]})
+											{send_db,bkdcore:node_name(),Ref,true,Evnum,Evcrc,Actor}]});
+		Node when is_binary(Node) ->
+			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,Actor,Type,
+											{send_db,bkdcore:node_name(),Ref,false,Evnum,Evcrc,Actor}]})
 	end,
 	?ADBG("Verify getdb ~p ~p ~p ~p ~p",[Actor,Type,Node1,MasterNode,{element(1,RpcRes),butil:type(element(2,RpcRes))}]),
 	case RpcRes of
