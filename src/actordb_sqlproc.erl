@@ -956,7 +956,6 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 			% case rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,<<>>,done}]}) of
 			exit(copyfail);
 		{Walname,Walsize} ->
-			?AINF("dbsend wal ~p",[{Walname,Walsize}]),
 			Readnum = min(1024*1024,Walsize-Offset),
 			case Offset of
 				0 ->
@@ -965,6 +964,7 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 					F1 = F
 			end,
 			{ok,Bin} = file:read(F1,Readnum),
+			?ADBG("dbsend wal ~p",[{Walname,Walsize}]),
 			% ok = rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,Bin,wal}]}),
 			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Bin,wal,original]}),
 			dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
@@ -972,8 +972,8 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 dbcopy(P,Home,ActorTo,F,0,db) ->
 	still_alive(P,Home,ActorTo),
 	{ok,Bin} = file:read(F,1024*1024),
-	?AINF("dbsend db ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
 	% ok = rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,Bin,db}]}),
+	?ADBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Bin,db,original]}),
 	case byte_size(Bin) == 1024*1024 of
 		true ->
@@ -1018,7 +1018,7 @@ start_copyrec(P) ->
 	spawn(fun() ->
 		case distreg:reg(self(),{copyproc,P#dp.dbcopyref}) of
 			ok ->
-				?AINF("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
+				?ADBG("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
 				Home ! {StartRef,self()},
 				file:delete(P#dp.dbpath++"-wal"),
 				file:delete(P#dp.dbpath++"-shm"),
@@ -1058,7 +1058,6 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 		{Ref,Source,Bin,Status,Origin} when Ref == P#dp.dbcopyref ->
 			case Origin of
 				original ->
-					?AINF("Spreading to ~p, ~pbytes ~p",[ChildNodes,byte_size(Bin),Status]),
 					[ok = rpc(Nd,{?MODULE,dbcopy_send,[Ref,Bin,Status,master]}) || Nd <- ChildNodes];
 				master ->
 					ok
@@ -1068,10 +1067,12 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 					ok = file:write(F,Bin),
 					F1 = F;
 				false when Status == db ->
-					{ok,F1} = file:open(P#dp.dbpath,[write,raw]);
+					{ok,F1} = file:open(P#dp.dbpath,[write,raw]),
+					ok = file:write(F1,Bin);
 				false when Status == wal ->
 					ok = file:close(F),
-					{ok,F1} = file:open(P#dp.dbpath++"-wal",[write,raw]);
+					{ok,F1} = file:open(P#dp.dbpath++"-wal",[write,raw]),
+					ok = file:write(F1,Bin);
 				false when Status == done ->
 					file:close(F),
 					F1 = undefined,
@@ -1092,12 +1093,14 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 								original ->
 									callback_unlock(P);
 								_ ->
-									ok
+									exit(ok)
 							end
 					end
 			end,
 			Source ! {Ref,self(),ok},
-			dbcopy_receive(P,F1,Status,ChildNodes)
+			dbcopy_receive(P,F1,Status,ChildNodes);
+		X ->
+			?AERR("dpcopy_receive ~p received invalid msg ~p",[P#dp.dbcopyref,X])
 	after 30000 ->
 		exit(timeout_db_receive)
 	end.
@@ -1244,7 +1247,7 @@ handle_cast({diepls,Reason},P) ->
 			end
 	end;
 handle_cast(print_info,P) ->
-	?AINF("~p~n",[?R2P(P#dp{writelog = byte_size(P#dp.writelog)})]),
+	io:format("~p~n",[?R2P(P#dp{writelog = byte_size(P#dp.writelog)})]),
 	{noreply,P};
 handle_cast(Msg,#dp{mors = master, verified = true} = P) ->
 	case apply(P#dp.cbmod,cb_cast,[Msg,P#dp.cbstate]) of
@@ -1439,7 +1442,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 					exit({error,{unable_to_verify_transaction,_Err}})
 			end;
 		{update_from,Node,Mors,MasterNode,Ref} ->
-			?AINF("Verify down ~p ~p master ~p, update from ~p",[PID,Reason,MasterNode,Node]),
+			?ADBG("Verify down ~p ~p master ~p, update from ~p",[PID,Reason,MasterNode,Node]),
 			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
 			case P#dp.copyfrom of
 				undefined ->
@@ -1528,10 +1531,13 @@ handle_info({'DOWN',Ref,_,_PID,Reason},#dp{transactioncheckref = Ref} = P) ->
 			{noreply,P#dp{transactioncheckref = undefined}}
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Reason}, #dp{copyproc = PID} = P) ->
+	?ADBG("copyproc died ~p ~p ~p",[Reason,P#dp.mors,P#dp.copyfrom]),
 	case Reason of
-		ok ->
+		ok when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
 			{ok,NP} = init(P,copyproc_done),
 			{noreply,NP};
+		ok when P#dp.mors == slave ->
+			{stop,normal,P};
 		_ ->
 			{stop,Reason,P}
 	end;
@@ -1716,14 +1722,16 @@ init([_|_] = Opts) ->
 		P when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->
 			case lists:keyfind(lockinfo,1,Opts) of
 				{lockinfo,dbcopy,{Ref,CbState,CpFrom,CpReset}} ->
-					?AINF("Starting actor lock for copy on ref ~p",[Ref]),
+					?ADBG("Starting actor lock for copy on ref ~p",[Ref]),
 					{ok,Pid} = start_copyrec(P#dp{mors = slave, cbstate = CbState, 
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					erlang:monitor(process,Pid),
-					receive
-						{'DOWN',_Monitor,_,Pid,_Reason} ->
-							{stop,normal}
-					end
+					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}}
+					% receive
+					% 	{'DOWN',_Monitor,_,Pid,_Reason} ->
+					% 		?AINF("Copy process for slave died ~p",[_Reason]),
+					% 		{stop,normal}
+					% end
 			end;
 		P ->
 			ClusterNodes = bkdcore:cluster_nodes(),
@@ -1777,7 +1785,7 @@ init([_|_] = Opts) ->
 												{_,false,_} ->
 													ResetSql = <<>>;
 												{_,CopyReset,CopyState} ->
-													?AINF("Copyreset ~p ~p",[CopyReset,CopyState]),
+													?ADBG("Copyreset ~p ~p",[CopyReset,CopyState]),
 													ResetSql = do_copy_reset(false,CopyReset,CopyState)
 											end,
 											case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
@@ -1837,7 +1845,7 @@ init([_|_] = Opts) ->
 					end;
 				% Either create a copy of an actor or move an actor from one cluster to another.
 				_ ->
-					?AINF("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
+					?ADBG("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
 					IsMove = element(1,P#dp.copyfrom) == move,
 					% First check if movement is already done.
 					case actordb_sqlite:init(P#dp.dbpath,JournalMode) of
@@ -1863,7 +1871,6 @@ init([_|_] = Opts) ->
 					end,
 					case Doit of
 						true  ->
-							?AINF("Copyfrom getdb"),
 							{Verifypid,_} = spawn_monitor(fun() -> 
 														verify_getdb(P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 															undefined,master,P#dp.cbmod,P#dp.evnum,P#dp.evcrc) 
@@ -1871,7 +1878,7 @@ init([_|_] = Opts) ->
 							{ok,P#dp{verified = false, verifypid = Verifypid, mors = master,
 								journal_mode = JournalMode, activity_now = actor_start(P)}};
 						_ ->
-							?AINF("Started for copy but copy already done or need check ~p ~p ~p",[Doit,P#dp.actorname,P#dp.actortype]),
+							?ADBG("Started for copy but copy already done or need check ~p ~p ~p",[Doit,P#dp.actorname,P#dp.actortype]),
 							case check_redirect(P,P#dp.copyfrom) of
 								false ->
 									file:delete(P#dp.dbpath),
@@ -2136,7 +2143,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 	LenCluster = length(ClusterNodes),
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo},[{flags,Flags}]]),
-	?AINF("verify from others ~p",[Results]),
+	?ADBG("verify from others ~p",[Results]),
 	checkfail(3,GetFailed),
 	Me = bkdcore:node_name(),
 	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
