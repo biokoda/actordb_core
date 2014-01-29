@@ -231,6 +231,25 @@ recv_handshake(Data) ->
 send_ok(Cst) ->
     AffectedRows = myactor_util:mysql_var_integer(0),
     LastInsertId = myactor_util:mysql_var_integer(0),
+    send_ok(Cst,AffectedRows,LastInsertId).
+
+%% @spec send_ok(#cst{},tuple()) -> send_packet()
+%% @doc  Sends OK response to the client<br/>
+%%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/generic-response-packets.html#packet-OK_Packet">Link</a>
+send_ok(Cst,{rowid,LastInsertId}) ->
+    send_ok(Cst,myactor_util:mysql_var_integer(0),myactor_util:mysql_var_integer(LastInsertId));
+
+%% @spec send_ok(#cst{},tuple()) -> send_packet()
+%% @doc  Sends OK response to the client<br/>
+%%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/generic-response-packets.html#packet-OK_Packet">Link</a>
+send_ok(Cst,{affected_count,AffectedRows}) ->
+    send_ok(Cst,myactor_util:mysql_var_integer(AffectedRows),myactor_util:mysql_var_integer(0)).
+
+%% @spec send_ok(#cst{}, integer(), integer()) -> send_packet()
+%% @doc  Sends OK response to the client<br/>
+%%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/generic-response-packets.html#packet-OK_Packet">Link</a>    
+send_ok(Cst,AffectedRows,LastInsertId) ->
+    lager:info("~p ~p ~p",[Cst,AffectedRows,LastInsertId]),
     Cst0 = Cst#cst{sequenceid=Cst#cst.sequenceid+1},
     send_packet(Cst0,<<?OK_HEADER,AffectedRows/binary,LastInsertId/binary,16#02,16#00,16#00,16#00>>).
 
@@ -424,8 +443,8 @@ execute_query(Cst,Stmts0,Query) ->
             case Result of
                 ok ->   % update queries                                    
                     send_ok(Cst0);
-                {ok,{rowid,_Num}} -> % insert queries
-                    send_ok(Cst0);
+                {ok,{rowid,Num}} -> % insert queries
+                    send_ok(Cst0,{rowid,Num});
                 {ok,[{columns,Cols},{rows,Rows}]} ->    % data queries
                     multirow_response(Cst0,Cols,Rows);
                 {ok,[{rowid,_}|_] = MultiResponse} ->
