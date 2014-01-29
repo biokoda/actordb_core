@@ -294,7 +294,7 @@ split_statements(Bin1) ->
 	end,
 	case find_ending(rem_spaces(StatementBin),0,[],true) of
 		BytesToEnd when is_integer(BytesToEnd) ->
-			<<Statement:BytesToEnd/binary,Next/binary>> = StatementBin;
+			<<Statement:BytesToEnd/binary,Next/binary>> = rem_spaces(StatementBin);
 		{<<_/binary>> = Statement,Next} ->
 			ok;
 		{Statement1,Next} ->
