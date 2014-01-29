@@ -92,7 +92,7 @@ handle_call({shard_moved,Nd,Name,Type},_,P) ->
 			{reply,ok,P}
 	end;
 handle_call(get_moves,_,P) ->
-	S = [{distreg:whereis({shard,T,F}),F,T} || {F,T} <- P#dp.shards_splitting],
+	S = [{distreg:whereis({F,T}),F,T} || {F,T} <- P#dp.shards_splitting],
 	{reply,{P#dp.shardstoget,P#dp.movingdone,S},P};
 handle_call(reload, _, P) ->
 	code:purge(?MODULE),
@@ -278,7 +278,7 @@ start_splits(P,Local) ->
 					 
 					 ShardsPerType = butil:sparsemap(fun(Type) -> 
 					 	?AINF("start_splitshard ~p ~p ~p",[From,To,Nd]),
-					 	% distreg:whereis({shard,Type,SplitPoint})
+					 	% distreg:whereis({SplitPoint,Type})
 					 	case actordb_shard:try_whereis(SplitPoint,Type) of
 					 		undefined ->
 								case catch actordb_shard:start_split(From,Type,SplitPoint) of

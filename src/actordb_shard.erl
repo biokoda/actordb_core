@@ -55,9 +55,9 @@
 %																API
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-start({shard,Type,ShardName}) ->
+start({ShardName,Type}) ->
 	start(ShardName,Type).
-start({shard,Type,Name},Flags) ->
+start({Name,Type},Flags) ->
 	start(Name,Type,false,Flags);
 start(Name,Type1) ->
 	start(Name,Type1,false).
@@ -71,13 +71,12 @@ start(Name,Type1,Slave,Opt) ->
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
 	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,Slave},{mod,?MODULE},create,
-										{state,#state{idtype = Idtype,name = Name,type = Type}},
-										{regname,{shard,Type,Name}}|Opt]),
+										{state,#state{idtype = Idtype,name = Name,type = Type}}|Opt]),
 	{ok,Pid}.
 
 
 % Steal shard from another node
-start_steal({shard,Type,Name},Nd) ->
+start_steal({Name,Type},Nd) ->
 	start_steal(Nd,Name,Type).
 start_steal(Nd,Name,Type1) ->
 	?AINF("start_steal ~p ~p ~p ~p",[Nd,Name,Type1,try_whereis(Name,Type1)]),
@@ -93,9 +92,8 @@ start_steal(Nd,Name,Type1) ->
 				false ->
 					{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,
 																	 {state,#state{idtype = Idtype, name = Name, 
-																	 				stealingfrom = Nd,type = Type}},
-																	 {regname,{shard,Type,Name}}]),
-					spawn(fun() -> actordb_sqlproc:call({shard,Type,Name},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) 
+																	 				stealingfrom = Nd,type = Type}}]),
+					spawn(fun() -> actordb_sqlproc:call({Name,Type},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) 
 							end),
 					{ok,Pid}
 			end;
@@ -112,7 +110,7 @@ start_steal_done(P,Nd) ->
 	% callmvr(P#state.name,actordb_shardmvr,shard_moved,[Nd,P#state.name,P#state.type]).
 
 % Split shard in half.
-start_split({shard,Type1,Name},SplitPoint) ->
+start_split({Name,Type1},SplitPoint) ->
 	start_split(Name,Type1,SplitPoint).
 start_split(Name,Type1,SplitPoint) ->
 	?AINF("start_split ~p ~p ~p",[Name,SplitPoint,Type1]),
@@ -121,10 +119,9 @@ start_split(Name,Type1,SplitPoint) ->
 	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,
 															 {state,#state{idtype = Idtype,split_point = SplitPoint, 
 															 				upperlimit = SplitPoint-1, 
-															 				name = Name, type = Type}},
-															 {regname,{shard,Type,Name}}]),	
+															 				name = Name, type = Type}}]),	
 	spawn(fun() -> 
-		ok = actordb_sqlproc:write({shard,Type,Name},[create],
+		ok = actordb_sqlproc:write({Name,Type},[create],
 								{{?MODULE,cb_set_upper_limit,[SplitPoint]},undefined,undefined},
 								{?MODULE,start_split,[SplitPoint]})
 	end),
@@ -166,16 +163,16 @@ kv_schema_check(_Type) ->
 get_schema_vers(ShardName,Type1) ->
 	Type = butil:toatom(Type1),
 	{ok,[{columns,_},{rows,[{_,Vers}]}]} =
-			actordb_sqlproc:read({shard,Type,ShardName},[create],<<"SELECT * FROM __adb WHERE id='schema_vers';">>,?MODULE),
+			actordb_sqlproc:read({ShardName,Type},[create],<<"SELECT * FROM __adb WHERE id='schema_vers';">>,?MODULE),
 	{ok,butil:toint(Vers)}.
 
 
 kvread(ShardName,{A,1},Type,Sql) ->
 	kvread(ShardName,A,Type,Sql);
 kvread(ShardName,Actor,Type,Sql) ->
-	% actordb_sqlproc:read({shard,Type,Name},Sql,?MODULE).
+	% actordb_sqlproc:read({Name,Type},Sql,?MODULE).
 	?ADBG("kvread ~p",[{ShardName,Actor,Sql}]),
-	R = actordb_sqlproc:read({shard,Type,ShardName},[create],{?MODULE,cb_kvexec,[Actor,Sql]},?MODULE),
+	R = actordb_sqlproc:read({ShardName,Type},[create],{?MODULE,cb_kvexec,[Actor,Sql]},?MODULE),
 	?ADBG("kvread res ~p",[R]),
 	case R of
 		{redirect_shard,Node} when is_binary(Node) ->
@@ -201,7 +198,7 @@ kvwrite(ShardName,Actor,Type,Sql) ->
 		_ ->
 			WriteParam = {{?MODULE,cb_kvexec,[Actor,Sql]},undefined,Sql}
 	end,
-	R = actordb_sqlproc:write({shard,Type,ShardName},[create],WriteParam,?MODULE),
+	R = actordb_sqlproc:write({ShardName,Type},[create],WriteParam,?MODULE),
 	?ADBG("Result ~p",[R]),
 	case R of
 		{redirect_shard,Node} when is_binary(Node) ->
@@ -216,7 +213,7 @@ print_info(ShardName,Type) ->
 	gen_server:cast(whereis(ShardName,Type),print_info).
 
 del_actor(ShardName,ActorName,Type) ->
-	case actordb_sqlproc:write({shard,Type,ShardName},[create],{{?MODULE,cb_del_actor,[ActorName]},undefined,undefined},?MODULE) of
+	case actordb_sqlproc:write({ShardName,Type},[create],{{?MODULE,cb_del_actor,[ActorName]},undefined,undefined},?MODULE) of
 		{redirect_shard,Node} when is_binary(Node) ->
 			actordb:rpc(Node,ShardName,{?MODULE,del_actor,[ShardName,ActorName,Type]});
 		{redirect_shard,Shard} when is_integer(Shard) ->
@@ -239,7 +236,7 @@ reg_actor(ShardName,ActorName,Type1) ->
 		_ ->
 			?ADBG("reg_actor ~p ~p ~p~n",[ShardName,ActorName,Type1]),
 			% Call sqlproc gen_server. It will call cb_reg_actor function in this module, which will return SQL statement to be executed.
-			case actordb_sqlproc:write({shard,Type,ShardName},[create],{{?MODULE,cb_reg_actor,[ActorName]},undefined,undefined},?MODULE) of
+			case actordb_sqlproc:write({ShardName,Type},[create],{{?MODULE,cb_reg_actor,[ActorName]},undefined,undefined},?MODULE) of
 				{redirect_shard,Node} when is_binary(Node) ->
 					actordb:rpc(Node,ShardName,{?MODULE,reg_actor,[ShardName,ActorName,Type]});
 				{redirect_shard,Shard} when is_integer(Shard) ->
@@ -253,13 +250,13 @@ reg_actor(ShardName,ActorName,Type1) ->
 
 count_actors(ShardName,Type1) ->
 	Type = butil:toatom(Type1),
-	{ok,[{columns,_},{rows,[{C}]}]} = actordb_sqlproc:read({shard,Type,ShardName},[create],<<"SELECT count(*) FROM actors;">>,?MODULE),
+	{ok,[{columns,_},{rows,[{C}]}]} = actordb_sqlproc:read({ShardName,Type},[create],<<"SELECT count(*) FROM actors;">>,?MODULE),
 	C.
 
 
 list_actors(ShardName,Type1,From,Limit) ->
 	Type = butil:toatom(Type1),
-	R = actordb_sqlproc:read({shard,Type,ShardName},[create],{?MODULE,cb_list_actors,[From,Limit]},?MODULE),
+	R = actordb_sqlproc:read({ShardName,Type},[create],{?MODULE,cb_list_actors,[From,Limit]},?MODULE),
 	?ADBG("List actors ~p result ~p",[ShardName,R]),
 	case R of
 		{ok,[{columns,_},{rows,L}]} ->
@@ -272,7 +269,7 @@ list_actors(ShardName,Type1,From,Limit) ->
 
 get_upper_limit(ShardName,Type1) ->
 	Type = butil:toatom(Type1),
-	case actordb_sqlproc:read({shard,Type,ShardName},[create],<<"SELECT * FROM meta WHERE id in(",
+	case actordb_sqlproc:read({ShardName,Type},[create],<<"SELECT * FROM meta WHERE id in(",
 						?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>,?MODULE) of
 		{ok,[{columns,_},{rows,[_|_] = Rows}]} ->
 			{ok,butil:toint(butil:ds_val(butil:toint([?META_UPPER_LIMIT]),Rows)),
@@ -283,11 +280,11 @@ get_upper_limit(ShardName,Type1) ->
 
 % get_actors(ShardName,Type1) ->
 % 	Type = butil:toatom(Type1),
-% 	actordb_sqlproc:read({shard,Type,ShardName},<<"SELECT * FROM actors;">>,?MODULE).
+% 	actordb_sqlproc:read({ShardName,Type},<<"SELECT * FROM actors;">>,?MODULE).
 
 top_actor(ShardName,Type1) ->
 	Type = butil:toatom(Type1),
-	case actordb_sqlproc:read({shard,Type,ShardName},[create],<<"SELECT id,max(hash) FROM actors;">>,?MODULE) of
+	case actordb_sqlproc:read({ShardName,Type},[create],<<"SELECT id,max(hash) FROM actors;">>,?MODULE) of
 		{ok,[{columns,_},{rows,[{undefined,undefined}]}]} ->
 			undefined;
 		{ok,[{columns,_},{rows,[{Id,Hash}]}]} ->
@@ -309,22 +306,22 @@ actor_stolen(ShardName,Type,Actor,ThiefNode) ->
 	ok.
 delete_actor_steal(ShardName,Type1,Actor,ThiefNode,Limit) ->
 	Type = butil:toatom(Type1),
-	actordb_sqlproc:write({shard,Type,ShardName},[create],{{?MODULE,cb_del_move_actor,[Actor,ThiefNode,Limit]},
+	actordb_sqlproc:write({ShardName,Type},[create],{{?MODULE,cb_del_move_actor,[Actor,ThiefNode,Limit]},
 												  undefined,undefined},?MODULE).
 
 delete_limits(Name,Type1,UpperLimit) when is_integer(UpperLimit) ->
 	Type = butil:toatom(Type1),
 	?AINF("delete_limits ~p ~p ~p",[Name,Type,UpperLimit]),
-	actordb_sqlproc:write({shard,Type,Name},[create],
+	actordb_sqlproc:write({Name,Type},[create],
 								<<"DELETE FROM actors WHERE hash > ",(butil:tobin(UpperLimit))/binary,";",
 								"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>,?MODULE).
 
 try_whereis(N,Type1) ->
 	Type = butil:toatom(Type1),
-	distreg:whereis({shard,Type,N}).
+	distreg:whereis({N,Type}).
 whereis(ShardName,Type1) ->
 	Type = butil:toatom(Type1),
-	case distreg:whereis({shard,Type,ShardName}) of
+	case distreg:whereis({ShardName,Type}) of
 		undefined ->
 			start(ShardName,Type),
 			whereis(ShardName,Type);

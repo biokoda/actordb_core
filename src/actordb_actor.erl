@@ -20,13 +20,13 @@ start(Name,Type) ->
 start(Name,Type1,Opt) ->
 	Type = actordb_util:typeatom(Type1),
 	actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},
-							  {state,#st{name = Name,type = Type}},{regname,{Name,Type}}|Opt]).
+							  {state,#st{name = Name,type = Type}}|Opt]).
 
 start_steal(Name,Type1,Node,ShardName) ->
 	Type = actordb_util:typeatom(Type1),
 	?ADBG("Start steal ~p ~p",[Name,Type]),
 	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{state,#st{name = Name,type = Type,doreg = ShardName}},
-									  {regname,{Name,Type}},{copyfrom,{move,ShardName,Node}},{startreason,{steal,Node}}]),
+									  {copyfrom,{move,ShardName,Node}},{startreason,{steal,Node}}]),
 	{ok,Pid}.
 
 
@@ -76,7 +76,7 @@ cb_slave_pid(Name,Type,Opts) ->
 	Actor = {Name,Type},
 	case distreg:whereis(Actor) of
 		undefined ->
-			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},{regname,Actor},create|Opts]),
+			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},create|Opts]),
 			{ok,Pid};
 		Pid ->
 			{ok,Pid}

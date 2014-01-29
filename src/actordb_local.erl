@@ -235,6 +235,7 @@ handle_info({bkdcore_sharedstate,cluster_connected},P) ->
 					{noreply,P};
 				[_|_] = NL ->
 					?AINF("Clusterstate mupdaters ~p",[NL]),
+					butil:ds_add(all,NL,multiupdaters),
 					{noreply,P#dp{mupdaters = NL}};
 				_ ->
 					case create_mupdaters(?MIN_SHARDS*4,[]) of
