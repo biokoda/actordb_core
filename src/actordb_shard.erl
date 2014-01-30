@@ -106,6 +106,7 @@ start_steal(Nd,Name,Type1) ->
 	end.
 
 start_steal_done(P,Nd) ->
+	?AINF("steal done ~p",[P#state.name]),
 	actordb_shardmvr:shard_moved(Nd,P#state.name,P#state.type).
 	% callmvr(P#state.name,actordb_shardmvr,shard_moved,[Nd,P#state.name,P#state.type]).
 

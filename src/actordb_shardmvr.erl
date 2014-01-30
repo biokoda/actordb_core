@@ -264,7 +264,7 @@ get_toget() ->
 
 start_shards(P) ->
 	[ 
-		[actordb_shard:start_steal(Nd,From,Type) || Type <- Types] 
+		[spawn(fun() -> actordb_shard:start_steal(Nd,From,Type) end) || Type <- Types] 
 		|| {From,_To,Nd,Types} <- P#dp.shardstoget
 	],
 	P.

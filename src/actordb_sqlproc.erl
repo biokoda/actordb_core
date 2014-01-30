@@ -341,7 +341,7 @@ redirect_master(P) ->
 	end.
 
 handle_call(_Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
-	?DBG("REDIRECT BECAUSE MOVED TO NODE ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.movedtonode,_Msg]),
+	?ADBG("REDIRECT BECAUSE MOVED TO NODE ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.movedtonode,_Msg]),
 	{reply,{redirect,P#dp.movedtonode},P#dp{activity = P#dp.activity + 1}};
 handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 	case What of
@@ -436,7 +436,7 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 					?ADBG("Actor unlocked ~p ~p",[{P#dp.actorname,P#dp.actortype},Data]),
 					case IsMove of
 						true ->
-							write_call({moved,Node},CallFrom,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)});
+							write_call({undefined,0,{moved,Node},undefined},CallFrom,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)});
 						false ->
 							self() ! doqueue,
 							case [ok || Tuple <- P#dp.locked,element(2,Tuple) == Data] of
@@ -627,6 +627,7 @@ handle_call(replicate_commit,From,P) ->
 					{stop,normal,P};
 				<<"moved,",MovedTo/binary>> ->
 					actordb_sqlite:stop(P#dp.db),
+					?DBG("Stopping because moved ~p ~p",[P#dp.actorname,MovedTo]),
 					delactorfile(P#dp{movedtonode = MovedTo}),
 					reply(From,ok),
 					{stop,normal,P};
@@ -809,15 +810,21 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 	end,
 	case Sql of
 		delete ->
-			ComplSql = <<"delete">>,
+			ReplSql = ComplSql = <<"delete">>,
 			Res = ok;
 		{moved,Node} ->
-			ComplSql = <<"moved,",Node/binary>>,
+			ReplSql = ComplSql = <<"moved,",Node/binary>>,
 			Res = ok;
 		_ ->
+			case actornum(P) of
+				<<>> ->
+					ReplSql = semicolon(Sql);
+				NumSql ->
+					ReplSql = <<(semicolon(Sql))/binary,NumSql/binary>>
+			end,
 			ComplSql = 
 					[<<"$SAVEPOINT 'adb';">>,
-					 semicolon(Sql),actornum(P),
+					 ReplSql,
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
 					 Tail
@@ -842,7 +849,7 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 					end,
 					{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = Crc, schemavers = NewVers}};
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
-					Commiter = commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,NewVers),
+					Commiter = commit_write(P,LenCluster,ConnectedNodes,EvNum,ReplSql,Crc,NewVers),
 					{noreply,P#dp{callfrom = From,callres = Res, commiter = Commiter, activity = P#dp.activity + 1,
 									replicate_sql = {ComplSql,EvNum,Crc,NewVers}}};
 				_ ->
@@ -1151,6 +1158,13 @@ callback_unlock(P) ->
 								P#dp.actortype,{dbcopy_op,undefined,unlock,P#dp.dbcopyref}]}) of
 		ok ->
 			exit(ok);
+		{redirect,Somenode} ->
+			case lists:member(Somenode,bkdcore:all_cluster_nodes()) of
+				true ->
+					exit(ok);
+				false ->
+					exit({unlock_invalid_redirect,Somenode})
+			end;
 		Err ->
 			?AERR("Failed to execute dbunlock ~p",[Err]),
 			exit(failed_unlock)
@@ -1226,7 +1240,7 @@ commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 							exit({replication_failed_3,LenCommited,LenCluster})
 					end;
 				false ->
-					?AERR("replicate failed ~p ~p",[?R2P(P),{ResultsStart,StartFailed}]),
+					?AERR("replicate failed ~p ~p ~p",[Sql,?R2P(P),{ResultsStart,StartFailed}]),
 					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,
 																P#dp.actortype,replicate_rollback,[{flags,P#dp.flags}]]),
 					exit({replication_failed_4,LenStarted,LenCluster})
@@ -1367,6 +1381,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 							Die = false
 					end;
 				<<"moved,",MovedTo/binary>> ->
+					?DBG("Stopping because moved ~p ~p",[P#dp.actorname,MovedTo]),
 					Die = true,
 					actordb_sqlite:stop(P#dp.db),
 					delactorfile(P#dp{movedtonode = MovedTo});
@@ -1510,11 +1525,8 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			{ok,NP} = init(P#dp{mors = Mors},update_direct),
 			{noreply,NP};
 		{redirect,Nd} ->
-			% If slave proc was started but master has moved someplace else. 
-			?AINF("verify redirect ~p",[Nd]),
-			% self() ! doqueue,
-			% {noreply,P#dp{movedtonode = Nd, verified = true}};
-			empty_queue(P#dp.callqueue,{redirect,Nd}),
+			?AINF("verify redirect ~p ~p",[P#dp.actorname,Nd]),
+			% case lists:member(Nd,bkdcore:)
 			{stop,normal,P};
 		{wlog,Crc,EvNum,Sql} ->
 			?ADBG("Verify wlog sql ~p ~p",[P#dp.actorname,P#dp.actortype]),
@@ -1605,15 +1617,17 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 					case lists:keyfind(Ref,2,WithoutCopy) of
 						false ->
 							% wait_copy not in list add it
-							WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy];
+							WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy],
+							Movedtonode = undefined;
 						{wait_copy,Ref,_,_,_} ->
 							% wait_copy already in list (race condition). Remove it. We already received confirmation if it is in it.
-							WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy)
+							WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy),
+							Movedtonode = Moved
 					end,
 					NP = P#dp{dbcopy_to = [], journal_mode = P#dp.def_journal_mode, 
 								% Remove first stage of lock, add second stage of lock
 								locked = WithoutCopy1,
-								activity = P#dp.activity + 1,  movedtonode = Moved},
+								activity = P#dp.activity + 1, movedtonode = Movedtonode},
 					case queue:is_empty(P#dp.callqueue) of
 						true ->
 							{noreply,NP};
@@ -1640,7 +1654,7 @@ handle_info({inactivity_timer,Ref,N},P) ->
 			handle_info({check_inactivity,N},P)
 	end;
 handle_info({check_inactivity,N}, P) ->
-	?DBG("check_inactivity ~p ~p~n",[{P#dp.actorname,P#dp.activity,P#dp.callfrom},{P#dp.dbcopyref,P#dp.dbcopy_to,P#dp.locked,P#dp.copyproc,P#dp.verified,P#dp.activity}]),
+	% ?AINF("check_inactivity ~p ~p ~p~n",[{N,P#dp.activity},{P#dp.actorname,P#dp.callfrom},{P#dp.dbcopyref,P#dp.dbcopy_to,P#dp.locked,P#dp.copyproc,P#dp.verified,P#dp.transactionid}]),
 	Empty = queue:is_empty(P#dp.callqueue),
 	case P of
 		% If true, process is inactive and can die (or go to sleep)
@@ -1650,7 +1664,7 @@ handle_info({check_inactivity,N}, P) ->
 				undefined ->
 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
 						true ->
-							?ADBG("Die because temporary ~p ~p",[P#dp.actorname,P#dp.actortype]),
+							?DBG("Die because temporary ~p ~p",[P#dp.actorname,P#dp.actortype]),
 							distreg:unreg(self()),
 							?DBLOG(P#dp.db,"die temporary ",[]),
 							{stop,normal,P};
@@ -1672,7 +1686,14 @@ handle_info({check_inactivity,N}, P) ->
 							{stop,normal,P};
 						_ ->
 							?DBG("Process hibernate ~p",[P#dp.actorname]),
-							{noreply,P,hibernate}
+							case P#dp.timerref /= undefined of
+								true ->
+									erlang:cancel_timer(P#dp.timerref),
+									Timer = undefined;
+								false ->
+									Timer = P#dp.timerref
+							end,
+							{noreply,P#dp{timerref = Timer},hibernate}
 					end;
 				_ ->
 					?ADBG("Die moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.movedtonode]),
@@ -1686,7 +1707,7 @@ handle_info({check_inactivity,N}, P) ->
 																	{delete,P#dp.movedtonode},[{flags,P#dp.flags}]]) 
 									|| Nd <- bkdcore:cluster_nodes_connected()]
 					end,
-					case timer:now_diff(os:timestamp(),P#dp.start_time) > 30*1000000 of
+					case timer:now_diff(os:timestamp(),P#dp.start_time) > 10*1000000 of
 						true ->
 							?ADBG("Die because moved"),
 							?DBLOG(P#dp.db,"die moved ",[]),
@@ -1719,7 +1740,7 @@ handle_info({check_inactivity,N}, P) ->
 				_ ->
 					WB = P#dp.write_bytes
 			end,
-			{noreply,check_timer(P#dp{activity_now = Now, write_bytes = WB, locked = abandon_locks(P#dp.locked,[])})}
+			{noreply,check_timer(P#dp{activity_now = Now, write_bytes = WB, locked = abandon_locks(P,P#dp.locked,[])})}
 	end;
 handle_info(check_inactivity,P) ->
 	handle_info({check_inactivity,P#dp.activity+1},P#dp{activity = P#dp.activity + 1});
@@ -1742,17 +1763,17 @@ handle_info(_Msg,P) ->
 	?DBG("sqlproc ~p unhandled info ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
 
-abandon_locks([{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
+abandon_locks(P,[{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
 	case timer:now_diff(os:timestamp(),TimeOfLock) > 3000000 of
 		true ->
-			?AERR("Abandoned lock ~p",[_CpRef]),
-			abandon_locks(T,L);
+			?AERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,_Node,_CpRef]),
+			abandon_locks(P,T,L);
 		false ->
-			abandon_locks(T,[H|L])
+			abandon_locks(P,T,[H|L])
 	end;
-abandon_locks([H|T],L) ->
-	abandon_locks(T,[H|L]);
-abandon_locks([],L) ->
+abandon_locks(P,[H|T],L) ->
+	abandon_locks(P,T,[H|L]);
+abandon_locks(_,[],L) ->
 	L.
 
 
@@ -1839,7 +1860,10 @@ init([_|_] = Opts) ->
 															case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
 																true ->
 																	ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype)
-															end
+															end;
+														Invalid ->
+															?AERR("Actor ~p has not moved correctly, should redirect ~p",[P#dp.actorname,Invalid]),
+															throw(move_failed)
 													end,
 													ResetSql = <<>>;
 												{_,false,_} ->
@@ -1855,7 +1879,7 @@ init([_|_] = Opts) ->
 												ok ->
 													ok
 											end,
-											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc,schemavers = Vers})};
+											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc,schemavers = Vers,movedtonode = MovedToNode1})};
 										[] ->
 											case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
 												{_,[]} ->
@@ -1867,7 +1891,7 @@ init([_|_] = Opts) ->
 																		"' WHERE id=",?SCHEMA_VERS/binary,";",
 																"COMMIT;">>)
 											end,
-											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers})};
+											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,movedtonode = MovedToNode1})};
 										[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
 											case base64:decode(MSql1) of
 												<<"delete">> ->
@@ -1938,7 +1962,7 @@ init([_|_] = Opts) ->
 							{ok,P#dp{verified = false, verifypid = Verifypid, mors = master,
 								journal_mode = JournalMode, activity_now = actor_start(P)}};
 						_ ->
-							?ADBG("Started for copy but copy already done or need check ~p ~p ~p",[Doit,P#dp.actorname,P#dp.actortype]),
+							?AINF("Started for copy but copy already done or need check (~p) ~p ~p",[Doit,P#dp.actorname,P#dp.actortype]),
 							case check_redirect(P,P#dp.copyfrom) of
 								false ->
 									file:delete(P#dp.dbpath),
@@ -1946,8 +1970,9 @@ init([_|_] = Opts) ->
 									file:delete(P#dp.dbpath++"-shm"),
 									{stop,{error,failed}};
 								Red  ->
+									?AINF("Returned redirect ~p ~p ~p",[P#dp.actorname,Red,P#dp.copyreset]),
 									case Red of
-										{true,NewShard} ->
+										{true,NewShard} when NewShard /= undefined ->
 											ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
 										_ ->
 											ok
@@ -1990,9 +2015,7 @@ check_redirect(P,Copyfrom) ->
 	end.
 
 
-do_copy_reset(true,_,_) ->
-	<<>>;
-do_copy_reset(_IsMove,Copyreset,State) ->
+do_copy_reset(IsMove,Copyreset,State) ->
 	case Copyreset of
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[State|Args]) of
@@ -2006,9 +2029,12 @@ do_copy_reset(_IsMove,Copyreset,State) ->
 		ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
 			ok
 	end,
-	% <<ResetSql/binary,"INSERT OR REPLACE INTO __adb VALUES (",?EVNUM/binary,",1);",
-	% 			 	"INSERT OR REPLACE INTO __adb VALUES (",?EVCRC/binary,",0);">>.
-	ResetSql.
+	case IsMove of
+		true ->
+			<<>>;
+		_ ->
+			ResetSql
+	end.
 
 start_verify(P) ->
 	ClusterNodes = bkdcore:cluster_nodes(),
