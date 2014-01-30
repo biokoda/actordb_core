@@ -217,6 +217,7 @@ compare_schema([Type|T],New,Out) ->
 					SizeNew = tuple_size(SqlNew),
 					{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
 					[begin
+						?AINF("Checking sql ~p",[element(N,SqlNew)]),
 						case actordb_sqlite:exec(Db,[element(N,SqlNew)]) of
 							ok ->
 								ok;

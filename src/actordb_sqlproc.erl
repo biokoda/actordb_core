@@ -5,7 +5,7 @@
 -module(actordb_sqlproc).
 -behaviour(gen_server).
 -define(LAGERDBG,true).
--export([start/1, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export([start/1,start_copylock/2, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/1]).
 -export([read/4,write/4,call/4,call/5,diepls/2]).
 -export([call_slave/4,call_slave/5,call_master/4,dbcopy_send/4]).
@@ -34,6 +34,7 @@
 -define(FLAG_NOVERIFY,8).
 -define(FLAG_TEST,16).
 -define(FLAG_STARTLOCK,32).
+-define(FLAG_NOHIBERNATE,64).
 % Log events to the actual sqlite db file. For debugging.
 % When shards are being moved across nodes it often may not be clear what exactly has been happening
 % to an actor.
@@ -376,7 +377,6 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 											?COPYTRASH,
 											Db = P#dp.db,
 											{Pid,_} = spawn_monitor(fun() -> 
-														% P#dp.actortype,P#dp.dbpath,Node,P#dp.cbmod,Ref
 													dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
 											{reply,{ok,Ref},check_timer(P#dp{db = Db,journal_mode = wal, 
 																				dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
@@ -426,21 +426,37 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 					?DBG("wal_size ~p",[{From1,What,Data}]), 
 					{reply,{[P#dp.dbpath,"-wal"],Size},P}
 			end;
-		% For unlock data = copyref
 		unlock ->
+			% For unlock data = copyref
 			case lists:keyfind(Data,2,P#dp.locked) of
 				false ->
+					?ADBG("Lock does not exist ~p ~p",[{P#dp.actorname,P#dp.actortype},Data]),
 					{reply,false,P};
 				{wait_copy,Data,IsMove,Node,_TimeOfLock} ->
+					?ADBG("Actor unlocked ~p ~p",[{P#dp.actorname,P#dp.actortype},Data]),
 					case IsMove of
 						true ->
 							write_call({moved,Node},CallFrom,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)});
 						false ->
-							{reply,ok,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)}}
+							self() ! doqueue,
+							case [ok || Tuple <- P#dp.locked,element(2,Tuple) == Data] of
+								% A bit silly but it avoids a race condition. Copy process has not died yet
+								%  but we already received unlock request.
+								[_,_] ->
+									{reply,ok,P};
+								_ ->
+									{reply,ok,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)}}
+							end
 					end;
 				{_FromPid,Data} ->
-					erlang:send_after(100,self(),doqueue),
-					{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy_op,From1,What,Data}},P#dp.callqueue)}}
+					?ADBG("Queue unlock ~p",[P#dp.actorname]),
+					% Check if race condition
+					case lists:keyfind(Data,3,P#dp.dbcopy_to) of
+						{Node,_PID,Data,IsMove} ->
+							handle_call(Msg,CallFrom,P#dp{locked = [{wait_copy,Data,IsMove,Node,os:timestamp()}|P#dp.locked]});
+						false ->
+							{reply,false,P}
+					end
 			end
 	end;
 handle_call({getinfo,What},_,P) ->
@@ -1010,6 +1026,19 @@ dbcopy_send(Ref,Bin,Status,Origin) ->
 			{error,timeout}
 	end.
 
+start_copylock(Fullname,O) ->
+	start_copylock(Fullname,O,0).
+start_copylock(Fullname,Opt,N) when N < 2 ->
+	case distreg:whereis(Fullname) of
+		undefined ->
+			start(Opt);
+		_ ->
+			timer:sleep(1000),
+			start_copylock(Fullname,Opt,N+1)
+	end;
+start_copylock(_,_,_) ->
+	{error,slave_proc_running}.
+
 
 start_copyrec(P) ->
 	StartRef = make_ref(),
@@ -1035,9 +1064,10 @@ start_copyrec(P) ->
 							_ ->
 								true = LenConnected*2 > LenCluster
 						end,
-						[{ok,_} = rpc(Nd,{?MODULE,start,[[{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},lock,
+						StartOpt = [{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},lock,nohibernate,
 													{lockinfo,dbcopy,{P#dp.dbcopyref,P#dp.cbstate,
-																	  P#dp.copyfrom,P#dp.copyreset}}]]}) || Nd <- ConnectedNodes];
+																	  P#dp.copyfrom,P#dp.copyreset}}],
+						[{ok,_} = rpc(Nd,{?MODULE,start_copylock,[{P#dp.actorname,P#dp.actortype},StartOpt]}) || Nd <- ConnectedNodes];
 					_ ->
 						ConnectedNodes = []
 				end,
@@ -1084,6 +1114,7 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 							actordb_sqlite:move_to_trash(P#dp.dbpath),
 							exit(copynoschema);
 						true ->
+							?ADBG("Copyreceive done ~p",[{P#dp.actorname,P#dp.actortype,Origin,P#dp.copyfrom}]),
 							{ok,_} = actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
 											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,
 																				P#dp.cbstate})))/binary,"');">>),
@@ -1116,7 +1147,7 @@ callback_unlock(P) ->
 			ActorName = P#dp.actorname
 	end,
 	% Unlock database on source side
-	case actordb:rpc(Node,ActorName,{?MODULE,call_master,[P#dp.cbmod,ActorName,
+	case rpc(Node,{?MODULE,call_master,[P#dp.cbmod,ActorName,
 								P#dp.actortype,{dbcopy_op,undefined,unlock,P#dp.dbcopyref}]}) of
 		ok ->
 			exit(ok);
@@ -1143,7 +1174,22 @@ still_alive(P,Home,ActorTo) ->
 rpc(localhost,{M,F,A}) ->
 	apply(M,F,A);
 rpc(Nd,MFA) ->
-	bkdcore:rpc(Nd,MFA).
+	% Me = self(),
+	% F = fun(F) ->
+	% 		receive
+	% 			done ->
+	% 				ok;
+	% 			{'DOWN',_MonRef,_,Me,_Reason} ->
+	% 				ok
+	% 			after 1000 ->
+	% 				?AINF("Rpc waiting on ~p ~p",[Nd,MFA]),
+	% 				F(F)
+	% 		end
+	% 	end,
+	% Printer = spawn(fun() -> erlang:monitor(process,Me), F(F) end),
+	Res = bkdcore:rpc(Nd,MFA),
+	% Printer ! done,
+	Res.
 
 checkfail(_,[]) ->
 	ok;
@@ -1531,7 +1577,7 @@ handle_info({'DOWN',Ref,_,_PID,Reason},#dp{transactioncheckref = Ref} = P) ->
 			{noreply,P#dp{transactioncheckref = undefined}}
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Reason}, #dp{copyproc = PID} = P) ->
-	?ADBG("copyproc died ~p ~p ~p",[Reason,P#dp.mors,P#dp.copyfrom]),
+	?DBG("copyproc died ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Reason,P#dp.mors,P#dp.copyfrom]),
 	case Reason of
 		ok when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
 			{ok,NP} = init(P,copyproc_done),
@@ -1544,7 +1590,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason}, #dp{copyproc = PID} = P) ->
 handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
 		{Node,PID,Ref,IsMove} ->
-			?DBG("Down copyto proc ~p",[Reason]),
+			?DBG("Down copyto proc ~p ~p ~p",[P#dp.actorname,Reason,P#dp.locked]),
 			case lists:keydelete(PID,2,P#dp.dbcopy_to) of
 				[] ->
 					?DBG("No copyto left ~p",[IsMove]),
@@ -1555,9 +1601,18 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 						_ ->
 							Moved = undefined
 					end,
+					WithoutCopy = lists:keydelete(PID,1,P#dp.locked),
+					case lists:keyfind(Ref,2,WithoutCopy) of
+						false ->
+							% wait_copy not in list add it
+							WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy];
+						{wait_copy,Ref,_,_,_} ->
+							% wait_copy already in list (race condition). Remove it. We already received confirmation if it is in it.
+							WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy)
+					end,
 					NP = P#dp{dbcopy_to = [], journal_mode = P#dp.def_journal_mode, 
 								% Remove first stage of lock, add second stage of lock
-								locked = [{wait_copy,Ref,IsMove,Node,os:timestamp()}|lists:keydelete(PID,1,P#dp.locked)],
+								locked = WithoutCopy1,
 								activity = P#dp.activity + 1,  movedtonode = Moved},
 					case queue:is_empty(P#dp.callqueue) of
 						true ->
@@ -1566,7 +1621,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 							handle_info(doqueue,NP)
 					end;
 				L ->
-					{noreply,P#dp{dbcopy_to = L, locked = lists:delete(PID,P#dp.locked)}}
+					{noreply,P#dp{dbcopy_to = L, locked = lists:keydelete(PID,1,P#dp.locked)}}
 			end;
 		false ->
 			?ADBG("downmsg, verify maybe? ~p",[P#dp.verifypid]),
@@ -1585,12 +1640,12 @@ handle_info({inactivity_timer,Ref,N},P) ->
 			handle_info({check_inactivity,N},P)
 	end;
 handle_info({check_inactivity,N}, P) ->
-	% ?DBG("check_inactivity ~p~n",[{P#dp.actorname,P#dp.activity,P#dp.callfrom}]),
+	?DBG("check_inactivity ~p ~p~n",[{P#dp.actorname,P#dp.activity,P#dp.callfrom},{P#dp.dbcopyref,P#dp.dbcopy_to,P#dp.locked,P#dp.copyproc,P#dp.verified,P#dp.activity}]),
 	Empty = queue:is_empty(P#dp.callqueue),
 	case P of
 		% If true, process is inactive and can die (or go to sleep)
 		#dp{activity = N, callfrom = undefined, verified = true, transactionid = undefined,
-			dbcopyref = undefined, dbcopy_to = [], locked = []} when Empty ->
+			dbcopyref = undefined, dbcopy_to = [], locked = [], copyproc = undefined} when Empty ->
 			case P#dp.movedtonode of
 				undefined ->
 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
@@ -1600,10 +1655,10 @@ handle_info({check_inactivity,N}, P) ->
 							?DBLOG(P#dp.db,"die temporary ",[]),
 							{stop,normal,P};
 						_ when P#dp.activity == 0 ->
-							case timer:now_diff(os:timestamp(),P#dp.start_time) > 60*5*1000000 of
+							case timer:now_diff(os:timestamp(),P#dp.start_time) > 10*1000000 of
 								true ->
-									?ADBG("die after 5min"),
-									?DBLOG(P#dp.db,"die 0 after 5min",[]),
+									?ADBG("die after 10sec inactive"),
+									?DBLOG(P#dp.db,"die 0 after 10sec",[]),
 									actordb_sqlite:stop(P#dp.db),
 									distreg:unreg(self()),
 									{stop,normal,P};
@@ -1611,6 +1666,10 @@ handle_info({check_inactivity,N}, P) ->
 									Now = actordb_local:actor_activity(P#dp.activity_now),
 									{noreply,check_timer(P#dp{activity_now = Now})}
 							end;
+						_ when (P#dp.flags band ?FLAG_NOHIBERNATE) > 0 ->
+							actordb_sqlite:stop(P#dp.db),
+							distreg:unreg(self()),
+							{stop,normal,P};
 						_ ->
 							?DBG("Process hibernate ~p",[P#dp.actorname]),
 							{noreply,P,hibernate}
@@ -1686,6 +1745,7 @@ handle_info(_Msg,P) ->
 abandon_locks([{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
 	case timer:now_diff(os:timestamp(),TimeOfLock) > 3000000 of
 		true ->
+			?AERR("Abandoned lock ~p",[_CpRef]),
 			abandon_locks(T,L);
 		false ->
 			abandon_locks(T,[H|L])
@@ -1702,7 +1762,7 @@ code_change(_, P, _) ->
 	{ok, P}.
 init(#dp{} = P,_Why) ->
 	?ADBG("Reinit because ~p, ~p",[_Why,?R2P(P)]),
-	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},
+	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,P#dp.flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 init([_|_] = Opts) ->
 	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
@@ -2081,6 +2141,8 @@ parse_opts(P,[H|T]) ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_TEST},T);
 		lock ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_STARTLOCK},T);
+		nohibernate ->
+			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOHIBERNATE},T);
 		_ ->
 			parse_opts(P,T)
 	end;

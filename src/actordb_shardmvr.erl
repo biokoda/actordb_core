@@ -214,8 +214,8 @@ handle_info(check_steal,P) ->
 	handle_info(check_splits,start_shards(P));
 handle_info(check_splits,P) ->
 	case ok of
-		_ when P#dp.shards_splitting /= [] ->
-			{noreply,start_splits(P,P#dp.local_shards)};
+		% _ when P#dp.shards_splitting /= [] ->
+		% 	{noreply,start_splits(P,P#dp.local_shards)};
 		_ ->
 			{noreply,P}
 	end;

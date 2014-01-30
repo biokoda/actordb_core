@@ -70,7 +70,7 @@ start(Name,Type1,Slave,Opt) ->
 	% #state will be provided with every callback from sqlproc.
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
-	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,Slave},{mod,?MODULE},create,
+	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,Slave},{mod,?MODULE},create,nohibernate,
 										{state,#state{idtype = Idtype,name = Name,type = Type}}|Opt]),
 	{ok,Pid}.
 
@@ -88,9 +88,9 @@ start_steal(Nd,Name,Type1) ->
 			% regular shards that hold the list of actors, require an actor-by-actor copy.
 			case actordb_schema:iskv(Type) of
 				true ->
-					{ok,_Pid} = start(Name,Type,false,[{copyfrom,{move,undefined,Nd}},{copyreset,{?MODULE,start_steal_done,[Nd]}}]);
+					{ok,_Pid} = start(Name,Type,false,[nohibernate,{copyfrom,{move,undefined,Nd}},{copyreset,{?MODULE,start_steal_done,[Nd]}}]);
 				false ->
-					{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,
+					{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
 																	 {state,#state{idtype = Idtype, name = Name, 
 																	 				stealingfrom = Nd,type = Type}}]),
 					spawn(fun() -> actordb_sqlproc:call({Name,Type},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) 
@@ -116,7 +116,7 @@ start_split(Name,Type1,SplitPoint) ->
 	?AINF("start_split ~p ~p ~p",[Name,SplitPoint,Type1]),
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
-	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,
+	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
 															 {state,#state{idtype = Idtype,split_point = SplitPoint, 
 															 				upperlimit = SplitPoint-1, 
 															 				name = Name, type = Type}}]),	
@@ -130,7 +130,7 @@ start_split(Name,Type1,SplitPoint) ->
 
 start_split_other(Name,Type,OriginShard) ->
 	?AINF("Start copyfrom ~p ~p from ~p",[Name,Type,OriginShard]),
-	{ok,_Pid} = start(Name,Type,false,[{copyfrom,{bkdcore:node_name(),OriginShard}},
+	{ok,_Pid} = start(Name,Type,false,[nohibernate,{copyfrom,{bkdcore:node_name(),OriginShard}},
 									   {copyreset,{?MODULE,split_other_done,
 									   				[OriginShard,<<"DELETE FROM actors WHERE hash < ",(butil:tobin(Name))/binary,";",
 													"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}]),
