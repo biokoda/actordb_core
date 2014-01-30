@@ -11,15 +11,23 @@ cmd(init,parse,Etc) ->
 	try case readnodes(Etc++"/nodes.yaml") of
 		{Nodes,Groups} ->
 			case catch yamerl_constr:file(Etc++"/schema.yaml") of
-				[_Schema] ->
-					case bkdcore:nodelist() of
-						[] ->
-							[_|_] = compare_groups(nodes_to_names(Nodes),
-											bkdcore_changecheck:parse_yaml_groups(Groups),
-											compare_nodes(Nodes,[])),
-							ok;
-						_ ->
-							{error,"ActorDB already initialized."}
+				[Schema] ->
+					NewCfg = actordb_util:parse_cfg_schema(Schema),
+					case catch compare_schema([],NewCfg,[]) of
+						{ok,L} ->
+							case bkdcore:nodelist() of
+								[] ->
+									[_|_] = compare_groups(nodes_to_names(Nodes),
+													bkdcore_changecheck:parse_yaml_groups(Groups),
+													compare_nodes(Nodes,[])),
+									ok;
+								_ ->
+									{error,"ActorDB already initialized."}
+							end;
+						{error,Err} ->
+							{error,Err};
+						Err ->
+							{error,Err}
 					end;
 				X ->
 					throw(io_lib:fwrite("Error parsing schema.yaml~n~p",[X]))
@@ -38,8 +46,8 @@ cmd(init,parse,Etc) ->
 			{error,io_lib:fwrite("~p~n",[S])};
 		_:{badmatch,{error,enoent}} ->
 			{error,io_lib:fwrite("File(s) missing: ~n~p~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml",Etc++"/schema.yaml"])};
-		_:Err ->
-			{error,io_lib:fwrite("Error parsing configs ~p~n",[Err])}
+		_:Err1 ->
+			{error,io_lib:fwrite("Error parsing configs ~p~n",[Err1])}
 	end;
 cmd(init,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
@@ -216,22 +224,7 @@ compare_schema([Type|T],New,Out) ->
 				SqlCur ->
 					SizeCur = tuple_size(SqlCur),
 					SizeNew = tuple_size(SqlNew),
-					{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
-					[begin
-						?AINF("Checking sql ~p",[element(N,SqlNew)]),
-						case actordb_sqlite:exec(Db,[element(N,SqlNew)]) of
-							ok ->
-								ok;
-							{ok,_} ->
-								ok;
-							{sql_error,E,_E1} ->
-								actordb_sqlite:stop(Db),
-								throw({error,io_lib:fwrite("SQL Error for type \"~p\"~n~p~n~p~n",[Type,E,binary_to_list(iolist_to_binary(element(N,SqlNew)))])});
-							{error,E} ->
-								actordb_sqlite:stop(Db),
-								throw({error,io_lib:fwrite("SQL Error for type ~p, ~p~n",[Type,E])})
-						end
-					end || N <- lists:seq(1,SizeNew)],
+					check_sql(Type,SqlNew),
 					case ok of
 						_ when SizeCur < SizeNew ->
 							Lines = [binary_to_list(iolist_to_binary(element(N,SqlNew))) || N <- lists:seq(SizeCur+1,SizeNew)],
@@ -248,7 +241,25 @@ compare_schema([],New,O) ->
 		[] ->
 			{ok,O};
 		NewTypes ->
+			[check_sql(Type,SqlNew) || {Type,SqlNew} <- NewTypes],
 			{ok,O ++ io_lib:fwrite("New actors:"++?DELIMITER,[NewTypes])}
 	end.
 
-
+check_sql(Type,SqlNew) ->
+	SizeNew = tuple_size(SqlNew),
+	{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
+	[begin
+		?AINF("Checking sql ~p",[element(N,SqlNew)]),
+		case actordb_sqlite:exec(Db,[element(N,SqlNew)]) of
+			ok ->
+				ok;
+			{ok,_} ->
+				ok;
+			{sql_error,E,_E1} ->
+				actordb_sqlite:stop(Db),
+				throw({error,io_lib:fwrite("SQL Error for type \"~p\"~n~p~n~p~n",[Type,E,binary_to_list(iolist_to_binary(element(N,SqlNew)))])});
+			{error,E} ->
+				actordb_sqlite:stop(Db),
+				throw({error,io_lib:fwrite("SQL Error for type ~p, ~p~n",[Type,E])})
+		end
+	end || N <- lists:seq(1,SizeNew)].
