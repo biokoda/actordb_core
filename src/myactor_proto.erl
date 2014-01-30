@@ -249,7 +249,6 @@ send_ok(Cst,{affected_count,AffectedRows}) ->
 %% @doc  Sends OK response to the client<br/>
 %%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/generic-response-packets.html#packet-OK_Packet">Link</a>    
 send_ok(Cst,AffectedRows,LastInsertId) ->
-    lager:info("~p ~p ~p",[Cst,AffectedRows,LastInsertId]),
     Cst0 = Cst#cst{sequenceid=Cst#cst.sequenceid+1},
     send_packet(Cst0,<<?OK_HEADER,AffectedRows/binary,LastInsertId/binary,16#02,16#00,16#00,16#00>>).
 
