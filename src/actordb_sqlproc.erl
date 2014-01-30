@@ -1853,7 +1853,7 @@ init([_|_] = Opts) ->
 									case Transaction of
 										[] when CopyFrom /= undefined ->
 											case binary_to_term(base64:decode(CopyFrom)) of
-												{{move,NewShard,Node},_CopyReset,_CopyState} ->
+												{{move,NewShard,Node},CopyReset,CopyState} ->
 													case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 																					{getinfo,verifyinfo}]}) of
 														{redirect,SomeNode} ->
@@ -1865,7 +1865,7 @@ init([_|_] = Opts) ->
 															?AERR("Actor ~p has not moved correctly, should redirect ~p",[P#dp.actorname,Invalid]),
 															throw(move_failed)
 													end,
-													ResetSql = <<>>;
+													ResetSql = do_copy_reset(true,CopyReset,CopyState);
 												{_,false,_} ->
 													ResetSql = <<>>;
 												{_,CopyReset,CopyState} ->
