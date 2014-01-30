@@ -236,14 +236,20 @@ send_ok(Cst) ->
 %% @spec send_ok(#cst{},tuple()) -> send_packet()
 %% @doc  Sends OK response to the client<br/>
 %%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/generic-response-packets.html#packet-OK_Packet">Link</a>
-send_ok(Cst,{rowid,LastInsertId}) ->
-    send_ok(Cst,myactor_util:mysql_var_integer(0),myactor_util:mysql_var_integer(LastInsertId));
+% send_ok(Cst,{rowid,LastInsertId}) ->
+%     send_ok(Cst,myactor_util:mysql_var_integer(0),myactor_util:mysql_var_integer(LastInsertId));
 
 %% @spec send_ok(#cst{},tuple()) -> send_packet()
 %% @doc  Sends OK response to the client<br/>
 %%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/generic-response-packets.html#packet-OK_Packet">Link</a>
-send_ok(Cst,{affected_count,AffectedRows}) ->
-    send_ok(Cst,myactor_util:mysql_var_integer(AffectedRows),myactor_util:mysql_var_integer(0)).
+% send_ok(Cst,{affected_count,AffectedRows}) ->
+%     send_ok(Cst,myactor_util:mysql_var_integer(AffectedRows),myactor_util:mysql_var_integer(0)).
+
+%% @spec send_ok(#cst{},tuple(),tuple()) -> send_packet()
+%% @doc  Sends OK response to the client<br/>
+%%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/generic-response-packets.html#packet-OK_Packet">Link</a>
+send_ok(Cst,{affected_count,AffectedRows},{rowid,LastInsertId}) ->
+    send_ok(Cst,myactor_util:mysql_var_integer(AffectedRows),myactor_util:mysql_var_integer(LastInsertId));
 
 %% @spec send_ok(#cst{}, integer(), integer()) -> send_packet()
 %% @doc  Sends OK response to the client<br/>
@@ -439,15 +445,18 @@ execute_query(Cst,Stmts0,Query) ->
                     %Cst0 = Cst,
                     ok
             end,
+            ?PROTO_DBG("result = ~p",[Result]),
             case Result of
                 ok ->   % update queries                                    
                     send_ok(Cst0);
                 {ok,{rowid,Num}} -> % insert queries
-                    send_ok(Cst0,{rowid,Num});
+                    send_ok(Cst0,{affected_count,0},{rowid,Num});
                 {ok,[{columns,Cols},{rows,Rows}]} ->    % data queries
                     multirow_response(Cst0,Cols,Rows);
                 {ok,[{rowid,_}|_] = MultiResponse} ->
                     case lists:last(MultiResponse) of
+                        {rowid,Num} ->
+                            send_ok(Cst0,{affected_count,0},{rowid,Num});                        
                         [{columns,Cols},{rows,Rows}] ->
                             multirow_response(Cst0,Cols,Rows);
                         _ ->
@@ -455,6 +464,8 @@ execute_query(Cst,Stmts0,Query) ->
                     end;                    
                 {ok,[[{columns,_},{rows,_}]|_] = MultiResponse } ->    % data queries
                     case lists:last(MultiResponse) of
+                        {rowid,Num} ->
+                            send_ok(Cst0,{affected_count,0},{rowid,Num});
                         [{columns,Cols},{rows,Rows}] ->
                             multirow_response(Cst0,Cols,Rows);
                         _ ->
