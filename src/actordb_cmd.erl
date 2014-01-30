@@ -5,6 +5,7 @@
 -module(actordb_cmd).
 -compile(export_all).
 -define(DELIMITER,"~n-------------------------~n~p~n-------------------------~n").
+-include("actordb.hrl").
 
 cmd(init,parse,Etc) ->
 	try case readnodes(Etc++"/nodes.yaml") of
