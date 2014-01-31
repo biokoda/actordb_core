@@ -64,7 +64,7 @@ handle_call({shard_has_split,Original,Name,Type},_,P) ->
 			end,
 			{reply,Res,P#dp{shards_splitting = Without}};
 		false ->
-			?AERR("Shard has split but not set to on this node"),
+			% ?AERR("Shard has split but not set to on this node"),
 			{reply,ok,P}
 	end;
 handle_call({shard_moved,Nd,Name,Type},_,P) ->
@@ -88,7 +88,7 @@ handle_call({shard_moved,Nd,Name,Type},_,P) ->
 					{reply,Err,P}
 			end;
 		false ->
-			?AERR("shard_moved that is not set for it"),
+			% ?AERR("shard_moved that is not set for it"),
 			{reply,ok,P}
 	end;
 handle_call(get_moves,_,P) ->
@@ -369,11 +369,10 @@ split_shards(Me,AllNodes,L,Existing) ->
 	     lists:reverse(lists:keysort(1,NodeShards))
 	   } || {Node,NodeShards} <- Grouped])),
 	SizeGoal = ?NAMESPACE_MAX div length(AllNodes),
+	?AINF("Size goal ~p, existing ~p",[SizeGoal,ExistingSize]),
 	split_shards(ExistingSize,Existing,SizeGoal - ExistingSize,Sorted,[],[]).
 
 split_shards(_,_,_,[],[],[]) ->
-	[];
-split_shards(_,_,Limit,_,_,[]) when Limit =< 0 ->
 	[];
 split_shards(_,_,Limit,_,_,L) when Limit =< 0 ->
 	L;

@@ -116,7 +116,7 @@ call(Name,Flags,Msg,Start) ->
 call(Name,Flags,Msg,Start,IsRedirect) ->
 	case distreg:whereis(Name) of
 		undefined ->
-			case startactor(Name,Start,Flags) of %{startreason,Msg}
+			case startactor(Name,Start,[{startreason,Msg}|Flags]) of %
 				{ok,Pid} when is_pid(Pid) ->
 					call(Name,Flags,Msg,Start,IsRedirect,Pid);
 				{error,nocreate} ->
@@ -170,7 +170,7 @@ startactor(Name,Start,Flags) ->
 	end.
 
 call_master(Cb,Actor,Type,Msg) ->
-	case apply(Cb,start,[Actor,Type,[]]) of %{startreason,Msg}
+	case apply(Cb,start,[Actor,Type,[{startreason,Msg}]]) of %
 		{ok,Pid} ->
 			ok;
 		Pid when is_pid(Pid) ->
@@ -186,7 +186,7 @@ call_master(Cb,Actor,Type,Msg) ->
 call_slave(Cb,Actor,Type,Msg) ->
 	call_slave(Cb,Actor,Type,Msg,[]).
 call_slave(Cb,Actor,Type,Msg,Flags) ->
-	case apply(Cb,cb_slave_pid,[Actor,Type,Flags]) of %{startreason,Msg}
+	case apply(Cb,cb_slave_pid,[Actor,Type,[{startreason,Msg}|Flags]]) of %
 		{ok,Pid} ->
 			ok;
 		Pid when is_pid(Pid) ->
@@ -209,7 +209,7 @@ diepls(Pid,Reason) ->
 % [{actor,Name},{type,Type},{mod,CallbackModule},{state,CallbackState},
 %  {inactivity_timeout,SecondsOrInfinity},{slave,true/false},{copyfrom,NodeName},{copyreset,{Mod,Func,Args}}]
 start(Opts) ->
-	?ADBG("Starting ~p ~p",[butil:ds_vals([name,type],Opts),butil:ds_val(slave,Opts)]),
+	?ADBG("Starting ~p ~p",[butil:ds_vals([actor,type],Opts),butil:ds_val(slave,Opts)]),
 	Ref = make_ref(),
 	case gen_server:start(?MODULE, [{start_from,{self(),Ref}}|Opts], []) of
 		{ok,Pid} ->
@@ -465,6 +465,8 @@ handle_call({getinfo,What},_,P) ->
 			{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,{P#dp.mors,P#dp.verified}},P};
 		actornum ->
 			{reply,{ok,P#dp.dbpath,read_num(P)},P};
+		donothing ->
+			{reply,ok,P};
 		conflicted ->
 			{stop,conflicted,P}
 	end;
@@ -1043,8 +1045,9 @@ start_copylock(Fullname,Opt,N) when N < 2 ->
 			timer:sleep(1000),
 			start_copylock(Fullname,Opt,N+1)
 	end;
-start_copylock(_,_,_) ->
-	{error,slave_proc_running}.
+start_copylock(Fullname,_,_) ->
+	print_info(distreg:whereis(Fullname)),
+	{error,{slave_proc_running,Fullname}}.
 
 
 start_copyrec(P) ->
@@ -1307,7 +1310,7 @@ handle_cast({diepls,Reason},P) ->
 			end
 	end;
 handle_cast(print_info,P) ->
-	io:format("~p~n",[?R2P(P#dp{writelog = byte_size(P#dp.writelog)})]),
+	io:format("~p~n~p~n",[?R2P(P#dp{writelog = byte_size(P#dp.writelog)}),get()]),
 	{noreply,P};
 handle_cast(Msg,#dp{mors = master, verified = true} = P) ->
 	case apply(P#dp.cbmod,cb_cast,[Msg,P#dp.cbstate]) of
@@ -1597,6 +1600,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason}, #dp{copyproc = PID} = P) ->
 		ok when P#dp.mors == slave ->
 			{stop,normal,P};
 		_ ->
+			?AINF("Coproc died ~p~n~p",[?R2P(P),get()]),
 			{stop,Reason,P}
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
@@ -1696,7 +1700,6 @@ handle_info({check_inactivity,N}, P) ->
 							{noreply,P#dp{timerref = Timer},hibernate}
 					end;
 				_ ->
-					?ADBG("Die moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.movedtonode]),
 					case P#dp.db of
 						undefined ->
 							ok;
@@ -1759,6 +1762,33 @@ handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 		noreply ->
 			{noreply,P}
 	end;
+handle_info({check_redirect,Db,IsMove},P) ->
+	case check_redirect(P,P#dp.copyfrom) of
+		false ->
+			file:delete(P#dp.dbpath),
+			file:delete(P#dp.dbpath++"-wal"),
+			file:delete(P#dp.dbpath++"-shm"),
+			{stop,{error,failed}};
+		Red  ->
+			?AINF("Returned redirect ~p ~p ~p",[P#dp.actorname,Red,P#dp.copyreset]),
+			case Red of
+				{true,NewShard} when NewShard /= undefined ->
+					ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
+				_ ->
+					ok
+			end,
+			ResetSql = do_copy_reset(IsMove,P#dp.copyreset,P#dp.cbstate),
+			case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
+												  ResetSql/binary,"COMMIT;">>) of
+				{ok,_} ->
+					ok;
+				ok ->
+					ok
+			end,
+			actordb_sqlite:stop(Db),
+			{ok,NP} = init(P#dp{db = undefined,copyfrom = undefined, copyreset = false, mors = master},cleanup_copymove),
+			{noreply,NP}
+	end;
 handle_info(_Msg,P) ->
 	?DBG("sqlproc ~p unhandled info ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
@@ -1786,6 +1816,7 @@ init(#dp{} = P,_Why) ->
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,P#dp.flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 init([_|_] = Opts) ->
+	put(opts,[{startat,time()}|Opts]),
 	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
 									schemanum = actordb_schema:num()}),Opts) of
 		{registered,Pid} ->
@@ -1852,34 +1883,43 @@ init([_|_] = Opts) ->
 									CopyFrom = butil:ds_val(?COPYFROMI,Rows),
 									case Transaction of
 										[] when CopyFrom /= undefined ->
-											case binary_to_term(base64:decode(CopyFrom)) of
-												{{move,NewShard,Node},CopyReset,CopyState} ->
-													case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-																					{getinfo,verifyinfo}]}) of
-														{redirect,SomeNode} ->
-															case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
-																true ->
-																	ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype)
-															end;
-														Invalid ->
-															?AERR("Actor ~p has not moved correctly, should redirect ~p",[P#dp.actorname,Invalid]),
-															throw(move_failed)
-													end,
-													ResetSql = do_copy_reset(true,CopyReset,CopyState);
-												{_,false,_} ->
-													ResetSql = <<>>;
-												{_,CopyReset,CopyState} ->
-													?ADBG("Copyreset ~p ~p",[CopyReset,CopyState]),
-													ResetSql = do_copy_reset(false,CopyReset,CopyState)
+											CPFrom = binary_to_term(base64:decode(CopyFrom)),
+											case CPFrom of
+												{{move,_NewShard,_Node},CopyReset,_CopyState} ->
+													IsMove = true;
+												{_,CopyReset,_CopyState} ->
+													IsMove = false
 											end,
-											case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
-																		  ResetSql/binary,"COMMIT;">>) of
-												{ok,_} ->
-													ok;
-												ok ->
-													ok
-											end,
-											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc,schemavers = Vers,movedtonode = MovedToNode1})};
+											self() ! {check_redirect,true,Db,IsMove},
+											{ok,P#dp{copyreset = CopyReset}};
+											% case binary_to_term(base64:decode(CopyFrom)) of
+											% 	{{move,NewShard,Node},CopyReset,CopyState} ->
+											% 		case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+											% 										{getinfo,donothing}]}) of
+											% 			{redirect,SomeNode} ->
+											% 				case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
+											% 					true ->
+											% 						ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype)
+											% 				end;
+											% 			Invalid ->
+											% 				?AERR("Actor ~p has not moved correctly, should redirect ~p",[P#dp.actorname,Invalid]),
+											% 				throw(move_failed)
+											% 		end,
+											% 		ResetSql = do_copy_reset(true,CopyReset,CopyState);
+											% 	{_,false,_} ->
+											% 		ResetSql = <<>>;
+											% 	{_,CopyReset,CopyState} ->
+											% 		?ADBG("Copyreset ~p ~p",[CopyReset,CopyState]),
+											% 		ResetSql = do_copy_reset(false,CopyReset,CopyState)
+											% end,
+											% case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
+											% 							  ResetSql/binary,"COMMIT;">>) of
+											% 	{ok,_} ->
+											% 		ok;
+											% 	ok ->
+											% 		ok
+											% end,
+											% {ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc,schemavers = Vers,movedtonode = MovedToNode1})};
 										[] ->
 											case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
 												{_,[]} ->
@@ -1963,31 +2003,8 @@ init([_|_] = Opts) ->
 								journal_mode = JournalMode, activity_now = actor_start(P)}};
 						_ ->
 							?AINF("Started for copy but copy already done or need check (~p) ~p ~p",[Doit,P#dp.actorname,P#dp.actortype]),
-							case check_redirect(P,P#dp.copyfrom) of
-								false ->
-									file:delete(P#dp.dbpath),
-									file:delete(P#dp.dbpath++"-wal"),
-									file:delete(P#dp.dbpath++"-shm"),
-									{stop,{error,failed}};
-								Red  ->
-									?AINF("Returned redirect ~p ~p ~p",[P#dp.actorname,Red,P#dp.copyreset]),
-									case Red of
-										{true,NewShard} when NewShard /= undefined ->
-											ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
-										_ ->
-											ok
-									end,
-									ResetSql = do_copy_reset(IsMove,P#dp.copyreset,P#dp.cbstate),
-									case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
-																		  ResetSql/binary,"COMMIT;">>) of
-										{ok,_} ->
-											ok;
-										ok ->
-											ok
-									end,
-									actordb_sqlite:stop(Db),
-									init(P#dp{copyfrom = undefined, copyreset = false, mors = master},cleanup_copymove)
-							end
+							self() ! {check_redirect,Db,IsMove},
+							{ok,P}
 					end
 			end
 	end;
@@ -1999,7 +2016,7 @@ check_redirect(P,Copyfrom) ->
 	case Copyfrom of
 		{move,NewShard,Node} ->
 			case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-											{getinfo,verifyinfo}]}) of
+											{getinfo,donothing}]}) of
 				{redirect,SomeNode} ->
 					case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
 						true ->
@@ -2027,7 +2044,9 @@ do_copy_reset(IsMove,Copyreset,State) ->
 		ok ->
 			ResetSql = <<>>;
 		ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
-			ok
+			ok;
+		_ ->
+			ResetSql = <<>>
 	end,
 	case IsMove of
 		true ->

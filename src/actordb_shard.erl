@@ -131,11 +131,10 @@ start_split(Name,Type1,SplitPoint) ->
 
 start_split_other(Name,Type,OriginShard) ->
 	?AINF("Start copyfrom ~p ~p from ~p",[Name,Type,OriginShard]),
-	{ok,_Pid} = start(Name,Type,false,[nohibernate,{copyfrom,{bkdcore:node_name(),OriginShard}},
+	start(Name,Type,false,[nohibernate,{copyfrom,{bkdcore:node_name(),OriginShard}},
 									   {copyreset,{?MODULE,split_other_done,
 									   				[OriginShard,<<"DELETE FROM actors WHERE hash < ",(butil:tobin(Name))/binary,";",
-													"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}]),
-	exit(ok).
+													"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}]).
 
 split_other_done(P,Origin,Sql) ->
 	?AINF("Split other done ~p ~p from ~p",[P#state.name, P#state.type,Origin]),
@@ -420,8 +419,8 @@ cb_set_upper_limit(P,SplitPoint) ->
 		true when is_pid(P#state.splitproc) ->
 			{Sql,P};
 		_ ->
-			{Pid,_} = spawn_monitor(fun() -> ?AINF("Start split from cb_set_upper_limit"),
-							start_split_other(SplitPoint,P#state.type,P#state.name) end),
+			{ok,Pid} = start_split_other(SplitPoint,P#state.type,P#state.name),
+			erlang:monitor(process,Pid),
 			{Sql,P#state{split_point = SplitPoint,splitproc = Pid, upperlimit = SplitPoint-1}}
 	end.
 
@@ -533,7 +532,7 @@ cb_info({'DOWN',_Monitor,_,PID,Reason},P) ->
 					?AINF("splitproc done ~p",[Reason]),
 					{noreply,P#state{splitproc = undefined}};
 				Err ->
-					?AERR("splitproc error ~p ~p",[Err]),
+					?AERR("splitproc error ~p",[Err]),
 					noreply
 			end;
 		_ ->
@@ -562,8 +561,8 @@ cb_init(S,_EvNum) ->
 	ok = actordb_shardmngr:shard_started(self(),S#state.name,S#state.type),
 	case is_integer(S#state.split_point) of
 		true ->
-			{Pid,_} = spawn_monitor(fun() ->?AINF("Start split from init"),
-						start_split_other(S#state.split_point,S#state.type,S#state.name) end),
+			{ok,Pid} = start_split_other(S#state.split_point,S#state.type,S#state.name),
+			erlang:monitor(process,Pid),
 			{ok,S#state{splitproc = Pid}};
 		false ->
 			% This will cause read to execute and result returned in cb_init/3
@@ -589,8 +588,8 @@ cb_init(S,_EvNum,{ok,[{columns,_},{rows,Rows}]}) ->
 								 end),
 							{ok,S#state{split_point = undefined, upperlimit = undefined}};
 						_ ->
-							{Pid,_} = spawn_monitor(fun() ->?AINF("Start split from init2"),
-										start_split_other(Limit+1,S#state.type,S#state.name) end),
+							{ok,Pid} = start_split_other(Limit+1,S#state.type,S#state.name),
+							erlang:monitor(process,Pid),
 							{ok,S#state{split_point = Limit+1,splitproc = Pid, upperlimit = Limit}}
 					end;
 				_ when is_binary(MovingTo) ->
