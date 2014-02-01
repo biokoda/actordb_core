@@ -1770,7 +1770,7 @@ handle_info({check_redirect,Db,IsMove},P) ->
 			file:delete(P#dp.dbpath++"-shm"),
 			{stop,{error,failed}};
 		Red  ->
-			?AINF("Returned redirect ~p ~p ~p",[P#dp.actorname,Red,P#dp.copyreset]),
+			?ADBG("Returned redirect ~p ~p ~p",[P#dp.actorname,Red,P#dp.copyreset]),
 			case Red of
 				{true,NewShard} when NewShard /= undefined ->
 					ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
@@ -1885,13 +1885,13 @@ init([_|_] = Opts) ->
 										[] when CopyFrom /= undefined ->
 											CPFrom = binary_to_term(base64:decode(CopyFrom)),
 											case CPFrom of
-												{{move,_NewShard,_Node},CopyReset,_CopyState} ->
+												{{move,_NewShard,_Node},CopyReset,CopyState} ->
 													IsMove = true;
-												{_,CopyReset,_CopyState} ->
+												{_,CopyReset,CopyState} ->
 													IsMove = false
 											end,
-											self() ! {check_redirect,true,Db,IsMove},
-											{ok,P#dp{copyreset = CopyReset}};
+											self() ! {check_redirect,Db,IsMove},
+											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState}};
 											% case binary_to_term(base64:decode(CopyFrom)) of
 											% 	{{move,NewShard,Node},CopyReset,CopyState} ->
 											% 		case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
