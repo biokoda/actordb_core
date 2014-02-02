@@ -137,7 +137,7 @@ start_split_other(Name,Type,OriginShard) ->
 													"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}]).
 
 split_other_done(P,Origin,Sql) ->
-	?AINF("Split other done ~p ~p from ~p",[P#state.name, P#state.type,Origin]),
+	?ADBG("Split other done ~p ~p from ~p",[P#state.name, P#state.type,Origin]),
 	callmvr(Origin,actordb_shardmvr,shard_has_split,[Origin,P#state.name,P#state.type]),
 	Sql.
 
@@ -148,7 +148,7 @@ callmvr(Shard,M,F,A) ->
 			?ADBG("apply ~p ~p ~p",[M,F,A]),
 			apply(M,F,A);
 		{_Shard,_,Node} ->
-			?AINF("rpc callmvr ~p ~p",[Node,{M,F,A}]),
+			?ADBG("rpc callmvr ~p ~p",[Node,{M,F,A}]),
 			bkdcore:rpc(Node,{M,F,A})
 	end.
 
@@ -528,8 +528,8 @@ cb_info({'DOWN',_Monitor,_,PID,Reason},P) ->
 			{noreply,P#state{stealingnow = undefined, stealingnowpid = undefined, stealingnowmon = undefined}};
 		_ when PID == P#state.splitproc ->
 			case Reason of
-				ok ->
-					?AINF("splitproc done ~p",[Reason]),
+				normal ->
+					?ADBG("splitproc done ~p",[Reason]),
 					{noreply,P#state{splitproc = undefined}};
 				Err ->
 					?AERR("splitproc error ~p",[Err]),
