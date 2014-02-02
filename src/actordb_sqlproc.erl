@@ -8,7 +8,7 @@
 -export([start/1,start_copylock/2, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/1]).
 -export([read/4,write/4,call/4,call/5,diepls/2]).
--export([call_slave/4,call_slave/5,call_master/4,dbcopy_send/4]).
+-export([call_slave/4,call_slave/5,call_master/4,dbcopy_send/5]).
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 % since sqlproc gets called so much, logging from here often makes it more difficult to find a bug.
@@ -430,7 +430,7 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 			% For unlock data = copyref
 			case lists:keyfind(Data,2,P#dp.locked) of
 				false ->
-					?ADBG("Lock does not exist ~p ~p",[{P#dp.actorname,P#dp.actortype},Data]),
+					?AERR("Unlock attempt on non existing lock ~p ~p, locks ~p",[{P#dp.actorname,P#dp.actortype},Data,P#dp.locked]),
 					{reply,false,P};
 				{wait_copy,Data,IsMove,Node,_TimeOfLock} ->
 					?ADBG("Actor unlocked ~p ~p",[{P#dp.actorname,P#dp.actortype},Data]),
@@ -445,16 +445,25 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 								[_,_] ->
 									{reply,ok,P};
 								_ ->
-									{reply,ok,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)}}
+									WithoutLock = lists:keydelete(Data,2,P#dp.locked),
+									case WithoutLock of
+										[] when P#dp.dbcopy_to == [] ->
+											actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
+											Md = P#dp.def_journal_mode;
+										_ ->
+											Md = P#dp.journal_mode
+									end,
+									{reply,ok,P#dp{locked = WithoutLock, journal_mode = Md}}
 							end
 					end;
 				{_FromPid,Data} ->
-					?ADBG("Queue unlock ~p",[P#dp.actorname]),
+					?AINF("Early unlock attempt ~p ~p ~p",[P#dp.actorname,Data,P#dp.locked]),
 					% Check if race condition
 					case lists:keyfind(Data,3,P#dp.dbcopy_to) of
 						{Node,_PID,Data,IsMove} ->
 							handle_call(Msg,CallFrom,P#dp{locked = [{wait_copy,Data,IsMove,Node,os:timestamp()}|P#dp.locked]});
 						false ->
+							?AERR("dbcopy_to does not contain ref ~p, ~p",[Data,P#dp.dbcopy_to]),
 							{reply,false,P}
 					end
 			end
@@ -968,7 +977,7 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 		{_Walname,Offset} ->
 			?ADBG("dbsend done ",[]),
 			% case rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,<<>>,done}]}) of
-			case rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,<<>>,done,original]}) of
+			case rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}) of
 				ok ->
 					exit(ok);
 				false ->
@@ -991,7 +1000,7 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 			{ok,Bin} = file:read(F1,Readnum),
 			?ADBG("dbsend wal ~p",[{Walname,Walsize}]),
 			% ok = rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,Bin,wal}]}),
-			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Bin,wal,original]}),
+			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,Bin,wal,original]}),
 			dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
 	end;
 dbcopy(P,Home,ActorTo,F,0,db) ->
@@ -999,7 +1008,7 @@ dbcopy(P,Home,ActorTo,F,0,db) ->
 	{ok,Bin} = file:read(F,1024*1024),
 	% ok = rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,Bin,db}]}),
 	?ADBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
-	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Bin,db,original]}),
+	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,Bin,db,original]}),
 	case byte_size(Bin) == 1024*1024 of
 		true ->
 			dbcopy(P,Home,ActorTo,F,0,db);
@@ -1008,11 +1017,11 @@ dbcopy(P,Home,ActorTo,F,0,db) ->
 			dbcopy(P,Home,ActorTo,undefined,0,wal)
 	end.
 
-dbcopy_send(Ref,Bin,Status,Origin) ->
+dbcopy_send(P,Ref,Bin,Status,Origin) ->
 	F = fun(_F,N) when N < 0 ->
 			{error,timeout};
 			(F,N) ->
-		case distreg:whereis({copyproc,Ref}) of
+		case distreg:whereis({copyproc,P#dp.actorname,P#dp.actortype,Ref}) of
 			undefined ->
 				timer:sleep(30),
 				F(F,N-30);
@@ -1046,8 +1055,9 @@ start_copylock(Fullname,Opt,N) when N < 2 ->
 			start_copylock(Fullname,Opt,N+1)
 	end;
 start_copylock(Fullname,_,_) ->
-	print_info(distreg:whereis(Fullname)),
-	{error,{slave_proc_running,Fullname}}.
+	Pid = distreg:whereis(Fullname),
+	print_info(Pid),
+	{error,{slave_proc_running,Pid,Fullname}}.
 
 
 start_copyrec(P) ->
@@ -1055,9 +1065,9 @@ start_copyrec(P) ->
 	Home = self(),
 	true = is_reference(P#dp.dbcopyref),
 	spawn(fun() ->
-		case distreg:reg(self(),{copyproc,P#dp.dbcopyref}) of
+		case distreg:reg(self(),{copyproc,P#dp.actorname,P#dp.actortype,P#dp.dbcopyref}) of
 			ok ->
-				?ADBG("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
+				?AINF("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
 				Home ! {StartRef,self()},
 				file:delete(P#dp.dbpath++"-wal"),
 				file:delete(P#dp.dbpath++"-shm"),
@@ -1083,7 +1093,7 @@ start_copyrec(P) ->
 				end,
 				dbcopy_receive(P,undefined,undefined,ConnectedNodes);
 			name_exists ->
-				Home ! {StartRef,distreg:whereis({copyproc,P#dp.dbcopyref})}
+				Home ! {StartRef,distreg:whereis({copyproc,P#dp.actorname,P#dp.actortype,P#dp.dbcopyref})}
 		end
 	end),
 	receive
@@ -1098,7 +1108,7 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 		{Ref,Source,Bin,Status,Origin} when Ref == P#dp.dbcopyref ->
 			case Origin of
 				original ->
-					[ok = rpc(Nd,{?MODULE,dbcopy_send,[Ref,Bin,Status,master]}) || Nd <- ChildNodes];
+					[ok = rpc(Nd,{?MODULE,dbcopy_send,[P,Ref,Bin,Status,master]}) || Nd <- ChildNodes];
 				master ->
 					ok
 			end,
@@ -1506,7 +1516,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 					exit({error,{unable_to_verify_transaction,_Err}})
 			end;
 		{update_from,Node,Mors,MasterNode,Ref} ->
-			?ADBG("Verify down ~p ~p master ~p, update from ~p",[PID,Reason,MasterNode,Node]),
+			?AINF("Verify down ~p ~p master ~p, update from ~p",[PID,Reason,MasterNode,Node]),
 			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
 			case P#dp.copyfrom of
 				undefined ->
@@ -1606,40 +1616,42 @@ handle_info({'DOWN',_Monitor,_,PID,Reason}, #dp{copyproc = PID} = P) ->
 handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
 		{Node,PID,Ref,IsMove} ->
-			?DBG("Down copyto proc ~p ~p ~p",[P#dp.actorname,Reason,P#dp.locked]),
-			case lists:keydelete(PID,2,P#dp.dbcopy_to) of
-				[] ->
-					?DBG("No copyto left ~p",[IsMove]),
-					actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
-					case IsMove of
-						true when Reason == ok ->
-							Moved = Node;
+			?AINF("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,Ref,P#dp.locked,P#dp.dbcopy_to]),
+			case IsMove of
+				true when Reason == ok ->
+					Moved = Node;
+				_ ->
+					Moved = undefined
+			end,
+			WithoutCopy = lists:keydelete(PID,1,P#dp.locked),
+			NewCopyto = lists:keydelete(PID,2,P#dp.dbcopy_to),
+			case lists:keyfind(Ref,2,WithoutCopy) of
+				false ->
+					% wait_copy not in list add it (2nd stage of lock)
+					WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy],
+					Md = P#dp.journal_mode,
+					Movedtonode = undefined;
+				{wait_copy,Ref,_,_,_} ->
+					% wait_copy already in list (race condition). Remove it. We already received confirmation if it is in it.
+					WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy),
+					case ok of
+						_ when WithoutCopy1 == [], NewCopyto == [] ->
+							actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
+							Md = P#dp.def_journal_mode;
 						_ ->
-							Moved = undefined
+							Md = P#dp.journal_mode
 					end,
-					WithoutCopy = lists:keydelete(PID,1,P#dp.locked),
-					case lists:keyfind(Ref,2,WithoutCopy) of
-						false ->
-							% wait_copy not in list add it
-							WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy],
-							Movedtonode = undefined;
-						{wait_copy,Ref,_,_,_} ->
-							% wait_copy already in list (race condition). Remove it. We already received confirmation if it is in it.
-							WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy),
-							Movedtonode = Moved
-					end,
-					NP = P#dp{dbcopy_to = [], journal_mode = P#dp.def_journal_mode, 
-								% Remove first stage of lock, add second stage of lock
-								locked = WithoutCopy1,
-								activity = P#dp.activity + 1, movedtonode = Movedtonode},
-					case queue:is_empty(P#dp.callqueue) of
-						true ->
-							{noreply,NP};
-						false ->
-							handle_info(doqueue,NP)
-					end;
-				L ->
-					{noreply,P#dp{dbcopy_to = L, locked = lists:keydelete(PID,1,P#dp.locked)}}
+					Movedtonode = Moved
+			end,
+			?AINF("After down copyto locked ~p",[WithoutCopy1]),
+			NP = P#dp{dbcopy_to = NewCopyto, 
+						locked = WithoutCopy1,journal_mode = Md,
+						activity = P#dp.activity + 1, movedtonode = Movedtonode},
+			case queue:is_empty(P#dp.callqueue) of
+				true ->
+					{noreply,NP};
+				false ->
+					handle_info(doqueue,NP)
 			end;
 		false ->
 			?ADBG("downmsg, verify maybe? ~p",[P#dp.verifypid]),
@@ -1834,7 +1846,7 @@ init([_|_] = Opts) ->
 		P when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->
 			case lists:keyfind(lockinfo,1,Opts) of
 				{lockinfo,dbcopy,{Ref,CbState,CpFrom,CpReset}} ->
-					?ADBG("Starting actor lock for copy on ref ~p",[Ref]),
+					?AINF("Starting actor lock for copy on ref ~p",[Ref]),
 					{ok,Pid} = start_copyrec(P#dp{mors = slave, cbstate = CbState, 
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					erlang:monitor(process,Pid),
