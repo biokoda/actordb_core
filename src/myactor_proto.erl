@@ -302,10 +302,7 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
             send_ok(Cst);
         ["show databases"++_] ->
             ?PROTO_DBG("got show dbs query"),
-            send_ok(Cst);
-        ["show tables"++_] ->
-            ?PROTO_DBG("got show tables query"),
-            send_ok(Cst);
+            send_ok(Cst);        
         ["select @@session"++_] ->
             ?PROTO_DBG("got session select variable"),
             multirow_response(Cst,{<<"variable_name">>},[{<<"1">>}]);
