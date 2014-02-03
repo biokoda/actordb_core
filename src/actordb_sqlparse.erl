@@ -208,6 +208,17 @@ parse_show(Bin) ->
 	case rem_spaces(Bin) of
 		<<"tables",_/binary>> ->
 			tables;
+		<<"TABLES",_/binary>> ->
+			tables;
+		<<"Tables",_/binary>> ->
+			tables;
+		<<_/binary>> = Str ->
+			case string:to_lower(butil:tolist(Str)) of
+				"tables"++_ ->
+					tables;
+				_ ->
+					ok
+			end;
 		_ ->
 			undefined
 	end.

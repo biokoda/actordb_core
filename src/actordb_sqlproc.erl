@@ -282,7 +282,7 @@ print_info(Pid) ->
   % Path to sqlite file.
   dbpath,
   % Which nodes current process is sending dbfile to.
-  % [{Node,Pid},..]
+  % [{Node,Pid,Ref,IsMove},..]
   dbcopy_to = [],
   % If node is sending us a complete copy of db, this identifies the operation
   dbcopyref,
@@ -360,8 +360,8 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 							case file:read_file_info(P#dp.dbpath) of
 								{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
 												IsMove == true orelse P#dp.journal_mode == wal ->
-									?DBG("senddb from ~p, myname ~p, remotename ~p info ~p",[bkdcore:node_name(),P#dp.actorname,ActornameToCopyto,
-																								{Node,Ref,IsMove,I#file_info.size}]),
+									?ADBG("senddb from ~p, myname ~p, remotename ~p info ~p, copyto already ~p",[bkdcore:node_name(),P#dp.actorname,ActornameToCopyto,
+																								{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
 									?DBLOG(P#dp.db,"senddb to ~p ~p",[ActornameToCopyto,Node]),
 									case P#dp.journal_mode of
 										wal ->
@@ -443,8 +443,9 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 								% A bit silly but it avoids a race condition. Copy process has not died yet
 								%  but we already received unlock request.
 								[_,_] ->
+									?ADBG("Race condition, wait for die ~p",[P#dp.actorname]),
 									{reply,ok,P};
-								_ ->
+								[_] ->
 									WithoutLock = lists:keydelete(Data,2,P#dp.locked),
 									case WithoutLock of
 										[] when P#dp.dbcopy_to == [] ->
@@ -457,7 +458,7 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 							end
 					end;
 				{_FromPid,Data} ->
-					?AINF("Early unlock attempt ~p ~p ~p",[P#dp.actorname,Data,P#dp.locked]),
+					?ADBG("Early unlock attempt ~p ~p ~p",[P#dp.actorname,Data,P#dp.locked]),
 					% Check if race condition
 					case lists:keyfind(Data,3,P#dp.dbcopy_to) of
 						{Node,_PID,Data,IsMove} ->
@@ -1017,11 +1018,11 @@ dbcopy(P,Home,ActorTo,F,0,db) ->
 			dbcopy(P,Home,ActorTo,undefined,0,wal)
 	end.
 
-dbcopy_send(P,Ref,Bin,Status,Origin) ->
+dbcopy_send(_P,Ref,Bin,Status,Origin) ->
 	F = fun(_F,N) when N < 0 ->
 			{error,timeout};
 			(F,N) ->
-		case distreg:whereis({copyproc,P#dp.actorname,P#dp.actortype,Ref}) of
+		case distreg:whereis({copyproc,Ref}) of
 			undefined ->
 				timer:sleep(30),
 				F(F,N-30);
@@ -1065,9 +1066,9 @@ start_copyrec(P) ->
 	Home = self(),
 	true = is_reference(P#dp.dbcopyref),
 	spawn(fun() ->
-		case distreg:reg(self(),{copyproc,P#dp.actorname,P#dp.actortype,P#dp.dbcopyref}) of
+		case distreg:reg(self(),{copyproc,P#dp.dbcopyref}) of
 			ok ->
-				?AINF("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
+				?ADBG("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
 				Home ! {StartRef,self()},
 				file:delete(P#dp.dbpath++"-wal"),
 				file:delete(P#dp.dbpath++"-shm"),
@@ -1093,7 +1094,7 @@ start_copyrec(P) ->
 				end,
 				dbcopy_receive(P,undefined,undefined,ConnectedNodes);
 			name_exists ->
-				Home ! {StartRef,distreg:whereis({copyproc,P#dp.actorname,P#dp.actortype,P#dp.dbcopyref})}
+				Home ! {StartRef,distreg:whereis({copyproc,P#dp.dbcopyref})}
 		end
 	end),
 	receive
@@ -1516,7 +1517,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 					exit({error,{unable_to_verify_transaction,_Err}})
 			end;
 		{update_from,Node,Mors,MasterNode,Ref} ->
-			?AINF("Verify down ~p ~p master ~p, update from ~p",[PID,Reason,MasterNode,Node]),
+			?ADBG("Verify down ~p ~p ~p master ~p, update from ~p",[P#dp.actorname,PID,Reason,MasterNode,Node]),
 			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
 			case P#dp.copyfrom of
 				undefined ->
@@ -1616,12 +1617,18 @@ handle_info({'DOWN',_Monitor,_,PID,Reason}, #dp{copyproc = PID} = P) ->
 handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
 		{Node,PID,Ref,IsMove} ->
-			?AINF("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,Ref,P#dp.locked,P#dp.dbcopy_to]),
+			?ADBG("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,Ref,P#dp.locked,P#dp.dbcopy_to]),
 			case IsMove of
 				true when Reason == ok ->
 					Moved = Node;
 				_ ->
 					Moved = undefined
+			end,
+			case Reason of
+				ok ->
+					ok;
+				_ ->
+					?AERR("Copyto process invalid exit ~p",[Reason])
 			end,
 			WithoutCopy = lists:keydelete(PID,1,P#dp.locked),
 			NewCopyto = lists:keydelete(PID,2,P#dp.dbcopy_to),
@@ -1632,7 +1639,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 					Md = P#dp.journal_mode,
 					Movedtonode = undefined;
 				{wait_copy,Ref,_,_,_} ->
-					% wait_copy already in list (race condition). Remove it. We already received confirmation if it is in it.
+					% wait_copy already in list (race condition). Remove it. We already received confirmation.
 					WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy),
 					case ok of
 						_ when WithoutCopy1 == [], NewCopyto == [] ->
@@ -1643,7 +1650,6 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 					end,
 					Movedtonode = Moved
 			end,
-			?AINF("After down copyto locked ~p",[WithoutCopy1]),
 			NP = P#dp{dbcopy_to = NewCopyto, 
 						locked = WithoutCopy1,journal_mode = Md,
 						activity = P#dp.activity + 1, movedtonode = Movedtonode},
@@ -1846,7 +1852,7 @@ init([_|_] = Opts) ->
 		P when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->
 			case lists:keyfind(lockinfo,1,Opts) of
 				{lockinfo,dbcopy,{Ref,CbState,CpFrom,CpReset}} ->
-					?AINF("Starting actor lock for copy on ref ~p",[Ref]),
+					?ADBG("Starting actor slave lock for copy on ref ~p",[Ref]),
 					{ok,Pid} = start_copyrec(P#dp{mors = slave, cbstate = CbState, 
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					erlang:monitor(process,Pid),
@@ -2333,6 +2339,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 						false ->
 							verified_response(MeMors,MasterNode);
 						_ ->
+							?ADBG("Node does not have db some other node does! ~p",[Actor]),
 							% Majority has evnum 0, but there is more than one group.
 							% This is an exception. In this case highest evnum db is the right one.
 							[{ok,Oknode,_,_,_}|_] = lists:reverse(lists:keysort(4,Results)),
@@ -2360,6 +2367,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 					case butil:findtrue(fun({ok,Node,_,_,_}) -> Node == MasterNode end,MajorityGroup) of
 						false ->
 							[{ok,Oknode,_,_,_}|_]  = MajorityGroup,
+							?ADBG("Restoring db from another node ~p",[Actor]),
 							verify_getdb(Actor,Type,Oknode,MasterNode,slave,Cb,Evnum,Evcrc);
 						{ok,MasterNode,_,_,_} ->
 							verify_getdb(Actor,Type,MasterNode,MasterNode,slave,Cb,Evnum,Evcrc)
@@ -2375,6 +2383,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 								false ->
 									exit({nomajority,Grouped});
 								{_,_ZeroGroup} when Evnum == 0 ->
+									?ADBG("Node does not have db some other node does! ~p",[Actor]),
 									[{_,OtherGroup}] = lists:keydelete({0,0},1,Grouped),
 									[{ok,Oknode,_,_,_}|_]  = OtherGroup,
 									verify_getdb(Actor,Type,Oknode,MasterNode,MeMors,Cb,Evnum,Evcrc);
