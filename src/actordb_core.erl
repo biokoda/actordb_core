@@ -153,12 +153,29 @@ start(_Type, _Args) ->
 
 	% Start dependencies
 	application:start(esqlite),
+	case length(actordb_conf:paths())*2 >= erlang:system_info(logical_processors) of
+		true ->
+			NProcs = length(actordb_conf:paths())*2;
+		false ->
+			NProcs = length(actordb_conf:paths())
+	end,
+	esqlite3:init(NProcs),
+	spawn(fun() -> check_rowid() end),
 	application:start(lager),						
 	bkdcore:start(actordb:configfiles()),
 	butil:wait_for_app(bkdcore),
 
 	Res = actordb_sup:start_link(),
 	Res.
+
+check_rowid() ->
+	{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
+	case actordb_sqlite:exec(Db,"CREATE TABLE t (id TEXT PRIMARY KEY) WITHOUT ROWID;") of
+		ok ->
+			application:set_env(actordb_core,withoutrowid,<<"WITHOUT ROWID">>);
+		_ ->
+			application:set_env(actordb_core,withoutrowid,<<>>)
+	end.
 
 stop(_State) ->
 	ok.

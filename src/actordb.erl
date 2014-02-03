@@ -4,7 +4,7 @@
 
 -module(actordb).
 % API
--export([exec/1]).
+-export([exec/1,types/0,tables/1,columns/2]).
 % start/stop
 -export([schema_changed/0]).
 % Generally not to be called from outside actordb
@@ -33,6 +33,67 @@ stop() ->
 	actordb_core:stop().
 stop_complete() ->
 	actordb_core:stop_complete().
+
+types() ->
+	case catch actordb_schema:types() of
+		L when is_list(L) ->
+			L;
+		_Err ->
+			schema_not_loaded
+	end.
+tables(Type) when is_atom(Type) ->
+	case catch apply(actordb_schema,Type,[tables]) of
+		L when is_list(L) ->
+			L;
+		_Err ->
+			schema_not_loaded
+	end;
+tables(Type) ->
+	case Type of
+		[_|_] ->
+			case catch list_to_existing_atom(Type) of
+				A ->
+					ok
+			end;
+		<<_/binary>> ->
+			case catch binary_to_existing_atom(Type,utf8) of
+				A ->
+					ok
+			end
+	end,
+	case is_atom(A) of
+		true ->
+			tables(A);
+		_ ->
+			schema_not_loaded
+	end.
+
+columns(Type,Table) when is_atom(Type) ->
+	case apply(actordb_schema,Type,[butil:tobin(Table)]) of
+		L when is_list(L) ->
+			L;
+		_Err ->
+			schema_not_loaded
+	end;
+columns(Type,Table) ->
+	case Type of
+		[_|_] ->
+			case catch list_to_existing_atom(Type) of
+				A ->
+					ok
+			end;
+		<<_/binary>> ->
+			case catch binary_to_existing_atom(Type,utf8) of
+				A ->
+					ok
+			end
+	end,
+	case is_atom(A) of
+		true ->
+			columns(A,Table);
+		_ ->
+			schema_not_loaded
+	end.
 
 % Calls with backpressure.
 % Generally all calls to actordb should get executed with these functions.

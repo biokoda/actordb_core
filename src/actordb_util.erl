@@ -112,7 +112,6 @@ parse_cfg_schema(G1) ->
 			Ids = [{Type,string} || Type <- Types]
 	end,
 	TypeSqls = [{Type,list_to_tuple([check_for_end(S) || S <- check_str(Sqls)])} || {Type,_,Sqls} <- G],
-	
 	TypeColumns = [begin
 		EntireSchema = tuple_to_list(Sqls),
 		{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
@@ -124,7 +123,7 @@ parse_cfg_schema(G1) ->
 			{Table,[{butil:ds_val(<<"name">>,Row),butil:ds_val(<<"type">>,Row)} || Row <- Rows]}
 		 end || {Table} <- Tables],
 		 actordb_sqlite:stop(Db),
-		 {Type,multihead,Val}
+		 {Type,multihead,[{tables,[Table || {Table} <- Tables]}|Val]}
 	end || {Type,Sqls} <- TypeSqls],
 
 	Out = [{types,Types}, {num,erlang:phash2(G1)}] ++ 

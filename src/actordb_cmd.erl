@@ -12,7 +12,7 @@ cmd(init,parse,Etc) ->
 		{Nodes,Groups} ->
 			case catch yamerl_constr:file(Etc++"/schema.yaml") of
 				[Schema] ->
-					NewCfg = actordb_util:parse_cfg_schema(Schema),
+					NewCfg = parse_schema(Schema),
 					case catch compare_schema([],NewCfg,[]) of
 						{ok,L} ->
 							case bkdcore:nodelist() of
@@ -103,7 +103,7 @@ cmd(updateschema,parse,Etc) ->
 		Types when is_list(Types) ->
 			try yamerl_constr:file(Etc++"/schema.yaml") of
 				[Schema] ->
-					NewCfg = actordb_util:parse_cfg_schema(Schema),
+					NewCfg = parse_schema(Schema),
 					case catch compare_schema(Types,NewCfg,[]) of
 						{ok,L} ->
 							{ok,L};
@@ -209,6 +209,10 @@ compare_nodes([NewInfo|T],Out) ->
 compare_nodes([],Out) ->
 	Out.
  
+parse_schema(Schema) ->
+	L1 = actordb_util:parse_cfg_schema(Schema),
+	[Tuple || Tuple <- L1, tuple_size(Tuple) == 2].
+
 % Move over existing tyes of actors. 
 % For every type check if it exists in new schema and if any sql statements added.
 compare_schema([Type|T],New,Out) when Type == ids; Type == types; Type == iskv; Type == num ->
@@ -217,6 +221,8 @@ compare_schema([Type|T],New,Out) ->
 	case lists:keyfind(Type,1,New) of
 		false ->
 			{error,io_lib:fwrite("Missing type ~p in new config. Config invalid.~n",[Type])};
+		{_,_,_} ->
+			compare_schema(T,New,Out);
 		{_,SqlNew} ->
 			case apply(actordb_schema,Type,[]) of
 				SqlNew ->
@@ -237,10 +243,11 @@ compare_schema([Type|T],New,Out) ->
 			end
 	end;
 compare_schema([],New,O) ->
-	case lists:keydelete(ids,1,lists:keydelete(types,1,lists:keydelete(iskv,1,lists:keydelete(num,1,New)))) of
+	NewTypes = lists:keydelete(ids,1,lists:keydelete(types,1,lists:keydelete(iskv,1,lists:keydelete(num,1,New)))),
+	case NewTypes of
 		[] ->
 			{ok,O};
-		NewTypes ->
+		_ ->
 			{iskv,multihead,MultiheadList1} = lists:keyfind(iskv,1,New),
 			MultiheadList = [Name || {Name,true} <- lists:keydelete(any,1,MultiheadList1)],
 			[check_sql(Type,SqlNew,lists:member(Type,MultiheadList)) || {Type,SqlNew} <- NewTypes],
