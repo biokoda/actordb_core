@@ -84,19 +84,21 @@ handle_call({transaction_state,Id},_From,P) ->
 handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
 
-	{ok,{rowid,Num}} = actordb_actor:write(sqlname(P),[create],<<"INSERT INTO transactions (commited) VALUES (0);">>),
+	{ok,{changes,Num,_}} = actordb_actor:write(sqlname(P),[create],<<"INSERT INTO transactions (commited) VALUES (0);">>),
 
 	{Pid,_} = spawn_monitor(fun() -> 
 		% Send sql
+		% put(nchanges,0),
 		case catch do_multiupdate(P#dp{currow = Num},S) of
 			ok ->
+				% NChanges = get(nchanges),
 				erase(),
 				?ADBG("multiupdate commiting"),
 				% With this write transaction is commited. 
 				% If any node goes down, actors will check back to this updater process
 				%  if transaction is set to commited or not. If commited is set and they have not commited, they will execute their sql
 				%  which they have saved locally.
-				ok = actordb_actor:write(sqlname(P),[create],<<"UPDATE transactions SET commited=1 WHERE id=",(butil:tobin(Num))/binary,
+				{ok,_} = actordb_actor:write(sqlname(P),[create],<<"UPDATE transactions SET commited=1 WHERE id=",(butil:tobin(Num))/binary,
 														" AND (commited=0 OR commited=1);">>),
 				% Inform all actors that they should commit.
 				case catch do_multiupdate(P#dp{currow = Num, confirming = true},S) of
@@ -105,6 +107,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 					Err ->
 						?AERR("Multiupdate confirm error ~p",[Err])
 				end,
+				% exit({ok,{changes,-1,NChanges}});
 				exit(ok);
 			Err ->
 				?AERR("Multiupdate failed ~p",[Err]),
@@ -118,7 +121,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.
 				% Once commited is set to 1 or -1 it is final.
-				ok = actordb_actor:write(sqlname(P),[create],abandon_sql(Num)),
+				{ok,_} = actordb_actor:write(sqlname(P),[create],abandon_sql(Num)),
 				exit(abandoned)
 		end
 	end),
@@ -146,10 +149,12 @@ handle_info({'DOWN',_Monitor,_Ref,PID,Result}, #dp{execproc = PID} = P) ->
 	case Result of
 		ok ->
 			ok;
+		{ok,_} ->
+			ok;
 		abandoned ->
 			ok;
 		_ ->
-			ok = actordb_actor:write(sqlname(P),[create],abandon_sql(P#dp.curnum))
+			{ok,_} = actordb_actor:write(sqlname(P),[create],abandon_sql(P#dp.curnum))
 	end,
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
@@ -193,7 +198,7 @@ init(Name1) ->
 			erlang:send_after(1000,self(),timeout),
 			case actordb_actor:read(sqlname(P),[create],<<"SELECT max(id),commited FROM transactions;">>) of
 				{ok,[{columns,_},{rows,[{Id,0}]}]} ->
-					ok = actordb_actor:write(sqlname(P),[create],abandon_sql(Id));
+					{ok,_} = actordb_actor:write(sqlname(P),[create],abandon_sql(Id));
 				{ok,_} ->
 					ok
 			end,
@@ -231,8 +236,10 @@ schema(1) ->
 % If a variable has local scope (it's from a for statement), it has a different {VariableName,cols}
 % [{VariableName,cols},{gvar,GlobalVarName,GlobalVarIndex}]
 
+
 multiread(L) ->
 	erase(),
+	put(nchanges,0),
 	case catch do_multiupdate(undefined,L) of
 		ok ->
 			case get({<<"RESULT">>,cols}) of
@@ -500,6 +507,9 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 			store_vars(IsMulti,Actor,Varlist,[L]);
 		{ok,[_|_] = L} ->
 			store_vars(IsMulti,Actor,Varlist,L);
+		{ok,{changes,_,_NChanges}} ->
+			% put(nchanges,get(nchanges)+NChanges);
+			ok;
 		{ok,_} ->
 			ok;
 		ok ->

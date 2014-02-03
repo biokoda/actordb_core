@@ -102,8 +102,10 @@ exec(Db,Sql) ->
 	case Res of
 		{ok,[[{columns,_},_] = Res1]} ->
 			{ok,Res1};
-		{ok,[{rowid,X}]} ->
+		{ok,[{rowid,X}]} -> % not used anymore
 			{ok,{rowid,X}};
+		{ok,[{changes,Id,Rows}]} ->
+			{ok,{changes,Id,Rows}};
 		{ok,[ok]} ->
 			ok;
 		{ok,[]} ->

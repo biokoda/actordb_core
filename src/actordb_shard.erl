@@ -122,9 +122,9 @@ start_split(Name,Type1,SplitPoint) ->
 															 				upperlimit = SplitPoint-1, 
 															 				name = Name, type = Type}}]),	
 	spawn(fun() -> 
-		ok = actordb_sqlproc:write({Name,Type},[create],
+		ok = actordb_sqlproc:okornot(actordb_sqlproc:write({Name,Type},[create],
 								{{?MODULE,cb_set_upper_limit,[SplitPoint]},undefined,undefined},
-								{?MODULE,start_split,[SplitPoint]})
+								{?MODULE,start_split,[SplitPoint]}))
 	end),
 	{ok,Pid}.
 	

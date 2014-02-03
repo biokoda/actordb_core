@@ -8,7 +8,7 @@
 -export([start/1,start_copylock/2, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/1]).
 -export([read/4,write/4,call/4,call/5,diepls/2]).
--export([call_slave/4,call_slave/5,call_master/4,dbcopy_send/5]).
+-export([call_slave/4,call_slave/5,call_master/4,dbcopy_send/5,okornot/1]).
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 % since sqlproc gets called so much, logging from here often makes it more difficult to find a bug.
@@ -501,7 +501,7 @@ handle_call({commit,Doit,Id},From, P) ->
 							reply(From,ok),
 							{stop,normal,P};
 						_ ->
-							ok = actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>),
+							{ok,_} = actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>),
 							{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
 									 replicate_sql = undefined, activity = P#dp.activity + 1}}
 					end;
@@ -911,7 +911,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 								 transactionid = TransactionId, schemavers = NewVers,
 								transactioncheckref = CheckRef,replicate_sql = {ComplSql,EvNum,EvCrc,NewVers}}};
 				_Err ->
-					ok = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+					{ok,_} = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					erlang:demonitor(CheckRef),
 					?ADBG("Transaction not ok ~p",[_Err]),
 					{reply,Res,P#dp{actortype = P#dp.activity + 1, transactionid = undefined}}
@@ -921,7 +921,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			case P#dp.transactionid of
 				TransactionId ->
 					% Rollback prev version of sql.
-					ok = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+					{ok,_} = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					{OldSql,_EvNum,_EvCrc,NewVers} = P#dp.replicate_sql,
 					% Combine prev sql with new one.
 					Sql = <<OldSql/binary,Sql1/binary>>,
@@ -950,7 +950,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(CrcTransaction),<<"' WHERE id=",?EVCRC/binary,";">>
 					 ],
-			ok = actordb_sqlite:exec(P#dp.db,ComplSql),
+			ok = okornot(actordb_sqlite:exec(P#dp.db,ComplSql)),
 			?DBG("Replicating transaction write, connected ~p",[ConnectedNodes]),
 			case ok of
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
@@ -1454,7 +1454,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 				<<"delete">> ->
 					ok;
 				_ ->
-					ok = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
+					{ok,_} = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
 			end,
 			reply(P#dp.callfrom,{error,Err}),
 			handle_info(doqueue,P#dp{callfrom = undefined,commiter = undefined, transactionid = undefined, replicate_sql = undefined})
@@ -1910,34 +1910,6 @@ init([_|_] = Opts) ->
 											end,
 											self() ! {check_redirect,Db,IsMove},
 											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState}};
-											% case binary_to_term(base64:decode(CopyFrom)) of
-											% 	{{move,NewShard,Node},CopyReset,CopyState} ->
-											% 		case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-											% 										{getinfo,donothing}]}) of
-											% 			{redirect,SomeNode} ->
-											% 				case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
-											% 					true ->
-											% 						ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype)
-											% 				end;
-											% 			Invalid ->
-											% 				?AERR("Actor ~p has not moved correctly, should redirect ~p",[P#dp.actorname,Invalid]),
-											% 				throw(move_failed)
-											% 		end,
-											% 		ResetSql = do_copy_reset(true,CopyReset,CopyState);
-											% 	{_,false,_} ->
-											% 		ResetSql = <<>>;
-											% 	{_,CopyReset,CopyState} ->
-											% 		?ADBG("Copyreset ~p ~p",[CopyReset,CopyState]),
-											% 		ResetSql = do_copy_reset(false,CopyReset,CopyState)
-											% end,
-											% case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
-											% 							  ResetSql/binary,"COMMIT;">>) of
-											% 	{ok,_} ->
-											% 		ok;
-											% 	ok ->
-											% 		ok
-											% end,
-											% {ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc,schemavers = Vers,movedtonode = MovedToNode1})};
 										[] ->
 											case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
 												{_,[]} ->
@@ -2490,6 +2462,8 @@ okornot(Res) ->
 		ok ->
 			ok;
 		{rowid,_} ->
+			ok;
+		{changes,_} ->
 			ok;
 		{ok,_} ->
 			ok;

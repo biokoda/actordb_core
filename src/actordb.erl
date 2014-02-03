@@ -138,7 +138,7 @@ direct_call(Actor,Type1,Flags,IsWrite,Statements,DoRpc) ->
 	Where = actordb_shardmngr:find_local_shard(Actor,Type),
 	% ?AINF("direct_call ~p ~p ~p ~p",[Actor,Statements,Where,DoRpc]),
 	% ?ADBG("call for actor local ~p global ~p ~p~n",[{Where,bkdcore:node_name()},actordb_shardmngr:find_global_shard(Actor),{IsWrite,Statements}]),
-	case Where of
+	Res = case Where of
 		undefined when DoRpc ->
 			{_,_,Node} = actordb_shardmngr:find_global_shard(Actor),
 			rpc(Node,Actor,{?MODULE,direct_call,[Actor,Type,Flags,IsWrite,Statements,false]});
@@ -157,7 +157,8 @@ direct_call(Actor,Type1,Flags,IsWrite,Statements,DoRpc) ->
 				false ->
 					actordb_actor:read(Shard,{Actor,Type},Flags,Statements)
 			end
-	end.
+	end,
+	Res.
 
 % First call node that should handle request.
 % If node not working, check cluster nodes and pick one by consistent hashing.
