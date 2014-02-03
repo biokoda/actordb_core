@@ -111,10 +111,26 @@ parse_cfg_schema(G1) ->
 		_ ->
 			Ids = [{Type,string} || Type <- Types]
 	end,
+	TypeSqls = [{Type,list_to_tuple([check_for_end(S) || S <- check_str(Sqls)])} || {Type,_,Sqls} <- G],
+	
+	TypeColumns = [begin
+		EntireSchema = tuple_to_list(Sqls),
+		{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
+		actordb_sqlite:exec(Db,EntireSchema),
+		{ok,[{columns,{<<"name">>}},{rows,Tables}]} = actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';"),
+		Val = [begin
+			{ok,[{columns,Columns},{rows,Rows1}]} = actordb_sqlite:exec(Db,["pragma table_info(",Table,");"]),
+			Rows = [lists:zip(tuple_to_list(Columns),tuple_to_list(Row)) || Row <- Rows1],
+			{Table,[{butil:ds_val(<<"name">>,Row),butil:ds_val(<<"type">>,Row)} || Row <- Rows]}
+		 end || {Table} <- Tables],
+		 actordb_sqlite:stop(Db),
+		 {Type,multihead,Val}
+	end || {Type,Sqls} <- TypeSqls],
+
 	Out = [{types,Types}, {num,erlang:phash2(G1)}] ++ 
 	[{iskv,multihead,[{Type,true} || {Type,kv,_Sqls} <- G] ++ [{any,false}]}] ++
-	 [{ids,Ids}] ++
-	 [{Type,list_to_tuple([check_for_end(S) || S <- check_str(Sqls)])} || {Type,_,Sqls} <- G],
+	 [{ids,Ids}] ++ TypeColumns ++
+	 TypeSqls,
 	Out.
 
 check_str(S) ->
