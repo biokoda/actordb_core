@@ -265,7 +265,8 @@ check_sql(Type,SqlNew,IsKv) ->
 				ok;
 			{sql_error,E,_E1} ->
 				actordb_sqlite:stop(Db),
-				throw({error,io_lib:fwrite("SQL Error for type \"~p\"~n~p~n~p~n",[Type,E,binary_to_list(iolist_to_binary(element(N,SqlNew)))])});
+				throw({error,io_lib:fwrite("SQL Error for type \"~p\"~n~p~n~p~n",[Type,E,
+									binary_to_list(iolist_to_binary(element(N,SqlNew)))])});
 			{error,E} ->
 				actordb_sqlite:stop(Db),
 				throw({error,io_lib:fwrite("SQL Error for type ~p, ~p~n",[Type,E])})
@@ -284,22 +285,26 @@ check_sql(Type,SqlNew,IsKv) ->
 									<<"TEXT">> ->
 										ok;
 									IdColType ->
-										throw({error,io_lib:fwrite("KV data type ~p \"id\" column should be TEXT, but is ~p.",[Type,butil:tolist(IdColType)])})
+										throw({error,io_lib:fwrite("KV data type ~p \"id\" column should be TEXT, but is ~p.",
+												[Type,butil:tolist(IdColType)])})
 								end
 						end,
 						case butil:findobj(<<"name">>,<<"hash">>,Rows) of
 							false ->
-								throw({error,io_lib:fwrite("KV data type ~p does not contain \"hash\" column of type INTEGER.",[Type])});
+								throw({error,io_lib:fwrite("KV data type ~p does not contain \"hash\" column of type INTEGER.",
+										[Type])});
 							HashCol ->
 								case butil:ds_val(<<"type">>,HashCol) of
 									<<"INTEGER">> ->
 										ok;
 									ColType ->
-										throw({error,io_lib:fwrite("KV data type ~p \"hash\" column should be INTEGER, but is ~p.",[Type,butil:tolist(ColType)])})
+										throw({error,io_lib:fwrite("KV data type ~p \"hash\" column should be INTEGER, but is ~p.",
+												[Type,butil:tolist(ColType)])})
 								end
 						end;
 					{ok,[{columns,{<<"name">>}},{rows,Tables}]} ->
-						throw({error,io_lib:fwrite("KV data types can only have a single table named \"actors\".~nType ~p has tables: ~p",
+						throw({error,io_lib:fwrite("KV data types can only have a single table named \"actors\"."++
+													"~nType ~p has tables: ~p",
 									[Type,[X || {X} <- Tables]])})
 				end;
 			false ->

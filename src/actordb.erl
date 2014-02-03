@@ -5,10 +5,15 @@
 -module(actordb).
 % API
 -export([exec/1,types/0,tables/1,columns/2]).
+% API backpressure
+-export([exec_bp/2,check_bp/0,sleep_bp/1,stop_bp/1]).
 % start/stop
+-export([start/0,stop/0,stop_complete/0,is_ready/0]).
+% start/stop internal
 -export([schema_changed/0]).
-% Generally not to be called from outside actordb
--export([direct_call/6,actor_id_type/1]).
+% Internal. Generally not to be called from outside actordb
+-export([direct_call/6,actor_id_type/1,configfiles/0,exec1/1,
+		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
 -include("actordb.hrl").
 -compile(export_all).
 
@@ -19,13 +24,6 @@ is_ready() ->
 		_ ->
 			false
 	end.
-configfiles() ->
-	[
-		{cfg,"schema.yaml",[{autoload,true},
-							{mod,actordb_schema},
-							{preload,{actordb_util,parse_cfg_schema,[]}},
-							{onload,{actordb,schema_changed,[]}}]}
-	].
 
 start() ->
 	actordb_core:start().
@@ -278,7 +276,13 @@ schema_changed() ->
 	[actordb_shard:kv_schema_check(Type) || Type <- actordb_schema:types(), actordb_schema:iskv(Type)],
 	ok.
 
-
+configfiles() ->
+	[
+		{cfg,"schema.yaml",[{autoload,true},
+							{mod,actordb_schema},
+							{preload,{actordb_util,parse_cfg_schema,[]}},
+							{onload,{actordb,schema_changed,[]}}]}
+	].
 
 
 
