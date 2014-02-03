@@ -501,7 +501,7 @@ handle_call({commit,Doit,Id},From, P) ->
 							reply(From,ok),
 							{stop,normal,P};
 						_ ->
-							{ok,_} = actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>),
+							ok = okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
 							{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
 									 replicate_sql = undefined, activity = P#dp.activity + 1}}
 					end;
@@ -911,7 +911,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 								 transactionid = TransactionId, schemavers = NewVers,
 								transactioncheckref = CheckRef,replicate_sql = {ComplSql,EvNum,EvCrc,NewVers}}};
 				_Err ->
-					{ok,_} = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					erlang:demonitor(CheckRef),
 					?ADBG("Transaction not ok ~p",[_Err]),
 					{reply,Res,P#dp{actortype = P#dp.activity + 1, transactionid = undefined}}
@@ -921,7 +921,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			case P#dp.transactionid of
 				TransactionId ->
 					% Rollback prev version of sql.
-					{ok,_} = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					{OldSql,_EvNum,_EvCrc,NewVers} = P#dp.replicate_sql,
 					% Combine prev sql with new one.
 					Sql = <<OldSql/binary,Sql1/binary>>,
@@ -1136,9 +1136,9 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 							exit(copynoschema);
 						true ->
 							?ADBG("Copyreceive done ~p",[{P#dp.actorname,P#dp.actortype,Origin,P#dp.copyfrom}]),
-							{ok,_} = actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
+							ok = okornot(actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
 											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,
-																				P#dp.cbstate})))/binary,"');">>),
+																				P#dp.cbstate})))/binary,"');">>)),
 							actordb_sqlite:stop(Db),
 							Source ! {Ref,self(),ok},
 							case Origin of
@@ -1454,7 +1454,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 				<<"delete">> ->
 					ok;
 				_ ->
-					{ok,_} = actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
+					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>))
 			end,
 			reply(P#dp.callfrom,{error,Err}),
 			handle_info(doqueue,P#dp{callfrom = undefined,commiter = undefined, transactionid = undefined, replicate_sql = undefined})
@@ -1544,13 +1544,13 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			{stop,normal,P};
 		{wlog,Crc,EvNum,Sql} ->
 			?ADBG("Verify wlog sql ~p ~p",[P#dp.actorname,P#dp.actortype]),
-			{ok,_} = actordb_sqlite:exec(P#dp.db,[
+			ok = okornot(actordb_sqlite:exec(P#dp.db,[
 					 <<"$SAVEPOINT 'adb';">>,
 					 Sql,
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
 					 <<"$RELEASE SAVEPOINT 'adb';">>
-					 ]),
+					 ])),
 			{ok,NP} = init(P#dp{evnum = EvNum, evcrc = Crc},update_wlog),
 			{noreply,NP};
 		{nomajority,Groups} ->
@@ -1915,11 +1915,11 @@ init([_|_] = Opts) ->
 												{_,[]} ->
 													SchemaVers = Vers;
 												{SchemaVers,Schema} ->
-													{ok,_} = actordb_sqlite:exec(Db,
+													ok = okornot(actordb_sqlite:exec(Db,
 															<<"BEGIN;",(iolist_to_binary(Schema))/binary,
 																"UPDATE __adb SET val='",(butil:tobin(SchemaVers))/binary,
 																		"' WHERE id=",?SCHEMA_VERS/binary,";",
-																"COMMIT;">>)
+																"COMMIT;">>))
 											end,
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,movedtonode = MovedToNode1})};
 										[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
@@ -1943,7 +1943,7 @@ init([_|_] = Opts) ->
 									CreateDb = [base_schema(SchemaVers,P#dp.actortype),
 												 Schema,
 												 <<"COMMIT;">>],
-									{ok,_} = actordb_sqlite:exec(Db,CreateDb),
+									ok = okornot(actordb_sqlite:exec(Db,CreateDb)),
 									?DBLOG(Db,"init normal created schema",[]),
 									{ok,start_verify(NP#dp{schemavers = SchemaVers})};
 								false ->
@@ -2211,7 +2211,7 @@ delactorfile(P) ->
 			% Leave behind redirect marker.
 			% Create a file with "1" attached to end
 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath++"1",off),
-			{ok,_} = actordb_sqlite:exec(Db,[base_schema(0,P#dp.actortype,P#dp.movedtonode),<<"COMMIT;">>]),
+			ok = okornot(actordb_sqlite:exec(Db,[base_schema(0,P#dp.actortype,P#dp.movedtonode),<<"COMMIT;">>])),
 			actordb_sqlite:stop(Db),
 			% Rename into the actual dbfile (should be atomic op)
 			ok = file:rename(P#dp.dbpath++"1",P#dp.dbpath),
