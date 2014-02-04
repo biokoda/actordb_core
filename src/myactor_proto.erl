@@ -446,14 +446,14 @@ execute_query(Cst,Stmts0,Query) ->
             case Result of
                 ok ->   % update queries                                    
                     send_ok(Cst0);
-                {ok,{rowid,Num}} -> % insert queries
-                    send_ok(Cst0,{affected_count,0},{rowid,Num});
+                {ok,{changes,LastInsertId,NumChanges}} -> % insert queries
+                    send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
                 {ok,[{columns,Cols},{rows,Rows}]} ->    % data queries
                     multirow_response(Cst0,Cols,Rows);
-                {ok,[{rowid,_}|_] = MultiResponse} ->
+                {ok,[{changes,_,_}|_] = MultiResponse} ->
                     case lists:last(MultiResponse) of
-                        {rowid,Num} ->
-                            send_ok(Cst0,{affected_count,0},{rowid,Num});                        
+                        {changes,LastInsertId,NumChanges} ->
+                            send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});                        
                         [{columns,Cols},{rows,Rows}] ->
                             multirow_response(Cst0,Cols,Rows);
                         _ ->
@@ -461,8 +461,8 @@ execute_query(Cst,Stmts0,Query) ->
                     end;                    
                 {ok,[[{columns,_},{rows,_}]|_] = MultiResponse } ->    % data queries
                     case lists:last(MultiResponse) of
-                        {rowid,Num} ->
-                            send_ok(Cst0,{affected_count,0},{rowid,Num});
+                        {changes,LastInsertId,NumChanges} ->
+                            send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
                         [{columns,Cols},{rows,Rows}] ->
                             multirow_response(Cst0,Cols,Rows);
                         _ ->
