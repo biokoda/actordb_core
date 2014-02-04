@@ -285,6 +285,8 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
     case actordb_sqlparse:parse_statements(Query) of
         ["show connection state"++_] ->
             ?PROTO_DBG("showing connection state: ~p",[Cst]),
+            Flags = [ [butil:tobin(Flag)," "] ||  Flag <- Cst#cst.current_actor_flags],
+            CstBpState = io_lib:format("~p",[Cst#cst.bp_action]),
             multirow_response(Cst,  {<<"param">>,<<"value">>},
                                     [
                                     {<<"socket">>,erlang:port_to_list(Cst#cst.socket)},
@@ -295,8 +297,8 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
                                     {<<"sequenceid">>,butil:tobin(Cst#cst.sequenceid)},
                                     {<<"capabilities">>,butil:tobin(Cst#cst.capabilities)},
                                     {<<"current_actor">>,butil:tobin(Cst#cst.current_actor)},
-                                    {<<"current_actor_flags">>,butil:tobin(Cst#cst.current_actor_flags)},
-                                    {<<"bp_action">>,term_to_binary(Cst#cst.bp_action)},
+                                    {<<"current_actor_flags">>,iolist_to_binary(Flags)},
+                                    {<<"bp_action">>,butil:tobin(CstBpState)},
                                     {<<"queueing">>,butil:tobin(Cst#cst.queueing)},
                                     {<<"query_queue">>,butil:tobin(Cst#cst.query_queue)}]);
         ["select @@version_comment"++_] ->
