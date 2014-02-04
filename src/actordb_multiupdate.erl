@@ -113,7 +113,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 					Err ->
 						?AERR("Multiupdate confirm error ~p",[Err])
 				end,
-				% exit({ok,{changes,-1,NChanges}});
+				% exit({ok,{changes,0,NChanges}});
 				exit(ok);
 			Err ->
 				?AERR("Multiupdate failed ~p",[Err]),

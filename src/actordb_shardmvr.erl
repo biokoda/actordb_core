@@ -209,13 +209,18 @@ handle_info({bkdcore_sharedstate,cluster_connected},P) ->
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info(check_steal,P) ->
-	erlang:send_after(10000,self(),check_steal),
-	?ADBG("Check steal ~p ~p",[P#dp.shardstoget, P#dp.shards_splitting]),
-	handle_info(check_splits,start_shards(P));
+	erlang:send_after(60000,self(),check_steal),
+	case P#dp.init of
+		true ->
+			?ADBG("Check steal ~p ~p",[P#dp.shardstoget, P#dp.shards_splitting]),
+			handle_info(check_splits,start_shards(P));
+		false ->
+			{noreply,P}
+	end;
 handle_info(check_splits,P) ->
 	case ok of
-		% _ when P#dp.shards_splitting /= [] ->
-		% 	{noreply,start_splits(P,P#dp.local_shards)};
+		_ when P#dp.shards_splitting /= [] ->
+			{noreply,start_splits(P,P#dp.local_shards)};
 		_ ->
 			{noreply,P}
 	end;
@@ -230,7 +235,7 @@ terminate(_, _) ->
 code_change(_, P, _) ->
 	{ok, P}.
 init([]) ->
-	erlang:send_after(10000,self(),check_steal),
+	erlang:send_after(60000,self(),check_steal),
 	erlang:send_after(400,self(),can_start),
 	ok = bkdcore_sharedstate:register_app(?MODULE,{?MODULE,whereis,[]}),
 	{ok,#dp{}}.
