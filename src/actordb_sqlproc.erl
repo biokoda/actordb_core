@@ -2010,9 +2010,17 @@ check_redirect(P,Copyfrom) ->
 				{redirect,SomeNode} ->
 					case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
 						true ->
-							{true,NewShard}
+							{true,NewShard};
+						false ->
+							case bkdcore:cluster_group(Node) == bkdcore:cluster_group(SomeNode) of
+								true ->
+									?AERR("Still redirects to local, will retry move. ~p",[{P#dp.actorname,P#dp.actortype}]),
+									check_redirect(P,{move,NewShard,SomeNode});
+								false ->
+									check_redirect(P,{move,NewShard,SomeNode})
+							end
 					end;
-				_ ->
+				ok ->
 					false
 			end;
 		{Copyf1,_,_} when is_tuple(Copyf1) ->
