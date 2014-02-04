@@ -210,8 +210,8 @@ compare_nodes([],Out) ->
 	Out.
  
 parse_schema(Schema) ->
-	L1 = actordb_util:parse_cfg_schema(Schema),
-	[Tuple || Tuple <- L1, tuple_size(Tuple) == 2].
+	actordb_util:parse_cfg_schema(Schema).
+	% [Tuple || Tuple <- L1, tuple_size(Tuple) == 2].
 
 % Move over existing tyes of actors. 
 % For every type check if it exists in new schema and if any sql statements added.
@@ -251,7 +251,13 @@ compare_schema([],New,O) ->
 			{iskv,multihead,MultiheadList1} = lists:keyfind(iskv,1,New),
 			MultiheadList = [Name || {Name,true} <- lists:keydelete(any,1,MultiheadList1)],
 			[check_sql(Type,SqlNew,lists:member(Type,MultiheadList)) || {Type,SqlNew} <- NewTypes],
-			{ok,O ++ io_lib:fwrite("New actors:"++?DELIMITER,[NewTypes])}
+			
+			case [Tuple || Tuple <- NewTypes, tuple_size(Tuple) == 2] of
+				[] ->
+					{ok,O};
+				NewTypes1 ->
+					{ok,O ++ io_lib:fwrite("New actors:"++?DELIMITER,[NewTypes1])}
+			end
 	end.
 
 check_sql(Type,SqlNew,IsKv) ->
@@ -274,43 +280,47 @@ check_sql(Type,SqlNew,IsKv) ->
 		case IsKv of
 			true ->
 				case actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';") of
-					{ok,[{columns,{<<"name">>}},{rows,[{<<"actors">>}]}]} ->
-						{ok,[{columns,Columns},{rows,Rows1}]} = actordb_sqlite:exec(Db,"pragma table_info(actors);"),
-						Rows = [lists:zip(tuple_to_list(Columns),tuple_to_list(Row)) || Row <- Rows1],
-						case butil:findobj(<<"name">>,<<"id">>,Rows) of
-							false ->
-								throw({error,io_lib:fwrite("KV data type ~p does not contain \"id\" column of type TEXT.",[Type])});
-							IdCol ->
-								case butil:ds_val(<<"type">>,IdCol) of
-									<<"TEXT">> ->
-										ok;
-									IdColType ->
-										throw({error,io_lib:fwrite("KV data type ~p \"id\" column should be TEXT, but is ~p.",
-												[Type,butil:tolist(IdColType)])})
-								end
-						end,
-						case butil:findobj(<<"name">>,<<"hash">>,Rows) of
-							false ->
-								throw({error,io_lib:fwrite("KV data type ~p does not contain \"hash\" column of type INTEGER.",
-										[Type])});
-							HashCol ->
-								case butil:ds_val(<<"type">>,HashCol) of
-									<<"INTEGER">> ->
-										ok;
-									ColType ->
-										throw({error,io_lib:fwrite("KV data type ~p \"hash\" column should be INTEGER, but is ~p.",
-												[Type,butil:tolist(ColType)])})
-								end
-						end;
 					{ok,[{columns,{<<"name">>}},{rows,Tables}]} ->
-						throw({error,io_lib:fwrite("KV data types can only have a single table named \"actors\"."++
+						case lists:member({<<"actors">>},Tables) of
+							true ->
+								check_actor_table(Db,Type);
+							_ ->
+								throw({error,io_lib:fwrite("KV requires an \"actors\" table."++
 													"~nType ~p has tables: ~p",
 									[Type,[X || {X} <- Tables]])})
+						end
 				end;
 			false ->
 				ok
 		end
 	end || N <- lists:seq(1,SizeNew)].
 
-
+check_actor_table(Db,Type) ->
+	{ok,[{columns,Columns},{rows,Rows1}]} = actordb_sqlite:exec(Db,"pragma table_info(actors);"),
+	Rows = [lists:zip(tuple_to_list(Columns),tuple_to_list(Row)) || Row <- Rows1],
+	case butil:findobj(<<"name">>,<<"id">>,Rows) of
+		false ->
+			throw({error,io_lib:fwrite("KV data type ~p does not contain \"id\" column of type TEXT.",[Type])});
+		IdCol ->
+			case butil:ds_val(<<"type">>,IdCol) of
+				<<"TEXT">> ->
+					ok;
+				IdColType ->
+					throw({error,io_lib:fwrite("KV data type ~p \"id\" column should be TEXT, but is ~p.",
+							[Type,butil:tolist(IdColType)])})
+			end
+	end,
+	case butil:findobj(<<"name">>,<<"hash">>,Rows) of
+		false ->
+			throw({error,io_lib:fwrite("KV data type ~p does not contain \"hash\" column of type INTEGER.",
+					[Type])});
+		HashCol ->
+			case butil:ds_val(<<"type">>,HashCol) of
+				<<"INTEGER">> ->
+					ok;
+				ColType ->
+					throw({error,io_lib:fwrite("KV data type ~p \"hash\" column should be INTEGER, but is ~p.",
+							[Type,butil:tolist(ColType)])})
+			end
+	end.
 

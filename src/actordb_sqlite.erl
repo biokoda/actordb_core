@@ -15,6 +15,7 @@ init(Path,JournalMode,Thread) ->
 			"PRAGMA page_size;"
 			% Exclusive locking is faster but unrealiable. 
 			% "$PRAGMA locking_mode=EXCLUSIVE;",
+			"$PRAGMA foreign_keys=1;",
 			"$PRAGMA synchronous=",(actordb_conf:sync())/binary,";",
 			"$PRAGMA cache_size=",(butil:tobin(?DEF_CACHE_PAGES))/binary,";",
 			"$PRAGMA journal_mode=",(butil:tobin(JournalMode))/binary,";",

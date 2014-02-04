@@ -130,6 +130,7 @@ parse_cfg_schema(G1) ->
 	[{iskv,multihead,[{Type,true} || {Type,kv,_Sqls} <- G] ++ [{any,false}]}] ++
 	 [{ids,Ids}] ++ TypeColumns ++
 	 TypeSqls,
+
 	Out.
 
 check_str(S) ->

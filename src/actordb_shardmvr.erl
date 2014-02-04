@@ -282,7 +282,7 @@ start_splits(P,Local) ->
 					 SplitPoint = From + ((To-From) div 2),
 					 
 					 ShardsPerType = butil:sparsemap(fun(Type) -> 
-					 	?AINF("start_splitshard ~p ~p ~p",[From,To,Nd]),
+					 	?AINF("start_splitshard ~p ~p ~p ~p",[From,To,Nd,Type]),
 					 	% distreg:whereis({SplitPoint,Type})
 					 	case actordb_shard:try_whereis(SplitPoint,Type) of
 					 		undefined ->

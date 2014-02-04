@@ -735,7 +735,7 @@ semicolon(<<_/binary>> = Sql) ->
 		$; ->
 			Sql;
 		_ ->
-			[Sql,$;]
+			<<Sql/binary,$;>>
 	end;
 semicolon(S) ->
 	S.

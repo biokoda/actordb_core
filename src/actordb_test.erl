@@ -135,13 +135,13 @@ all_test_() ->
 	[
 		fun test_creating_shards/0,
 		fun test_parsing/0,
-		{setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
+		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
 		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
 		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1},
-		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
+		{setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
 	].
 
 test_parsing() ->
@@ -368,6 +368,15 @@ kv_readwrite() ->
 					  {rows,[{<<"id1">>,_,2,<<"id1">>}]}]},
 			 exec(ReadSome)),
 	?assertMatch({ok,[{columns,_},{rows,_}]},All),
+
+
+	% Multiple tables test
+	[?assertMatch({ok,_},exec(["actor filesystem(id",butil:tolist(N),");",
+		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");",
+		 "insert into users (fileid,uid) values ('id",butil:tolist(N),"',",butil:tolist(N),");"])) 
+				|| N <- lists:seq(1,numactors())],
+
+	
 	ok.
 
 
@@ -714,14 +723,23 @@ schema() ->
 		"- CREATE TABLE tab (id INTEGER PRIMARY KEY, txt TEXT, i INTEGER)",
 		"- CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT)",
 		"- CREATE TABLE tab2 (id INTEGER PRIMARY KEY, txt TEXT)",
+		"",
 		"thread:",
 		"- CREATE TABLE thread (id INTEGER PRIMARY KEY, msg TEXT, user INTEGER);",
+		"",
 		"user:",
 		"- CREATE TABLE userinfo (id INTEGER PRIMARY KEY, name TEXT);",
+		"",
 		"counters:",
 		" type: kv",
 		" schema:",
 		" - CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, val INTEGER);"
+		"",
+		"filesystem:",
+		" type: kv",
+		" schema:",
+		" - CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, size INTEGER)",
+		" - CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, fileid TEXT, uid INTEGER, FOREIGN KEY (fileid) REFERENCES actors(id) ON DELETE CASCADE)"
 	],"\n").
 
 
