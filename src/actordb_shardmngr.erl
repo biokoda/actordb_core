@@ -8,7 +8,7 @@
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/0,reload/0,deser_prop/1]).
 -export([whereis/0,find_local_shard/2,find_local_shard/3,is_local_shard/1,is_local_shard/2,find_global_shard/1,find_global_shard/2,steal_shard/3,
-			set_shard_border/4,shard_moved/3,shard_started/3,shard_has_split/2,get_local_shards/0]).
+			set_shard_border/4,shard_moved/3,shard_started/3,shard_has_split/2,get_local_shards/0,schema_changed/0]).
 % for testing
 -export([create_shards/1]).
 -include_lib("actordb.hrl").
@@ -28,6 +28,9 @@
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
+
+schema_changed() ->
+	gen_server:cast(?MODULE,schema_changed).
 
 % Return shard id for actor. It should be local, but might not be if shard is in the process of moving to another node.
 % In this case {redirect,ActualNode} is returned.
@@ -174,9 +177,8 @@ reload() ->
   shardsbeingtaken = [],
   % Shards previously taken from this node.
   shardsprevtaken = [],
-  dirty = false
-  % [{Shard,[Type1,Type2,...]}]
-  % shardsbeingsplit = []
+  dirty = false,
+  haveschema = false
   }).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
@@ -326,6 +328,8 @@ handle_call(stop, _, P) ->
 deser_prop(P) ->
 	?P2R(P).
 
+handle_cast(schema_changed,P) ->
+	handle_info({bkdcore_sharedstate,global_state_change},P#dp{haveschema = true});
 handle_cast({shard_started,Pid,Shard,Type},P) ->
 	?ADBG("shard_started"),
 	case lists:keymember(Pid,1,P#dp.localshardpids) of
@@ -441,7 +445,7 @@ handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
 	end;
 handle_info({bkdcore_sharedstate,global_state_change},P) ->
 	?ADBG("GLobal statechange ~p",[bkdcore:node_name()]),
-	case bkdcore:nodelist() /= [] andalso bkdcore_sharedstate:is_ok() of
+	case bkdcore:nodelist() /= [] andalso bkdcore_sharedstate:is_ok() andalso P#dp.haveschema of
 		false ->
 			{noreply,P};
 		_ ->
@@ -477,6 +481,14 @@ init([]) ->
 			ok
 	end,
 	self() ! {bkdcore_sharedstate,global_state_change},
+	spawn(fun() ->
+		case catch actordb_schema:types() of
+			{'EXIT',_} ->
+				ok;
+			_ ->
+				schema_changed()
+		end
+	end),
 	{ok,#dp{}}.
 
 
