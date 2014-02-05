@@ -90,78 +90,87 @@ start_ready() ->
 			false
 	end.
 
-start() ->
-	?AINF("Starting actordb"),
-	application:start(actordb_core).
-start(_Type, _Args) ->
+prestart() ->
+	application:start(lager),
 	application:ensure_started(sasl),
 	application:ensure_started(os_mon),
 	application:ensure_started(yamerl),
-	?AINF("Starting actordb ~p",[_Args]),
-	Args = init:get_arguments(),
-	% application:set_env(bkdcore,startapps,[actordb]),
-	?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
-	% Read args file manually to get paths for state.
-	case butil:ds_val(config,Args) of
-		undefined ->
-			?AERR("No app.config file in parameters! ~p",[init:get_arguments()]),
-			init:stop();
-		Cfgfile ->
-			case catch file:consult(Cfgfile) of
-				{ok,[L]} ->
-					ActorParam = butil:ds_val(actordb_core,L),
-					[Main,Extra,Level,Journal,Sync] = butil:ds_vals([main_db_folder,extra_db_folders,level_size,
-																		journal_mode,sync],ActorParam,
-																	["db",[],0,wal,0]),
-					Statep = butil:expand_path(butil:tolist(Main)),
-					?AINF("State path ~p, ~p",[Main,Statep]),
-					% No etc folder. config files are provided manually.
-					BkdcoreParam = butil:ds_val(bkdcore,L),
-					case butil:ds_val(etc,BkdcoreParam) of
-						undefined ->
-							application:set_env(bkdcore,etc,none);
-						_ ->
-							ok
-					end,
-					case application:get_env(bkdcore,statepath) of
-						{ok,_} ->
-							ok;
-						_ ->
-							application:set_env(bkdcore,statepath,Statep)
-					end,
-					actordb_util:createcfg(Main,Extra,Level,Journal,butil:tobin(Sync));
-				Err ->
-					?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
-					init:stop()
-			end
-	end,
-	% Ensure folders exist.
-	[begin
-		case filelib:ensure_dir(F++"/actors/") of
-			ok ->
-				ok;
-			Errx1 ->
-				throw({path_invalid,F++"/actors/",Errx1})
-		end,
-		case  filelib:ensure_dir(F++"/shards/") of
-			ok -> 
-				ok;
-			Errx2 ->
-				throw({path_invalid,F++"/shards/",Errx2})
-		end
-	 end || F <- actordb_conf:paths()],
+	case catch actordb_conf:paths() of
+		[_|_] ->
+			ok;
+		_ ->
+			?AINF("Starting actordb"),
+			Args = init:get_arguments(),
+			% application:set_env(bkdcore,startapps,[actordb]),
+			?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
+			% Read args file manually to get paths for state.
+			case butil:ds_val(config,Args) of
+				undefined ->
+					?AERR("No app.config file in parameters! ~p",[init:get_arguments()]),
+					init:stop();
+				Cfgfile ->
+					case catch file:consult(Cfgfile) of
+						{ok,[L]} ->
+							ActorParam = butil:ds_val(actordb_core,L),
+							[Main,Extra,Level,Journal,Sync] = butil:ds_vals([main_db_folder,extra_db_folders,level_size,
+																				journal_mode,sync],ActorParam,
+																			["db",[],0,wal,0]),
+							Statep = butil:expand_path(butil:tolist(Main)),
+							?AINF("State path ~p, ~p",[Main,Statep]),
+							% No etc folder. config files are provided manually.
+							BkdcoreParam = butil:ds_val(bkdcore,L),
+							case butil:ds_val(etc,BkdcoreParam) of
+								undefined ->
+									application:set_env(bkdcore,etc,none);
+								_ ->
+									ok
+							end,
+							case application:get_env(bkdcore,statepath) of
+								{ok,_} ->
+									ok;
+								_ ->
+									application:set_env(bkdcore,statepath,Statep)
+							end,
+							actordb_util:createcfg(Main,Extra,Level,Journal,butil:tobin(Sync));
+						Err ->
+							?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
+							init:stop()
+					end
+			end,
+			% Ensure folders exist.
+			[begin
+				case filelib:ensure_dir(F++"/actors/") of
+					ok ->
+						ok;
+					Errx1 ->
+						throw({path_invalid,F++"/actors/",Errx1})
+				end,
+				case  filelib:ensure_dir(F++"/shards/") of
+					ok -> 
+						ok;
+					Errx2 ->
+						throw({path_invalid,F++"/shards/",Errx2})
+				end
+			 end || F <- actordb_conf:paths()],
 
-	% Start dependencies
-	application:start(esqlite),
-	case length(actordb_conf:paths())*2 >= erlang:system_info(logical_processors) of
-		true ->
-			NProcs = length(actordb_conf:paths())*2;
-		false ->
-			NProcs = length(actordb_conf:paths())
-	end,
-	esqlite3:init(NProcs),
-	spawn(fun() -> check_rowid() end),
-	application:start(lager),						
+			% Start dependencies
+			application:start(esqlite),
+			case length(actordb_conf:paths())*2 >= erlang:system_info(logical_processors) of
+				true ->
+					NProcs = length(actordb_conf:paths())*2;
+				false ->
+					NProcs = length(actordb_conf:paths())
+			end,
+			esqlite3:init(NProcs),
+			spawn(fun() -> check_rowid() end)
+	end.
+
+start() ->
+	?AINF("Starting actordb"),
+	application:start(actordb_core).
+
+start(_Type, _Args) ->
+	prestart(),
 	bkdcore:start(actordb:configfiles()),
 	butil:wait_for_app(bkdcore),
 
