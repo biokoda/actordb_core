@@ -1321,7 +1321,7 @@ handle_cast({diepls,Reason},P) ->
 			end
 	end;
 handle_cast(print_info,P) ->
-	io:format("~p~n~p~n",[?R2P(P#dp{writelog = byte_size(P#dp.writelog)}),get()]),
+	io:format("~p~n",[?R2P(P#dp{writelog = byte_size(P#dp.writelog)})]),
 	{noreply,P};
 handle_cast(Msg,#dp{mors = master, verified = true} = P) ->
 	case apply(P#dp.cbmod,cb_cast,[Msg,P#dp.cbstate]) of
@@ -1611,7 +1611,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason}, #dp{copyproc = PID} = P) ->
 		ok when P#dp.mors == slave ->
 			{stop,normal,P};
 		_ ->
-			?AINF("Coproc died ~p~n~p",[?R2P(P),get()]),
+			?AINF("Coproc died ~p~n",[?R2P(P)]),
 			{stop,Reason,P}
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
@@ -1834,7 +1834,6 @@ init(#dp{} = P,_Why) ->
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,P#dp.flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 init([_|_] = Opts) ->
-	put(opts,[{startat,time()}|Opts]),
 	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
 									schemanum = actordb_schema:num()}),Opts) of
 		{registered,Pid} ->
