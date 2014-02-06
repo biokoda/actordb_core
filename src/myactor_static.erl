@@ -224,3 +224,8 @@ show_collation() ->
 	{<<"cp932_bin">>,<<"cp932">>,96,undefined,1,1},
 	{<<"eucjpms_japanese_ci">>,<<"eucjpms">>,97,1,1,1},
 	{<<"eucjpms_bin">>,<<"eucjpms">>,98,undefined,1,1}].
+
+session_variable("tx_isolation") ->
+	{{<<"@@session.tx_isolation">>},[{<<"REPEATABLE-READ">>}]};
+session_variable(Variable) ->
+	{{iolist_to_binary(["@@session.",Variable])},[{<<"1">>}]}.

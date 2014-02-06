@@ -315,12 +315,22 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
         ["set "++_] ->  % actordb does not support set queries for now
             ?PROTO_DBG("set names() query"),
             send_ok(Cst);
+        ["commit"++_] ->  % actordb does not support set queries for now
+            ?PROTO_DBG("commit query"),
+            send_ok(Cst);
+        ["rollback"++_] ->  % actordb does not support set queries for now
+            ?PROTO_DBG("rollback query"),
+            send_ok(Cst);
         ["show databases"++_] ->
             ?PROTO_DBG("got show dbs query"),
             send_ok(Cst);        
-        ["select @@session"++_] ->
+        ["show full tables"++_] ->
+            ?PROTO_DBG("got show full tables query"),
+            multirow_response(Cst,{<<"tables_in_db">>},[]);
+        ["select @@session."++Rest] ->
             ?PROTO_DBG("got session select variable"),
-            multirow_response(Cst,{<<"variable_name">>},[{<<"1">>}]);
+            {Cols,Rows} = myactor_static:session_variable(Rest),
+            multirow_response(Cst,Cols,Rows);
         ["show collation"++_] ->
             ?PROTO_DBG("got show collation query"),
             multirow_response(Cst,{<<"collation">>,<<"charset">>,{<<"id">>,t_longlong},<<"default">>,<<"compiled">>,<<"sortlen">>},
