@@ -323,7 +323,7 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
             multirow_response(Cst,{<<"variable_name">>},[{<<"1">>}]);
         ["show collation"++_] ->
             ?PROTO_DBG("got show collation query"),
-            multirow_response(Cst,{<<"collation">>,<<"charset">>,<<"id">>,<<"default">>,<<"compiled">>,<<"sortlen">>},
+            multirow_response(Cst,{<<"collation">>,<<"charset">>,{<<"id">>,t_longlong},<<"default">>,<<"compiled">>,<<"sortlen">>},
                                     myactor_static:show_collation());    
         ["show variables"++_] ->    % for java driver
             ?PROTO_DBG("got show variables query"),
@@ -556,8 +556,13 @@ multirow_columndefs0(Cst,Cols,undefined,ColId,NumCols,Bin) ->
     multirow_columndefs0(Cst,Cols,ColTypes,ColId,NumCols,Bin);        
 multirow_columndefs0(Cst,Cols,ColTypes,ColId,NumCols,Bin) ->
     Cst0 = Cst#cst{sequenceid=Cst#cst.sequenceid+1},
-    ColName = element(ColId,Cols),    
-    ColType = element(ColId,ColTypes#coltypes.cols),
+    ColDef = element(ColId,Cols),
+    case ColDef of
+        {ColName,ColType} ->
+            ok;
+        ColName ->
+            ColType = element(ColId,ColTypes#coltypes.cols)
+    end,    
     ColType0 = map_coltype(ColType),    
     ?PROTO_DBG("building column ~p with type (~p)~p",[ColName,ColType,ColType0]),
     % ?PROTO_NTC("preparing column ~p ~p",[ColId,ColName]),
@@ -676,8 +681,12 @@ get_type(_) ->
 
 %% @spec map_coltype(atom()) -> binary()
 %% @doc  Maps a type atom to binary representation to be used in packet when creating a column definition. See: {@link myactor_proto:multirow_columndefs0/6}
+map_coltype(t_tiny) ->
+    ?T_TINY;
 map_coltype(t_int) ->
     ?T_LONG;
+map_coltype(t_longlong) ->
+    ?T_LONGLONG;
 map_coltype(t_double) ->
     ?T_DOUBLE;
 map_coltype(t_blob) ->
