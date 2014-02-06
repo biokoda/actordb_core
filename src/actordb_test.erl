@@ -5,7 +5,7 @@
 -module(actordb_test).
 -compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
--define(TESTPTH,butil:project_rootpath()++"/test/").
+-define(TESTPTH,butil:project_rootpath()++"/testdb/").
 -define(NUM_ACTORS,100).
 
 numactors() ->
@@ -376,7 +376,7 @@ kv_readwrite() ->
 		 "insert into users (fileid,uid) values ('id",butil:tolist(N),"',",butil:tolist(N),");"])) 
 				|| N <- lists:seq(1,numactors())],
 
-	
+
 	ok.
 
 
