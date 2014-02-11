@@ -23,14 +23,17 @@ test_real() ->
 	% multiupdate_read().
 
 l(N) ->
-	D = <<"actor type1(ac",(butil:tobin(1))/binary,");",
-			"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",
-			(binary:copy(<<"a">>,1024*1))/binary,"');">>,
-	Start = now(),
-	% cprof:start(),
-	l1(N,D),
-	% cprof:pause(),
-	io:format("Diff ~p~n",[timer:now_diff(now(),Start)]).
+	spawn(fun() ->
+		D = <<"actor type1(ac",(butil:tobin(1))/binary,");",
+				"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",
+				(binary:copy(<<"a">>,1024*1))/binary,"');">>,
+		
+		% cprof:start(),
+		Start = now(),
+		l1(N,D),
+		% cprof:pause(),
+		io:format("Diff ~p~n",[timer:now_diff(now(),Start)])
+	end).
 	% io:format("~p~n",[cprof:analyse()]).
 
 l1(0,_) ->
@@ -38,7 +41,8 @@ l1(0,_) ->
 l1(N,X) ->
 	% actordb_sqlparse:parse_statements(X),
 	% base64:encode(X),
-	butil:dec2hex(X),
+	% butil:dec2hex(X),
+	os:timestamp(),
 	l1(N-1,X).
 
 

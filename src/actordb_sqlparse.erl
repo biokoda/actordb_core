@@ -490,9 +490,9 @@ split_actor(<<"'",Bin/binary>>,Word,T,L) ->
 split_actor(<<"`",Bin/binary>>,Word,undefined,L) ->
 	split_actor(Bin,Word,undefined,L);
 split_actor(<<",",Bin/binary>>,Word,Type,L) ->
-	split_actor(Bin,<<>>,Type,[Word|L]);
+	split_actor(Bin,<<>>,Type,[is_not_empty(Word)|L]);
 split_actor(<<")",FlagsBin/binary>>,Word,Type,L) ->
-	{Type,[Word|L],check_flags(FlagsBin,[])};
+	{Type,[is_not_empty(Word)|L],check_flags(FlagsBin,[])};
 split_actor(<<"for ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var,Flags};
@@ -509,11 +509,24 @@ split_actor(<<"FOREACH ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var,Flags};
 split_actor(<<";",_/binary>>,Word,Type,L) ->
-	{Type,[Word|L],[]};
+	% {Type,[Word|L],[]};
+	split_actor(<<>>,Word,Type,L);
 split_actor(<<C,Bin/binary>>,Word,Type,L) ->
 	split_actor(Bin,<<Word/binary,C>>,Type,L);
 split_actor(<<>>,Word,Type,L) ->
-	{Type,[Word|L],[]}.
+	case catch count_name(Word,0) of
+		0 ->
+			throw({error,empty_actor_name});
+		{'EXIT',_} ->
+			throw({error,invalid_actor_name});
+		_ ->
+			{Type,[Word|L],[]}
+	end.
+
+is_not_empty(<<>>) ->
+	throw({error,empty_actor_name});
+is_not_empty(W) ->
+	W.
 
 check_flags(<<" ",Rem/binary>>,L) ->
 	check_flags(Rem,L);

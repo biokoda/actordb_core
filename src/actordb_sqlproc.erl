@@ -1556,6 +1556,9 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 		{nomajority,Groups} ->
 			?AERR("Verify nomajority ~p",[Groups]),
 			handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
+		{nomajority,Groups,Failed} ->
+			?AERR("Verify nomajority ~p ~p",[Groups,Failed]),
+			handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
 		{error,enoent} ->
 			?AERR("error enoent result of verify ~p ~p",[P#dp.actorname,P#dp.actortype]),
 			distreg:unreg(self()),
