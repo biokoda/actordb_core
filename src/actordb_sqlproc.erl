@@ -559,19 +559,19 @@ handle_call({read,Msg},From,P) ->
 						{Mod,Func,Args} ->
 							case apply(Mod,Func,[P#dp.cbstate|Args]) of
 								{reply,What,Sql,NS} ->
-									{reply,{What,actordb_sqlite:exec(P#dp.db,Sql)},P#dp{cbstate = NS}};
+									{reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
 								{reply,What,NS} ->
 									{reply,What,P#dp{cbstate = NS}};
 								{reply,What} ->
 									{reply,What,P};
 								{Sql,State} ->
-									{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1, 
+									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),check_timer(P#dp{activity = P#dp.activity+1, 
 																							  cbstate = State})};
 								Sql ->
-									{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1})}
+									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),check_timer(P#dp{activity = P#dp.activity+1})}
 							end;
 						Sql ->
-							{reply,actordb_sqlite:exec(P#dp.db,Sql),check_timer(P#dp{activity = P#dp.activity+1})}
+							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),check_timer(P#dp{activity = P#dp.activity+1})}
 					end;
 				% Schema has changed. Execute write on schema update.
 				% Place this read in callqueue for later execution.
@@ -650,7 +650,7 @@ handle_call(replicate_commit,From,P) ->
 						 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 						 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
 						 <<"$RELEASE SAVEPOINT 'adb';">>
-						 ]),
+						 ],write),
 					{reply,okornot(Res),check_timer(P#dp{replicate_sql = <<>>,evnum = EvNum, 
 									 evcrc = Crc, activity = P#dp.activity + 1, schemavers = NewVers})}
 			end
@@ -841,7 +841,7 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
 					 Tail
 					 ],
-			Res = actordb_sqlite:exec(P#dp.db,ComplSql)
+			Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
 	end,
 	% ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	?DBG("Replicating write ~p    connected ~p",[Sql,ConnectedNodes]),
@@ -886,7 +886,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 					% if we are already in this transaction, just update sql.
 					{_OldSql,EvNum,EvCrc,_} = P#dp.replicate_sql,
 					ComplSql = Sql1,
-					Res = actordb_sqlite:exec(P#dp.db,ComplSql);
+					Res = actordb_sqlite:exec(P#dp.db,ComplSql,write);
 				undefined ->
 					EvNum = P#dp.evnum+1,
 					EvCrc = Crc,
@@ -901,7 +901,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 								 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 								 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>
 								 ],
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql)
+							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
 					end
 			end,
 			case okornot(Res) of
@@ -950,7 +950,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(CrcTransaction),<<"' WHERE id=",?EVCRC/binary,";">>
 					 ],
-			ok = okornot(actordb_sqlite:exec(P#dp.db,ComplSql)),
+			ok = okornot(actordb_sqlite:exec(P#dp.db,ComplSql,write)),
 			?DBG("Replicating transaction write, connected ~p",[ConnectedNodes]),
 			case ok of
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
@@ -1138,7 +1138,7 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 							?ADBG("Copyreceive done ~p",[{P#dp.actorname,P#dp.actortype,Origin,P#dp.copyfrom}]),
 							ok = okornot(actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
 											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,
-																				P#dp.cbstate})))/binary,"');">>)),
+																				P#dp.cbstate})))/binary,"');">>,write)),
 							actordb_sqlite:stop(Db),
 							Source ! {Ref,self(),ok},
 							case Origin of
@@ -1423,7 +1423,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 									 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNumNew),<<"' WHERE id=",?EVNUM/binary,";">>,
 									 <<"$UPDATE __adb SET val='">>,butil:tolist(CrcSql),<<"' WHERE id=",?EVCRC/binary,";">>
 									 ],
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql),
+							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write),
 							reply(P#dp.callfrom,Res),
 							% Store sql for later execution on slave nodes.
 							ReplicateSql = {NewSql,EvNumNew,CrcSql,NewVers},
@@ -1495,7 +1495,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 						 <<"$UPDATE __adb SET val='">>,butil:tolist(Evnum),<<"' WHERE id=",?EVNUM/binary,";">>,
 						 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>
 						 ],
-					actordb_sqlite:exec(P#dp.db,ComplSql),
+					actordb_sqlite:exec(P#dp.db,ComplSql,write),
 					% 0 - transaction still running, wait for done.
 					% 1 - finished, do commit straight away.
 					case State of
@@ -1550,7 +1550,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
 					 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
 					 <<"$RELEASE SAVEPOINT 'adb';">>
-					 ])),
+					 ],write)),
 			{ok,NP} = init(P#dp{evnum = EvNum, evcrc = Crc},update_wlog),
 			{noreply,NP};
 		{nomajority,Groups} ->
@@ -1800,7 +1800,7 @@ handle_info({check_redirect,Db,IsMove},P) ->
 			end,
 			ResetSql = do_copy_reset(IsMove,P#dp.copyreset,P#dp.cbstate),
 			case actordb_sqlite:exec(Db,<<"BEGIN;DELETE FROM __adb WHERE id=",(?COPYFROM)/binary,";",
-												  ResetSql/binary,"COMMIT;">>) of
+												  ResetSql/binary,"COMMIT;">>,write) of
 				{ok,_} ->
 					ok;
 				ok ->
@@ -1895,7 +1895,7 @@ init([_|_] = Opts) ->
 									{ok,[[{columns,_},{rows,Transaction}],
 										[{columns,_},{rows,Rows}]]} = actordb_sqlite:exec(Db,
 											<<"SELECT * FROM __adb;",
-											  "SELECT * FROM __transactions;">>),
+											  "SELECT * FROM __transactions;">>,read),
 									Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows)),
 									Evcrc = butil:toint(butil:ds_val(?EVCRCI,Rows)),
 									Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
@@ -1921,7 +1921,7 @@ init([_|_] = Opts) ->
 															<<"BEGIN;",(iolist_to_binary(Schema))/binary,
 																"UPDATE __adb SET val='",(butil:tobin(SchemaVers))/binary,
 																		"' WHERE id=",?SCHEMA_VERS/binary,";",
-																"COMMIT;">>))
+																"COMMIT;">>,write))
 											end,
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,movedtonode = MovedToNode1})};
 										[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
@@ -1945,7 +1945,7 @@ init([_|_] = Opts) ->
 									CreateDb = [base_schema(SchemaVers,P#dp.actortype),
 												 Schema,
 												 <<"COMMIT;">>],
-									ok = okornot(actordb_sqlite:exec(Db,CreateDb)),
+									ok = okornot(actordb_sqlite:exec(Db,CreateDb,write)),
 									?DBLOG(Db,"init normal created schema",[]),
 									{ok,start_verify(NP#dp{schemavers = SchemaVers})};
 								false ->
@@ -1967,7 +1967,7 @@ init([_|_] = Opts) ->
 					case actordb_sqlite:init(P#dp.dbpath,JournalMode) of
 						{ok,Db,true,_PageSize} ->
 							?DBLOG(P#dp.db,"init copyfrom ~p",[P#dp.copyfrom]),
-							case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"]) of
+							case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"],read) of
 								{ok,[{columns,_},{rows,[]}]} ->
 									case IsMove of
 										true ->
@@ -2082,7 +2082,7 @@ read_num(P) ->
 			<<>>;
 		_ ->
 			Res = actordb_sqlite:exec(Db,
-						<<"SELECT * FROM __adb WHERE id=",?ANUM/binary,";">>),
+						<<"SELECT * FROM __adb WHERE id=",?ANUM/binary,";">>,read),
 			case Res of
 				{ok,[{columns,_},{rows,[]}]} ->
 					<<>>;
@@ -2135,7 +2135,7 @@ do_cb_init(P) ->
 		{ok,NS} ->
 			NS;
 		{doread,Sql} ->
-			case apply(P#dp.cbmod,cb_init,[P#dp.cbstate,P#dp.evnum,actordb_sqlite:exec(P#dp.db,Sql)]) of
+			case apply(P#dp.cbmod,cb_init,[P#dp.cbstate,P#dp.evnum,actordb_sqlite:exec(P#dp.db,Sql,read)]) of
 				{ok,NS} ->
 					NS;
 				ok ->
@@ -2221,7 +2221,7 @@ delactorfile(P) ->
 			% Leave behind redirect marker.
 			% Create a file with "1" attached to end
 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath++"1",off),
-			ok = okornot(actordb_sqlite:exec(Db,[base_schema(0,P#dp.actortype,P#dp.movedtonode),<<"COMMIT;">>])),
+			ok = okornot(actordb_sqlite:exec(Db,[base_schema(0,P#dp.actortype,P#dp.movedtonode),<<"COMMIT;">>],write)),
 			actordb_sqlite:stop(Db),
 			% Rename into the actual dbfile (should be atomic op)
 			ok = file:rename(P#dp.dbpath++"1",P#dp.dbpath),

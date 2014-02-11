@@ -10,13 +10,32 @@
 -export([pick_mupdate/0,mupdate_busy/2,get_mupdaters_state/0,reg_mupdater/2,local_mupdaters/0]).
 % Actor activity
 -export([actor_started/3,actor_mors/2,actor_cachesize/1,actor_activity/1]).
+-export([report_write/0, report_read/0]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
 -define(MB,1024*1024).
 -define(GB,1024*1024*1024).
+-define(STATS,runningstats).
 
 killactors() ->
 	gen_server:cast(?MODULE,killactors).
+
+
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
+% 
+% 						stats
+% 
+% 	- public ETS: runningstats (?STATS)
+% 		[{reads,N} {writes,N}]
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
+report_read() ->
+	ets:update_counter(?STATS,reads,1),
+	ok.
+
+report_write() ->
+	ets:update_counter(?STATS,writes,1),
+	ok.
+
 
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
 % 						
@@ -64,8 +83,8 @@ get_mupdaters_state() ->
 % 						
 % 									ACTOR ACTIVITY TRACKING
 % 
-% - public ETS: actoractivity (ordered_set)
-%   {now(),Pid} -> activity table of all actors. 
+% - public ETS: actoractivity (ordered_set) -> ref is always incrementing so is perfect for sort key
+%   {make_ref(),Pid} -> activity table of all actors. 
 % - public ETS: actorsalive (set)
 %   #actor key on pid
 %   #actor with pid of actordb_local holds the cachesize sum of all actors
@@ -74,7 +93,7 @@ get_mupdaters_state() ->
 
 % called from actor
 actor_started(Name,Type,Size) ->
-	Now = now(),
+	Now = make_ref(),
 	butil:ds_add({Now,self()},actoractivity),
 	butil:ds_add(#actor{pid = self(),name = Name, type = Type, now = Now, cachesize = Size},actorsalive),
 	ets:update_counter(actorsalive,whereis(?MODULE),{#actor.cachesize,Size}),
@@ -104,7 +123,7 @@ actor_cachesize(Size) ->
 
 % Call when actor does something. No need for every activity, < 5 times per second at the most.
 actor_activity(PrevNow) ->
-	Now = now(),
+	Now = make_ref(),
 	butil:ds_rem(PrevNow,actoractivity),
 	butil:ds_add({Now,self()},actoractivity),
 	ets:update_element(actorsalive,self(),{#actor.now,Now}),
@@ -130,7 +149,10 @@ print_info() ->
 
 -record(dp,{mupdaters = [], mpids = [], updaters_saved = true, 
 % Ulimit and memlimit are checked on startup and will influence how many actors to keep in memory
-			ulimit = 1024*100, memlimit = 1024*1024*1024, proclimit, lastcull = {0,0,0}}).
+			ulimit = 1024*100, memlimit = 1024*1024*1024, proclimit, lastcull = {0,0,0}, 
+			% Every second do make_ref. Since ref is always incrementing it's a simple+fast way
+			%  to find out which actors were active during prev second.
+			prev_sec_from, prev_sec_to}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
@@ -208,8 +230,12 @@ handle_info(check_limits,P) ->
 			end
 	end,
 	{noreply,P#dp{lastcull = LastCull}};
+handle_info(read_ref,P) ->
+	erlang:send_after(1000,self(),read_ref),
+	% butil:ds_add(os:timestamp(),make_ref(),?STATS),
+	{noreply,P#dp{prev_sec_to = make_ref(), prev_sec_from = P#dp.prev_sec_to}};
 handle_info(check_mem,P) ->
-	erlang:send_after(10000,self(),check_mem),
+	erlang:send_after(5000,self(),check_mem),
 	spawn(fun() -> 
 			L = memsup:get_system_memory_data(),
 			[Free,Total] = butil:ds_vals([free_memory,system_total_memory],L),
@@ -287,6 +313,7 @@ init(_) ->
 	net_kernel:monitor_nodes(true),
 	erlang:send_after(100,self(),timeout),
 	erlang:send_after(10000,self(),check_mem),
+	erlang:send_after(1000,self(),read_ref),
 	ok = bkdcore_sharedstate:register_app(?MODULE,{?MODULE,whereis,[]}),
 	case ets:info(multiupdaters,size) of
 		undefined ->
@@ -304,6 +331,15 @@ init(_) ->
 		undefined ->
 			ets:new(actorsalive, [named_table,public,ordered_set,{heir,whereis(actordb_sup),<<>>},
 									{write_concurrency,true},{keypos,#actor.pid}]);
+		_ ->
+			ok
+	end,
+	case ets:info(?STATS,size) of
+		undefined ->
+			ets:new(?STATS, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},
+									{write_concurrency,true}]),
+			butil:ds_add(writes,0,?STATS),
+			butil:ds_add(reads,0,?STATS);
 		_ ->
 			ok
 	end,
@@ -338,7 +374,7 @@ init(_) ->
 		_ ->
 			Memlimit = erlang:round(Memlimit1*0.5)
 	end,
-	{ok,#dp{memlimit = Memlimit, ulimit = Ulimit, proclimit = Proclimit}}.
+	{ok,#dp{memlimit = Memlimit, ulimit = Ulimit, proclimit = Proclimit, prev_sec_from = make_ref(),prev_sec_to = make_ref()}}.
 
 
 whereis() ->

@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -module(actordb_sqlite).
--export([init/1,init/2,init/3,exec/2,set_pragmas/2,set_pragmas/3,stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1]). 
+-export([init/1,init/2,init/3,exec/2,exec/3,set_pragmas/2,set_pragmas/3,stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1]). 
 -include("actordb.hrl").
 
 init(Path) ->
@@ -96,6 +96,12 @@ set_pragmas(Db,JournalMode,Sync) ->
 						"PRAGMA journal_size_limit=0;">>),
 	ok.
 
+exec(Db,Sql,read) ->
+	actordb_local:report_read(),
+	exec(Db,Sql);
+exec(Db,Sql,write) ->
+	actordb_local:report_write(),
+	exec(Db,Sql).
 exec(undefined,_) ->
 	ok;
 exec(Db,Sql) ->
