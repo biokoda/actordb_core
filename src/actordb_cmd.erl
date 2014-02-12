@@ -137,7 +137,7 @@ cmd(updateschema,commit,Etc) ->
 cmd(dummy,_,Etc) ->
 	Etc;
 cmd(stats,describe,ok) ->
-	{ok,{"allreads", "readsnow", "allwrites", "writesnow", "nactors", "nactive"}};
+	{ok,{"allreads", "readsnow", "allwrites", "writesnow", "nactors", "nactive","tmngrs"}};
 cmd(stats,stats,{Node,Pid,Ref}) ->
 	spawn(fun() -> actordb_local:subscribe_stat(),
 					send_stats(Node,Pid,Ref) end),
@@ -150,7 +150,9 @@ send_stats(Node,Pid,Ref) ->
 		true ->
 			receive
 				{doread,Reads,Writes,PrevReads,PrevWrites,NActive} ->
-					Pid ! {Ref,{Reads,PrevReads,Writes,PrevWrites,actordb_local:get_nactors(),NActive}},
+					Mngrs = actordb_local:get_mupdaters_state(),
+					Busy = [ok || {_,true} <- actordb_local:get_mupdaters_state()],
+					Pid ! {Ref,{Reads,PrevReads,Writes,PrevWrites,actordb_local:get_nactors(),NActive,butil:tolist(length(Busy))++"/"++butil:tolist(length(Mngrs))}},
 					send_stats(Node,Pid,Ref)
 				after 5000 ->
 					ok

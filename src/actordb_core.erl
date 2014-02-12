@@ -24,7 +24,7 @@ wait_done_queries(N) when N < 0 ->
 wait_done_queries(N) ->
 	case actordb_backpressure:call_size() of
 		0 ->
-			case [ok || {_,false} <- actordb_local:get_mupdaters_state()] of
+			case [ok || {_,true} <- actordb_local:get_mupdaters_state()] of
 				[] ->
 					[spawn(fun() -> gen_server:call(Pid,stop) end) || {_,Pid} <- distreg:processes()],
 					timer:sleep(1000),
