@@ -136,8 +136,28 @@ cmd(updateschema,commit,Etc) ->
 	end;
 cmd(dummy,_,Etc) ->
 	Etc;
+cmd(stats,describe,ok) ->
+	{ok,{"allreads", "readsnow", "allwrites", "writesnow", "nactors", "nactive"}};
+cmd(stats,stats,{Node,Pid,Ref}) ->
+	spawn(fun() -> actordb_local:subscribe_stat(),
+					send_stats(Node,Pid,Ref) end),
+	ok;
 cmd(_,_,_) ->
 	{error,io_lib:fwrite("uncrecognized command.~nSupported commands: ~p, ~p, ~p~n",[init,updateschema,updatenodes])}.
+
+send_stats(Node,Pid,Ref) ->
+	case lists:member(Node,nodes(connected)) of
+		true ->
+			receive
+				{doread,Reads,Writes,PrevReads,PrevWrites,NActive} ->
+					Pid ! {Ref,{Reads,PrevReads,Writes,PrevWrites,actordb_local:get_nactors(),NActive}},
+					send_stats(Node,Pid,Ref)
+				after 5000 ->
+					ok
+			end;
+		false ->
+			ok
+	end.
 
 readnodes(Pth) ->
 	{ok,_} = file:read_file_info(Pth),

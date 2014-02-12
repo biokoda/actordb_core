@@ -10,7 +10,7 @@
 -export([pick_mupdate/0,mupdate_busy/2,get_mupdaters_state/0,reg_mupdater/2,local_mupdaters/0]).
 % Actor activity
 -export([actor_started/3,actor_mors/2,actor_cachesize/1,actor_activity/1]).
--export([report_write/0, report_read/0]).
+-export([subscribe_stat/0,report_write/0, report_read/0,get_nreads/0,get_nactors/0]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
 -define(MB,1024*1024).
@@ -26,8 +26,10 @@ killactors() ->
 % 						stats
 % 
 % 	- public ETS: runningstats (?STATS)
-% 		[{reads,N} {writes,N}]
+% 		[{reads,N} {writes,N},{time_refs,RefFrom,RefTo}]
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
+subscribe_stat() ->
+	gen_server:call(?MODULE,{subscribe_stat,self()}).
 report_read() ->
 	ets:update_counter(?STATS,reads,1),
 	ok.
@@ -36,6 +38,19 @@ report_write() ->
 	ets:update_counter(?STATS,writes,1),
 	ok.
 
+get_nreads() ->
+	butil:ds_val(reads,?STATS).
+get_nwrites() ->
+	butil:ds_val(writes,?STATS).
+
+get_nactors() ->
+	case ets:info(actorsalive,size) of
+		undefined ->
+			0;
+		Size ->
+			Size
+	end.
+	
 
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
 % 						
@@ -152,7 +167,8 @@ print_info() ->
 			ulimit = 1024*100, memlimit = 1024*1024*1024, proclimit, lastcull = {0,0,0}, 
 			% Every second do make_ref. Since ref is always incrementing it's a simple+fast way
 			%  to find out which actors were active during prev second.
-			prev_sec_from, prev_sec_to}).
+			prev_sec_from, prev_sec_to,
+			stat_readers = [],prev_reads = 0, prev_writes = 0}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
@@ -164,6 +180,8 @@ handle_call(mupdaters,_,P) ->
 	{reply,{ok,[{N,butil:ds_val(N,multiupdaters)} || N <- P#dp.mupdaters]},P};
 handle_call(ulimit,_,P) ->
 	{reply,P#dp.ulimit,P};
+handle_call({subscribe_stat,Pid},_,P) ->
+	{reply,ok,P#dp{stat_readers = [Pid|P#dp.stat_readers]}};
 handle_call(print_info,_,P) ->
 	io:format("~p~n",[?R2P(P)]),
 	{reply,ok,P};
@@ -232,8 +250,22 @@ handle_info(check_limits,P) ->
 	{noreply,P#dp{lastcull = LastCull}};
 handle_info(read_ref,P) ->
 	erlang:send_after(1000,self(),read_ref),
-	% butil:ds_add(os:timestamp(),make_ref(),?STATS),
-	{noreply,P#dp{prev_sec_to = make_ref(), prev_sec_from = P#dp.prev_sec_to}};
+	Ref = make_ref(),
+	butil:ds_add(time_refs,{P#dp.prev_sec_to,Ref},?STATS),
+	AllReads = get_nreads(),
+	AllWrites = get_nwrites(),
+	case P#dp.stat_readers of
+		[] ->
+			SR = [];
+		_ ->
+			Count = ets:select_count(actoractivity,[{{'$1','_'},[{'>','$1',P#dp.prev_sec_to},{'<','$1',Ref}], [true]}]),
+			butil:ds_add(nactive,Count,?STATS),
+			SR = [begin Pid ! {doread,AllReads,AllWrites,AllReads - P#dp.prev_reads,AllWrites - P#dp.prev_writes,Count},
+					Pid 
+		  		  end || Pid <- P#dp.stat_readers, erlang:is_process_alive(Pid)]
+	end,
+	{noreply,P#dp{prev_sec_to = Ref, prev_sec_from = P#dp.prev_sec_to,
+					stat_readers = SR, prev_reads = AllReads, prev_writes = AllWrites}};
 handle_info(check_mem,P) ->
 	erlang:send_after(5000,self(),check_mem),
 	spawn(fun() -> 

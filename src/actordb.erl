@@ -154,7 +154,6 @@ sleep_bp(P) ->
 stop_bp(P) ->
 	actordb_backpressure:stop_caller(P).
 
-
 exec([_|_] = Sql) ->
 	exec(butil:tobin(Sql));
 exec(Sql) ->
