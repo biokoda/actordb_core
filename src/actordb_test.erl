@@ -570,6 +570,14 @@ wait_modified_tree(Nd,All) ->
 			end
 	end.
 
+wait_is_ready(Nd) ->
+	case rpc:call(fullname(Nd),actordb,is_ready,[]) of
+		true ->
+			ok;
+		_ ->
+			timer:sleep(1000),
+			wait_is_ready(Nd)
+	end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 % 
@@ -608,8 +616,8 @@ test_add_cluster() ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 % 
-% 			ADD CLUSTER TO NETWORK
-% 	Start with a cluster, add an additional cluster, wait for shards to move.
+% 			FAILED NODES
+% 	Run queries with nodes offline. 
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 failednodes_start() ->
@@ -631,6 +639,13 @@ test_failednodes(_) ->
 	 fun() -> stop_slaves([2]),ok end,
 	 fun basic_write/0,
 	 fun() -> start_slaves([2]), ok end,
+	 fun basic_write/0,
+	 fun() -> stop_slaves([2,3]),ok end,
+	 fun() -> case catch fun basic_write/0 of
+	 			_ ->
+	 				ok
+	 		end end,
+	 fun() -> start_slaves([2,3]), wait_is_ready(2),wait_is_ready(3), ok end,
 	 fun basic_write/0,
 	 fun() -> test_print_end([1,2,3]) end
 	].
