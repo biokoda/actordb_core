@@ -283,7 +283,6 @@ handle_info(check_mem,P) ->
 handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
 	handle_info({bkdcore_sharedstate,cluster_connected},P);
 handle_info({bkdcore_sharedstate,global_state_change},P) ->
-	?AINF("Global statechange ~p",[bkdcore:node_name()]),
 	{noreply,P};
 handle_info({bkdcore_sharedstate,cluster_connected},P) ->
 	case P#dp.mupdaters of

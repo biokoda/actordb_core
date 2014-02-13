@@ -140,13 +140,14 @@ all_test_() ->
 	[
 		fun test_creating_shards/0,
 		fun test_parsing/0,
-		{setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
+		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
 		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
 		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1},
 		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
+		{setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
 	].
 
 test_parsing() ->
@@ -607,6 +608,44 @@ test_add_cluster() ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 % 
+% 			ADD CLUSTER TO NETWORK
+% 	Start with a cluster, add an additional cluster, wait for shards to move.
+% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+failednodes_start() ->
+	basic_init(),
+	create_allgroups([[1,2,3]]),
+	start_slaves([1,2,3]),
+	ok.
+failednodes_stop(_) ->
+	stop_slaves([1,2,3]),
+	ok.
+test_failednodes(_) ->
+	[
+	 fun basic_write/0,
+	 fun basic_write/0,
+	 fun basic_read/0,
+	 fun kv_readwrite/0,
+	 fun multiupdate_write/0,
+	 fun multiupdate_read/0,
+	 fun() -> stop_slaves([2]),ok end,
+	 fun basic_write/0,
+	 fun() -> start_slaves([2]), ok end,
+	 fun basic_write/0,
+	 fun() -> test_print_end([1,2,3]) end
+	].
+
+
+
+
+
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+% 
 % 	UTILITY FUNCTIONS
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -615,9 +654,18 @@ exec(Bin) ->
 	% if not we are running tests manually on live nodes
 	case node() == 'testnd@127.0.0.1' of
 		true ->
-			rpc:call('slave1@127.0.0.1',actordb,exec,[butil:tobin(Bin)]);
+			S = ['slave1@127.0.0.1','slave2@127.0.0.1','slave3@127.0.0.1'],
+			rpc:call(findnd(S),actordb,exec,[butil:tobin(Bin)]);
 		false ->
 			actordb:exec(Bin)
+	end.
+
+findnd([H|T]) ->
+	case lists:member(H,nodes(connected)) of
+		true ->
+			H;
+		_ ->
+			findnd(T)
 	end.
 
 basic_init() ->

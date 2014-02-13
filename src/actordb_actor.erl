@@ -14,9 +14,14 @@
 start({Name,Type}) ->
 	start(Name,Type).
 start({Name,Type},Flags) ->
-	start(Name,Type,Flags);
+	case lists:keyfind(slave,1,Flags) of
+		false ->
+			start(Name,Type,[{slave,false}|Flags]);
+		true ->
+			start(Name,Type,Flags)
+	end;
 start(Name,Type) ->
-	start(Name,Type,[]).
+	start(Name,Type,[{slave,false}]).
 start(Name,Type1,Opt) ->
 	Type = actordb_util:typeatom(Type1),
 	actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},

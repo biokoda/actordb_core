@@ -598,7 +598,7 @@ handle_call({write,_},_,#dp{mors = slave} = P) ->
 	?DBG("Redirect not master ~p",[P#dp.masternode]),
 	redirect_master(P);
 % Called from master
-handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers},From,P) ->
+handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} = Msg,From,P) ->
 	?ADBG("Replicate start ~p ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,Sql]),
 	?DBLOG(P#dp.db,"replicatestart ~p ~p ~p ~p",[_Ref,butil:encode_percent(_Node),EvNum,Crc]),
 	case Sql of
@@ -613,13 +613,18 @@ handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers},
 		_ when Trump; P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.evnum == PrevEvnum, P#dp.evcrc == PrevCrc ->
 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
 		_ ->
-			?DBLOG(P#dp.db,"replicate conflict!!! ~p ~p in ~p ~p, cur ~p ~p",[_Ref,_Node,EvNum,Crc,P#dp.evnum,P#dp.evcrc]),
-			?AERR("Replicate conflict!!!!! ~p ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc]),
 			actordb_sqlite:stop(P#dp.db),
-			reply(From,desynced),
-			% Doing init again will mean calling verify and restore db.
-			{ok,NP} = init(P,replicate_conflict),
-	 		{reply,ok,NP#dp{callqueue = P#dp.callqueue}}
+			case ok of
+				_ when Node == P#dp.masternodedist ->
+					?DBLOG(P#dp.db,"replicate conflict!!! ~p ~p in ~p ~p, cur ~p ~p",[_Ref,_Node,EvNum,Crc,P#dp.evnum,P#dp.evcrc]),
+					?AERR("Replicate conflict!!!!! ~p ~p ~p ~p ~p, master ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,{Node,P#dp.masternodedist}]),
+					reply(From,desynced),
+					{ok,NP} = init(P,replicate_conflict);
+				_ ->
+					?AINF("Reinit to reastablish master node ~p",[{P#dp.actorname,P#dp.actortype}]),
+					{ok,NP} = init(P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)},replicate_conflict)
+			end,
+			{reply,ok,NP}
 	end;
 % Called from master
 handle_call(replicate_commit,From,P) ->
@@ -1267,16 +1272,16 @@ get_from_wlog(FEv,FCrc,Bin) ->
 get_from_wlog(FEv,_,<<Evn:64,_/binary>>,undefined) when FEv < Evn ->
 	% FEv too far behind
 	undefined;
-get_from_wlog(FEv,_,<<Evn:64,Evcrc:64,Size:32/unsigned,Sql:Size/binary>>,Out) when FEv < Evn ->
+get_from_wlog(FEv,_,<<Evn:64,Evcrc:32,Size:32/unsigned,Sql:Size/binary>>,Out) when FEv < Evn ->
 	% Reached the end of wlog and have something to return.
 	{Evn,Evcrc,<<Out/binary,Sql/binary>>};
-get_from_wlog(FEv,FCrc,<<Evn:64,_:64,Size:32/unsigned,Sql:Size/binary,Rem/binary>>,Out) when FEv < Evn ->
+get_from_wlog(FEv,FCrc,<<Evn:64,_:32,Size:32/unsigned,Sql:Size/binary,Rem/binary>>,Out) when FEv < Evn ->
 	% We went past FEv == Evn and are building the sql statement
 	get_from_wlog(FEv,FCrc,Rem,<<Out/binary,Sql/binary>>);
-get_from_wlog(FEv,FCrc,<<Evn:64,_:64,Size:32/unsigned,_:Size/binary,Rem/binary>>,L) when FEv > Evn ->
+get_from_wlog(FEv,FCrc,<<Evn:64,_:32,Size:32/unsigned,_:Size/binary,Rem/binary>>,L) when FEv > Evn ->
 	% wlog is bigger than missing events, move upto FEv == Evn
 	get_from_wlog(FEv,FCrc,Rem,L);
-get_from_wlog(FEv,FCrc,<<FEv:64,Crc:64,Size:32/unsigned,_:Size/binary,Rem/binary>>,undefined) ->
+get_from_wlog(FEv,FCrc,<<FEv:64,Crc:32,Size:32/unsigned,_:Size/binary,Rem/binary>>,undefined) ->
 	% FEv == Evn, if crcs match, then we can start extracting sql statements
 	case FCrc == Crc of
 		true ->
@@ -1564,7 +1569,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			distreg:unreg(self()),
 			{stop,normal,P};
 		nomaster ->
-			?AERR("No master found for verify ~p",[?R2P(P)]),
+			?AERR("No master found for verify ~p ~p",[?R2P(P),get()]),
 			{stop,nomaster,P};
 		_ ->
 			case queue:is_empty(P#dp.callqueue) of
@@ -1833,10 +1838,11 @@ terminate(_, _) ->
 code_change(_, P, _) ->
 	{ok, P}.
 init(#dp{} = P,_Why) ->
-	?ADBG("Reinit because ~p, ~p",[_Why,?R2P(P)]),
+	?ADBG("Reinit because ~p, ~p, ~p",[_Why,?R2P(P),get()]),
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,P#dp.flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 init([_|_] = Opts) ->
+	put(opt,Opts),
 	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
 									schemanum = actordb_schema:num()}),Opts) of
 		{registered,Pid} ->
@@ -2312,6 +2318,12 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 					end
 			end
 	end,
+	case MasterNode == Me of
+		true ->
+			MeMorsOut = master;
+		_ ->
+			MeMorsOut = slave
+	end,
 	% This node is in majority group.
 	case (Yes+1)*2 > (LenCluster+1) of
 		true ->
@@ -2319,16 +2331,16 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 				true ->
 					case butil:findtrue(fun({ok,_,_,NodeEvnum,_}) -> NodeEvnum > 0 end,Results) of
 						false ->
-							verified_response(MeMors,MasterNode);
+							verified_response(MeMorsOut,MasterNode);
 						_ ->
 							?ADBG("Node does not have db some other node does! ~p",[Actor]),
 							% Majority has evnum 0, but there is more than one group.
 							% This is an exception. In this case highest evnum db is the right one.
 							[{ok,Oknode,_,_,_}|_] = lists:reverse(lists:keysort(4,Results)),
-							verify_getdb(Actor,Type,Oknode,MasterNode,MeMors,Cb,Evnum,Evcrc)
+							verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc)
 					end;
 				_ ->
-					verified_response(MeMors,MasterNode)
+					verified_response(MeMorsOut,MasterNode)
 			end;
 		false ->
 			Grouped = butil:group(fun({ok,_Node,NodeCrc,NodeEvnum,_NodeMors}) -> {NodeEvnum,NodeCrc} end,
@@ -2350,9 +2362,9 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 						false ->
 							[{ok,Oknode,_,_,_}|_]  = MajorityGroup,
 							?ADBG("Restoring db from another node ~p",[Actor]),
-							verify_getdb(Actor,Type,Oknode,MasterNode,slave,Cb,Evnum,Evcrc);
+							verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc);
 						{ok,MasterNode,_,_,_} ->
-							verify_getdb(Actor,Type,MasterNode,MasterNode,slave,Cb,Evnum,Evcrc)
+							verify_getdb(Actor,Type,MasterNode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc)
 					end;
 				% No clear majority or majority has no writes.
 				_ ->
@@ -2368,9 +2380,9 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 									?ADBG("Node does not have db some other node does! ~p",[Actor]),
 									[{_,OtherGroup}] = lists:keydelete({0,0},1,Grouped),
 									[{ok,Oknode,_,_,_}|_]  = OtherGroup,
-									verify_getdb(Actor,Type,Oknode,MasterNode,MeMors,Cb,Evnum,Evcrc);
+									verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc);
 								{_,_ZeroGroup} ->
-									verified_response(MeMors,MasterNode)
+									verified_response(MeMorsOut,MasterNode)
 							end;
 						_ ->
 							exit({nomajority,Grouped,GetFailed})
@@ -2404,8 +2416,8 @@ verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 		{ok,Bin} ->
 			% db file small enough to be sent directly
 			exit({update_direct,MeMors,Bin});
-		{wlog,Evnum,Evcrc,Sql} ->
-			exit({wlog,Evnum,Evcrc,Sql});
+		{wlog,LEvnum,LEvcrc,Sql} ->
+			exit({wlog,LEvnum,LEvcrc,Sql});
 		{error,enoent} ->
 			exit({error,enoent});
 		{redirect,RNode} when RNode /= Node ->
