@@ -184,6 +184,7 @@ handle_info(can_start,P) ->
 		true ->
 			ok;
 		false ->
+			?ADBG("Checking canstart"),
 			spawn(fun() -> can_start() end),
 			erlang:send_after(300,self(),can_start)
 	end,

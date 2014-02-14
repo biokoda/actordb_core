@@ -636,17 +636,29 @@ test_failednodes(_) ->
 	 fun kv_readwrite/0,
 	 fun multiupdate_write/0,
 	 fun multiupdate_read/0,
-	 fun() -> stop_slaves([2]),ok end,
-	 fun basic_write/0,
-	 fun() -> start_slaves([2]), ok end,
-	 fun basic_write/0,
-	 fun() -> stop_slaves([2,3]),ok end,
+	 fun() -> 
+	 	?debugFmt("Taking down node 2",[]),
+	 	stop_slaves([2]),ok 
+	 end,
+	 {timeout,20,fun basic_write/0},
+	 {timeout,20,fun() -> 
+	 	?debugFmt("Starting back node 2",[]),
+	 	start_slaves([2]), ok 
+	 end},
+	 {timeout,20,fun basic_write/0},
+	 fun() -> 
+	 	?debugFmt("Taking down node 2 and node 3",[]),
+	 	stop_slaves([2,3]),ok 
+	 end,
 	 fun() -> case catch fun basic_write/0 of
 	 			_ ->
 	 				ok
 	 		end end,
-	 fun() -> start_slaves([2,3]), wait_is_ready(2),wait_is_ready(3), ok end,
-	 fun basic_write/0,
+	 {timeout,20,fun() ->
+	 	?debugFmt("Starting back node 2 and node 3",[]),
+	 	start_slaves([2,3]), wait_is_ready(2),wait_is_ready(3), ok 
+	 end},
+	 {timeout,20,fun basic_write/0},
 	 fun() -> test_print_end([1,2,3]) end
 	].
 

@@ -1224,10 +1224,17 @@ rpc(Nd,MFA) ->
 	% Printer ! done,
 	Res.
 
-checkfail(_,[]) ->
+checkfail(_P,_,[]) ->
 	ok;
-checkfail(N,L) ->
-	?AERR("commit failed on ~p  ~p",[N,L]).
+checkfail(P,N,L) ->
+	case P of
+		{A,T} ->
+			ok;
+		_ ->
+			A = P#dp.actorname,
+			T = P#dp.actortype
+	end,
+	?AERR("commit failed on ~p ~p  ~p",[{A,T},N,L]).
 
 commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 	Ref = make_ref(),
@@ -1235,7 +1242,7 @@ commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 			{ResultsStart,StartFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
 						[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{replicate_start,Ref,node(),P#dp.evnum,
 																	P#dp.evcrc,Sql,EvNum,Crc,SchemaVers},[{flags,P#dp.flags}]]),
-			checkfail(1,StartFailed),
+			checkfail(P,1,StartFailed),
 			% Only count ok responses
 			LenStarted = lists:foldl(fun(X,NRes) -> case X == ok of true -> NRes+1; false -> NRes end end,0,ResultsStart),
 			case (LenStarted+1)*2 > LenCluster+1 of
@@ -1243,7 +1250,7 @@ commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 					NodesToCommit = lists:subtract(ConnectedNodes,StartFailed),
 					{ResultsCommit,CommitFailedOn} = rpc:multicall(NodesToCommit,?MODULE,call_slave,
 										[P#dp.cbmod,P#dp.actorname,P#dp.actortype,replicate_commit,[{flags,P#dp.flags}]]),
-					checkfail(2,CommitFailedOn),
+					checkfail(P,2,CommitFailedOn),
 					LenCommited = length(ResultsCommit),
 					case (LenCommited+1)*2 > LenCluster+1 of
 						true ->
@@ -1560,9 +1567,11 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			{noreply,NP};
 		{nomajority,Groups} ->
 			?AERR("Verify nomajority ~p",[Groups]),
+			self() ! stop,
 			handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
 		{nomajority,Groups,Failed} ->
 			?AERR("Verify nomajority ~p ~p",[Groups,Failed]),
+			self() ! stop,
 			handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
 		{error,enoent} ->
 			?AERR("error enoent result of verify ~p ~p",[P#dp.actorname,P#dp.actortype]),
@@ -2257,7 +2266,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo},[{flags,Flags}]]),
 	?ADBG("verify from others ~p",[Results]),
-	checkfail(3,GetFailed),
+	checkfail({Actor,Type},3,GetFailed),
 	Me = bkdcore:node_name(),
 	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
 	{Yes,Masters} = lists:foldl(
@@ -2267,6 +2276,8 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 			 	case NodeMors of
 			 		{master,true} ->
 			 			Masters1 = [{Node,true}|Masters];
+			 		{_,failed} ->
+			 			Masters1 = Masters;
 			 		{master,false} ->
 			 			Masters1 = [{Node,false}|Masters];
 			 		{slave,_} ->
