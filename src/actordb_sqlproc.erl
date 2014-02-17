@@ -652,8 +652,8 @@ handle_call(replicate_commit,From,P) ->
 					Res = actordb_sqlite:exec(P#dp.db,[
 						 <<"$SAVEPOINT 'adb';">>,
 						 semicolon(Sql),
-						 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
-						 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
+						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
 						 <<"$RELEASE SAVEPOINT 'adb';">>
 						 ],write),
 					{reply,okornot(Res),check_timer(P#dp{replicate_sql = <<>>,evnum = EvNum, 
@@ -749,7 +749,7 @@ semicolon(S) ->
 % the delete call and relies on actordb_events.
 actornum(#dp{evnum = 0} = P) ->
 	ActorNum = butil:md5(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
-	<<"$INSERT OR REPLACE INTO __adb VALUES (",?ANUM/binary,",'",(butil:tobin(ActorNum))/binary,"');">>;
+	[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>];
 actornum(_) ->
 	<<>>.
 
@@ -837,13 +837,13 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 				<<>> ->
 					ReplSql = semicolon(Sql);
 				NumSql ->
-					ReplSql = <<(semicolon(Sql))/binary,NumSql/binary>>
+					ReplSql = [semicolon(Sql),NumSql]
 			end,
 			ComplSql = 
 					[<<"$SAVEPOINT 'adb';">>,
 					 ReplSql,
-					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
-					 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
 					 Tail
 					 ],
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
@@ -903,8 +903,8 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 							ComplSql = 
 								[<<"$SAVEPOINT 'adb';">>,
 								 semicolon(Sql1),actornum(P),
-								 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
-								 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>
+								 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+								 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";"
 								 ],
 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
 					end
@@ -925,35 +925,36 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			EvNum = P#dp.evnum+1,
 			case P#dp.transactionid of
 				TransactionId ->
+					?AINF("WHATWHAT ~p~n",[P#dp.db]),
 					% Rollback prev version of sql.
 					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					{OldSql,_EvNum,_EvCrc,NewVers} = P#dp.replicate_sql,
 					% Combine prev sql with new one.
-					Sql = <<OldSql/binary,Sql1/binary>>,
-					TransactionInfo = <<"$INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,",
-											(butil:tobin(Tid))/binary,",",(butil:tobin(Updaterid))/binary,",'",Node/binary,"',",
-								 				(butil:tobin(NewVers))/binary,",",
-								 				"'",(base64:encode(Sql))/binary,"');">>;
+					Sql = iolist_to_binary([OldSql,Sql1]),
+					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
+											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
+								 				(butil:tobin(NewVers)),",",
+								 				"'",(base64:encode(Sql)),"');"];
 				_ ->
 					case Sql1 of
 						delete ->
 							Sql = <<"delete">>;
 						_ ->
-							Sql = Sql1
+							Sql = iolist_to_binary(Sql1)
 					end,
 					% First store transaction info 
 					% Once that is stored (on all nodes), execute the sql to see if there are errors (but only on this master node).
-					TransactionInfo = <<"$INSERT INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,",
-											(butil:tobin(Tid))/binary,",",(butil:tobin(Updaterid))/binary,",'",Node/binary,"',",
-											(butil:tobin(NewVers))/binary,",",
-								 				"'",(base64:encode(Sql))/binary,"');">>
+					TransactionInfo = [<<"$INSERT INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
+											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
+											(butil:tobin(NewVers)),",",
+								 				"'",(base64:encode(Sql)),"');"]
 			end,
 			CrcTransaction = erlang:crc32(TransactionInfo),
 			ComplSql = 
 					[<<"$SAVEPOINT 'adb';">>,
 					 TransactionInfo,
-					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
-					 <<"$UPDATE __adb SET val='">>,butil:tolist(CrcTransaction),<<"' WHERE id=",?EVCRC/binary,";">>
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(CrcTransaction),<<"' WHERE id=">>,?EVCRC,";"
 					 ],
 			ok = okornot(actordb_sqlite:exec(P#dp.db,ComplSql,write)),
 			?DBG("Replicating transaction write, connected ~p",[ConnectedNodes]),
@@ -965,7 +966,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 								  % evnum = EvNum,evcrc = CrcTransaction,
 								  transactioncheckref = CheckRef,
 								  transactionid = TransactionId,
-								  write_bytes = P#dp.write_bytes + iolist_size(Sql)}};
+								  write_bytes = P#dp.write_bytes + byte_size(Sql)}};
 				_ ->
 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					erlang:demonitor(CheckRef),
@@ -1239,9 +1240,10 @@ checkfail(P,N,L) ->
 commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 	Ref = make_ref(),
 	{Commiter,_} = spawn_monitor(fun() ->
+			SqlBin = iolist_to_binary(Sql),
 			{ResultsStart,StartFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
 						[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{replicate_start,Ref,node(),P#dp.evnum,
-																	P#dp.evcrc,Sql,EvNum,Crc,SchemaVers},[{flags,P#dp.flags}]]),
+																	P#dp.evcrc,SqlBin,EvNum,Crc,SchemaVers},[{flags,P#dp.flags}]]),
 			checkfail(P,1,StartFailed),
 			% Only count ok responses
 			LenStarted = lists:foldl(fun(X,NRes) -> case X == ok of true -> NRes+1; false -> NRes end end,0,ResultsStart),
@@ -1255,8 +1257,8 @@ commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 					case (LenCommited+1)*2 > LenCluster+1 of
 						true ->
 							WLog = <<(trim_wlog(P#dp.writelog))/binary,
-												EvNum:64/unsigned,Crc:32/unsigned,(iolist_size(Sql)):32/unsigned,
-													(iolist_to_binary(Sql))/binary>>,
+												EvNum:64/unsigned,Crc:32/unsigned,(byte_size(SqlBin)):32/unsigned,
+													(SqlBin)/binary>>,
 							exit({ok, EvNum, Crc, WLog});
 						false ->
 							CommitOkOn = lists:subtract(NodesToCommit,CommitFailedOn),
@@ -1426,14 +1428,14 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 							ReplicateSql = {<<"delete">>,EvNumNew,CrcSql,NewVers},
 							reply(P#dp.callfrom,ok);
 						_ ->
-							NewSql = <<Sql/binary,"$DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary,
-												" AND updater=",(butil:tobin(Updaterid))/binary,";">>,
+							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
 							ComplSql = 
 									[<<"$SAVEPOINT 'adb';">>,
 									 NewSql,
-									 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNumNew),<<"' WHERE id=",?EVNUM/binary,";">>,
-									 <<"$UPDATE __adb SET val='">>,butil:tolist(CrcSql),<<"' WHERE id=",?EVCRC/binary,";">>
+									 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
+									 <<"$UPDATE __adb SET val='">>,butil:tobin(CrcSql),<<"' WHERE id=">>,?EVCRC,";"
 									 ],
 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write),
 							reply(P#dp.callfrom,Res),
@@ -1502,10 +1504,10 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 					ComplSql = 
 						[<<"$SAVEPOINT 'adb';">>,
 						 semicolon(Sql),actornum(P),
-						 <<"$DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary,
-						 		" AND updater=",(butil:tobin(Updid))/binary,";">>,
-						 <<"$UPDATE __adb SET val='">>,butil:tolist(Evnum),<<"' WHERE id=",?EVNUM/binary,";">>,
-						 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>
+						 <<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+						 		<<" AND updater=">>,(butil:tobin(Updid)),";",
+						 <<"$UPDATE __adb SET val='">>,butil:tobin(Evnum),<<"' WHERE id=">>,?EVNUM,";",
+						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";"
 						 ],
 					actordb_sqlite:exec(P#dp.db,ComplSql,write),
 					% 0 - transaction still running, wait for done.
@@ -1559,8 +1561,8 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			ok = okornot(actordb_sqlite:exec(P#dp.db,[
 					 <<"$SAVEPOINT 'adb';">>,
 					 Sql,
-					 <<"$UPDATE __adb SET val='">>,butil:tolist(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
-					 <<"$UPDATE __adb SET val='">>,butil:tolist(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
 					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],write)),
 			{ok,NP} = init(P#dp{evnum = EvNum, evcrc = Crc},update_wlog),
@@ -2124,19 +2126,19 @@ base_schema(SchemaVers,Type,MovedTo) ->
 		undefined ->
 			Moved = <<>>;
 		_ ->
-			Moved = <<"INSERT INTO __adb (id,val) VALUES (",?MOVEDTO/binary,",'",MovedTo/binary,"');">>
+			Moved = [<<"INSERT INTO __adb (id,val) VALUES (">>,?MOVEDTO,",'",MovedTo,"');"]
 	end,
-	<<"BEGIN;",(?LOGTABLE)/binary,
-	 "CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
+	[<<"BEGIN;">>,(?LOGTABLE),
+	 <<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
 	 "CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);",
-	 "INSERT INTO __adb (id,val) VALUES (",?EVNUM/binary,",'0');",
-	 "INSERT INTO __adb (id,val) VALUES (",?EVCRC/binary,",'0');",
-	 "INSERT INTO __adb (id,val) VALUES (",?SCHEMA_VERS/binary,",'",
-	 						(butil:tobin(SchemaVers))/binary, "');",
-	Moved/binary,
-	 "INSERT INTO __adb (id,val) VALUES (",?ATYPE/binary,",'",
-	 		(butil:tobin(Type))/binary, "');">>.
+	 "INSERT INTO __adb (id,val) VALUES (">>,?EVNUM,",'0');",
+	 <<"INSERT INTO __adb (id,val) VALUES (">>,?EVCRC,",'0');",
+	 <<"INSERT INTO __adb (id,val) VALUES (">>,?SCHEMA_VERS,",'",
+	 						(butil:tobin(SchemaVers)), "');",
+	Moved,
+	 <<"INSERT INTO __adb (id,val) VALUES (">>,?ATYPE,",'",
+	 		(butil:tobin(Type)), "');"].
 
 do_cb_init(#dp{cbstate = undefined} = P) ->
 	case P#dp.movedtonode of
