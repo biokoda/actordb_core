@@ -925,7 +925,6 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			EvNum = P#dp.evnum+1,
 			case P#dp.transactionid of
 				TransactionId ->
-					?AINF("WHATWHAT ~p~n",[P#dp.db]),
 					% Rollback prev version of sql.
 					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					{OldSql,_EvNum,_EvCrc,NewVers} = P#dp.replicate_sql,
