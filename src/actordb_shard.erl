@@ -636,7 +636,7 @@ cb_schema(Idtype,Type,0) ->
 	case actordb_schema:iskv(butil:toatom(Type)) of
 		true ->
 			{V,Sql} = actordb_util:type_schema(Type,0),
-			{V,[Sql,schema(2,Type)]};
+			{V,[Sql,<<"CREATE INDEX hind ON actors (hash);">>,schema(2,Type)]};
 		false ->
 			{schema_version(), [schema(N,Idtype) || N <- lists:seq(1,schema_version())]}
 	end;
