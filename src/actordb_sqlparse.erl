@@ -415,7 +415,7 @@ count_param(<<"}}",_/binary>>,N) ->
 count_param(<<C,Rem/binary>>,N) when C >= $a, C =< z; 
 									 C >= $A, C =< $Z; 
 									 C >= $0, C =< $9;
-									 C == $.; C == $=; C == $(; C == $) ->
+									 C == $.; C == $=; C == $(; C == $); C == $_ ->
 	count_param(Rem,N+1);
 count_param(<<>>,_) ->
 	undefined;
