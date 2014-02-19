@@ -56,7 +56,7 @@ handle_call({shard_has_split,Original,Name,Type},_,P) ->
 	case lists:member({Name,Type},P#dp.shards_splitting) of
 		true ->
 			Without = lists:delete({Name,Type},P#dp.shards_splitting),
-			case lists:keyfind(Type,2,Without) of
+			case lists:keyfind(Name,1,Without) of
 				false ->
 					Res = actordb_shardmngr:shard_has_split(Original,Name);
 				_ ->

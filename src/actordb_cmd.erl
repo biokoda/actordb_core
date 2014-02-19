@@ -13,7 +13,7 @@ cmd(init,parse,Etc) ->
 			case catch yamerl_constr:file(Etc++"/schema.yaml") of
 				[Schema] ->
 					NewCfg = parse_schema(Schema),
-					case catch compare_schema([],NewCfg,[]) of
+					case catch compare_schema([],NewCfg) of
 						{ok,L} ->
 							case bkdcore:nodelist() of
 								[] ->
@@ -104,7 +104,7 @@ cmd(updateschema,parse,Etc) ->
 			try yamerl_constr:file(Etc++"/schema.yaml") of
 				[Schema] ->
 					NewCfg = parse_schema(Schema),
-					case catch compare_schema(Types,NewCfg,[]) of
+					case catch compare_schema(Types,NewCfg) of
 						{ok,L} ->
 							{ok,L};
 						{error,Err} ->
@@ -235,6 +235,9 @@ parse_schema(Schema) ->
 	actordb_util:parse_cfg_schema(Schema).
 	% [Tuple || Tuple <- L1, tuple_size(Tuple) == 2].
 
+compare_schema(Types,New) ->
+	N1 = [Data || Data <- New, (tuple_size(Data) == 2 orelse element(1,Data) == iskv)],
+	compare_schema(Types,N1,[]).
 % Move over existing tyes of actors. 
 % For every type check if it exists in new schema and if any sql statements added.
 compare_schema([Type|T],New,Out) when Type == ids; Type == types; Type == iskv; Type == num ->

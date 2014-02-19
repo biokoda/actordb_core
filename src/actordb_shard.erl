@@ -130,11 +130,18 @@ start_split(Name,Type1,SplitPoint) ->
 	
 
 start_split_other(Name,Type,OriginShard) ->
-	?AINF("Start copyfrom ~p ~p from ~p",[Name,Type,OriginShard]),
-	start(Name,Type,false,[nohibernate,{copyfrom,{bkdcore:node_name(),OriginShard}},
+	case start(Name,Type,false,[exists]) of
+		{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]} ->
+			?AINF("Shard split, report done ~p",[{Name,Type,OriginShard}]),
+			Pid = spawn(fun() -> callmvr(OriginShard,actordb_shardmvr,shard_has_split,[OriginShard,Name,Type]) end),
+			{ok,Pid};
+		_ ->
+			?AINF("Start copyfrom ~p ~p from ~p",[Name,Type,OriginShard]),
+			start(Name,Type,false,[nohibernate,{copyfrom,{bkdcore:node_name(),OriginShard}},
 									   {copyreset,{?MODULE,split_other_done,
 									   				[OriginShard,<<"DELETE FROM actors WHERE hash < ",(butil:tobin(Name))/binary,";",
-													"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}]).
+													"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}])
+	end.
 
 split_other_done(P,Origin,Sql) ->
 	?ADBG("Split other done ~p ~p from ~p",[P#state.name, P#state.type,Origin]),
