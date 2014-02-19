@@ -265,7 +265,7 @@ hash_pick(_,[]) ->
 	undefined;
 % Nodes are taken from bkdcore:nodelist, nodes from there are always sorted by name.
 hash_pick(Val,L) ->
-	ValInt = actordb_util:hash({Val,"asdf"}),
+	ValInt = actordb_util:hash([Val,"asdf"]),
 	Len = length(L),
 	Step = ?NAMESPACE_MAX div Len,
 	Index = ValInt div Step,
