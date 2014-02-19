@@ -162,6 +162,7 @@ prestart() ->
 					NProcs = length(actordb_conf:paths())
 			end,
 			esqlite3:init(NProcs),
+			emurmur3:init(),
 			spawn(fun() -> check_rowid() end)
 	end.
 

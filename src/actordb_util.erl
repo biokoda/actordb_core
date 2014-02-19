@@ -8,7 +8,8 @@
 
 
 hash(V) ->
-	erlang:phash2([V,{1234982,32402942}]).
+	% erlang:phash2([V,{1234982,32402942}]).
+	emurmur3:hash_x86_32(V,1283346540).
 
 actor_types() ->
 	actordb_schema:types().

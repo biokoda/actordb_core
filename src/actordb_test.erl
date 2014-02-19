@@ -130,6 +130,14 @@ tsingle(Db,N) ->
 						>>),
 	tsingle(Db,N-1).
 
+filltkv(N) ->
+	filltkv(N,binary:copy(<<"a">>,1024*1024)).
+filltkv(N,B) when N > 0 ->
+	actordb:exec(["ACTOR textkv(",butil:tobin(N),");","INSERT OR IGNORE INTO actors VALUES ('",butil:tobin(N),"',","{{hash(",butil:tobin(N),")}},'",B,"')"]),
+	filltkv(N-1,B);
+filltkv(0,_) ->
+	ok.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 % 
 % 		All tests are executed in slave nodes of current node.

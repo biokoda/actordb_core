@@ -9,7 +9,7 @@
 -export([print_info/0,reload/0,deser_prop/1]).
 -export([local_shards_changed/2,shard_moved/3,shard_has_split/3]).
 % for testing
--export([split_shards/4,has_neighbour/3]).
+-export([split_shards/4,has_neighbour/3,start_splits/0]).
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 % -compile(export_all).
@@ -281,6 +281,29 @@ start_shards(P) ->
 	P.
 
 
+start_splits() ->
+	{_,Local} = gen_server:call(actordb_shardmngr,get_all_shards),
+	butil:sparsemap(fun({From,To,Nd}) ->
+					 SplitPoint = From + ((To-From) div 2),
+					 
+					 ShardsPerType = butil:sparsemap(fun(Type) -> 
+					 	?AINF("start_splitshard ~p ~p ~p ~p",[From,To,Nd,Type]),
+					 	% distreg:whereis({SplitPoint,Type})
+					 	case actordb_shard:try_whereis(SplitPoint,Type) of
+					 		undefined ->
+								case catch actordb_shard:start_split(From,Type,SplitPoint) of
+									{ok,_Pid} ->
+										{SplitPoint,Type};
+									_Err ->
+										?AINF("SPLIT ERR ~p",[_Err]),
+										undefined
+								end;
+							_ ->
+								undefined
+						end
+					end,actordb_util:actor_types()),
+					 ShardsPerType
+	end,Local).
 
 start_splits(P,Local) ->
 	?AINF("Start split shards ~p",[Local]),
