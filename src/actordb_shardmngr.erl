@@ -8,7 +8,7 @@
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/0,reload/0,deser_prop/1]).
 -export([whereis/0,find_local_shard/2,find_local_shard/3,is_local_shard/1,is_local_shard/2,find_global_shard/1,find_global_shard/2,steal_shard/3,
-			set_shard_border/4,shard_moved/3,shard_started/3,shard_has_split/2,get_local_shards/0,schema_changed/0]).
+			set_shard_border/5,shard_moved/3,shard_started/3,shard_has_split/2,get_local_shards/0,schema_changed/0]).
 % for testing
 -export([create_shards/1]).
 -include_lib("actordb.hrl").
@@ -21,10 +21,6 @@
 % Communicates with other nodes in cluster for when a node is down, which shards to take over 
 % 	 (or not because not enough nodes online)
 
-% Information about shards is stored in bkdcore_sharedstate.
-% Every node should have more then ?MIN_SHARDS shards. Initial server setup will give each server ?MIN_SHARDS*2.
-% Every shard is a chunk of erlang:phash2 namespace (0-?NAMESPACE_MAX).
-% Every actor type has its own shard. So shardmngr starts a maximum of ?MIN_SHARDS*2*NumberOfActors shard processes.
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -65,10 +61,10 @@ find_local_shard(Actor,Type,Hash) ->
 			case butil:ds_val({Shard,Type},?BORDERETS) of
 				undefined ->
 					Shard;
-				{UpperLimit,_OtherNode} when Hash =< UpperLimit ->
+				{UpperLimit,_OtherNode,_OtherShard} when Hash =< UpperLimit ->
 					Shard;
-				{_,Other} ->
-					{redirect,Shard,Other}
+				{_,OtherNode,OtherShard} ->
+					{redirect,OtherShard,OtherNode}
 			end
 	end.
 is_local_shard(Actor) ->
@@ -95,8 +91,8 @@ find_global_shard(_Actor,Hash) ->
 
 % Gets called on node from which shard is being taken. 
 % Its upper border gets lowered for every actor moved over to new node.
-set_shard_border(Shard,Type,Limit,NewNode) ->
-	butil:ds_add({Shard,Type},{Limit,NewNode},?BORDERETS).
+set_shard_border(Shard,NewShard,Type,Limit,NewNode) ->
+	butil:ds_add({Shard,Type},{Limit,NewNode,NewShard},?BORDERETS).
 
 % When shard has been completely moved over to a new node, this gets called.
 % Once all types for shard have been moved over to another node, it will tell shardmngr on global master node
@@ -173,10 +169,10 @@ reload() ->
 % Processes that do work async. Result returned in exit signal.
   getstatepid,  
 % Which shards are being taken from this node.
-% [{Shard,Node,[ActorType1,ActorType2,...]}]   
+% [{NewShard,OldShard,Node,[ActorType1,ActorType2,...]}]   
   shardsbeingtaken = [],
   % Shards previously taken from this node.
-  shardsprevtaken = [],
+  % shardsprevtaken = [],
   dirty = false,
   haveschema = false
   }).
@@ -184,31 +180,31 @@ reload() ->
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
 % Shard has been completely moved over to another node.
-handle_call({shard_moved,Shard,Type,Node},From,P) ->
-	?AINF("Shard moved ~p ~p ~p~n~p",[Shard,Type,Node,P#dp.shardsbeingtaken]),
+handle_call({shard_moved,NewShard,Type,Node},From,P) ->
+	?AINF("Shard moved ~p ~p ~p~n~p",[NewShard,Type,Node,P#dp.shardsbeingtaken]),
 	% Have all types for shard been moved?
 	% If yes, tell global master shard Node is in charge of shard now.
-	case lists:keyfind(Shard,1,P#dp.shardsbeingtaken) of
-		{Shard,Node,Types} ->
+	case lists:keyfind(NewShard,1,P#dp.shardsbeingtaken) of
+		{NewShard,OldShard,Node,Types} ->
 			case lists:delete(Type,Types) of
 				[] ->
-					?AINF("ALl types moved! ~p",[Shard]),
-					CleanedUp = [{Shd,Nd,TypesToGo} || {Shd,Nd,TypesToGo} <- P#dp.shardsbeingtaken, Shd /= Shard],
+					?AINF("ALl types moved! ~p",[NewShard]),
+					CleanedUp = [{NShd,OShd,Nd,TypesToGo} || {NShd,OShd,Nd,TypesToGo} <- P#dp.shardsbeingtaken, NShd /= NewShard],
 					ok = bkdcore_sharedstate:set_cluster_state(shardmngr,{shardsbeingtaken,bkdcore:node_name()},CleanedUp),
-					handle_call({change_shard_node,Shard,Node},From,P); 
+					handle_call({change_shard_node,NewShard,OldShard,Node},From,P); 
 				Deleted ->
-					SBT = lists:keystore(Shard,1,P#dp.shardsbeingtaken,{Shard,Node,Deleted}),
+					SBT = lists:keystore(NewShard,1,P#dp.shardsbeingtaken,{NewShard,OldShard,Node,Deleted}),
 					ok = bkdcore_sharedstate:set_cluster_state(shardmngr,{shardsbeingtaken,bkdcore:node_name()},SBT),
 					?AINF("Still have not moved, yet to move ~p",[Deleted]),
 					{reply,ok,P#dp{shardsbeingtaken = SBT}}
 			end;
 		false ->
-			case find_global_shard(Shard,Shard) of
-				{Shard,_,Node} ->
+			case find_global_shard(NewShard,NewShard) of
+				{NewShard,_,Node} ->
 					{reply,ok,P};
 				Existing ->
 					?AERR("Unknown shard moved?! shard ~p, tonode ~p, myshards ~p beingtaken ~p, current pos ~p",
-							[Shard,Node,P#dp.localshards,P#dp.shardsbeingtaken,Existing]),
+							[NewShard,Node,P#dp.localshards,P#dp.shardsbeingtaken,Existing]),
 					{reply,false,P}
 			end
 	end;
@@ -221,24 +217,25 @@ handle_call({steal_shard,Nd,Shard,NdToTakeFrom},_From,P) ->
 			{reply,already_have_it,P};
 		% {_,_,_} when P#dp.shardsbeingsplit /= [] ->
 		% 	{reply,splitting,P};
-		{Shard,_,NdToTakeFrom} ->
+		{Shard,ShardTo,NdToTakeFrom} ->
 			case ok of
 				_ when P#dp.shardsbeingtaken /= [] ->
-					case lists:keyfind(Shard,1,P#dp.shardsbeingtaken) of
-						{Shard,Nd,_} ->
+					case lists:keyfind(Shard,2,P#dp.shardsbeingtaken) of
+						{_,Shard,Nd,_} ->
 							?ADBG("steal again"),
 							Doit = already;
 						_ ->
 							?ADBG("Already have shards being taken ~p",[P#dp.shardsbeingtaken]),
 							Doit = false
 					end;
-				_ when NdToTakeFrom == Me, length(P#dp.localshards) > ?MIN_SHARDS ->
-					?ADBG("Take conditions ok if not in prev ~p",[P#dp.shardsprevtaken]),
-					Doit = lists:keymember(Shard,1,P#dp.shardsprevtaken) == false;
+				_ when NdToTakeFrom == Me, length(P#dp.localshards) >= ?NUM_SHARDS ->
+					?ADBG("Take conditions ok if not in prev ~p",[[]]),
+					% Doit = lists:keymember(Shard,1,P#dp.shardsprevtaken) == false;
+					Doit = true;
 				_ when NdToTakeFrom /= Me ->
-					Doit = length([ok || {_,_,Ndx} <- P#dp.allshards,Ndx == Nd]) > ?MIN_SHARDS andalso
-								 lists:member(NdToTakeFrom,bkdcore:all_cluster_nodes()) andalso
-								 lists:keymember(Shard,1,P#dp.shardsprevtaken) == false,
+					Doit = length([ok || {_,_,Ndx} <- P#dp.allshards,Ndx == Nd]) >= ?NUM_SHARDS andalso
+								 lists:member(NdToTakeFrom,bkdcore:all_cluster_nodes()), %andalso
+								 %lists:keymember(Shard,1,P#dp.shardsprevtaken) == false,
 					?ADBG("Not taking from me, doit ~p",[Doit]);
 				_ ->
 					?AERR("Steal shard no, state ~p",[?R2P(P)]),
@@ -247,7 +244,7 @@ handle_call({steal_shard,Nd,Shard,NdToTakeFrom},_From,P) ->
 			?AINF("steal shard decision = ~p",[Doit]),
 			case Doit of
 				true ->
-					SBT = [{Shard,Nd,actordb_util:actor_types()}],
+					SBT = [{actordb_util:split_point(Shard,ShardTo),Shard,Nd,actordb_util:actor_types()}],
 					case bkdcore_sharedstate:set_cluster_state(shardmngr,{shardsbeingtaken,bkdcore:node_name()},SBT) of
 						ok ->
 							{reply,ok,P#dp{shardsbeingtaken = SBT}};
@@ -264,24 +261,26 @@ handle_call({steal_shard,Nd,Shard,NdToTakeFrom},_From,P) ->
 			{reply, shard_moved,P}
 	end;
 % Change list of all shards. Shard has switched node.
-handle_call({change_shard_node,Shard,Node},_,P) ->
-	?AINF("Change shard node ~p ~p ~p~n",[Shard,Node,P#dp.shardsbeingtaken]),
+handle_call({change_shard_node,NewShard,OldShard,Node},_,P) ->
+	?AINF("Change shard node ~p ~p ~p~n",[NewShard,Node,P#dp.shardsbeingtaken]),
 	Master = bkdcore_sharedstate:whois_global_master(),
-	NewAll = [case From == Shard of
-						true ->
-							{From,To,Node};
-						false ->
-							{From,To,Nd}
-					end || {From,To,Nd} <- P#dp.allshards],
-	PrevTaken = lists:sublist([{Shard,Node}|P#dp.shardsprevtaken],5),
+	{OldShard,OldTo,OldNd} = lists:keyfind(OldShard,1,P#dp.allshards),
+	NewAll = [{NewShard,OldTo,Node}|lists:keyreplace(OldShard,1,P#dp.allshards,{OldShard,NewShard-1,OldNd})],
+	% NewAll = [case From == OldShard of
+	% 				true ->
+	% 					{From,NewShard-1,Nd};
+	% 				false ->
+	% 					{From,To,Nd}
+	% 			end || {From,To,Nd} <- P#dp.allshards],
+	% PrevTaken = lists:sublist([{Shard,Node}|P#dp.shardsprevtaken],5),
 	case Master == bkdcore:node_name() of
 		true ->
 			ok = bkdcore_sharedstate:set_global_state(actordb,shards,NewAll),
-			{reply,ok,P#dp{allshards = NewAll, shardsprevtaken = PrevTaken, dirty = true}};
+			{reply,ok,P#dp{allshards = NewAll,  dirty = true}}; %shardsprevtaken = PrevTaken
 		false ->
-			case bkdcore:rpc(Master,gen_server,call,[?MODULE,{change_shard_node,Shard,Node}]) of
+			case bkdcore:rpc(Master,gen_server,call,[?MODULE,{change_shard_node,NewShard,OldShard,Node}]) of
 				ok ->
-					{reply,ok, P#dp{allshards = NewAll, shardsprevtaken = PrevTaken, dirty = true}};
+					{reply,ok, P#dp{allshards = NewAll, dirty = true}}; % shardsprevtaken = PrevTaken
 				Err ->
 					{reply,Err,P}
 			end
@@ -353,7 +352,7 @@ handle_info(startshards,P) ->
 handle_info(compileshards,P) ->
 	Local = create_shard_tree(P#dp.localshards), 
 	All = create_shard_tree(P#dp.allshards),
-	Taken = lists:filter(fun({Shard,_,_}) -> lists:keymember(Shard,1,P#dp.localshards) end,P#dp.shardsbeingtaken),
+	Taken = lists:filter(fun({NewShard,_OldShard,_,_}) -> lists:keymember(NewShard,1,P#dp.allshards) == false end,P#dp.shardsbeingtaken),
 	?AINF("Compileshards ~p",[Local]),
 	bkdcore:mkmodule(actordb_shardtree,[{local,Local},{all,All}]),
 	actordb_shardmvr:local_shards_changed(P#dp.allshards,P#dp.localshards),
@@ -382,40 +381,40 @@ handle_info(readshards,P) ->
 						_ when P#dp.getstatepid /= undefined ->
 							{noreply,P};
 						_ ->
-							{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate(shards) end),
+							{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
 							{noreply,P#dp{getstatepid = NPid}}
 					end;
 				false when P#dp.getstatepid /= undefined ->
 					{noreply,P};
 				false ->
-					{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate(shards) end),
+					{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
 					{noreply,P#dp{getstatepid = NPid}}
 			end
 	end;
 	% set_shard_border(Shard,Type,Limit,NewNode) ->
 handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
 	case Result of
-		{Global,Local1} ->
+		{GlobalShards,Local1} ->
 			case Local1 of
 				[] ->
 					Local = [];
 				_ ->
-					Local = [{Shard,Nd,TypesToGo} || {Shard,Nd,TypesToGo} <- Local1, 
-														lists:keymember(Shard,1,P#dp.shardsbeingtaken) == false]
+					Local = [{NewShard,OldShard,Nd,TypesToGo} || {NewShard,OldShard,Nd,TypesToGo} <- Local1, 
+														lists:keymember(NewShard,1,P#dp.shardsbeingtaken) == false]
 			end,
-			case Global of
-				[_|_] = Shards when P#dp.allshards == Shards andalso P#dp.dirty == false ->
+			case GlobalShards of
+				[_|_] when P#dp.allshards == GlobalShards andalso P#dp.dirty == false ->
 					{noreply,P#dp{getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local}};
-				Shards when Shards /= nostate ->
+				GlobalShards when GlobalShards /= nostate ->
 					self() ! readshards,
-					{noreply,P#dp{allshards = Shards,getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local, 
+					{noreply,P#dp{allshards = GlobalShards,getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local, 
 									dirty = false}};
 				_ ->
-					{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate(shards) end),
+					{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
 					{noreply,P#dp{getstatepid = NPid, shardsbeingtaken = P#dp.shardsbeingtaken++Local}}
 			end;
 		_ ->
-			{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate(shards) end),
+			{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
 			{noreply,P#dp{getstatepid = NPid}}
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Result},P) ->
@@ -451,7 +450,7 @@ handle_info({bkdcore_sharedstate,global_state_change},P) ->
 		_ ->
 			case P#dp.getstatepid of
 				undefined ->
-					{Pid,_} =  spawn_monitor(fun() -> async_getstate(shards) end),
+					{Pid,_} =  spawn_monitor(fun() -> async_getstate() end),
 					{noreply,P#dp{getstatepid = Pid}};
 				_ ->
 					{noreply,P}
@@ -492,8 +491,8 @@ init([]) ->
 	{ok,#dp{}}.
 
 
-async_getstate(Key) ->
-	Global = bkdcore_sharedstate:get_global_state(actordb,Key),
+async_getstate() ->
+	Global = bkdcore_sharedstate:get_global_state(actordb,shards),
 	case Global of
 		nostate ->
 			exit(nostate);
@@ -549,13 +548,13 @@ create_shard_tree1(L) ->
 
 
 % No shards have been determined. Cluster has just been started for the first time.
-% Give ?MIN_SHARDS*2 shards to each node.
+% Create ?NUM_SHARDS for each node
 create_shards() ->
 	Nodes = lists:sort(bkdcore:nodelist_allclusters()),
 	create_shards(Nodes).
 create_shards(Nodes) ->
 	Len = length(Nodes),
-	Shardsize = ?NAMESPACE_MAX div (Len*(?MIN_SHARDS*2)),
+	Shardsize = ?NAMESPACE_MAX div (Len*(?NUM_SHARDS)),
 	Shards = lists:reverse([?NAMESPACE_MAX|tl(lists:reverse(lists:seq(0,?NAMESPACE_MAX,Shardsize)))]),
 	assign_shards(Nodes,Shards,[],Nodes).
 

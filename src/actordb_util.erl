@@ -50,6 +50,9 @@ drive(Actor) ->
 			actordb:hash_pick(Actor,Paths)
 	end.
 
+split_point(From,To) ->
+	From + ((To-From) div 2).
+
 type_schema(?MULTIUPDATE_TYPE,Vers) ->
 	actordb_multiupdate:get_schema(Vers);
 type_schema(?CLUSTEREVENTS_TYPE,Vers) ->

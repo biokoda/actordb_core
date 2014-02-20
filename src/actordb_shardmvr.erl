@@ -8,11 +8,9 @@
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,whereis/0]).
 -export([print_info/0,reload/0,deser_prop/1]).
 -export([local_shards_changed/2,shard_moved/3,shard_has_split/3]).
-% for testing
--export([split_shards/4,has_neighbour/3,start_splits/0]).
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
-% -compile(export_all).
+-compile(export_all).
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -36,14 +34,14 @@ reload() ->
 
 -record(dp,{can_start = false, allshards, localshards,
 % Which shards local node is taking from other nodes
-% [{From,To,Node,[Type1,Type2,..]},..]
+% [{SplitPoint,From,To,Node,[Type1,Type2,..]},..]
 	shardstoget = [],
 % [{Pid,From,To,Nodename,Type}]
 	% shardstogetpid = [],
 	% [{From,Type,Nd}]
 	movingdone = [],
 	% [{Name,Type}]
-	shards_splitting = [],
+	% shards_splitting = [],
 	local_shards = [],
 	init = false,
 	badstop = false}).
@@ -51,26 +49,10 @@ reload() ->
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
 
-handle_call({shard_has_split,Original,Name,Type},_,P) ->
-	?AINF("Shard has split ~p ~p ~p",[Name,Type,P#dp.shards_splitting]),
-	case lists:member({Name,Type},P#dp.shards_splitting) of
-		true ->
-			Without = lists:delete({Name,Type},P#dp.shards_splitting),
-			case lists:keyfind(Name,1,Without) of
-				false ->
-					Res = actordb_shardmngr:shard_has_split(Original,Name);
-				_ ->
-					Res = ok
-			end,
-			{reply,Res,P#dp{shards_splitting = Without}};
-		false ->
-			% ?AERR("Shard has split but not set to on this node"),
-			{reply,ok,P}
-	end;
 handle_call({shard_moved,Nd,Name,Type},_,P) ->
 	?AINF("Shard moved ~p ~p ~p",[Name,Type, P#dp.shardstoget]),
 	case lists:keyfind(Name,1,P#dp.shardstoget) of
-		{Name,_To,Nd,Types} ->
+		{Name,ShardFrom,To,Nd,Types} ->
 			case bkdcore:rpc(Nd,{actordb_shardmngr,shard_moved,[Name,Type,bkdcore:node_name()]}) of
 				ok ->
 					% TG = lists:keydelete(Name,1,P#dp.shardstoget),
@@ -79,7 +61,7 @@ handle_call({shard_moved,Nd,Name,Type},_,P) ->
 						[] ->
 							TG = lists:keydelete(Name,1,P#dp.shardstoget);
 						_ ->
-							TG = [{Name,Type,Nd,Types1}|lists:keydelete(Name,1,P#dp.shardstoget)]
+							TG = [{Name,ShardFrom,To,Nd,Types1}|lists:keydelete(Name,1,P#dp.shardstoget)]
 					end,
 					?AINF("Shardstoget now ~p~nprev ~p",[TG,P#dp.shardstoget]),
 					store_toget(TG),
@@ -92,8 +74,7 @@ handle_call({shard_moved,Nd,Name,Type},_,P) ->
 			{reply,ok,P}
 	end;
 handle_call(get_moves,_,P) ->
-	S = [{distreg:whereis({F,T}),F,T} || {F,T} <- P#dp.shards_splitting],
-	{reply,{P#dp.shardstoget,P#dp.movingdone,S},P};
+	{reply,{P#dp.shardstoget,P#dp.movingdone},P};
 handle_call(reload, _, P) ->
 	code:purge(?MODULE),
 	code:load_file(?MODULE),
@@ -218,16 +199,9 @@ handle_info(check_steal,P) ->
 	erlang:send_after(60000,self(),check_steal),
 	case P#dp.init of
 		true ->
-			?ADBG("Check steal ~p ~p",[P#dp.shardstoget, P#dp.shards_splitting]),
-			handle_info(check_splits,start_shards(P));
+			?ADBG("Check steal ~p ~p",[P#dp.shardstoget]),
+			{noreply,start_shards(P)};
 		false ->
-			{noreply,P}
-	end;
-handle_info(check_splits,P) ->
-	case ok of
-		_ when P#dp.shards_splitting /= [] ->
-			{noreply,start_splits(P,P#dp.local_shards)};
-		_ ->
 			{noreply,P}
 	end;
 handle_info({stop,Reason},P) ->
@@ -275,215 +249,100 @@ get_toget() ->
 
 start_shards(P) ->
 	[ 
-		[spawn(fun() -> actordb_shard:start_steal(Nd,From,Type) end) || Type <- Types] 
-		|| {From,_To,Nd,Types} <- P#dp.shardstoget
+		[spawn(fun() ->
+			actordb_shard:start_steal(Nd,From,To,SplitPoint,Type) end) || Type <- Types] 
+		|| {SplitPoint,From,To,Nd,Types} <- P#dp.shardstoget
 	],
 	P.
-
-
-start_splits() ->
-	{_,Local} = gen_server:call(actordb_shardmngr,get_all_shards),
-	butil:sparsemap(fun({From,To,Nd}) ->
-					 SplitPoint = From + ((To-From) div 2),
-					 
-					 ShardsPerType = butil:sparsemap(fun(Type) -> 
-					 	?AINF("start_splitshard ~p ~p ~p ~p",[From,To,Nd,Type]),
-					 	% distreg:whereis({SplitPoint,Type})
-					 	case actordb_shard:try_whereis(SplitPoint,Type) of
-					 		undefined ->
-								case catch actordb_shard:start_split(From,Type,SplitPoint) of
-									{ok,_Pid} ->
-										{SplitPoint,Type};
-									_Err ->
-										?AINF("SPLIT ERR ~p",[_Err]),
-										undefined
-								end;
-							_ ->
-								undefined
-						end
-					end,actordb_util:actor_types()),
-					 ShardsPerType
-	end,Local).
-
-start_splits(P,Local) ->
-	?AINF("Start split shards ~p",[Local]),
-	Splits =  butil:sparsemap(fun({From,To,Nd}) ->
-					 SplitPoint = From + ((To-From) div 2),
-					 
-					 ShardsPerType = butil:sparsemap(fun(Type) -> 
-					 	?AINF("start_splitshard ~p ~p ~p ~p",[From,To,Nd,Type]),
-					 	% distreg:whereis({SplitPoint,Type})
-					 	case actordb_shard:try_whereis(SplitPoint,Type) of
-					 		undefined ->
-								case catch actordb_shard:start_split(From,Type,SplitPoint) of
-									{ok,_Pid} ->
-										{SplitPoint,Type};
-									_Err ->
-										?AINF("SPLIT ERR ~p",[_Err]),
-										undefined
-								end;
-							_ ->
-								undefined
-						end
-					end,actordb_util:actor_types()),
-					ShardsPerType
-	end,Local),
-	P#dp{local_shards = Local,
-	     shards_splitting = P#dp.shards_splitting ++ (lists:flatten(Splits) -- P#dp.shards_splitting)}.
 
 
 % Called on node without enough shards. Will start stealing shards from other nodes if it can find any.
 pick_shards(P,All,Local) ->
 	case ok of
-		_ when P#dp.shardstoget == [], P#dp.movingdone == [] ->
+		_ when P#dp.shardstoget == [], P#dp.movingdone == [], length(Local) < ?NUM_SHARDS ->
 			?ADBG("Started move shards ~p",[bkdcore:node_name()]),
 			case get_toget() of
 				[_|_] = TG ->
 					ok;
 				_ ->
-					TG = [{From,To,Nd,actordb_schema:types()} || {From,To,Nd} <- split_shards(All,Local)]
+					TG = split_shards(All)
 			end,
-			?AINF("shardstoget ~p",[TG]),
+			?AINF("shardstoget candidates ~p",[TG]),
 			case TG of
 				[] ->
-					case length(Local) =< ?MIN_SHARDS of
-						true ->
-							start_splits(P,Local);
-						false ->
-							P
-					end;
+					P;
 				_ ->
-					{Started,NotStarted} = lists:foldl(fun({From,To,Nd,Types},{Started,Not}) -> 
-						case bkdcore:rpc(Nd,actordb_shardmngr,steal_shard,[bkdcore:node_name(),From,Nd]) of
-							ok ->
-								?AINF("steal_shard success ~p ~p",[From,Nd]),
-								{[{From,To,Nd,Types}|Started],Not};
-							Err ->
-								?AINF("Unable to take shard ~p ~p ~p",[From,Nd,Err]),
-								{Started,[{From,To,Nd,Types}|Not]}
-						end
-					end,
-					{[],[]},TG),
-				case NotStarted of
-					[] ->
-						TGFinal = Started;
-					_ ->
-						% TGFinal = lists:subtract(TG,NotStarted),
-						TGFinal = [{From,To,Nd,Types} || {From,To,Nd,Types} <- TG, lists:keyfind(From,1,NotStarted) == false],
-						store_toget(TGFinal)
-				end,
-				start_shards(P#dp{shardstoget = TGFinal})
+					TGFinal = try_start_steal(TG),
+					start_shards(P#dp{shardstoget = TGFinal})
 			end;
 		_ ->
 			P
 	end.
 
-
-% New node. Other nodes in network have shards, this one might not have enough (or any). 
-% Decide which shards to move over to this node.
-% We want to avoid having neighbouring shards on the same node. So if a node we might be taking shards from has neighbours,
-%  pick one of them unless that would create a neighbour on node we are picking for.
-% Returns: [{From,To,CurrentNode},...]
-split_shards(L,Existing) ->
-	AllNodes = lists:flatten([bkdcore:nodelist(G)|| G <- bkdcore:groups_of_type(cluster)]),
-	split_shards(bkdcore:node_name(),AllNodes,L,Existing).
-split_shards(Me,AllNodes,L,Existing) ->
-	ExistingSize = lists:sum([To-From || {From,To,_Nd} <- Existing]),
-	Grouped = butil:keygroup(3,[{F,T,Nd} || {F,T,Nd} <- L, Nd /= Me]),
-	% ?AINF("split_shards grouped ~p",[Grouped]),
-
-	% Convert to [{NodeName,NamespaceSize,Shards}]
-	%  NamespaceSize is sum of all shard sizes
-	%  Shards is list of shards for node. 
-	% Sorted so that shards will be taken from nodes with highest NamespaceSizes
-	Sorted = lists:reverse(lists:keysort(2,
-		[{
-		   Node,
-		   lists:sum([To - From || {From,To,_} <- NodeShards]),
-	     lists:reverse(lists:keysort(1,NodeShards))
-	   } || {Node,NodeShards} <- Grouped])),
-	SizeGoal = ?NAMESPACE_MAX div length(AllNodes),
-	?AINF("Size goal ~p, existing ~p",[SizeGoal,ExistingSize]),
-	split_shards(ExistingSize,Existing,SizeGoal - ExistingSize,Sorted,[],[]).
-
-split_shards(_,_,_,[],[],[]) ->
-	[];
-split_shards(_,_,Limit,_,_,L) when Limit =< 0 ->
-	L;
-split_shards(ExistingSize,Existing,Limit,[{Node,Size,Shards}|T],PrevNodes,L) ->
-	case length(Shards) > ?MIN_SHARDS andalso 
-		   length(Existing)+1 < length(Shards) andalso 
-		   ExistingSize < Size of
-		true ->
-			case shard_candidates(Shards,Existing,L,[]) of
-				[] ->
-					?AINF("No direct candidates ~p",[Node]),
-					case [{SF,ST,SN} || {SF,ST,SN} <- Shards, has_neighbour(SF,ST,Existing) == false, 
-													has_neighbour(SF,ST,L) == false] of
-						[{From,To,_}|_] ->
-							?AINF("Picked ~p",[From]),
-							ShardRem = lists:keydelete(From,1,Shards);
-						_ ->
-							Neighbors = [{SF,ST,SN} || {SF,ST,SN} <- Shards, 
-											has_neighbour(SF,ST,Existing) orelse has_neighbour(SF,ST,L)],
-							?AINF("No candidates at all ~p~nneighbours ~p",[Node,Neighbors]),
-							From = To = ShardRem = undefined
-					end;
-				[{From,To,_}|_] ->
-					ShardRem = lists:keydelete(From,1,Shards),
-					ok
-			end,
-			case From of
-				undefined ->
-					split_shards(ExistingSize,Existing,Limit,T,PrevNodes,L);
-				_ ->
-					ShardSize = To-From,
-					split_shards(ExistingSize,Existing,
-									Limit-ShardSize,T,
-									[{Node,Size - ShardSize,ShardRem}|PrevNodes], %lists:keydelete(From,1,Shards)
-									[{From,To,Node}|L])
-			end;
-		% Wait for node to duplicate number of shards as it has too few atm.
-		false ->
-			?AINF("Node has too few shards ~p",[Node]),
-			% ?ADBG("Node does not have enough shards ~p ~p ~p",[bkdcore:node_name(),Node,L]),
-			L
-	end;
-split_shards(ExistingSize,Existing,Limit,[],[_|_] = Prev,L) ->
-	split_shards(ExistingSize,Existing,Limit,lists:reverse(lists:keysort(2,Prev)),[],L);
-split_shards(_,_,_,[],[],L) ->
-	L.
-
-% If node we are picking from has neighbouring shards, those are primary candidates.
-shard_candidates([{From,To,Nd}|T],Existing,PickedAlready,L) ->
-	case has_neighbour(From,To,T) of
-		true ->
-			% This shard has a neighbour, but must not have a neighbour in among
-			%  existing shards for node we are picking for.
-			case has_neighbour(From,To,Existing) of
-				false ->
-					case has_neighbour(From,To,PickedAlready) of
-						false ->
-							shard_candidates(T,Existing,[{From,To,Nd}|PickedAlready],[{From,To,Nd}|L]);
-						true ->
-							shard_candidates(T,Existing,PickedAlready,L)
-					end;
-				true ->
-					shard_candidates(T,Existing,PickedAlready,L)
-			end;
-		false ->
-			shard_candidates(T,Existing,PickedAlready,L)
-	end;
-shard_candidates([],_,_,L) ->
-	L.
-
-% Does L have neighbor of shard that starts with From
-has_neighbour(From,To,L) ->
-	case butil:findtrue(fun({F1,T1,_}) -> To+1 == F1 orelse From-1 == T1 end,L) of
-		false ->
-			false;
+try_start_steal([{From,To,Nd}|T]) ->
+	SplitPoint = actordb_util:split_point(From,To),
+	case bkdcore:rpc(Nd,actordb_shardmngr,steal_shard,[bkdcore:node_name(),From,Nd]) of
+		ok ->
+			?AINF("steal_shard success ~p ~p",[From,Nd]),
+			[{SplitPoint,From,To,Nd,actordb_util:actor_types()}];
 		_ ->
-			true
+			try_start_steal(T)
+	end;
+try_start_steal([]) ->
+	[].
+
+% Pick one shard from another node to take. Uses filter_largest/4 to take out
+%  any nodes that have less than current maximum amount of namespace assigned.
+split_shards(L) ->
+	Me = bkdcore:node_name(),
+	Grouped = butil:keygroup(3,[{F,T,Nd} || {F,T,Nd} <- L, Nd /= Me]),
+	Grouped1 = 
+		[{
+			Node,
+			lists:sum([To - From || {From,To,_} <- NodeShards]),
+			filter_largest(fun filter_shards/2,NodeShards,0,[])
+		} || {Node,NodeShards} <- Grouped],
+	Grouped2 = filter_largest(fun filter_nodes/2,Grouped1,0,[]),
+	extract_shards(Grouped2,5).
+
+extract_shards([],_) ->
+	[];
+extract_shards(_,0) ->
+	[];
+extract_shards([{_Node,_Size,Shards}|T],N) ->
+	[hd(Shards)|extract_shards(T,N-1)].
+
+
+filter_nodes({_Node,Size,_},Max) ->
+	case ok of
+		_ when Size > Max ->
+			{ok,Size};
+		_ when Size == Max ->
+			ok;
+		_ ->
+			false
+	end.
+			
+
+filter_shards({From,To,_},Max) ->
+	Size = To - From,
+	case ok of
+		_ when Size > Max ->
+			{ok,Size};
+		_ when Size == Max ->
+			ok;
+		_ ->
+			false
 	end.
 
-
+filter_largest(Fun,[H|T],Max,L) ->
+	case Fun(H,Max) of
+		ok ->
+			filter_largest(Fun,T,Max,[H|L]);
+		{ok,NMax} ->
+			filter_largest(Fun,T,NMax,[H]);
+		_ ->
+			filter_largest(Fun,T,Max,L)
+	end;
+filter_largest(_,[],_,L) ->
+	L.

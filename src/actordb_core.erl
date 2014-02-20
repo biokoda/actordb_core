@@ -112,9 +112,10 @@ prestart() ->
 					case catch file:consult(Cfgfile) of
 						{ok,[L]} ->
 							ActorParam = butil:ds_val(actordb_core,L),
-							[Main,Extra,Level,Journal,Sync] = butil:ds_vals([main_db_folder,extra_db_folders,level_size,
-																				journal_mode,sync],ActorParam,
-																			["db",[],0,wal,0]),
+							[Main,Extra,Level,Journal,Sync,NumMngrs] = butil:ds_vals([main_db_folder,extra_db_folders,level_size,
+																				journal_mode,sync,num_transaction_managers],ActorParam,
+																			["db",[],0,wal,0,12]),
+							application:set_env(actordb_core,num_transaction_managers,NumMngrs),
 							Statep = butil:expand_path(butil:tolist(Main)),
 							?AINF("State path ~p, ~p",[Main,Statep]),
 							% No etc folder. config files are provided manually.

@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -compile([{parse_transform, lager_transform}]).
--define(MIN_SHARDS,3).
+-define(NUM_SHARDS,6).
 % -define(NAMESPACE_MAX,134217728).
 -define(NAMESPACE_MAX,4294967295).
 -define(MULTIUPDATE_TYPE,'__mupdate__').

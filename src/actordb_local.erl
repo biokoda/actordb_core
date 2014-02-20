@@ -298,7 +298,8 @@ handle_info({bkdcore_sharedstate,cluster_connected},P) ->
 					butil:ds_add(all,NL,multiupdaters),
 					{noreply,P#dp{mupdaters = NL}};
 				_ ->
-					case create_mupdaters(?MIN_SHARDS*4,[]) of
+					{ok,NumMngrs} = application:get_env(actordb_core,num_transaction_managers),
+					case create_mupdaters(NumMngrs,[]) of
 						[] ->
 							erlang:send_after(1000,self(),{bkdcore_sharedstate,cluster_connected}),
 							{noreply,P};

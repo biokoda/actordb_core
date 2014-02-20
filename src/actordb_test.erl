@@ -145,15 +145,15 @@ filltkv(0,_) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%  
 all_test_() ->
 	[
-		fun test_creating_shards/0,
+		% fun test_creating_shards/0,
 		fun test_parsing/0,
-		{setup,	fun single_start/0, fun single_stop/1, fun test_single/1},
-		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
+		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1},
+		{setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
 		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1},
-		{setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
+		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
 		% {setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
 	].
 
@@ -328,67 +328,67 @@ multiupdate_read() ->
         ResForum),
 	{ok,[{columns,_},{rows,Rows1}]} = exec(["actor type1(*);pragma list;"]),
 	Num = numactors()-6+3,
+	?debugFmt("~p",[lists:sort(Rows1)]),
 	?assertEqual(Num,length(Rows1)),
 	?assertMatch({ok,[{columns,_},{rows,[{Num}]}]},exec(["actor type1(*);pragma count;"])),
 	ok.
 
 kv_readwrite() ->
-	?debugFmt("~p",[[iolist_to_binary(["actor counters(id",butil:tolist(N),");",
-		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",
-		 	butil:tolist(N),");"])|| N <- lists:seq(1,1)]]),
-	[?assertMatch({ok,_},exec(["actor counters(id",butil:tolist(N),");",
-		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");"])) 
-				|| N <- lists:seq(1,numactors())],
-	[?assertMatch({ok,[{columns,_},{rows,[{_,_,N}]}]},
-					exec(["actor counters(id",butil:tolist(N),");",
-					 "select * from actors where id='id",butil:tolist(N),"';"])) || N <- lists:seq(1,numactors())],
-	ReadAll = ["actor counters(*);",
-	"{{RESULT}}SELECT * FROM actors;"],
-	All = exec(ReadAll),
-	?debugFmt("All counters ~p",[All]),
-	?debugFmt("Select first 5",[]),
-	ReadSome = ["actor counters(id1,id2,id3,id4,id5);",
-	"{{RESULT}}SELECT * FROM actors where id='{{curactor}}';"],
-	?assertMatch({ok,[{columns,_},
-					  {rows,[{<<"id5">>,_,5,<<"id5">>},
-					  		  {<<"id4">>,_,4,<<"id4">>},
-					  		  {<<"id3">>,_,3,<<"id3">>},
-					  		  {<<"id2">>,_,2,<<"id2">>},
-					  		  {<<"id1">>,_,1,<<"id1">>}]}]},
-			exec(ReadSome)),
-	?debugFmt("Increment first 5",[]),
-	?assertMatch(ok,exec(["actor counters(id1,id2,id3,id4,id5);",
-					"UPDATE actors SET val = val+1 WHERE id='{{curactor}}';"])),
-	?debugFmt("Select first 5 again",[]),
-	?assertMatch({ok,[{columns,_},
-						{rows,[{<<"id5">>,_,6,<<"id5">>},
-						  {<<"id4">>,_,5,<<"id4">>},
-						  {<<"id3">>,_,4,<<"id3">>},
-						  {<<"id2">>,_,3,<<"id2">>},
-						  {<<"id1">>,_,2,<<"id1">>}]}]},
-			 exec(ReadSome)),
-	?debugFmt("delete 5 and 4",[]),
-	% Not the right way to delete but it works (not transactional)
-	?assertMatch(ok,exec(["actor counters(id5,id4);PRAGMA delete;"])),
-	?assertMatch({ok,[{columns,_},
-					  {rows,[{<<"id3">>,_,4,<<"id3">>},
-						  {<<"id2">>,_,3,<<"id2">>},
-						  {<<"id1">>,_,2,<<"id1">>}]}]},
-			 exec(ReadSome)),
-	% the right way
-	?assertMatch(ok,exec(["actor counters(id3,id2);DELETE FROM actors WHERE id='{{curactor}}';"])),
-	?assertMatch({ok,[{columns,_},
-					  {rows,[{<<"id1">>,_,2,<<"id1">>}]}]},
-			 exec(ReadSome)),
-	?assertMatch({ok,[{columns,_},{rows,_}]},All),
+	% ?debugFmt("~p",[[iolist_to_binary(["actor counters(id",butil:tolist(N),");",
+	% 	 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",
+	% 	 	butil:tolist(N),");"])|| N <- lists:seq(1,1)]]),
+	% [?assertMatch({ok,_},exec(["actor counters(id",butil:tolist(N),");",
+	% 	 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");"])) 
+	% 			|| N <- lists:seq(1,numactors())],
+	% [?assertMatch({ok,[{columns,_},{rows,[{_,_,N}]}]},
+	% 				exec(["actor counters(id",butil:tolist(N),");",
+	% 				 "select * from actors where id='id",butil:tolist(N),"';"])) || N <- lists:seq(1,numactors())],
+	% ReadAll = ["actor counters(*);",
+	% "{{RESULT}}SELECT * FROM actors;"],
+	% All = exec(ReadAll),
+	% ?debugFmt("All counters ~p",[All]),
+	% ?debugFmt("Select first 5",[]),
+	% ReadSome = ["actor counters(id1,id2,id3,id4,id5);",
+	% "{{RESULT}}SELECT * FROM actors where id='{{curactor}}';"],
+	% ?assertMatch({ok,[{columns,_},
+	% 				  {rows,[{<<"id5">>,_,5,<<"id5">>},
+	% 				  		  {<<"id4">>,_,4,<<"id4">>},
+	% 				  		  {<<"id3">>,_,3,<<"id3">>},
+	% 				  		  {<<"id2">>,_,2,<<"id2">>},
+	% 				  		  {<<"id1">>,_,1,<<"id1">>}]}]},
+	% 		exec(ReadSome)),
+	% ?debugFmt("Increment first 5",[]),
+	% ?assertMatch(ok,exec(["actor counters(id1,id2,id3,id4,id5);",
+	% 				"UPDATE actors SET val = val+1 WHERE id='{{curactor}}';"])),
+	% ?debugFmt("Select first 5 again",[]),
+	% ?assertMatch({ok,[{columns,_},
+	% 					{rows,[{<<"id5">>,_,6,<<"id5">>},
+	% 					  {<<"id4">>,_,5,<<"id4">>},
+	% 					  {<<"id3">>,_,4,<<"id3">>},
+	% 					  {<<"id2">>,_,3,<<"id2">>},
+	% 					  {<<"id1">>,_,2,<<"id1">>}]}]},
+	% 		 exec(ReadSome)),
+	% ?debugFmt("delete 5 and 4",[]),
+	% % Not the right way to delete but it works (not transactional)
+	% ?assertMatch(ok,exec(["actor counters(id5,id4);PRAGMA delete;"])),
+	% ?assertMatch({ok,[{columns,_},
+	% 				  {rows,[{<<"id3">>,_,4,<<"id3">>},
+	% 					  {<<"id2">>,_,3,<<"id2">>},
+	% 					  {<<"id1">>,_,2,<<"id1">>}]}]},
+	% 		 exec(ReadSome)),
+	% % the right way
+	% ?assertMatch(ok,exec(["actor counters(id3,id2);DELETE FROM actors WHERE id='{{curactor}}';"])),
+	% ?assertMatch({ok,[{columns,_},
+	% 				  {rows,[{<<"id1">>,_,2,<<"id1">>}]}]},
+	% 		 exec(ReadSome)),
+	% ?assertMatch({ok,[{columns,_},{rows,_}]},All),
 
 
-	% Multiple tables test
-	[?assertMatch({ok,_},exec(["actor filesystem(id",butil:tolist(N),");",
-		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");",
-		 "insert into users (fileid,uid) values ('id",butil:tolist(N),"',",butil:tolist(N),");"])) 
-				|| N <- lists:seq(1,numactors())],
-
+	% % Multiple tables test
+	% [?assertMatch({ok,_},exec(["actor filesystem(id",butil:tolist(N),");",
+	% 	 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");",
+	% 	 "insert into users (fileid,uid) values ('id",butil:tolist(N),"',",butil:tolist(N),");"])) 
+	% 			|| N <- lists:seq(1,numactors())],
 
 	ok.
 
@@ -559,7 +559,7 @@ wait_modified_tree(Nd,All) ->
 					wait_modified_tree(Nd,All);
 				true ->
 					case rpc:call(fullname(Nd),gen_server,call,[actordb_shardmvr,get_moves]) of
-						{[],[],[]} ->
+						{[],[]} ->
 							case lists:filter(fun({_,_,_,SNode}) -> SNode == butil:tobin(slave_name(Nd)) end,AllShards) of
 								[_,_,_|_] ->
 									ok;
@@ -816,17 +816,17 @@ schema() ->
 		"",
 		"user:",
 		"- CREATE TABLE userinfo (id INTEGER PRIMARY KEY, name TEXT);",
-		"",
-		"counters:",
-		" type: kv",
-		" schema:",
-		" - CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, val INTEGER);"
-		"",
-		"filesystem:",
-		" type: kv",
-		" schema:",
-		" - CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, size INTEGER)",
-		" - CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, fileid TEXT, uid INTEGER, FOREIGN KEY (fileid) REFERENCES actors(id) ON DELETE CASCADE)"
+		""
+		% "counters:",
+		% " type: kv",
+		% " schema:",
+		% " - CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, val INTEGER);"
+		% "",
+		% "filesystem:",
+		% " type: kv",
+		% " schema:",
+		% " - CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, size INTEGER)",
+		% " - CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, fileid TEXT, uid INTEGER, FOREIGN KEY (fileid) REFERENCES actors(id) ON DELETE CASCADE)"
 	],"\n").
 
 

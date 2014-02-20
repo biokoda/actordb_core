@@ -4,13 +4,13 @@
 
 -module(actordb_shard).
 -define(LAGERDBG,true).
--export([start/1,start/2,start/3,start/4,start_steal/2,start_steal/3,start_split/2,start_split/3,
+-export([start/1,start/2,start/3,start/4,start_steal/5,%start_split/2,start_split/3, %start_steal/2
 		 whereis/2,try_whereis/2,reg_actor/3, 
-		top_actor/2,actor_stolen/4,print_info/2,get_upper_limit/2,list_actors/4,count_actors/2,del_actor/3,
+		top_actor/2,actor_stolen/5,print_info/2,get_upper_limit/2,list_actors/4,count_actors/2,del_actor/3,
 		kvread/4,kvwrite/4,kv_schema_check/1,get_schema_vers/2]). 
--export([cb_set_upper_limit/2, cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/4,cb_schema/3,cb_path/3,
+-export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/4,cb_schema/3,cb_path/3, %cb_set_upper_limit/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
-		 split_other_done/3,start_steal_done/2,cb_candie/4,cb_checkmoved/2,cb_startstate/2]).
+		 start_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2]). %split_other_done/3,
 -include_lib("actordb.hrl").
 -define(META_UPPER_LIMIT,$1).
 -define(META_MOVINGTO,$2).
@@ -36,11 +36,12 @@
 	upperlimit,
 	% if split_point is integer, then shard is splitting.
 	% split_point is new upperlimit+1
-	split_point, splitproc, 
+	split_point,  
 	% Node to which shard is moving
 	thiefnode,
 	% Node name from which shard is copying
 	stealingfrom,
+	stealingfromshard,
 	% Which actor is in the process of moving atm
 	stealingnow, stealingnowpid,stealingnowmon}).
 
@@ -76,10 +77,10 @@ start(Name,Type1,Slave,Opt) ->
 
 
 % Steal shard from another node
-start_steal({Name,Type},Nd) ->
-	start_steal(Nd,Name,Type).
-start_steal(Nd,Name,Type1) ->
-	?AINF("start_steal ~p ~p ~p ~p",[Nd,Name,Type1,try_whereis(Name,Type1)]),
+% start_steal({Name,Type},Nd) ->
+% 	start_steal(Nd,Name,Type).
+start_steal(Nd,FromName,To,NewName,Type1) ->
+	?AINF("start_steal ~p ~p ~p ~p",[Nd,NewName,Type1,try_whereis(NewName,Type1)]),
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
 	case lists:member(Nd,bkdcore:cluster_nodes()) of 
@@ -88,65 +89,68 @@ start_steal(Nd,Name,Type1) ->
 			% regular shards that hold the list of actors, require an actor-by-actor copy.
 			case actordb_schema:iskv(Type) of
 				true ->
-					{ok,_Pid} = start(Name,Type,false,[nohibernate,{copyfrom,{move,undefined,Nd}},{copyreset,{?MODULE,start_steal_done,[Nd]}}]);
+					% {ok,_Pid} = start(NewName,Type,false,[nohibernate,{copyfrom,{copychange,FromName,Nd}},
+					% 						{copyreset,{?MODULE,start_steal_done,[Nd,FromName,<<"DELETE FROM actors WHERE hash < ",(butil:tobin(NewName))/binary,";",
+					% 																			"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}]);
+					ok;
 				false ->
-					{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
-																	 {state,#state{idtype = Idtype, name = Name, 
-																	 				stealingfrom = Nd,type = Type}}]),
-					spawn(fun() -> actordb_sqlproc:call({Name,Type},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) 
+					{ok,Pid} = actordb_sqlproc:start([{actor,NewName},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
+														 {state,#state{idtype = Idtype, name = NewName, stealingfromshard = FromName,
+															 				stealingfrom = Nd,type = Type}}]),
+					spawn(fun() -> actordb_sqlproc:call({NewName,Type},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) 
 							end),
 					{ok,Pid}
 			end;
 		% If member of same cluster, we just need to run the shard normally. This will copy over the database.
 		% Master might be this new node or if shard already running on another node, it will remain master untill restart.
 		true ->
-			{ok,Pid} = start(Name,Type1),
-			spawn(fun() ->  actordb_shardmvr:shard_moved(Nd,Name,Type) end),
+			{ok,Pid} = start(NewName,Type1),
+			spawn(fun() ->  actordb_shardmvr:shard_moved(Nd,NewName,Type) end),
 			{ok,Pid}
 	end.
 
-start_steal_done(P,Nd) ->
+start_steal_done(P,Nd,ShardFrom,Sql) ->
 	?AINF("steal done ~p",[P#state.name]),
 	actordb_shardmvr:shard_moved(Nd,P#state.name,P#state.type).
 	% callmvr(P#state.name,actordb_shardmvr,shard_moved,[Nd,P#state.name,P#state.type]).
 
 % Split shard in half.
-start_split({Name,Type1},SplitPoint) ->
-	start_split(Name,Type1,SplitPoint).
-start_split(Name,Type1,SplitPoint) ->
-	?AINF("start_split ~p ~p ~p",[Name,SplitPoint,Type1]),
-	Type = butil:toatom(Type1),
-	Idtype = actordb:actor_id_type(Type),
-	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
-															 {state,#state{idtype = Idtype,split_point = SplitPoint, 
-															 				upperlimit = SplitPoint-1, 
-															 				name = Name, type = Type}}]),	
-	spawn(fun() -> 
-		ok = actordb_sqlproc:okornot(actordb_sqlproc:write({Name,Type},[create],
-								{{?MODULE,cb_set_upper_limit,[SplitPoint]},undefined,undefined},
-								{?MODULE,start_split,[SplitPoint]}))
-	end),
-	{ok,Pid}.
+% start_split({Name,Type1},SplitPoint) ->
+% 	start_split(Name,Type1,SplitPoint).
+% start_split(Name,Type1,SplitPoint) ->
+% 	?AINF("start_split ~p ~p ~p",[Name,SplitPoint,Type1]),
+% 	Type = butil:toatom(Type1),
+% 	Idtype = actordb:actor_id_type(Type),
+% 	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
+% 															 {state,#state{idtype = Idtype,split_point = SplitPoint, 
+% 															 				upperlimit = SplitPoint-1, 
+% 															 				name = Name, type = Type}}]),	
+% 	spawn(fun() -> 
+% 		ok = actordb_sqlproc:okornot(actordb_sqlproc:write({Name,Type},[create],
+% 								{{?MODULE,cb_set_upper_limit,[SplitPoint]},undefined,undefined},
+% 								{?MODULE,start_split,[SplitPoint]}))
+% 	end),
+% 	{ok,Pid}.
 	
 
-start_split_other(Name,Type,OriginShard) ->
-	case start(Name,Type,false,[exists]) of
-		{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]} ->
-			?AINF("Shard split, report done ~p",[{Name,Type,OriginShard}]),
-			Pid = spawn(fun() -> callmvr(OriginShard,actordb_shardmvr,shard_has_split,[OriginShard,Name,Type]) end),
-			{ok,Pid};
-		_ ->
-			?AINF("Start copyfrom ~p ~p from ~p",[Name,Type,OriginShard]),
-			start(Name,Type,false,[nohibernate,{copyfrom,{bkdcore:node_name(),OriginShard}},
-									   {copyreset,{?MODULE,split_other_done,
-									   				[OriginShard,<<"DELETE FROM actors WHERE hash < ",(butil:tobin(Name))/binary,";",
-													"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}])
-	end.
+% start_split_other(Name,Type,OriginShard) ->
+% 	case start(Name,Type,false,[exists]) of
+% 		{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]} ->
+% 			?AINF("Shard split, report done ~p",[{Name,Type,OriginShard}]),
+% 			Pid = spawn(fun() -> callmvr(OriginShard,actordb_shardmvr,shard_has_split,[OriginShard,Name,Type]) end),
+% 			{ok,Pid};
+% 		_ ->
+% 			?AINF("Start copyfrom ~p ~p from ~p",[Name,Type,OriginShard]),
+% 			start(Name,Type,false,[nohibernate,{copyfrom,{bkdcore:node_name(),OriginShard}},
+% 									   {copyreset,{?MODULE,split_other_done,
+% 									   				[OriginShard,<<"DELETE FROM actors WHERE hash < ",(butil:tobin(Name))/binary,";",
+% 													"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}])
+% 	end.
 
-split_other_done(P,Origin,Sql) ->
-	?ADBG("Split other done ~p ~p from ~p",[P#state.name, P#state.type,Origin]),
-	callmvr(Origin,actordb_shardmvr,shard_has_split,[Origin,P#state.name,P#state.type]),
-	Sql.
+% split_other_done(P,Origin,Sql) ->
+% 	?ADBG("Split other done ~p ~p from ~p",[P#state.name, P#state.type,Origin]),
+% 	callmvr(Origin,actordb_shardmvr,shard_has_split,[Origin,P#state.name,P#state.type]),
+% 	Sql.
 
 callmvr(Shard,M,F,A) ->
 	Me = bkdcore:node_name(),
@@ -300,15 +304,15 @@ top_actor(ShardName,Type1) ->
 			undefined
 	end.
 
-actor_stolen(ShardName,Type,Actor,ThiefNode) ->
+actor_stolen(NewShard,ShardName,Type,Actor,ThiefNode) ->
 	case top_actor(ShardName,Type) of
 		{ok,_,Hash} ->
 			delete_actor_steal(ShardName,Type,Actor,ThiefNode,Hash),
-			actordb_shardmngr:set_shard_border(ShardName,Type,Hash,ThiefNode);
+			actordb_shardmngr:set_shard_border(ShardName,NewShard,Type,Hash,ThiefNode);
 		_ ->
 			Hash = actordb_util:hash(butil:tobin(Actor)),
 			delete_actor_steal(ShardName,Type,Actor,ThiefNode,Hash-1),
-			actordb_shardmngr:set_shard_border(ShardName,Type,Hash-1,ThiefNode)
+			actordb_shardmngr:set_shard_border(ShardName,NewShard,Type,Hash-1,ThiefNode)
 	end,
 	ok.
 delete_actor_steal(ShardName,Type1,Actor,ThiefNode,Limit) ->
@@ -418,18 +422,18 @@ cb_del_move_actor(P,Actor,ThiefNode,UpperLimit) ->
 	],
 	{Sql,P#state{upperlimit = UpperLimit, thiefnode = ThiefNode}}.
 
-cb_set_upper_limit(P,SplitPoint) ->
-	?ADBG("cb_set_upper_limit ~p ~p ~p",[P,SplitPoint,P#state.split_point]),
-	Sql = [ "$INSERT OR REPLACE INTO meta VALUES (",?META_MOVINGTO,$,,$',base64:encode(term_to_binary(SplitPoint)),$', ");",
-			"$INSERT OR REPLACE INTO meta VALUES (",?META_UPPER_LIMIT,$,,$',butil:tolist(SplitPoint-1),$', ");"],
-	case is_integer(P#state.split_point) of
-		true when is_pid(P#state.splitproc) ->
-			{Sql,P};
-		_ ->
-			{ok,Pid} = start_split_other(SplitPoint,P#state.type,P#state.name),
-			erlang:monitor(process,Pid),
-			{Sql,P#state{split_point = SplitPoint,splitproc = Pid, upperlimit = SplitPoint-1}}
-	end.
+% cb_set_upper_limit(P,SplitPoint) ->
+% 	?ADBG("cb_set_upper_limit ~p ~p ~p",[P,SplitPoint,P#state.split_point]),
+% 	Sql = [ "$INSERT OR REPLACE INTO meta VALUES (",?META_MOVINGTO,$,,$',base64:encode(term_to_binary(SplitPoint)),$', ");",
+% 			"$INSERT OR REPLACE INTO meta VALUES (",?META_UPPER_LIMIT,$,,$',butil:tolist(SplitPoint-1),$', ");"],
+% 	case is_integer(P#state.split_point) of
+% 		true when is_pid(P#state.splitproc) ->
+% 			{Sql,P};
+% 		_ ->
+% 			{ok,Pid} = start_split_other(SplitPoint,P#state.type,P#state.name),
+% 			erlang:monitor(process,Pid),
+% 			{Sql,P#state{split_point = SplitPoint,splitproc = Pid, upperlimit = SplitPoint-1}}
+% 	end.
 
 % 
 % Mandatory callbacks.
@@ -450,7 +454,7 @@ cb_candie(Mors,Name,_Type,P) ->
 			Local;
 		_ ->
 			Local andalso P#state.stealingnow == undefined andalso P#state.stealingfrom == undefined andalso 
-			P#state.split_point == undefined andalso P#state.upperlimit == undefined andalso P#state.splitproc == undefined
+			P#state.split_point == undefined andalso P#state.upperlimit == undefined 
 	end.
 
 cb_checkmoved(Name,Type) ->
@@ -465,7 +469,7 @@ cb_checkmoved(Name,Type) ->
 cb_call({move_to_next,ActorName},Client,P) ->
 	?ADBG("Shard move_to_next ~p",[ActorName]),
 	% Actor has been copied over. Call other node to forget actor. Then call to send a new one.
-	ok = actordb:rpc(P#state.stealingfrom,P#state.name,{?MODULE,actor_stolen,[P#state.name,P#state.type,
+	ok = actordb:rpc(P#state.stealingfrom,P#state.stealingfromshard,{?MODULE,actor_stolen,[P#state.name,P#state.stealingfromshard,P#state.type,
 																	ActorName,bkdcore:node_name()]}),
 	cb_call(do_steal,Client,P);
 % Steal a single actor from node indicated in #state.stealingfrom
@@ -478,13 +482,13 @@ cb_call(do_steal,_,P) ->
 				false ->
 					case lists:member(P#state.stealingfrom,bkdcore:cluster_nodes()) of 
 						false ->
-							case actordb:rpc(P#state.stealingfrom,P#state.name,{?MODULE,top_actor,[P#state.name,P#state.type]}) of
-								{ok,Id,_Hash} ->
+							case actordb:rpc(P#state.stealingfrom,P#state.stealingfromshard,{?MODULE,top_actor,[P#state.stealingfromshard,P#state.type]}) of
+								{ok,Id,Hash} when Hash >= P#state.name ->
 									?ADBG("Found actor ~p",[Id]),
 									% Once db is copied over, it will call reg_actor
 									{ok,Pid} = actordb_actor:start_steal(Id,P#state.type,P#state.stealingfrom,P#state.name),
 									Mon = erlang:monitor(process,Pid);
-								undefined ->
+								Res when Res == undefined; element(1,Res) == ok ->
 									?ADBG("Shard steal no top actors ~p",[P#state.stealingnow]),
 									Id = undefined,
 									Pid = undefined,
@@ -533,15 +537,15 @@ cb_info({'DOWN',_Monitor,_,PID,Reason},P) ->
 			Me = self(),
 			spawn(fun() -> timer:sleep(5000), gen_server:call(Me,do_steal) end),
 			{noreply,P#state{stealingnow = undefined, stealingnowpid = undefined, stealingnowmon = undefined}};
-		_ when PID == P#state.splitproc ->
-			case Reason of
-				normal ->
-					?ADBG("splitproc done ~p",[Reason]),
-					{noreply,P#state{splitproc = undefined}};
-				Err ->
-					?AERR("splitproc error ~p",[Err]),
-					noreply
-			end;
+		% _ when PID == P#state.splitproc ->
+		% 	case Reason of
+		% 		normal ->
+		% 			?ADBG("splitproc done ~p",[Reason]),
+		% 			{noreply,P#state{splitproc = undefined}};
+		% 		Err ->
+		% 			?AERR("splitproc error ~p",[Err]),
+		% 			noreply
+		% 	end;
 		_ ->
 			?ADBG("unknown pid died on shard ~p,stealing ~p ~p",[PID,P#state.stealingnow,Reason]),
 			noreply
@@ -568,9 +572,10 @@ cb_init(S,_EvNum) ->
 	ok = actordb_shardmngr:shard_started(self(),S#state.name,S#state.type),
 	case is_integer(S#state.split_point) of
 		true ->
-			{ok,Pid} = start_split_other(S#state.split_point,S#state.type,S#state.name),
-			erlang:monitor(process,Pid),
-			{ok,S#state{splitproc = Pid}};
+			% {ok,Pid} = start_split_other(S#state.split_point,S#state.type,S#state.name),
+			% erlang:monitor(process,Pid),
+			% {ok,S#state{splitproc = Pid}};
+			{ok,S};
 		false ->
 			% This will cause read to execute and result returned in cb_init/3
 			{doread,<<"SELECT * FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>}
@@ -595,9 +600,10 @@ cb_init(S,_EvNum,{ok,[{columns,_},{rows,Rows}]}) ->
 								 end),
 							{ok,S#state{split_point = undefined, upperlimit = undefined}};
 						_ ->
-							{ok,Pid} = start_split_other(Limit+1,S#state.type,S#state.name),
-							erlang:monitor(process,Pid),
-							{ok,S#state{split_point = Limit+1,splitproc = Pid, upperlimit = Limit}}
+							% {ok,Pid} = start_split_other(Limit+1,S#state.type,S#state.name),
+							% erlang:monitor(process,Pid),
+							% {ok,S#state{split_point = Limit+1,splitproc = Pid, upperlimit = Limit}}
+							{ok,S}
 					end;
 				_ when is_binary(MovingTo) ->
 					case actordb_shardmngr:find_global_shard(Limit+1,Limit+1) of
