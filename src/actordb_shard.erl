@@ -38,7 +38,7 @@
 	% split_point is new upperlimit+1
 	split_point,  
 	% Node to which shard is moving
-	thiefnode,
+	thiefnode,thiefshard,
 	% Node name from which shard is copying
 	stealingfrom,
 	stealingfromshard,
@@ -186,10 +186,8 @@ kvread(ShardName,Actor,Type,Sql) ->
 	R = actordb_sqlproc:read({ShardName,Type},[create],{?MODULE,cb_kvexec,[Actor,Sql]},?MODULE),
 	?ADBG("kvread res ~p",[R]),
 	case R of
-		{redirect_shard,Node} when is_binary(Node) ->
-			actordb:rpc(Node,ShardName,{?MODULE,kvread,[ShardName,Actor,Type,Sql]});
-		{redirect_shard,RShard} when is_integer(RShard) ->
-			kvread(RShard,Actor,Type,Sql);
+		{redirect_shard,Node,NewShard} when is_binary(Node) ->
+			actordb:rpc(Node,NewShard,{?MODULE,kvread,[NewShard,Actor,Type,Sql]});
 		_ ->
 			R
 	end.
@@ -212,10 +210,8 @@ kvwrite(ShardName,Actor,Type,Sql) ->
 	R = actordb_sqlproc:write({ShardName,Type},[create],WriteParam,?MODULE),
 	?ADBG("Result ~p",[R]),
 	case R of
-		{redirect_shard,Node} when is_binary(Node) ->
-			actordb:rpc(Node,ShardName,{?MODULE,kvwrite,[ShardName,Actor,Type,Sql]});
-		{redirect_shard,RShard} when is_integer(RShard) ->
-			kvwrite(RShard,Actor,Type,Sql);
+		{redirect_shard,Node,NewShard} when is_binary(Node) ->
+			actordb:rpc(Node,NewShard,{?MODULE,kvwrite,[NewShard,Actor,Type,Sql]});
 		_ ->
 			R
 	end.
@@ -225,10 +221,8 @@ print_info(ShardName,Type) ->
 
 del_actor(ShardName,ActorName,Type) ->
 	case actordb_sqlproc:write({ShardName,Type},[create],{{?MODULE,cb_del_actor,[ActorName]},undefined,undefined},?MODULE) of
-		{redirect_shard,Node} when is_binary(Node) ->
-			actordb:rpc(Node,ShardName,{?MODULE,del_actor,[ShardName,ActorName,Type]});
-		{redirect_shard,Shard} when is_integer(Shard) ->
-			del_actor(Shard,ActorName,Type);
+		{redirect_shard,Node,NewShard} when is_binary(Node) ->
+			actordb:rpc(Node,NewShard,{?MODULE,del_actor,[NewShard,ActorName,Type]});
 		{ok,_} ->
 			ok;
 		ok ->
@@ -248,10 +242,8 @@ reg_actor(ShardName,ActorName,Type1) ->
 			?ADBG("reg_actor ~p ~p ~p~n",[ShardName,ActorName,Type1]),
 			% Call sqlproc gen_server. It will call cb_reg_actor function in this module, which will return SQL statement to be executed.
 			case actordb_sqlproc:write({ShardName,Type},[create],{{?MODULE,cb_reg_actor,[ActorName]},undefined,undefined},?MODULE) of
-				{redirect_shard,Node} when is_binary(Node) ->
-					actordb:rpc(Node,ShardName,{?MODULE,reg_actor,[ShardName,ActorName,Type]});
-				{redirect_shard,Shard} when is_integer(Shard) ->
-					reg_actor(Shard,ActorName,Type);
+				{redirect_shard,Node,NewShard} when is_binary(Node) ->
+					actordb:rpc(Node,NewShard,{?MODULE,reg_actor,[NewShard,ActorName,Type]});
 				ok ->
 					ok;
 				{ok,_} ->
@@ -353,10 +345,8 @@ cb_reg_actor(P,ActorName) ->
 	NM = at(P#state.idtype,ActorName),
 	Sql = [<<"INSERT OR REPLACE INTO actors VALUES (">>,NM,$,,(butil:tobin(Hash)), <<");">>],
 	case is_integer(P#state.upperlimit) of
-		true when P#state.upperlimit < Hash, is_integer(P#state.split_point) ->
-			{reply,{redirect_shard,P#state.split_point},Sql,P};
 		true when P#state.upperlimit < Hash, is_binary(P#state.thiefnode) ->
-			{reply,{redirect_shard,P#state.thiefnode},Sql,P};
+			{reply,{redirect_shard,P#state.thiefnode,P#state.thiefshard},Sql,P};
 		_ ->
 			% Is this regular actor registration or are we moving actors from another node.
 			case P#state.stealingnow == ActorName of
@@ -378,10 +368,8 @@ cb_kvexec(P,Actor,Sql) ->
 		true ->
 			Hash = actordb_util:hash(butil:tobin(Actor)),
 			case ok of
-				_ when P#state.upperlimit < Hash, is_integer(P#state.split_point) ->
-					{reply,{redirect_shard,P#state.split_point}};
 				_ when P#state.upperlimit < Hash, is_binary(P#state.thiefnode) ->
-					{reply,{redirect_shard,P#state.thiefnode}};
+					{reply,{redirect_shard,P#state.thiefnode,P#state.thiefshard}};
 				_ ->
 					Sql
 			end;
@@ -406,10 +394,8 @@ cb_del_actor(P,ActorName) ->
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
 	Sql = ["DELETE FROM actors WHERE id=",at(P#state.idtype,ActorName),";"],
 	case is_integer(P#state.upperlimit) of
-		true when P#state.upperlimit < Hash, is_integer(P#state.split_point) ->
-			{reply,{redirect_shard,P#state.split_point},Sql,P};
 		true when P#state.upperlimit < Hash, is_binary(P#state.thiefnode) ->
-			{reply,{redirect_shard,P#state.thiefnode},Sql,P};
+			{reply,{redirect_shard,P#state.thiefnode,P#state.thiefshard},Sql,P};
 		_ ->
 			{Sql,P}
 	end.
