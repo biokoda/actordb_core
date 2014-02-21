@@ -555,7 +555,7 @@ handle_call({read,Msg},From,P) ->
 		master ->
 			case check_schema(P,[]) of
 				ok ->
-					case Msg of
+					case Msg of	
 						{Mod,Func,Args} ->
 							case apply(Mod,Func,[P#dp.cbstate|Args]) of
 								{reply,What,Sql,NS} ->
@@ -569,6 +569,27 @@ handle_call({read,Msg},From,P) ->
 																							  cbstate = State})};
 								Sql ->
 									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),check_timer(P#dp{activity = P#dp.activity+1})}
+							end;
+						{Sql,{Mod,Func,Args}} ->
+							case apply(Mod,Func,[actordb_sqlite:exec(P#dp.db,Sql,read)|Args]) of
+								{write,Write} ->
+									case Write of
+										_ when is_binary(Write); is_list(Write) ->
+											write_call({undefined,erlang:crc32(Write),iolist_to_binary(Sql),undefined},From,P);
+										{_,_,_} ->
+											write_call({Write,undefined,undefined,undefined},From,P)
+									end;
+								{write,Write,NS} ->
+									case Write of
+										_ when is_binary(Write); is_list(Write) ->
+											write_call({undefined,erlang:crc32(Write),iolist_to_binary(Sql),undefined},From,P#dp{cbstate = NS});
+										{_,_,_} ->
+											write_call({Write,undefined,undefined,undefined},From,P#dp{cbstate = NS})
+									end;
+								{reply,What,NS} ->
+									{reply,What,P#dp{cbstate = NS}};
+								{reply,What} ->
+									{reply,What,P}
 							end;
 						Sql ->
 							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),check_timer(P#dp{activity = P#dp.activity+1})}

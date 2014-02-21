@@ -6,14 +6,16 @@
 -define(LAGERDBG,true).
 -export([start/1,start/2,start/3,start/4,start_steal/5,%start_split/2,start_split/3, %start_steal/2
 		 whereis/2,try_whereis/2,reg_actor/3, 
-		top_actor/2,actor_stolen/5,print_info/2,get_upper_limit/2,list_actors/4,count_actors/2,del_actor/3,
+		top_actor/2,actor_stolen/5,print_info/2,list_actors/4,count_actors/2,del_actor/3, %get_upper_limit/2,
 		kvread/4,kvwrite/4,kv_schema_check/1,get_schema_vers/2]). 
--export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/4,cb_schema/3,cb_path/3, %cb_set_upper_limit/2,
+-export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3, %cb_set_upper_limit/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 start_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2]). %split_other_done/3,
 -include_lib("actordb.hrl").
--define(META_UPPER_LIMIT,$1).
--define(META_MOVINGTO,$2).
+% -define(META_UPPER_LIMIT,$1).
+% -define(META_MOVINGTO,$2).
+-define(META_NEXT_SHARD,$1).
+-define(META_NEXT_SHARD_NODE,$2).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
@@ -32,16 +34,9 @@
 % [ActorName, ActorNameHash, BlockedFlag, MovingAwayFlag]
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 -record(state,{idtype,name,type,
-	% upperlimit is changed actor-by-actor if shard being moved or set to half of previous top if actor is being split in half
-	upperlimit,
-	% if split_point is integer, then shard is splitting.
-	% split_point is new upperlimit+1
-	split_point,  
-	% Node to which shard is moving
-	thiefnode,thiefshard,
+	nextshard,nextshardnode,
 	% Node name from which shard is copying
-	stealingfrom,
-	stealingfromshard,
+	stealingfrom,stealingfromshard,
 	% Which actor is in the process of moving atm
 	stealingnow, stealingnowpid,stealingnowmon}).
 
@@ -79,7 +74,7 @@ start(Name,Type1,Slave,Opt) ->
 % Steal shard from another node
 % start_steal({Name,Type},Nd) ->
 % 	start_steal(Nd,Name,Type).
-start_steal(Nd,FromName,To,NewName,Type1) ->
+start_steal(Nd,FromName,_To,NewName,Type1) ->
 	?AINF("start_steal ~p ~p ~p ~p",[Nd,NewName,Type1,try_whereis(NewName,Type1)]),
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
@@ -97,8 +92,7 @@ start_steal(Nd,FromName,To,NewName,Type1) ->
 					{ok,Pid} = actordb_sqlproc:start([{actor,NewName},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
 														 {state,#state{idtype = Idtype, name = NewName, stealingfromshard = FromName,
 															 				stealingfrom = Nd,type = Type}}]),
-					spawn(fun() -> actordb_sqlproc:call({NewName,Type},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) 
-							end),
+					spawn(fun() -> actordb_sqlproc:call({NewName,Type},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) end),
 					{ok,Pid}
 			end;
 		% If member of same cluster, we just need to run the shard normally. This will copy over the database.
@@ -260,26 +254,25 @@ count_actors(ShardName,Type1) ->
 list_actors(ShardName,Type1,From,Limit) ->
 	Type = butil:toatom(Type1),
 	R = actordb_sqlproc:read({ShardName,Type},[create],{?MODULE,cb_list_actors,[From,Limit]},?MODULE),
-	?ADBG("List actors ~p result ~p",[ShardName,R]),
+	?AINF("List actors ~p result ~p",[ShardName,R]),
 	case R of
 		{ok,[{columns,_},{rows,L}]} ->
 			{ok,L};
-		{{_UpperLimit,Thief,undefined},{ok,[{columns,_},{rows,L}]}} ->
-			{ok,L,Thief};
-		{{_UpperLimit,undefined,NextShard},{ok,[{columns,_},{rows,L}]}} ->
-			{ok,L,NextShard}
+		{{NextShard,NextShardNode},{ok,[{columns,_},{rows,L}]}} ->
+			{ok,L,NextShard,NextShardNode}
 	end.
 
-get_upper_limit(ShardName,Type1) ->
-	Type = butil:toatom(Type1),
-	case actordb_sqlproc:read({ShardName,Type},[create],<<"SELECT * FROM meta WHERE id in(",
-						?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>,?MODULE) of
-		{ok,[{columns,_},{rows,[_|_] = Rows}]} ->
-			{ok,butil:toint(butil:ds_val(butil:toint([?META_UPPER_LIMIT]),Rows)),
-					binary_to_term(base64:decode(butil:ds_val(butil:toint([?META_MOVINGTO]),Rows)))};
-		_ ->
-			undefined
-	end.
+% get_upper_limit(ShardName,Type1) ->
+% 	ok.
+	% Type = butil:toatom(Type1),
+	% case actordb_sqlproc:read({ShardName,Type},[create],<<"SELECT * FROM meta WHERE id in(",
+	% 					?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>,?MODULE) of
+	% 	{ok,[{columns,_},{rows,[_|_] = Rows}]} ->
+	% 		{ok,butil:toint(butil:ds_val(butil:toint([?META_UPPER_LIMIT]),Rows)),
+	% 				binary_to_term(base64:decode(butil:ds_val(butil:toint([?META_MOVINGTO]),Rows)))};
+	% 	_ ->
+	% 		undefined
+	% end.
 
 % get_actors(ShardName,Type1) ->
 % 	Type = butil:toatom(Type1),
@@ -299,25 +292,25 @@ top_actor(ShardName,Type1) ->
 actor_stolen(NewShard,ShardName,Type,Actor,ThiefNode) ->
 	case top_actor(ShardName,Type) of
 		{ok,_,Hash} ->
-			delete_actor_steal(ShardName,Type,Actor,ThiefNode,Hash),
+			delete_actor_steal(ShardName,NewShard,Type,Actor,ThiefNode,Hash),
 			actordb_shardmngr:set_shard_border(ShardName,NewShard,Type,Hash,ThiefNode);
 		_ ->
 			Hash = actordb_util:hash(butil:tobin(Actor)),
-			delete_actor_steal(ShardName,Type,Actor,ThiefNode,Hash-1),
+			delete_actor_steal(ShardName,NewShard,Type,Actor,ThiefNode,Hash-1),
 			actordb_shardmngr:set_shard_border(ShardName,NewShard,Type,Hash-1,ThiefNode)
 	end,
 	ok.
-delete_actor_steal(ShardName,Type1,Actor,ThiefNode,Limit) ->
+delete_actor_steal(ShardName,NewShard,Type1,Actor,ThiefNode,Limit) ->
 	Type = butil:toatom(Type1),
-	actordb_sqlproc:write({ShardName,Type},[create],{{?MODULE,cb_del_move_actor,[Actor,ThiefNode,Limit]},
+	actordb_sqlproc:write({ShardName,Type},[create],{{?MODULE,cb_del_move_actor,[NewShard,Actor,ThiefNode,Limit]},
 												  undefined,undefined},?MODULE).
 
-delete_limits(Name,Type1,UpperLimit) when is_integer(UpperLimit) ->
-	Type = butil:toatom(Type1),
-	?AINF("delete_limits ~p ~p ~p",[Name,Type,UpperLimit]),
-	actordb_sqlproc:write({Name,Type},[create],
-								<<"DELETE FROM actors WHERE hash > ",(butil:tobin(UpperLimit))/binary,";",
-								"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>,?MODULE).
+% delete_limits(Name,Type1,UpperLimit) when is_integer(UpperLimit) ->
+% 	Type = butil:toatom(Type1),
+% 	?AINF("delete_limits ~p ~p ~p",[Name,Type,UpperLimit]),
+% 	actordb_sqlproc:write({Name,Type},[create],
+% 								<<"DELETE FROM actors WHERE hash > ",(butil:tobin(UpperLimit))/binary,";",
+% 								"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>,?MODULE).
 
 try_whereis(N,Type1) ->
 	Type = butil:toatom(Type1),
@@ -344,9 +337,9 @@ cb_reg_actor(P,ActorName) ->
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
 	NM = at(P#state.idtype,ActorName),
 	Sql = [<<"INSERT OR REPLACE INTO actors VALUES (">>,NM,$,,(butil:tobin(Hash)), <<");">>],
-	case is_integer(P#state.upperlimit) of
-		true when P#state.upperlimit < Hash, is_binary(P#state.thiefnode) ->
-			{reply,{redirect_shard,P#state.thiefnode,P#state.thiefshard},Sql,P};
+	case is_integer(P#state.nextshard) of
+		true when P#state.nextshard =< Hash, is_binary(P#state.nextshardnode) ->
+			{reply,{redirect_shard,P#state.nextshardnode,P#state.nextshard},Sql,P};
 		_ ->
 			% Is this regular actor registration or are we moving actors from another node.
 			case P#state.stealingnow == ActorName of
@@ -363,13 +356,13 @@ cb_reg_actor(P,ActorName) ->
 	end.
 
 cb_kvexec(P,Actor,Sql) ->
-	?ADBG("kvexec ~p ~p",[P#state.upperlimit,Sql]),
-	case is_integer(P#state.upperlimit) of
+	?ADBG("kvexec ~p ~p",[P#state.nextshard,Sql]),
+	case is_integer(P#state.nextshard) of
 		true ->
 			Hash = actordb_util:hash(butil:tobin(Actor)),
 			case ok of
-				_ when P#state.upperlimit < Hash, is_binary(P#state.thiefnode) ->
-					{reply,{redirect_shard,P#state.thiefnode,P#state.thiefshard}};
+				_ when P#state.nextshard =< Hash, is_binary(P#state.nextshardnode) ->
+					{reply,{redirect_shard,P#state.nextshardnode,P#state.nextshard}};
 				_ ->
 					Sql
 			end;
@@ -379,10 +372,10 @@ cb_kvexec(P,Actor,Sql) ->
 
 cb_list_actors(P,From,Limit) ->
 	?ADBG("cb_list_actors ~p",[P]),
-	case is_integer(P#state.upperlimit) of
+	case is_integer(P#state.nextshard) of
 		true ->
-			{reply,{P#state.upperlimit,P#state.thiefnode,P#state.split_point},
-				<<"SELECT id FROM actors WHERE hash<",(butil:tobin(P#state.upperlimit))/binary," LIMIT ", 
+			{reply,{P#state.nextshard,P#state.nextshardnode},
+				<<"SELECT id FROM actors WHERE hash<",(butil:tobin(P#state.nextshard))/binary," LIMIT ", 
 						(butil:tobin(Limit))/binary," OFFSET ",(butil:tobin(From))/binary, ";">>,P};
 		false ->
 			<<"SELECT id FROM actors LIMIT ", (butil:tobin(Limit))/binary,
@@ -392,21 +385,21 @@ cb_list_actors(P,From,Limit) ->
 cb_del_actor(P,ActorName) ->
 	?ADBG("cb_del_actor ~p ~p ~p",[P#state.name,ActorName,P#state.type]),
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
+	?AINF("Del actor ~p ~p",[ActorName,{P#state.nextshard,P#state.nextshardnode,Hash}]),
 	Sql = ["DELETE FROM actors WHERE id=",at(P#state.idtype,ActorName),";"],
-	case is_integer(P#state.upperlimit) of
-		true when P#state.upperlimit < Hash, is_binary(P#state.thiefnode) ->
-			{reply,{redirect_shard,P#state.thiefnode,P#state.thiefshard},Sql,P};
+	case is_integer(P#state.nextshard) of
+		true when P#state.nextshard =< Hash, is_binary(P#state.nextshardnode) ->
+			{reply,{redirect_shard,P#state.nextshardnode,P#state.nextshard},Sql,P};
 		_ ->
 			{Sql,P}
 	end.
 
-cb_del_move_actor(P,Actor,ThiefNode,UpperLimit) ->
+cb_del_move_actor(P,NewShard,Actor,NextShardNode,NextShard) ->
 	Sql = [ "DELETE FROM actors WHERE id=",at(P#state.idtype,Actor),";",
-			  "$INSERT OR REPLACE INTO meta VALUES (",?META_MOVINGTO,$,,$',base64:encode(term_to_binary(ThiefNode)),$', ");",
-			  "$INSERT OR REPLACE INTO meta VALUES (",?META_UPPER_LIMIT,$,,
-	  			$',butil:tolist(UpperLimit),$', ");"
+			  "$INSERT OR REPLACE INTO meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',base64:encode(term_to_binary(NextShardNode)),$', ");",
+			  "$INSERT OR REPLACE INTO meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");"
 	],
-	{Sql,P#state{upperlimit = UpperLimit, thiefnode = ThiefNode}}.
+	{Sql,P#state{nextshardnode = NextShardNode, nextshard = NextShard}}.
 
 % cb_set_upper_limit(P,SplitPoint) ->
 % 	?ADBG("cb_set_upper_limit ~p ~p ~p",[P,SplitPoint,P#state.split_point]),
@@ -440,7 +433,7 @@ cb_candie(Mors,Name,_Type,P) ->
 			Local;
 		_ ->
 			Local andalso P#state.stealingnow == undefined andalso P#state.stealingfrom == undefined andalso 
-			P#state.split_point == undefined andalso P#state.upperlimit == undefined 
+			P#state.nextshard == undefined 
 	end.
 
 cb_checkmoved(Name,Type) ->
@@ -538,13 +531,13 @@ cb_info({'DOWN',_Monitor,_,PID,Reason},P) ->
 	end;
 cb_info(borders_changed,P) ->
 	case ok of
-		_ when is_integer(P#state.split_point) ->
+		_ when is_integer(P#state.nextshard) ->
 			% If split point is it's own shard, delete borders
-			case actordb_shardmngr:find_global_shard(P#state.split_point,P#state.split_point) of
-				{Shard,_,_} when P#state.split_point == Shard ->
-					spawn(fun() -> 	delete_limits(P#state.name,P#state.type,P#state.upperlimit) end),
+			case actordb_shardmngr:find_global_shard(P#state.nextshard,P#state.nextshard) of
+				{Shard,_,_} when P#state.nextshard == Shard ->
+					% spawn(fun() -> 	delete_limits(P#state.name,P#state.type,P#state.upperlimit) end),
 					% ?AINF("borders changed, my split ~p tree ~p",[P#state.upperlimit,actordb_shardtree:all()]),
-					{noreply,P#state{split_point = undefined, upperlimit = undefined}};
+					{noreply,P#state{nextshard = undefined, nextshardnode = undefined}};
 				_ ->
 					noreply
 			end;
@@ -554,60 +547,65 @@ cb_info(borders_changed,P) ->
 cb_info(_,_S) ->
 	noreply.
 cb_init(S,_EvNum) ->
-	?ADBG("cb_init shard ~p",[S]),
 	ok = actordb_shardmngr:shard_started(self(),S#state.name,S#state.type),
-	case is_integer(S#state.split_point) of
-		true ->
-			% {ok,Pid} = start_split_other(S#state.split_point,S#state.type,S#state.name),
-			% erlang:monitor(process,Pid),
-			% {ok,S#state{splitproc = Pid}};
-			{ok,S};
-		false ->
-			% This will cause read to execute and result returned in cb_init/3
-			{doread,<<"SELECT * FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>}
-	end.
-cb_init(S,_EvNum,{ok,[{columns,_},{rows,Rows}]}) ->
-	?ADBG("cb_init shard ~p ~p ~p",[S,_EvNum,Rows]),
-	case Rows of
-		[_|_] ->
-			Limit = butil:toint(butil:ds_val(butil:toint([?META_UPPER_LIMIT]),Rows)),
-			MovingTo = binary_to_term(base64:decode(butil:ds_val(butil:toint([?META_MOVINGTO]),Rows))),
-			?AINF("shard started and is moving ~p ~p",[Limit,MovingTo]),
-			case ok of
-				% Shard is being split in half
-				_ when is_integer(MovingTo) ->
-					case actordb_shardmngr:find_global_shard(Limit+1,Limit+1) of
-						% Has process concluded?
-						% If yes delete leftover data from db
-						{Shard,_,_} when Limit+1 == Shard ->
-							spawn(fun() -> 
-									?AINF("init shard that is being split moving to ~p ~p",[MovingTo,S]),
-									delete_limits(S#state.name,S#state.type,Limit) 
-								 end),
-							{ok,S#state{split_point = undefined, upperlimit = undefined}};
-						_ ->
-							% {ok,Pid} = start_split_other(Limit+1,S#state.type,S#state.name),
-							% erlang:monitor(process,Pid),
-							% {ok,S#state{split_point = Limit+1,splitproc = Pid, upperlimit = Limit}}
-							{ok,S}
-					end;
-				_ when is_binary(MovingTo) ->
-					case actordb_shardmngr:find_global_shard(Limit+1,Limit+1) of
-						% Shard for limit+1 is globally set somewhere else, this means shard has completely moved over.
-						{Shard,_,_} when Shard /= S#state.name ->
-							spawn(fun() -> 
-									?AINF("init shard that is being moved ~p",[MovingTo]),
-									delete_limits(S#state.name,S#state.type,Limit) 
-								end),
-							{ok,S#state{split_point = undefined, upperlimit = undefined}};
-						_ ->
-							actordb_shardmngr:set_shard_border(S#state.name,S#state.type,Limit,MovingTo),
-							{ok,S#state{upperlimit = Limit,thiefnode = MovingTo}}
-					end
-			end;
-		_ ->
-			ok
-	end.
+	{ok,S}.
+cb_init(S,_,_) ->
+	{ok,S}.
+% cb_init(S,_EvNum) ->
+% 	?ADBG("cb_init shard ~p",[S]),
+% 	ok = actordb_shardmngr:shard_started(self(),S#state.name,S#state.type),
+% 	case is_integer(S#state.split_point) of
+% 		true ->
+% 			% {ok,Pid} = start_split_other(S#state.split_point,S#state.type,S#state.name),
+% 			% erlang:monitor(process,Pid),
+% 			% {ok,S#state{splitproc = Pid}};
+% 			{ok,S};
+% 		false ->
+% 			% This will cause read to execute and result returned in cb_init/3
+% 			{doread,<<"SELECT * FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>}
+% 	end.
+% cb_init(S,_EvNum,{ok,[{columns,_},{rows,Rows}]}) ->
+% 	?ADBG("cb_init shard ~p ~p ~p",[S,_EvNum,Rows]),
+% 	case Rows of
+% 		[_|_] ->
+% 			Limit = butil:toint(butil:ds_val(butil:toint([?META_UPPER_LIMIT]),Rows)),
+% 			MovingTo = binary_to_term(base64:decode(butil:ds_val(butil:toint([?META_MOVINGTO]),Rows))),
+% 			?AINF("shard started and is moving ~p ~p",[Limit,MovingTo]),
+% 			case ok of
+% 				% Shard is being split in half
+% 				_ when is_integer(MovingTo) ->
+% 					case actordb_shardmngr:find_global_shard(Limit+1,Limit+1) of
+% 						% Has process concluded?
+% 						% If yes delete leftover data from db
+% 						{Shard,_,_} when Limit+1 == Shard ->
+% 							spawn(fun() -> 
+% 									?AINF("init shard that is being split moving to ~p ~p",[MovingTo,S]),
+% 									delete_limits(S#state.name,S#state.type,Limit) 
+% 								 end),
+% 							{ok,S#state{split_point = undefined, upperlimit = undefined}};
+% 						_ ->
+% 							% {ok,Pid} = start_split_other(Limit+1,S#state.type,S#state.name),
+% 							% erlang:monitor(process,Pid),
+% 							% {ok,S#state{split_point = Limit+1,splitproc = Pid, upperlimit = Limit}}
+% 							{ok,S}
+% 					end;
+% 				_ when is_binary(MovingTo) ->
+% 					case actordb_shardmngr:find_global_shard(Limit+1,Limit+1) of
+% 						% Shard for limit+1 is globally set somewhere else, this means shard has completely moved over.
+% 						{Shard,_,_} when Shard /= S#state.name ->
+% 							spawn(fun() -> 
+% 									?AINF("init shard that is being moved ~p",[MovingTo]),
+% 									delete_limits(S#state.name,S#state.type,Limit) 
+% 								end),
+% 							{ok,S#state{split_point = undefined, upperlimit = undefined}};
+% 						_ ->
+% 							actordb_shardmngr:set_shard_border(S#state.name,S#state.type,Limit,MovingTo),
+% 							{ok,S#state{upperlimit = Limit,thiefnode = MovingTo}}
+% 					end
+% 			end;
+% 		_ ->
+% 			ok
+% 	end.
 
 
 
