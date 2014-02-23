@@ -360,8 +360,9 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 							case file:read_file_info(P#dp.dbpath) of
 								{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
 												IsMove == true orelse P#dp.journal_mode == wal ->
-									?ADBG("senddb from ~p, myname ~p, remotename ~p info ~p, copyto already ~p",[bkdcore:node_name(),P#dp.actorname,ActornameToCopyto,
-																								{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
+									?ADBG("senddb from ~p, myname ~p, remotename ~p info ~p, copyto already ~p",
+											[bkdcore:node_name(),P#dp.actorname,ActornameToCopyto,
+																	{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
 									?DBLOG(P#dp.db,"senddb to ~p ~p",[ActornameToCopyto,Node]),
 									case P#dp.journal_mode of
 										wal ->
@@ -450,11 +451,12 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 									case WithoutLock of
 										[] when P#dp.dbcopy_to == [] ->
 											actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
-											Md = P#dp.def_journal_mode;
+											NP = P#dp{locked = WithoutLock, journal_mode = P#dp.def_journal_mode},
+											{ok,NS} = apply(P#dp.cbmod,cb_copyunlock,[P#dp.cbstate]),
+											{reply,ok,NP#dp{cbstate = NS}};
 										_ ->
-											Md = P#dp.journal_mode
-									end,
-									{reply,ok,P#dp{locked = WithoutLock, journal_mode = Md}}
+											{reply,ok,P#dp{locked = WithoutLock}}
+									end
 							end
 					end;
 				{_FromPid,Data} ->
@@ -582,7 +584,8 @@ handle_call({read,Msg},From,P) ->
 								{write,Write,NS} ->
 									case Write of
 										_ when is_binary(Write); is_list(Write) ->
-											write_call({undefined,erlang:crc32(Write),iolist_to_binary(Sql),undefined},From,P#dp{cbstate = NS});
+											write_call({undefined,erlang:crc32(Write),iolist_to_binary(Sql),undefined},
+													   From,P#dp{cbstate = NS});
 										{_,_,_} ->
 											write_call({Write,undefined,undefined,undefined},From,P#dp{cbstate = NS})
 									end;
@@ -638,7 +641,8 @@ handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} 
 			case ok of
 				_ when Node == P#dp.masternodedist ->
 					?DBLOG(P#dp.db,"replicate conflict!!! ~p ~p in ~p ~p, cur ~p ~p",[_Ref,_Node,EvNum,Crc,P#dp.evnum,P#dp.evcrc]),
-					?AERR("Replicate conflict!!!!! ~p ~p ~p ~p ~p, master ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,{Node,P#dp.masternodedist}]),
+					?AERR("Replicate conflict!!!!! ~p ~p ~p ~p ~p, master ~p",[{P#dp.actorname,P#dp.actortype},
+												P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,{Node,P#dp.masternodedist}]),
 					reply(From,desynced),
 					{ok,NP} = init(P,replicate_conflict);
 				_ ->
@@ -1676,6 +1680,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 					% wait_copy not in list add it (2nd stage of lock)
 					WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy],
 					Md = P#dp.journal_mode,
+					NS = P#dp.cbstate,
 					Movedtonode = undefined;
 				{wait_copy,Ref,_,_,_} ->
 					% wait_copy already in list (race condition). Remove it. We already received confirmation.
@@ -1683,13 +1688,15 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 					case ok of
 						_ when WithoutCopy1 == [], NewCopyto == [] ->
 							actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
+							{ok,NS} = apply(P#dp.cbmod,cb_copyunlock,[P#dp.cbstate]),
 							Md = P#dp.def_journal_mode;
 						_ ->
+							NS = P#dp.cbstate,
 							Md = P#dp.journal_mode
 					end,
 					Movedtonode = Moved
 			end,
-			NP = P#dp{dbcopy_to = NewCopyto, 
+			NP = P#dp{dbcopy_to = NewCopyto, cbstate = NS,
 						locked = WithoutCopy1,journal_mode = Md,
 						activity = P#dp.activity + 1, movedtonode = Movedtonode},
 			case queue:is_empty(P#dp.callqueue) of
@@ -1715,7 +1722,8 @@ handle_info({inactivity_timer,Ref,N},P) ->
 			handle_info({check_inactivity,N},P)
 	end;
 handle_info({check_inactivity,N}, P) ->
-	% ?AINF("check_inactivity ~p ~p ~p~n",[{N,P#dp.activity},{P#dp.actorname,P#dp.callfrom},{P#dp.dbcopyref,P#dp.dbcopy_to,P#dp.locked,P#dp.copyproc,P#dp.verified,P#dp.transactionid}]),
+	% ?AINF("check_inactivity ~p ~p ~p~n",[{N,P#dp.activity},{P#dp.actorname,P#dp.callfrom},
+	% 				{P#dp.dbcopyref,P#dp.dbcopy_to,P#dp.locked,P#dp.copyproc,P#dp.verified,P#dp.transactionid}]),
 	Empty = queue:is_empty(P#dp.callqueue),
 	case P of
 		% If true, process is inactive and can die (or go to sleep)

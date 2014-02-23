@@ -71,6 +71,9 @@ write(Actor,Flags,Sql) ->
 cb_schema(_,Type,Vers) ->
 	actordb_util:type_schema(Type,Vers).
 
+cb_copyunlock(S) ->
+	{ok,S}.
+
 cb_path(_,Name,_Type) ->
 	actordb_util:actorpath(Name).
 
