@@ -10,7 +10,7 @@
 		kvread/4,kvwrite/4,kv_schema_check/1,get_schema_vers/2]). 
 -export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3, %cb_set_upper_limit/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
-		 start_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2,cb_copyunlock/1]). %split_other_done/3,
+		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2]). %split_other_done/3,
 -include_lib("actordb.hrl").
 % -define(META_UPPER_LIMIT,$1).
 % -define(META_MOVINGTO,$2).
@@ -99,17 +99,21 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 		% If member of same cluster, we just need to run the shard normally. This will copy over the database.
 		% Master might be this new node or if shard already running on another node, it will remain master untill restart.
 		true ->
-			% {ok,Pid} = start(NewName,Type1),
-			% spawn(fun() ->  actordb_shardmvr:shard_moved(Nd,NewName,Type) end),
-			% {ok,Pid}
-			% {ok,_Pid} = start(NewName,Type,false,[nohibernate,{copyfrom,{FromName,Nd}},
-			% 					{copyreset,{?MODULE,start_steal_done,
-			% 					[Nd,FromName,<<"DELETE FROM actors WHERE hash < ",(butil:tobin(NewName))/binary,";",
-			% 						"DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>]}}]);
-			ok
+			{ok,_Pid} = start(NewName,Type,false,[nohibernate,{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName}},
+								{copyreset,{?MODULE,newshard_steal_done,
+								[Nd,FromName]}}])
 	end.
 
-start_steal_done(P,Nd,ShardFrom,Sql) ->
+	% ,<<"DELETE FROM actors WHERE hash < ",(butil:tobin(NewName))/binary,";",
+									% "DELETE FROM meta WHERE id in(",?META_UPPER_LIMIT,$,,?META_MOVINGTO,");">>
+
+% Called on shard that is origin of moving shard.
+origin_steal_done(P,split,NewShardNode,NewShard) ->
+	{ok,<<>>};
+origin_steal_done(P,{check,Nd},NewShardNode,NewShard) ->
+	ok.
+
+newshard_steal_done(P,Nd,ShardFrom) ->
 	?AINF("steal done ~p",[P#state.name]),
 	actordb_shardmvr:shard_moved(Nd,P#state.name,P#state.type).
 	% callmvr(P#state.name,actordb_shardmvr,shard_moved,[Nd,P#state.name,P#state.type]).
@@ -442,8 +446,6 @@ cb_candie(Mors,Name,_Type,P) ->
 			P#state.nextshard == undefined 
 	end.
 
-cb_copyunlock(P) ->
-	{ok,P}.
 
 cb_checkmoved(Name,Type) ->
 	Shard = actordb_shardmngr:find_local_shard(Name,Type,Name),

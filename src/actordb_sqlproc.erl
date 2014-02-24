@@ -359,7 +359,7 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 						undefined ->
 							case file:read_file_info(P#dp.dbpath) of
 								{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
-												IsMove == true orelse P#dp.journal_mode == wal ->
+												IsMove /= false orelse P#dp.journal_mode == wal ->
 									?ADBG("senddb from ~p, myname ~p, remotename ~p info ~p, copyto already ~p",
 											[bkdcore:node_name(),P#dp.actorname,ActornameToCopyto,
 																	{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
@@ -427,6 +427,10 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 					?DBG("wal_size ~p",[{From1,What,Data}]), 
 					{reply,{[P#dp.dbpath,"-wal"],Size},P}
 			end;
+		checksplit ->
+			{{M,F,A},Node} = Data,
+			{reply,apply(M,F,[P#dp.cbstate,{check,Node}|A]),P};
+		% Copy done ok, release lock.
 		unlock ->
 			% For unlock data = copyref
 			case lists:keyfind(Data,2,P#dp.locked) of
@@ -435,29 +439,41 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 					{reply,false,P};
 				{wait_copy,Data,IsMove,Node,_TimeOfLock} ->
 					?ADBG("Actor unlocked ~p ~p",[{P#dp.actorname,P#dp.actortype},Data]),
+					DbCopyTo = lists:keydelete(Data,3,P#dp.dbcopy_to),
 					case IsMove of
 						true ->
-							write_call({undefined,0,{moved,Node},undefined},CallFrom,P#dp{locked = lists:keydelete(Data,2,P#dp.locked)});
+							write_call({undefined,0,{moved,Node},undefined},CallFrom,P#dp{locked = lists:keydelete(Data,2,P#dp.locked),dbcopy_to = DbCopyTo});
+						{split,{M,F,A}} ->
+							case apply(M,F,[P#dp.cbstate,split|A]) of
+								{ok,Sql} ->
+									NS = P#dp.cbstate;
+								{ok,Sql,NS} ->
+									ok
+							end,
+							actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
+							write_call({undefined,erlang:crc32(Sql),Sql,undefined},CallFrom,P#dp{cbstate = NS,
+															locked = lists:keydelete(Data,2,P#dp.locked),dbcopy_to = DbCopyTo});
 						false ->
 							self() ! doqueue,
-							case [ok || Tuple <- P#dp.locked,element(2,Tuple) == Data] of
-								% A bit silly but it avoids a race condition. Copy process has not died yet
-								%  but we already received unlock request.
-								[_,_] ->
-									?ADBG("Race condition, wait for die ~p",[P#dp.actorname]),
-									{reply,ok,P};
-								[_] ->
-									WithoutLock = lists:keydelete(Data,2,P#dp.locked),
+							% case [ok || Tuple <- P#dp.locked,element(2,Tuple) == Data] of
+							% 	% A bit silly but it avoids a race condition. Copy process has not died yet
+							% 	%  but we already received unlock request.
+							% 	[_,_] ->
+							% 		?ADBG("Race condition, wait for die ~p",[P#dp.actorname]),
+							% 		{reply,ok,P};
+							% 	[_] ->
+									% WithoutLock = lists:keydelete(Data,2,P#dp.locked),
+									WithoutLock = [Tuple || Tuple <- P#dp.locked, element(2,Tuple) == Data],
 									case WithoutLock of
-										[] when P#dp.dbcopy_to == [] ->
+										[] when DbCopyTo == [] ->
 											actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
-											NP = P#dp{locked = WithoutLock, journal_mode = P#dp.def_journal_mode},
-											{ok,NS} = apply(P#dp.cbmod,cb_copyunlock,[P#dp.cbstate]),
-											{reply,ok,NP#dp{cbstate = NS}};
+											{reply,ok,P#dp{locked = WithoutLock, 
+														dbcopy_to = DbCopyTo,
+													 journal_mode = P#dp.def_journal_mode}};
 										_ ->
-											{reply,ok,P#dp{locked = WithoutLock}}
+											{reply,ok,P#dp{locked = WithoutLock, dbcopy_to = DbCopyTo}}
 									end
-							end
+							% end
 					end;
 				{_FromPid,Data} ->
 					?ADBG("Early unlock attempt ~p ~p ~p",[P#dp.actorname,Data,P#dp.locked]),
@@ -1661,12 +1677,12 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
 		{Node,PID,Ref,IsMove} ->
 			?ADBG("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,Ref,P#dp.locked,P#dp.dbcopy_to]),
-			case IsMove of
-				true when Reason == ok ->
-					Moved = Node;
-				_ ->
-					Moved = undefined
-			end,
+			% case IsMove of
+			% 	true when Reason == ok ->
+			% 		Moved = Node;
+			% 	_ ->
+			% 		Moved = undefined
+			% end,
 			case Reason of
 				ok ->
 					ok;
@@ -1681,20 +1697,20 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 					WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy],
 					Md = P#dp.journal_mode,
 					NS = P#dp.cbstate,
-					Movedtonode = undefined;
-				{wait_copy,Ref,_,_,_} ->
-					% wait_copy already in list (race condition). Remove it. We already received confirmation.
-					WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy),
-					case ok of
-						_ when WithoutCopy1 == [], NewCopyto == [] ->
-							actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
-							{ok,NS} = apply(P#dp.cbmod,cb_copyunlock,[P#dp.cbstate]),
-							Md = P#dp.def_journal_mode;
-						_ ->
-							NS = P#dp.cbstate,
-							Md = P#dp.journal_mode
-					end,
-					Movedtonode = Moved
+					Movedtonode = undefined
+				% {wait_copy,Ref,_,_,_} ->
+				% 	% wait_copy already in list (race condition). Remove it. We already received confirmation.
+				% 	WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy),
+				% 	case ok of
+				% 		_ when WithoutCopy1 == [], NewCopyto == [] ->
+				% 			actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
+				% 			{ok,NS} = apply(P#dp.cbmod,cb_copyunlock,[P#dp.cbstate]),
+				% 			Md = P#dp.def_journal_mode;
+				% 		_ ->
+				% 			NS = P#dp.cbstate,
+				% 			Md = P#dp.journal_mode
+				% 	end,
+				% 	Movedtonode = Moved
 			end,
 			NP = P#dp{dbcopy_to = NewCopyto, cbstate = NS,
 						locked = WithoutCopy1,journal_mode = Md,
@@ -1951,11 +1967,13 @@ init([_|_] = Opts) ->
 											CPFrom = binary_to_term(base64:decode(CopyFrom)),
 											case CPFrom of
 												{{move,_NewShard,_Node},CopyReset,CopyState} ->
-													IsMove = true;
+													TypeOfMove = move;
+												{{split,_Mfa,_Node,_FromActor},CopyReset,CopyState} ->
+													TypeOfMove = split;
 												{_,CopyReset,CopyState} ->
-													IsMove = false
+													TypeOfMove = false
 											end,
-											self() ! {check_redirect,Db,IsMove},
+											self() ! {check_redirect,Db,TypeOfMove},
 											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState}};
 										[] ->
 											case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
@@ -2007,18 +2025,26 @@ init([_|_] = Opts) ->
 				% Either create a copy of an actor or move an actor from one cluster to another.
 				_ ->
 					?ADBG("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
-					IsMove = element(1,P#dp.copyfrom) == move,
+					case element(1,P#dp.copyfrom) of
+						move ->
+							TypeOfMove = move;
+						split ->
+							TypeOfMove = split;
+						_ ->
+							TypeOfMove = false
+					end,
+					% IsMove = element(1,P#dp.copyfrom) == move orelse element(1,P#dp.copyfrom) == split,
 					% First check if movement is already done.
 					case actordb_sqlite:init(P#dp.dbpath,JournalMode) of
 						{ok,Db,true,_PageSize} ->
 							?DBLOG(P#dp.db,"init copyfrom ~p",[P#dp.copyfrom]),
 							case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"],read) of
 								{ok,[{columns,_},{rows,[]}]} ->
-									case IsMove of
-										true ->
-											Doit = check;
+									case TypeOfMove of
 										false ->
-											Doit = true
+											Doit = true;
+										_ ->
+											Doit = check
 									end;
 								{ok,[{columns,_},{rows,[{_,_Copyf}]}]} ->
 									Doit = false
@@ -2040,7 +2066,7 @@ init([_|_] = Opts) ->
 								journal_mode = JournalMode, activity_now = actor_start(P)}};
 						_ ->
 							?AINF("Started for copy but copy already done or need check (~p) ~p ~p",[Doit,P#dp.actorname,P#dp.actortype]),
-							self() ! {check_redirect,Db,IsMove},
+							self() ! {check_redirect,Db,TypeOfMove},
 							{ok,P}
 					end
 			end
@@ -2067,7 +2093,19 @@ check_redirect(P,Copyfrom) ->
 									check_redirect(P,{move,NewShard,SomeNode})
 							end
 					end;
+				{error,econnrefused} ->
+					throw({econnrefused,Node});
 				ok ->
+					false
+			end;
+		{split,{M,F,A},Node,ShardFrom} ->
+			case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,ShardFrom,P#dp.actortype,
+											{dbcopy_op,undefined,checksplit,{{M,F,A},P#dp.actorname}}]}) of
+				ok ->
+					ok;
+				{error,econnrefused} ->
+					throw({econnrefused,Node});
+				false ->
 					false
 			end;
 		{Copyf1,_,_} when is_tuple(Copyf1) ->
@@ -2077,7 +2115,7 @@ check_redirect(P,Copyfrom) ->
 	end.
 
 
-do_copy_reset(IsMove,Copyreset,State) ->
+do_copy_reset(MoveType,Copyreset,State) ->
 	case Copyreset of
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[State|Args]) of
@@ -2093,8 +2131,8 @@ do_copy_reset(IsMove,Copyreset,State) ->
 		_ ->
 			ResetSql = <<>>
 	end,
-	case IsMove of
-		true ->
+	case MoveType of
+		move ->
 			<<>>;
 		_ ->
 			ResetSql
@@ -2442,6 +2480,9 @@ verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 		{Node,ActorFrom} ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,ActorFrom,Type,
 											{dbcopy_op,undefined, send_db,{bkdcore:node_name(),Ref,false,Evnum,Evcrc,Actor}}]});
+		{split,MFA,Node,ActorFrom} ->
+			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,ActorFrom,Type,
+											{dbcopy_op,undefined, send_db,{bkdcore:node_name(),Ref,{split,MFA},Evnum,Evcrc,Actor}}]});
 		{move,_NewShard,Node} ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,Actor,Type,
 											{dbcopy_op,undefined, send_db,{bkdcore:node_name(),Ref,true,Evnum,Evcrc,Actor}}]});
