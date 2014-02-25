@@ -405,8 +405,6 @@ move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,
 					move_over_shard_actors(Nd,Type,Flags,Shard,L,0,CountAll,P,IsWrite,StBin,Varlist,Next);
 				{ok,[],NextShard,NextShardNode} ->
 					move_over_shard_actors(NextShardNode,Type,Flags,NextShard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
-				% {ok,[],Next} when is_integer(Next) ->
-				% 	move_over_shard_actors(Nd,Type,Flags,Next,[],0,0,P,IsWrite,StBin,Varlist,undefined);
 				{ok,L,NextShard1,NextShardNode1} ->
 					move_over_shard_actors(Nd,Type,Flags,Shard,L,0,CountAll,P,IsWrite,StBin,Varlist,{NextShard1,NextShardNode1})
 			end;
@@ -414,8 +412,6 @@ move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,
 			case Next of
 				undefined ->
 					Shard;
-				% _ when is_binary(NextShard) ->
-				% 	move_over_shard_actors(NextShard,Type,Flags,Shard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
 				{NextShard,NextShardNode} ->
 					case get({shard_visited,NextShard}) of
 						undefined ->

@@ -110,19 +110,19 @@ origin_steal_done(P,split,NextShardNode,NextShard) ->
 		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',base64:encode(term_to_binary(NextShardNode)),$', ");",
 		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");"],
 	P#state{nextshard = NextShard, nextshardnode = NextShardNode}};
-origin_steal_done(P,{check,Nd},NewShardNode,NewShard) ->
-	case P#state.nextshard == NewShard andalso Nd == NewShardNode andalso Nd == P#state.nextshardnode of
+origin_steal_done(P,check,NewShardNode,NewShard) ->
+	case P#state.nextshard == NewShard andalso  NewShardNode == P#state.nextshardnode of
 		true ->
 			ok;
 		_ ->
-			?AERR("steal done does not match ~p ~p",[{P#state.nextshard,NewShard},{Nd,NewShardNode,P#state.nextshardnode}]),
+			?AERR("steal done does not match ~p ~p",[{P#state.nextshard,NewShard},{P#state.nextshardnode,NewShardNode}]),
 			false
 	end.
 
 % Called on new shard that is being split in half. Same as above only for kv or shards
 %  in the same cluster.
 newshard_steal_done(P,Nd,_ShardFrom) ->
-	?AINF("steal done ~p",[P#state.name]),
+	?AINF("steal done ~p",[{P#state.name,P#state.type}]),
 	ok = actordb_shardmvr:shard_moved(Nd,P#state.name,P#state.type),
 	["$DELETE FROM actors WHERE hash < ",butil:tobin(P#state.name),";"].
 
@@ -228,7 +228,7 @@ count_actors(ShardName,Type1) ->
 list_actors(ShardName,Type1,From,Limit) ->
 	Type = butil:toatom(Type1),
 	R = actordb_sqlproc:read({ShardName,Type},[create],{?MODULE,cb_list_actors,[From,Limit]},?MODULE),
-	?AINF("List actors ~p result ~p",[ShardName,R]),
+	?ADBG("List actors ~p result ~p",[ShardName,R]),
 	case R of
 		{ok,[{columns,_},{rows,L}]} ->
 			{ok,L};
@@ -343,9 +343,8 @@ cb_list_actors(P,From,Limit) ->
 	end.
 
 cb_del_actor(P,ActorName) ->
-	?ADBG("cb_del_actor ~p ~p ~p",[P#state.name,ActorName,P#state.type]),
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
-	?AINF("Del actor ~p ~p",[ActorName,{P#state.nextshard,P#state.nextshardnode,Hash}]),
+	?ADBG("Del actor ~p ~p",[ActorName,{P#state.nextshard,P#state.nextshardnode,Hash}]),
 	Sql = ["DELETE FROM actors WHERE id=",at(P#state.idtype,ActorName),";"],
 	case is_integer(P#state.nextshard) of
 		true when P#state.nextshard =< Hash, is_binary(P#state.nextshardnode) ->
