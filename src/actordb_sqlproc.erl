@@ -442,7 +442,8 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 					DbCopyTo = lists:keydelete(Data,3,P#dp.dbcopy_to),
 					case IsMove of
 						true ->
-							write_call({undefined,0,{moved,Node},undefined},CallFrom,P#dp{locked = lists:keydelete(Data,2,P#dp.locked),dbcopy_to = DbCopyTo});
+							write_call({undefined,0,{moved,Node},undefined},CallFrom,
+												P#dp{locked = lists:keydelete(Data,2,P#dp.locked),dbcopy_to = DbCopyTo});
 						{split,{M,F,A}} ->
 							case apply(M,F,[P#dp.cbstate,split|A]) of
 								{ok,Sql} ->
@@ -1218,6 +1219,8 @@ callback_unlock(P) ->
 								P#dp.actortype,{dbcopy_op,undefined,unlock,P#dp.dbcopyref}]}) of
 		ok ->
 			exit(ok);
+		{ok,_} ->
+			exit(ok);
 		{redirect,Somenode} ->
 			case lists:member(Somenode,bkdcore:all_cluster_nodes()) of
 				true ->
@@ -1225,7 +1228,7 @@ callback_unlock(P) ->
 				false ->
 					exit({unlock_invalid_redirect,Somenode})
 			end;
-		Err ->
+		{error,Err} ->
 			?AERR("Failed to execute dbunlock ~p",[Err]),
 			exit(failed_unlock)
 	end.
@@ -1238,7 +1241,8 @@ still_alive(P,Home,ActorTo) ->
 			receive
 				delete ->
 					?ADBG("Actor deleted during copy ~p",[Home]),
-					ok = rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,<<>>,delete}]})
+					ok = rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,
+																	{db_chunk,P#dp.dbcopyref,<<>>,delete}]})
 			after 0 ->
 				?AERR("dbcopy home proc is dead ~p",[Home]),
 				exit(actorprocdead)
@@ -1303,8 +1307,9 @@ commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 						false ->
 							CommitOkOn = lists:subtract(NodesToCommit,CommitFailedOn),
 							[rpc:async_call(Nd,?MODULE,call_slave,
-										[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{replicate_bad_commit,EvNum,Crc},[{flags,P#dp.flags}]]) || 
-													Nd <- CommitOkOn],
+										[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+													{replicate_bad_commit,EvNum,Crc},[{flags,P#dp.flags}]]) || 
+														Nd <- CommitOkOn],
 							exit({replication_failed_3,LenCommited,LenCluster})
 					end;
 				false ->
@@ -1896,6 +1901,8 @@ init(#dp{} = P,_Why) ->
 	?ADBG("Reinit because ~p, ~p, ~p",[_Why,?R2P(P),get()]),
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,P#dp.flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
+% Never call other processes from init. It may cause deadlocks. Whoever
+% started actor is blocking waiting for init to finish.
 init([_|_] = Opts) ->
 	put(opt,Opts),
 	case parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
@@ -1986,7 +1993,8 @@ init([_|_] = Opts) ->
 																		"' WHERE id=",?SCHEMA_VERS/binary,";",
 																"COMMIT;">>,write))
 											end,
-											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,movedtonode = MovedToNode1})};
+											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,
+																	movedtonode = MovedToNode1})};
 										[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
 											case base64:decode(MSql1) of
 												<<"delete">> ->
@@ -2065,7 +2073,8 @@ init([_|_] = Opts) ->
 							{ok,P#dp{verified = false, verifypid = Verifypid, mors = master,
 								journal_mode = JournalMode, activity_now = actor_start(P)}};
 						_ ->
-							?AINF("Started for copy but copy already done or need check (~p) ~p ~p",[Doit,P#dp.actorname,P#dp.actortype]),
+							?AINF("Started for copy but copy already done or need check (~p) ~p ~p",
+										[Doit,P#dp.actorname,P#dp.actortype]),
 							self() ! {check_redirect,Db,TypeOfMove},
 							{ok,P}
 					end
@@ -2100,7 +2109,7 @@ check_redirect(P,Copyfrom) ->
 			end;
 		{split,{M,F,A},Node,ShardFrom} ->
 			case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,ShardFrom,P#dp.actortype,
-											{dbcopy_op,undefined,checksplit,{{M,F,A},P#dp.actorname}}]}) of
+										{dbcopy_op,undefined,checksplit,{{M,F,A},P#dp.actorname}}]}) of
 				ok ->
 					ok;
 				{error,econnrefused} ->

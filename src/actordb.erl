@@ -273,7 +273,7 @@ hash_pick(Val,L) ->
 
 schema_changed() ->
 	actordb_shardmngr:schema_changed(),
-	[actordb_shard:kv_schema_check(Type) || Type <- actordb_schema:types(), actordb_schema:iskv(Type)],
+	% [actordb_shard:kv_schema_check(Type) || Type <- actordb_schema:types(), actordb_schema:iskv(Type)],
 	ok.
 
 configfiles() ->
