@@ -385,7 +385,7 @@ move_over_shard_actors(Nd,Type,_Flags,Shard,[],_CountNow,_CountAll,_P,_IsWrite,[
 	end,
 	put({<<"RESULT">>,0},{CurCount+Count}),
 	ok;
-move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,Varlist,NextShard) ->
+move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,Varlist,Next) ->
 	Iskv = actordb_schema:iskv(Type),
 	case ok of
 		_ when Iskv ->
@@ -402,25 +402,25 @@ move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,
 				{ok,[]} ->
 					ok;
 				{ok,L} ->
-					move_over_shard_actors(Nd,Type,Flags,Shard,L,0,CountAll,P,IsWrite,StBin,Varlist,NextShard);
-				{ok,[],Next} when is_binary(Next) ->
-					move_over_shard_actors(Next,Type,Flags,Shard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
-				{ok,[],Next} when is_integer(Next) ->
-					move_over_shard_actors(Nd,Type,Flags,Next,[],0,0,P,IsWrite,StBin,Varlist,undefined);
-				{ok,L,Next} ->
-					move_over_shard_actors(Nd,Type,Flags,Shard,L,0,CountAll,P,IsWrite,StBin,Varlist,Next)
+					move_over_shard_actors(Nd,Type,Flags,Shard,L,0,CountAll,P,IsWrite,StBin,Varlist,Next);
+				{ok,[],NextShard,NextShardNode} ->
+					move_over_shard_actors(NextShardNode,Type,Flags,NextShard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
+				% {ok,[],Next} when is_integer(Next) ->
+				% 	move_over_shard_actors(Nd,Type,Flags,Next,[],0,0,P,IsWrite,StBin,Varlist,undefined);
+				{ok,L,NextShard1,NextShardNode1} ->
+					move_over_shard_actors(Nd,Type,Flags,Shard,L,0,CountAll,P,IsWrite,StBin,Varlist,{NextShard1,NextShardNode1})
 			end;
 		_ ->
-			case NextShard of
+			case Next of
 				undefined ->
 					Shard;
-				_ when is_binary(NextShard) ->
-					move_over_shard_actors(NextShard,Type,Flags,Shard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
-				_ when is_integer(NextShard) ->
+				% _ when is_binary(NextShard) ->
+				% 	move_over_shard_actors(NextShard,Type,Flags,Shard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
+				{NextShard,NextShardNode} ->
 					case get({shard_visited,NextShard}) of
 						undefined ->
 							put({shard_visited,NextShard},true),
-							move_over_shard_actors(Nd,Type,Flags,NextShard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
+							move_over_shard_actors(NextShardNode,Type,Flags,NextShard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
 						_ ->
 							ok
 					end

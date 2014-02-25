@@ -333,14 +333,13 @@ cb_kvexec(P,Actor,Sql) ->
 
 cb_list_actors(P,From,Limit) ->
 	?ADBG("cb_list_actors ~p",[P]),
+	Sql = [<<"SELECT id FROM actors LIMIT ">>, (butil:tobin(Limit)),
+				<<" OFFSET ">>,(butil:tobin(From)), ";"],
 	case is_integer(P#state.nextshard) of
 		true ->
-			{reply,{P#state.nextshard,P#state.nextshardnode},
-				<<"SELECT id FROM actors WHERE hash<",(butil:tobin(P#state.nextshard))/binary," LIMIT ", 
-						(butil:tobin(Limit))/binary," OFFSET ",(butil:tobin(From))/binary, ";">>,P};
+			{reply,{P#state.nextshard,P#state.nextshardnode},Sql,P};
 		false ->
-			<<"SELECT id FROM actors LIMIT ", (butil:tobin(Limit))/binary,
-				" OFFSET ",(butil:tobin(From))/binary, ";">>
+			Sql
 	end.
 
 cb_del_actor(P,ActorName) ->
