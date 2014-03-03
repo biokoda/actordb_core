@@ -1619,7 +1619,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			self() ! stop,
 			handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
 		{nomajority,Groups,Failed} ->
-			?AERR("Verify nomajority ~p ~p",[Groups,Failed]),
+			?AERR("Verify nomajority ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Groups,Failed]),
 			self() ! stop,
 			handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
 		{error,enoent} ->
