@@ -139,7 +139,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 							double_redirect;
 						false ->
 							?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
-							case actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start,true]}) of
+							case actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,true]}) of
 								double_redirect ->
 									diepls(Pid,nomaster),
 									call(Name,Flags,Msg,Start);
@@ -148,7 +148,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 							end
 					end;
 				false ->
-					actordb:rpc(Node,Name,{?MODULE,call,[Name,Flags,Msg,Start,false]})
+					actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,false]})
 			end;
 		{'EXIT',{noproc,_}} = _X  ->
 			?ADBG("noproc call again ~p",[_X]),
@@ -1616,12 +1616,14 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			{noreply,NP};
 		{nomajority,Groups} ->
 			?AERR("Verify nomajority ~p ~p",[{P#dp.actorname,P#dp.actortype},Groups]),
-			self() ! stop,
-			handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
+			% self() ! stop,
+			% handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
+			{stop,nomajority,P};
 		{nomajority,Groups,Failed} ->
 			?AERR("Verify nomajority ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Groups,Failed]),
-			self() ! stop,
-			handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
+			% self() ! stop,
+			% handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
+			{stop,nomajority,P};
 		{error,enoent} ->
 			?AERR("error enoent result of verify ~p ~p",[P#dp.actorname,P#dp.actortype]),
 			distreg:unreg(self()),
