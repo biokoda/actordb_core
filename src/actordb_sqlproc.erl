@@ -1280,7 +1280,6 @@ checkfail(A,T,N,L) ->
 	?AERR("commit failed on ~p ~p  ~p",[{A,T},N,L]).
 
 commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
-	Ref = make_ref(),
 	Actor = P1#dp.actorname,
 	Type = P1#dp.actortype,
 	OldEvnum = P1#dp.evnum,
@@ -1289,6 +1288,7 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 	Cbmod = P1#dp.cbmod,
 	WL = P1#dp.writelog,
 	{Commiter,_} = spawn_monitor(fun() ->
+			Ref = make_ref(),
 			SqlBin = iolist_to_binary(Sql),
 			{ResultsStart,StartFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
 						[Cbmod,Actor,Type,{replicate_start,Ref,node(),OldEvnum,
@@ -1296,15 +1296,10 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 			checkfail(Actor,Type,1,StartFailed),
 			% Only count ok responses
 			LenStarted = lists:foldl(fun(X,NRes) -> 
-									case X == ok of 
-										true -> NRes+1; 
-										false ->
-											case X of
-												reinit ->
-													exit({reinit,OrigMsg});
-												_ ->
-													NRes
-											 end 
+									case X of 
+										ok -> NRes+1; 
+										reinit -> exit({reinit,OrigMsg});
+										_ -> NRes
 									end
 									end,0,ResultsStart),
 			case (LenStarted+1)*2 > LenCluster+1 of
