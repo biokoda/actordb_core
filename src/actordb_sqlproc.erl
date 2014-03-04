@@ -524,7 +524,7 @@ handle_call({commit,Doit,Id},From, P) ->
 									 replicate_sql = undefined, activity = P#dp.activity + 1}}
 					end;
 				true ->
-					Commiter = commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,NewVers),
+					Commiter = commit_write({commit,Doit,Id},P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,NewVers),
 					{noreply,P#dp{callfrom = From, commiter = Commiter, activity = P#dp.activity + 1,
 								  callres = ok,
 								 transactionid = undefined,transactioncheckref = undefined}};
@@ -562,6 +562,10 @@ handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; 
 	case Msg of
 		{write,{_,_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,P);
+		_ when element(1,Msg) == replicate_start, P#dp.mors == master, P#dp.verified ->
+			reply(From,reinit),
+			{ok,NP} = init(P,replicate_conflict),
+			{noreply,NP};
 		_ ->
 			?DBG("Queueing msg ~p ~p, because ~p",[Msg,P#dp.mors,{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = P#dp.activity+1}}
@@ -616,7 +620,7 @@ handle_call({read,Msg},From,P) ->
 				% Schema has changed. Execute write on schema update.
 				% Place this read in callqueue for later execution.
 				{NewVers,Sql1} ->
-					case write_call(erlang:crc32(Sql1),Sql1,undefined,undefined,NewVers,P) of
+					case write_call(undefined,erlang:crc32(Sql1),Sql1,undefined,undefined,NewVers,P) of
 						{reply,Reply,NP} ->
 							case okornot(Reply) of
 								ok ->
@@ -820,15 +824,15 @@ check_schema(P,Sql) ->
 			end
 	end.
 
-write_call({MFA,Crc,Sql,Transaction},From,P) ->
+write_call({MFA,Crc,Sql,Transaction} = OrigMsg,From,P) ->
 	?DBG("writecall ~p ~p ~p",[MFA,Sql,Transaction]),	
 	case MFA of
 		undefined ->
 			case check_schema(P,Sql) of
 				ok ->
-					write_call(Crc,Sql,Transaction,From,P#dp.schemavers,P);
+					write_call(OrigMsg,Crc,Sql,Transaction,From,P#dp.schemavers,P);
 				{NewVers,Sql1} ->
-					write_call(Crc,Sql1,Transaction,From,NewVers,P)
+					write_call(OrigMsg,Crc,Sql1,Transaction,From,NewVers,P)
 			end;
 		{Mod,Func,Args} ->
 			case check_schema(P,[]) of
@@ -843,20 +847,20 @@ write_call({MFA,Crc,Sql,Transaction},From,P) ->
 				{reply,What,OutSql1,NS} ->
 					gen_server:reply(From,What),
 					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(erlang:crc32(OutSql),OutSql,Transaction,undefined,NewVers,P#dp{cbstate = NS});
+					write_call(OrigMsg,erlang:crc32(OutSql),OutSql,Transaction,undefined,NewVers,P#dp{cbstate = NS});
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
 					{reply,What,P};
 				{OutSql1,State} ->
 					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(erlang:crc32(OutSql),OutSql,Transaction,From,NewVers,P#dp{cbstate = State});
+					write_call(OrigMsg,erlang:crc32(OutSql),OutSql,Transaction,From,NewVers,P#dp{cbstate = State});
 				OutSql1 ->
 					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(erlang:crc32(OutSql),OutSql,Transaction,From,NewVers,P)
+					write_call(OrigMsg,erlang:crc32(OutSql),OutSql,Transaction,From,NewVers,P)
 			end
 	end.
-write_call(Crc,Sql,undefined,From,NewVers,P) ->
+write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	?DBLOG(P#dp.db,"writecall ~p ~p ~p ~p ~p",[EvNum,Crc,P#dp.dbcopy_to,From,Sql]),
 	{ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
@@ -907,7 +911,7 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 					end,
 					{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = Crc, schemavers = NewVers}};
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
-					Commiter = commit_write(P,LenCluster,ConnectedNodes,EvNum,ReplSql,Crc,NewVers),
+					Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,ReplSql,Crc,NewVers),
 					{noreply,P#dp{callfrom = From,callres = Res, commiter = Commiter, activity = P#dp.activity + 1,
 									replicate_sql = {ComplSql,EvNum,Crc,NewVers}}};
 				_ ->
@@ -918,7 +922,7 @@ write_call(Crc,Sql,undefined,From,NewVers,P) ->
 			actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 			{reply,Resp,P#dp{activity = P#dp.activity+1, write_bytes = P#dp.write_bytes + iolist_size(Sql)}}
 	end;
-write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
+write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 	?DBLOG(P#dp.db,"writetransaction ~p ~p ~p ~p",[P#dp.evnum,Crc,{Tid,Updaterid,Node},P#dp.dbcopy_to]),
 	{_CheckPid,CheckRef} = start_transaction_checker(Tid,Updaterid,Node),
 	{ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
@@ -1000,7 +1004,7 @@ write_call(Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			?DBG("Replicating transaction write, connected ~p",[ConnectedNodes]),
 			case ok of
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
-					Commiter = commit_write(P,LenCluster,ConnectedNodes,EvNum,TransactionInfo,CrcTransaction,P#dp.schemavers),
+					Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,TransactionInfo,CrcTransaction,P#dp.schemavers),
 					{noreply,P#dp{callfrom = From,callres = undefined, commiter = Commiter, 
 								  activity = P#dp.activity + 1,replicate_sql = {Sql,EvNum+1,Crc,NewVers},
 								  % evnum = EvNum,evcrc = CrcTransaction,
@@ -1270,53 +1274,64 @@ rpc(Nd,MFA) ->
 	% Printer ! done,
 	Res.
 
-checkfail(_P,_,[]) ->
+checkfail(_A,_T,_,[]) ->
 	ok;
-checkfail(P,N,L) ->
-	case P of
-		{A,T} ->
-			ok;
-		_ ->
-			A = P#dp.actorname,
-			T = P#dp.actortype
-	end,
+checkfail(A,T,N,L) ->
 	?AERR("commit failed on ~p ~p  ~p",[{A,T},N,L]).
 
-commit_write(P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
+commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 	Ref = make_ref(),
+	Actor = P1#dp.actorname,
+	Type = P1#dp.actortype,
+	OldEvnum = P1#dp.evnum,
+	OldCrc = P1#dp.evcrc,
+	Flags = P1#dp.flags,
+	Cbmod = P1#dp.cbmod,
+	WL = P1#dp.writelog,
 	{Commiter,_} = spawn_monitor(fun() ->
 			SqlBin = iolist_to_binary(Sql),
 			{ResultsStart,StartFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
-						[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{replicate_start,Ref,node(),P#dp.evnum,
-																	P#dp.evcrc,SqlBin,EvNum,Crc,SchemaVers},[{flags,P#dp.flags}]]),
-			checkfail(P,1,StartFailed),
+						[Cbmod,Actor,Type,{replicate_start,Ref,node(),OldEvnum,
+																	OldCrc,SqlBin,EvNum,Crc,SchemaVers},[{flags,Flags}]]),
+			checkfail(Actor,Type,1,StartFailed),
 			% Only count ok responses
-			LenStarted = lists:foldl(fun(X,NRes) -> case X == ok of true -> NRes+1; false -> NRes end end,0,ResultsStart),
+			LenStarted = lists:foldl(fun(X,NRes) -> 
+									case X == ok of 
+										true -> NRes+1; 
+										false ->
+											case X of
+												reinit ->
+													exit({reinit,OrigMsg});
+												_ ->
+													NRes
+											 end 
+									end
+									end,0,ResultsStart),
 			case (LenStarted+1)*2 > LenCluster+1 of
 				true ->
 					NodesToCommit = lists:subtract(ConnectedNodes,StartFailed),
 					{ResultsCommit,CommitFailedOn} = rpc:multicall(NodesToCommit,?MODULE,call_slave,
-										[P#dp.cbmod,P#dp.actorname,P#dp.actortype,replicate_commit,[{flags,P#dp.flags}]]),
-					checkfail(P,2,CommitFailedOn),
+										[Cbmod,Actor,Type,replicate_commit,[{flags,Flags}]]),
+					checkfail(Actor,Type,2,CommitFailedOn),
 					LenCommited = length(ResultsCommit),
 					case (LenCommited+1)*2 > LenCluster+1 of
 						true ->
-							WLog = <<(trim_wlog(P#dp.writelog))/binary,
+							WLog = <<(trim_wlog(WL))/binary,
 												EvNum:64/unsigned,Crc:32/unsigned,(byte_size(SqlBin)):32/unsigned,
 													(SqlBin)/binary>>,
 							exit({ok, EvNum, Crc, WLog});
 						false ->
 							CommitOkOn = lists:subtract(NodesToCommit,CommitFailedOn),
 							[rpc:async_call(Nd,?MODULE,call_slave,
-										[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-													{replicate_bad_commit,EvNum,Crc},[{flags,P#dp.flags}]]) || 
+										[Cbmod,Actor,Type,
+													{replicate_bad_commit,EvNum,Crc},[{flags,Flags}]]) || 
 														Nd <- CommitOkOn],
 							exit({replication_failed_3,LenCommited,LenCluster})
 					end;
 				false ->
-					?AERR("replicate failed ~p ~p ~p",[Sql,?R2P(P),{ResultsStart,StartFailed}]),
-					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,
-																P#dp.actortype,replicate_rollback,[{flags,P#dp.flags}]]),
+					?AERR("replicate failed ~p ~p",[Sql,{Actor,Type},{ResultsStart,StartFailed}]),
+					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cbmod,Actor,
+																Type,replicate_rollback,[{flags,Flags}]]),
 					exit({replication_failed_4,LenStarted,LenCluster})
 			end
 	end),
@@ -1507,6 +1522,10 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 												schemavers = NewVers,
 												replicate_sql = ReplicateSql}))
 			end;
+		{reinit,Msg} ->
+			ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
+			{ok,NP} = init(P#dp{callqueue = queue:in_r({P#dp.callfrom,Msg},P#dp.callqueue)}),
+			{noreply,NP};
 		% Should always be: {replication_failed,HasNodes,NeedsNodes}
 		Err ->
 			?DBLOG(P#dp.db,"commiterdown error ~p",[Err]),
@@ -1686,12 +1705,6 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
 		{Node,PID,Ref,IsMove} ->
 			?ADBG("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,Ref,P#dp.locked,P#dp.dbcopy_to]),
-			% case IsMove of
-			% 	true when Reason == ok ->
-			% 		Moved = Node;
-			% 	_ ->
-			% 		Moved = undefined
-			% end,
 			case Reason of
 				ok ->
 					ok;
@@ -1700,30 +1713,12 @@ handle_info({'DOWN',_Monitor,_,PID,Reason} = Msg,P) ->
 			end,
 			WithoutCopy = lists:keydelete(PID,1,P#dp.locked),
 			NewCopyto = lists:keydelete(PID,2,P#dp.dbcopy_to),
-			case lists:keyfind(Ref,2,WithoutCopy) of
-				false ->
-					% wait_copy not in list add it (2nd stage of lock)
-					WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy],
-					Md = P#dp.journal_mode,
-					NS = P#dp.cbstate,
-					Movedtonode = undefined
-				% {wait_copy,Ref,_,_,_} ->
-				% 	% wait_copy already in list (race condition). Remove it. We already received confirmation.
-				% 	WithoutCopy1 = lists:keydelete(Ref,2,WithoutCopy),
-				% 	case ok of
-				% 		_ when WithoutCopy1 == [], NewCopyto == [] ->
-				% 			actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
-				% 			{ok,NS} = apply(P#dp.cbmod,cb_copyunlock,[P#dp.cbstate]),
-				% 			Md = P#dp.def_journal_mode;
-				% 		_ ->
-				% 			NS = P#dp.cbstate,
-				% 			Md = P#dp.journal_mode
-				% 	end,
-				% 	Movedtonode = Moved
-			end,
-			NP = P#dp{dbcopy_to = NewCopyto, cbstate = NS,
-						locked = WithoutCopy1,journal_mode = Md,
-						activity = P#dp.activity + 1, movedtonode = Movedtonode},
+			false = lists:keyfind(Ref,2,WithoutCopy),
+			% wait_copy not in list add it (2nd stage of lock)
+			WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy],
+			NP = P#dp{dbcopy_to = NewCopyto, 
+						locked = WithoutCopy1,
+						activity = P#dp.activity + 1},
 			case queue:is_empty(P#dp.callqueue) of
 				true ->
 					{noreply,NP};
@@ -2348,7 +2343,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo},[{flags,Flags}]]),
 	?ADBG("verify from others ~p",[Results]),
-	checkfail({Actor,Type},3,GetFailed),
+	checkfail(Actor,Type,3,GetFailed),
 	Me = bkdcore:node_name(),
 	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
 	{Yes,Masters} = lists:foldl(
