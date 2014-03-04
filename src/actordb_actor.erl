@@ -87,6 +87,8 @@ cb_slave_pid(Name,Type,Opts) ->
 			{ok,Pid}
 	end.
 
+cb_candie(_,_,'__clusterevents__',_) ->
+	false;
 cb_candie(Mors,Name,_Type,_S) ->
 	case Mors of
 		master ->

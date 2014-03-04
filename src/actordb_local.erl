@@ -271,12 +271,13 @@ handle_info(check_mem,P) ->
 	spawn(fun() -> 
 			L = memsup:get_system_memory_data(),
 			[Free,Total] = butil:ds_vals([free_memory,system_total_memory],L),
+			NProc = ets:info(actoractivity,size),
 			case is_integer(Total) andalso 
 				 is_integer(Free) andalso 
 				 Total > 0 andalso 
-				 (Free / Total) < 0.2 of
+				 (Free / Total) < 0.2 andalso
+				 NProc > 100 of
 				true ->
-					NProc = ets:info(actoractivity,size),
 					killactors(NProc*0.2,ets:last(actoractivity));
 				false ->
 					ok

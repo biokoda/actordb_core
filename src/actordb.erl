@@ -206,6 +206,8 @@ direct_call(Actor,Type1,Flags,IsWrite,Statements,DoRpc) ->
 			case Where of
 				undefined ->
 					{Shard,_,_Node} = actordb_shardmngr:find_global_shard(Actor);
+				{redirect,Shard,_} ->
+					ok;
 				Shard ->
 					ok
 			end,

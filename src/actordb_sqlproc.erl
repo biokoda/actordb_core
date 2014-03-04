@@ -132,13 +132,18 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	% If call returns redirect, this is slave node not master node.
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
+			case element(2,Name) /= '__clusterevents__' of
+				true ->
+					?AINF("Redirect call ~p ~p ~p",[Node,Name,Msg]);
+				_ ->
+					ok
+			end,
 			case lists:member(Node,bkdcore:cluster_nodes()) of
 				true ->
 					case IsRedirect of
 						true ->
 							double_redirect;
 						false ->
-							?ADBG("Redirect call ~p ~p ~p",[Node,Name,Msg]),
 							case actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,true]}) of
 								double_redirect ->
 									diepls(Pid,nomaster),
@@ -822,7 +827,7 @@ check_schema(P,Sql) ->
 	end.
 
 write_call({MFA,Crc,Sql,Transaction},From,P) ->
-	?ADBG("writecall ~p ~p ~p",[MFA,Sql,Transaction]),	
+	?DBG("writecall ~p ~p ~p",[MFA,Sql,Transaction]),	
 	case MFA of
 		undefined ->
 			case check_schema(P,Sql) of
@@ -1357,6 +1362,7 @@ trim_wlog(<<_Evnum:64,_Crc:32,Size:32/unsigned,_Sql:Size/binary,Rem/binary>>) ->
 
 
 handle_cast({diepls,Reason},P) ->
+	?ADBG("diepls ~p",[{P#dp.actorname,P#dp.actortype}]),
 	case Reason of
 		nomaster ->
 			?AERR("Die because nomaster"),
@@ -1758,7 +1764,7 @@ handle_info({check_inactivity,N}, P) ->
 				undefined ->
 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
 						true ->
-							?DBG("Die because temporary ~p ~p",[P#dp.actorname,P#dp.actortype]),
+							?ADBG("Die because temporary ~p ~p master ~p",[P#dp.actorname,P#dp.actortype,P#dp.masternode]),
 							distreg:unreg(self()),
 							?DBLOG(P#dp.db,"die temporary ",[]),
 							{stop,normal,P};
