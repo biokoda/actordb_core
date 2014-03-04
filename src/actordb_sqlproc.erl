@@ -132,12 +132,6 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	% If call returns redirect, this is slave node not master node.
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
-			case element(2,Name) /= '__clusterevents__' of
-				true ->
-					?AINF("Redirect call ~p ~p ~p",[Node,Name,Msg]);
-				_ ->
-					ok
-			end,
 			case lists:member(Node,bkdcore:cluster_nodes()) of
 				true ->
 					case IsRedirect of
