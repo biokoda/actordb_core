@@ -23,19 +23,19 @@ init(Path,JournalMode,Thread) ->
 	case esqlite3:open(Path,Thread,Sql) of
 		{ok,Db,Res} ->
 			case Res of
-				[[_,{rows,[{Size}]}],[{columns,_},{rows,[]}]] ->
-					{ok,Db,false,Size};
-				[[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
-					{ok,Db,true,Size};
+				[[_,{rows,[{Size}]}],[{columns,_},{rows,Tables}]] ->
+					{ok,Db,Tables,Size};
+				% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
+				% 	{ok,Db,true,Size};
 				{ok,[]} ->
 					% Not sure yet why this happens, but opening again seems to work
 					stop(Db),
 					{ok,Db1,Res1} = esqlite3:open(Path,Thread,Sql),
 					case Res1 of
-						[[_,{rows,[{Size}]}],[{columns,_},{rows,[]}]] ->
-							{ok,Db1,false,Size};
-						[[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
-							{ok,Db1,true,Size}
+						[[_,{rows,[{Size}]}],[{columns,_},{rows,Tables}]] ->
+							{ok,Db1,Tables,Size}
+						% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
+						% 	{ok,Db1,true,Size}
 					end
 			end;
 		% Unable to open sqlite file.

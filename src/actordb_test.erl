@@ -108,9 +108,9 @@ tsingle(N) ->
 			file:delete("tt"),
 			{ok,Db,Schema,_} = actordb_sqlite:init("tt",delete),
 			case Schema of
-				true ->
+				[_|_] ->
 					ok;
-				false ->
+				[] ->
 					% actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>)
 					XX = actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id TEXT PRIMARY KEY, txt TEXT);">>),
 					io:format("~p~n",[XX])

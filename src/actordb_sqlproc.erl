@@ -372,8 +372,6 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 									Me = self(),
 									case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
 										false ->
-											% actordb_sqlite:stop(P#dp.db),
-											% {ok,Db,true,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 											?COPYTRASH,
 											Db = P#dp.db,
 											{Pid,_} = spawn_monitor(fun() -> 
@@ -1177,14 +1175,14 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 				false when Status == done ->
 					file:close(F),
 					F1 = undefined,
-					{ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-					case HaveSchema of
-						false ->
+					{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					case SchemaTables of
+						[] ->
 							?AERR("DB open after move without schema? ~p ~p",[P#dp.actorname,P#dp.actortype]),
 							actordb_sqlite:stop(Db),
 							actordb_sqlite:move_to_trash(P#dp.dbpath),
 							exit(copynoschema);
-						true ->
+						_ ->
 							?ADBG("Copyreceive done ~p",[{P#dp.actorname,P#dp.actortype,Origin,P#dp.copyfrom}]),
 							ok = okornot(actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
 											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,
@@ -1910,9 +1908,9 @@ init([_|_] = Opts) ->
 			explain({actornum,P#dp.dbpath,read_num(P)},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_EXISTS) > 0 ->
-			{ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,actordb_conf:journal_mode()),
+			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,actordb_conf:journal_mode()),
 			actordb_sqlite:stop(Db),
-			explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(HaveSchema)}]}]},Opts),
+			explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(SchemaTables /= [])}]}]},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->
 			case lists:keyfind(lockinfo,1,Opts) of
@@ -1947,12 +1945,12 @@ init([_|_] = Opts) ->
 					RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
 					case ok of
 						_ when MovedToNode == undefined; RightCluster ->
-							{ok,Db,HaveSchema,PageSize} = actordb_sqlite:init(P#dp.dbpath,JournalMode),
+							{ok,Db,SchemaTables,PageSize} = actordb_sqlite:init(P#dp.dbpath,JournalMode),
 							NP = P#dp{db = Db, journal_mode = JournalMode, def_journal_mode = JournalMode, 
 										page_size = PageSize},
 
-							case HaveSchema of
-								true ->
+							case SchemaTables of
+								[_|_] ->
 									?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
 									?DBLOG(Db,"init normal have schema",[]),
 									{ok,[[{columns,_},{rows,Transaction}],
@@ -2005,7 +2003,7 @@ init([_|_] = Opts) ->
 															movedtonode = MovedToNode1,
 															schemavers = SchemaVers})}
 									end;
-								false when (P#dp.flags band ?FLAG_CREATE) > 0 ->
+								[] when (P#dp.flags band ?FLAG_CREATE) > 0 ->
 									?ADBG("Opening NO schema create ~p",[{P#dp.actorname,P#dp.actortype}]),
 									{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
 									CreateDb = [base_schema(SchemaVers,P#dp.actortype),
@@ -2014,7 +2012,7 @@ init([_|_] = Opts) ->
 									ok = okornot(actordb_sqlite:exec(Db,CreateDb,write)),
 									?DBLOG(Db,"init normal created schema",[]),
 									{ok,start_verify(NP#dp{schemavers = SchemaVers})};
-								false ->
+								[] ->
 									actordb_sqlite:stop(NP#dp.db),
 									?ADBG("Opening NO schema nocreate ~p",[{P#dp.actorname,P#dp.actortype}]),
 									explain(nocreate,Opts),
@@ -2039,7 +2037,7 @@ init([_|_] = Opts) ->
 					% IsMove = element(1,P#dp.copyfrom) == move orelse element(1,P#dp.copyfrom) == split,
 					% First check if movement is already done.
 					case actordb_sqlite:init(P#dp.dbpath,JournalMode) of
-						{ok,Db,true,_PageSize} ->
+						{ok,Db,[_|_],_PageSize} ->
 							?DBLOG(P#dp.db,"init copyfrom ~p",[P#dp.copyfrom]),
 							case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"],read) of
 								{ok,[{columns,_},{rows,[]}]} ->
@@ -2052,7 +2050,7 @@ init([_|_] = Opts) ->
 								{ok,[{columns,_},{rows,[{_,_Copyf}]}]} ->
 									Doit = false
 							end;
-						{ok,Db,false,_PageSize} ->
+						{ok,Db,[],_PageSize} ->
 							actordb_sqlite:stop(Db),
 							Doit = true;
 						_ ->
@@ -2160,12 +2158,12 @@ actor_start(P) ->
 read_num(P) ->
 	case P#dp.db of
 		undefined ->
-			{ok,Db,HaveSchema,_PageSize} = actordb_sqlite:init(P#dp.dbpath,actordb_conf:journal_mode());
+			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,actordb_conf:journal_mode());
 		Db ->
-			HaveSchema = true
+			SchemaTables = true
 	end,
-	case HaveSchema of
-		false ->
+	case SchemaTables of
+		[] ->
 			<<>>;
 		_ ->
 			Res = actordb_sqlite:exec(Db,
