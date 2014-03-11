@@ -20,6 +20,7 @@
 -define(COPYFROM,<<"5">>).
 -define(MOVEDTO,<<"6">>).
 -define(ANUM,<<"7">>).
+-define(WLOG,<<"8">>).
 -define(EVNUMI,1).
 -define(EVCRCI,2).
 -define(SCHEMA_VERSI,3).
@@ -27,6 +28,7 @@
 -define(COPYFROMI,5).
 -define(MOVEDTOI,6).
 -define(ANUMI,7).
+-define(WLOGI,8).
 -define(WLOG_LIMIT,1024*4).
 -define(FLAG_CREATE,1).
 -define(FLAG_ACTORNUM,2).
@@ -42,7 +44,7 @@
 % -compile(export_all).
 
 % For every actor, sqlproc is running on every node in cluster (1 master, other slaves). 
-% For writes, master starts 2 phase commit. 
+% For writes, master starts majority commit. 
 % 1. Master encapsulates call in savepoint without release. If statement fails, it will be rolled back 
 %    and error returned. If succeeds, move on to 2.
 % 2. Master sends sql statement to all other nodes (they keep it in state not db)
@@ -52,7 +54,8 @@
 % 		for actor will be copied over from other valid nodes.
 %  - if a node was offline and connected to the cluster while sqlproc is running for an actor, it will be started
 % 		on next write call. If database is stale (it missed write events), the sqlite db
-% 		file will be copied (just like if it was corrupted) from a valid node.
+% 		file will be copied (just like if it was corrupted) from a valid node or 
+% 		it will recover through the write log.
 % If a node has a stale or corrupted database, it will restore it from another node.
 % Node from which sqlite is being restored from will be switched to journal_mode=wal so that the db 
 % does not get changed during stransfer. After the db has been copied, it will copy wal 
@@ -266,7 +269,7 @@ print_info(Pid) ->
   %   From oldest sql statement to youngest.
   % <<EvNum:64/unsigned,Crc:32/unsigned,(byte_size(Sql)):32/unsigned,Sql/binary,
   %   ....>>
-  writelog = <<>>,
+  % writelog = <<>>,
   % Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
   % If local db is being restored, verified will be on false.
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
@@ -292,7 +295,8 @@ print_info(Pid) ->
   movedtonode,
   % Will cause actor not to do any DB initialization, but will take the db from another node
   copyfrom,copyreset = false,copyproc}). 
--define(R2P(Record), butil:rec2prop(Record#dp{writelog = byte_size(P#dp.writelog)}, record_info(fields, dp))).
+% -define(R2P(Record), butil:rec2prop(Record#dp{writelog = byte_size(P#dp.writelog)}, record_info(fields, dp))).
+-define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
 -ifndef(NOLOG).
@@ -354,8 +358,8 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 			{Node,Ref,IsMove,RemoteEvNum,RemoteEvCrc,ActornameToCopyto} = Data,
 			case P#dp.verified of
 				true ->
-					case get_from_wlog(RemoteEvNum,RemoteEvCrc,P#dp.writelog) of
-						undefined ->
+					% case get_from_wlog(RemoteEvNum,RemoteEvCrc,P#dp.writelog) of
+					% 	undefined ->
 							case file:read_file_info(P#dp.dbpath) of
 								{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
 												IsMove /= false orelse P#dp.journal_mode == wal ->
@@ -393,9 +397,9 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 								Err ->
 									{reply,Err,P}
 							end;
-						{LastEv,LastCrc,Sql} ->
-							{reply,{wlog,LastEv,LastCrc,Sql},P}
-					end;
+					% 	{LastEv,LastCrc,Sql} ->
+					% 		{reply,{wlog,LastEv,LastCrc,Sql},P}
+					% end;
 				_ when P#dp.masternode /= undefined ->
 					case P#dp.masternode == bkdcore:node_name() of
 						true ->
@@ -662,15 +666,16 @@ handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} 
 					?AERR("Replicate conflict!!!!! ~p ~p ~p ~p ~p, master ~p",[{P#dp.actorname,P#dp.actortype},
 												P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,{Node,P#dp.masternodedist}]),
 					reply(From,desynced),
-					{ok,NP} = init(P,replicate_conflict);
+					{ok,NP} = init(P,replicate_conflict),
+					{noreply,NP};
 				_ ->
 					?AINF("Reinit to reastablish master node ~p",[{P#dp.actorname,P#dp.actortype}]),
-					{ok,NP} = init(P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)},replicate_conflict)
-			end,
-			{reply,ok,NP}
+					{ok,NP} = init(P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)},replicate_conflict),
+					{reply,ok,NP}
+			end
 	end;
 % Called from master
-handle_call(replicate_commit,From,P) ->
+handle_call({replicate_commit,StoreLog},From,P) ->
 	?ADBG("Replicate commit! ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.replicate_sql]),
 	case P#dp.replicate_sql of
 		<<>> ->
@@ -694,7 +699,7 @@ handle_call(replicate_commit,From,P) ->
 				_ ->
 					Res = actordb_sqlite:exec(P#dp.db,[
 						 <<"$SAVEPOINT 'adb';">>,
-						 semicolon(Sql),
+						 add_wlog(StoreLog,semicolon(Sql),EvNum,Crc),
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
 						 <<"$RELEASE SAVEPOINT 'adb';">>
@@ -747,6 +752,11 @@ check_timer(P) ->
 			P
 	end.
 
+add_wlog(false,Sql,_Evnum,_Crc) ->
+	Sql;
+add_wlog(true,Sql,Evnum,Crc) ->
+	[Sql,<<"$INSERT INTO __wlog VALUES (">>,butil:tobin(Evnum),$,,butil:tobin(Crc),$,,$',base64:encode(Sql),$',");"].
+
 delete_actor(P) ->
 	?ADBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
 	case (P#dp.flags band ?FLAG_TEST == 0) of
@@ -783,7 +793,7 @@ semicolon(<<_/binary>> = Sql) ->
 		$; ->
 			Sql;
 		_ ->
-			<<Sql/binary,$;>>
+			[Sql,$;]
 	end;
 semicolon(S) ->
 	S.
@@ -1284,7 +1294,7 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 	OldCrc = P1#dp.evcrc,
 	Flags = P1#dp.flags,
 	Cbmod = P1#dp.cbmod,
-	WL = P1#dp.writelog,
+	% WL = P1#dp.writelog,
 	{Commiter,_} = spawn_monitor(fun() ->
 			Ref = make_ref(),
 			SqlBin = iolist_to_binary(Sql),
@@ -1293,26 +1303,27 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 																	OldCrc,SqlBin,EvNum,Crc,SchemaVers},[{flags,Flags}]]),
 			checkfail(Actor,Type,1,StartFailed),
 			% Only count ok responses
-			LenStarted = lists:foldl(fun(X,NRes) -> 
+			{LenStarted,NProblems} = lists:foldl(fun(X,{NRes,NProblems}) -> 
 									case X of 
-										ok -> NRes+1; 
+										ok -> {NRes+1,NProblems}; 
 										reinit -> exit({reinit,OrigMsg});
-										_ -> NRes
+										_ -> {NRes,NProblems+1}
 									end
-									end,0,ResultsStart),
+									end,{0,0},ResultsStart),
 			case (LenStarted+1)*2 > LenCluster+1 of
 				true ->
 					NodesToCommit = lists:subtract(ConnectedNodes,StartFailed),
 					{ResultsCommit,CommitFailedOn} = rpc:multicall(NodesToCommit,?MODULE,call_slave,
-										[Cbmod,Actor,Type,replicate_commit,[{flags,Flags}]]),
+										[Cbmod,Actor,Type,{replicate_commit,StartFailed /= [] orelse 
+																			NProblems > 0},[{flags,Flags}]]),
 					checkfail(Actor,Type,2,CommitFailedOn),
 					LenCommited = length(ResultsCommit),
 					case (LenCommited+1)*2 > LenCluster+1 of
 						true ->
-							WLog = <<(trim_wlog(WL))/binary,
-												EvNum:64/unsigned,Crc:32/unsigned,(byte_size(SqlBin)):32/unsigned,
-													(SqlBin)/binary>>,
-							exit({ok, EvNum, Crc, WLog});
+							% WLog = <<(trim_wlog(WL))/binary,
+							% 					EvNum:64/unsigned,Crc:32/unsigned,(byte_size(SqlBin)):32/unsigned,
+							% 						(SqlBin)/binary>>,
+							exit({ok, EvNum, Crc, StartFailed /= [] orelse CommitFailedOn /= [] orelse NProblems > 0});
 						false ->
 							CommitOkOn = lists:subtract(NodesToCommit,CommitFailedOn),
 							[rpc:async_call(Nd,?MODULE,call_slave,
@@ -1330,37 +1341,36 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 	end),
 	Commiter.
 
-get_from_wlog(FEv,FCrc,Bin) ->
-	get_from_wlog(FEv,FCrc,Bin,undefined).
-get_from_wlog(FEv,_,<<Evn:64,_/binary>>,undefined) when FEv < Evn ->
-	% FEv too far behind
-	undefined;
-get_from_wlog(FEv,_,<<Evn:64,Evcrc:32,Size:32/unsigned,Sql:Size/binary>>,Out) when FEv < Evn ->
-	% Reached the end of wlog and have something to return.
-	{Evn,Evcrc,<<Out/binary,Sql/binary>>};
-get_from_wlog(FEv,FCrc,<<Evn:64,_:32,Size:32/unsigned,Sql:Size/binary,Rem/binary>>,Out) when FEv < Evn ->
-	% We went past FEv == Evn and are building the sql statement
-	get_from_wlog(FEv,FCrc,Rem,<<Out/binary,Sql/binary>>);
-get_from_wlog(FEv,FCrc,<<Evn:64,_:32,Size:32/unsigned,_:Size/binary,Rem/binary>>,L) when FEv > Evn ->
-	% wlog is bigger than missing events, move upto FEv == Evn
-	get_from_wlog(FEv,FCrc,Rem,L);
-get_from_wlog(FEv,FCrc,<<FEv:64,Crc:32,Size:32/unsigned,_:Size/binary,Rem/binary>>,undefined) ->
-	% FEv == Evn, if crcs match, then we can start extracting sql statements
-	case FCrc == Crc of
-		true ->
-			get_from_wlog(FEv,FCrc,Rem,<<>>);
-		% something went seriously wrong. Crcs don't match for evnums.
-		false ->
-			undefined
-	end;
-get_from_wlog(_,_,<<>>,undefined) ->
-	undefined.
+% get_from_wlog(FEv,FCrc,Bin) ->
+% 	get_from_wlog(FEv,FCrc,Bin,undefined).
+% get_from_wlog(FEv,_,<<Evn:64,_/binary>>,undefined) when FEv < Evn ->
+% 	% FEv too far behind
+% 	undefined;
+% get_from_wlog(FEv,_,<<Evn:64,Evcrc:32,Size:32/unsigned,Sql:Size/binary>>,Out) when FEv < Evn ->
+% 	% Reached the end of wlog and have something to return.
+% 	{Evn,Evcrc,<<Out/binary,Sql/binary>>};
+% get_from_wlog(FEv,FCrc,<<Evn:64,_:32,Size:32/unsigned,Sql:Size/binary,Rem/binary>>,Out) when FEv < Evn ->
+% 	% We went past FEv == Evn and are building the sql statement
+% 	get_from_wlog(FEv,FCrc,Rem,<<Out/binary,Sql/binary>>);
+% get_from_wlog(FEv,FCrc,<<Evn:64,_:32,Size:32/unsigned,_:Size/binary,Rem/binary>>,L) when FEv > Evn ->
+% 	% wlog is bigger than missing events, move upto FEv == Evn
+% 	get_from_wlog(FEv,FCrc,Rem,L);
+% get_from_wlog(FEv,FCrc,<<FEv:64,Crc:32,Size:32/unsigned,_:Size/binary,Rem/binary>>,undefined) ->
+% 	% FEv == Evn, if crcs match, then we can start extracting sql statements
+% 	case FCrc == Crc of
+% 		true ->
+% 			get_from_wlog(FEv,FCrc,Rem,<<>>);
+% 		% something went seriously wrong. Crcs don't match for evnums.
+% 		false ->
+% 			undefined
+% 	end;
+% get_from_wlog(_,_,<<>>,undefined) ->
+% 	undefined.
 
-
-trim_wlog(B) when byte_size(B) < ?WLOG_LIMIT ->
-	B;
-trim_wlog(<<_Evnum:64,_Crc:32,Size:32/unsigned,_Sql:Size/binary,Rem/binary>>) ->
-	trim_wlog(Rem).
+% trim_wlog(B) when byte_size(B) < ?WLOG_LIMIT ->
+% 	B;
+% trim_wlog(<<_Evnum:64,_Crc:32,Size:32/unsigned,_Sql:Size/binary,Rem/binary>>) ->
+% 	trim_wlog(Rem).
 
 
 handle_cast({diepls,Reason},P) ->
@@ -1390,7 +1400,7 @@ handle_cast({diepls,Reason},P) ->
 			end
 	end;
 handle_cast(print_info,P) ->
-	io:format("~p~n",[?R2P(P#dp{writelog = byte_size(P#dp.writelog)})]),
+	io:format("~p~n",[?R2P(P)]),
 	{noreply,P};
 handle_cast(Msg,#dp{mors = master, verified = true} = P) ->
 	case apply(P#dp.cbmod,cb_cast,[Msg,P#dp.cbstate]) of
@@ -1450,7 +1460,7 @@ handle_info(doqueue,P) ->
 % 	handle_info({'DOWN',_Monitor,Ref,PID,_Result},P#dp{callfrom = undefined,commiter = undefined});
 handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 	case Result of
-		{ok,EvNum,Crc,WLog} ->
+		{ok,EvNum,Crc,DoWlog} ->
 			?DBLOG(P#dp.db,"commiterdown ok ~p ~p",[EvNum,Crc]),
 			?DBG("Commiter down ok ~p callres ~p ~p",[EvNum,P#dp.callres,P#dp.callqueue]),
 			{Sql,EvNumNew,CrcSql,NewVers} = P#dp.replicate_sql,
@@ -1470,7 +1480,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 					delactorfile(P#dp{movedtonode = MovedTo});
 				_ ->
 					Die = false,
-					actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)
+					actordb_sqlite:exec(P#dp.db,[add_wlog(DoWlog,Sql,EvNum,Crc),<<"RELEASE SAVEPOINT 'adb';">>])
 			end,
 			case P#dp.transactionid of
 				undefined ->
@@ -1511,7 +1521,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 				_ ->
 					handle_info(doqueue,check_timer(P#dp{commiter = undefined,callres = undefined, 
 												callfrom = undefined,activity = P#dp.activity+1, 
-												evnum = EvNum, evcrc = Crc,writelog = WLog, 
+												evnum = EvNum, evcrc = Crc,%writelog = WLog, 
 												schemavers = NewVers,
 												replicate_sql = ReplicateSql}))
 			end;
@@ -1951,14 +1961,20 @@ init([_|_] = Opts) ->
 
 							case SchemaTables of
 								[_|_] ->
+									case lists:member({<<"__wlog">>},SchemaTables) of
+										true ->
+											ok;
+										false ->
+											actordb_sqlite:exec(<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>)
+									end,
 									?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
 									?DBLOG(Db,"init normal have schema",[]),
 									{ok,[[{columns,_},{rows,Transaction}],
 										[{columns,_},{rows,Rows}]]} = actordb_sqlite:exec(Db,
 											<<"SELECT * FROM __adb;",
 											  "SELECT * FROM __transactions;">>,read),
-									Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows)),
-									Evcrc = butil:toint(butil:ds_val(?EVCRCI,Rows)),
+									Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
+									Evcrc = butil:toint(butil:ds_val(?EVCRCI,Rows,0)),
 									Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 									MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 									CopyFrom = butil:ds_val(?COPYFROMI,Rows),
@@ -2192,21 +2208,19 @@ base_schema(SchemaVers,Type) ->
 base_schema(SchemaVers,Type,MovedTo) ->
 	case MovedTo of
 		undefined ->
-			Moved = <<>>;
+			Moved = [];
 		_ ->
-			Moved = [<<"INSERT INTO __adb (id,val) VALUES (">>,?MOVEDTO,",'",MovedTo,"');"]
+			Moved = [{?MOVEDTO,MovedTo}]
 	end,
+	DefVals = [[$(,K,$,,butil:tobin(V),$)] || {K,V} <- [{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVCRC,0}|Moved]],
 	[<<"BEGIN;">>,(?LOGTABLE),
 	 <<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
-	 "CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);",
-	 "INSERT INTO __adb (id,val) VALUES (">>,?EVNUM,",'0');",
-	 <<"INSERT INTO __adb (id,val) VALUES (">>,?EVCRC,",'0');",
-	 <<"INSERT INTO __adb (id,val) VALUES (">>,?SCHEMA_VERS,",'",
-	 						(butil:tobin(SchemaVers)), "');",
-	Moved,
-	 <<"INSERT INTO __adb (id,val) VALUES (">>,?ATYPE,",'",
-	 		(butil:tobin(Type)), "');"].
+	 "CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);",
+	 "CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
+	 <<"INSERT INTO __adb (id,val) VALUES (">>,
+	 	butil:iolist_join(DefVals,$,),$;].
+
 
 do_cb_init(#dp{cbstate = undefined} = P) ->
 	case P#dp.movedtonode of
