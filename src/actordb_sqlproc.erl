@@ -1965,7 +1965,7 @@ init([_|_] = Opts) ->
 										true ->
 											ok;
 										false ->
-											actordb_sqlite:exec(<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>)
+											actordb_sqlite:exec(Db,<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>)
 									end,
 									?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
 									?DBLOG(Db,"init normal have schema",[]),
