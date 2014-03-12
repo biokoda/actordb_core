@@ -17,13 +17,6 @@
 -include("actordb.hrl").
 -compile(export_all).
 
-% t()  ->
-% 	spawn(fun() ->
-% 		{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
-% 		io:format("~p~n",[actordb_sqlite:exec(Db, <<"$CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);",
-% 													"$INSERT INTO __wlog VALUES (10,10,'asd');"
-% 													"SELECT min(id) FROM __wlog;">>,read)])
-% 	end).
 
 is_ready() ->
 	case application:get_env(actordb_core,isready) of
