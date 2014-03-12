@@ -270,6 +270,7 @@ print_info(Pid) ->
   % <<EvNum:64/unsigned,Crc:32/unsigned,(byte_size(Sql)):32/unsigned,Sql/binary,
   %   ....>>
   % writelog = <<>>,
+  dowlog = false,
   % Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
   % If local db is being restored, verified will be on false.
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
@@ -426,6 +427,15 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 		checksplit ->
 			{M,F,A} = Data,
 			{reply,apply(M,F,[P#dp.cbstate,check|A]),P};
+		wlog_unneeded ->
+			?ADBG("Received wlog_unneeded ~p, have it? ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dowlog]),
+			case P#dp.dowlog of
+				true ->
+					actordb_sqlite:exec(P#dp.db,<<"DELETE * FROM __wlog;">>);
+				false ->
+					ok
+			end,
+			{reply,ok,P};
 		% Copy done ok, release lock.
 		unlock ->
 			% For unlock data = copyref
@@ -699,7 +709,7 @@ handle_call({replicate_commit,StoreLog},From,P) ->
 				_ ->
 					Res = actordb_sqlite:exec(P#dp.db,[
 						 <<"$SAVEPOINT 'adb';">>,
-						 add_wlog(StoreLog,semicolon(Sql),EvNum,Crc),
+						 add_wlog(P,StoreLog,semicolon(Sql),EvNum,Crc),
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
 						 <<"$RELEASE SAVEPOINT 'adb';">>
@@ -752,9 +762,9 @@ check_timer(P) ->
 			P
 	end.
 
-add_wlog(false,Sql,_Evnum,_Crc) ->
+add_wlog(#dp{dowlog = false} = P,false,Sql,_Evnum,_Crc) ->
 	Sql;
-add_wlog(true,Sql,Evnum,Crc) ->
+add_wlog(_P,_,Sql,Evnum,Crc) ->
 	[Sql,<<"$INSERT INTO __wlog VALUES (">>,butil:tobin(Evnum),$,,butil:tobin(Crc),$,,$',base64:encode(Sql),$',");"].
 
 delete_actor(P) ->
@@ -1480,7 +1490,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 					delactorfile(P#dp{movedtonode = MovedTo});
 				_ ->
 					Die = false,
-					actordb_sqlite:exec(P#dp.db,[add_wlog(DoWlog,Sql,EvNum,Crc),<<"RELEASE SAVEPOINT 'adb';">>])
+					actordb_sqlite:exec(P#dp.db,[add_wlog(P,DoWlog,Sql,EvNum,Crc),<<"RELEASE SAVEPOINT 'adb';">>])
 			end,
 			case P#dp.transactionid of
 				undefined ->
@@ -1544,7 +1554,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 	case Reason of
-		{verified,Mors,MasterNode} when P#dp.transactionid == undefined; Mors == slave ->
+		{verified,Mors,MasterNode,AllSynced} when P#dp.transactionid == undefined; Mors == slave ->
 			actordb_local:actor_mors(Mors,MasterNode),
 			?ADBG("Verify down ~p ~p ~p ~p ~p ~p",[P#dp.actorname, P#dp.actortype, P#dp.evnum,
 						Reason, P#dp.mors, queue:is_empty(P#dp.callqueue)]),
@@ -1558,15 +1568,15 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			end,
 			handle_info(doqueue,P#dp{verified = true, verifypid = undefined, mors = Mors, masternode = MasterNode, 
 									masternodedist = bkdcore:dist_name(MasterNode),
-									cbstate = NS});
-		{verified,Mors,MasterNode} ->
+									cbstate = NS, dowlog = wlog_stillneed(P,AllSynced)});
+		{verified,Mors,MasterNode,AllSynced} ->
 			?ADBG("Verify down ~p ~p ~p ~p ~p ~p",[P#dp.actorname, P#dp.actortype, P#dp.evnum,
 						Reason, P#dp.mors, queue:is_empty(P#dp.callqueue)]),
 			?DBLOG(P#dp.db,"verified ~p ~p",[Mors,MasterNode]),
 			actordb_local:actor_mors(Mors,MasterNode),
 			{Tid,Updid,Node} = P#dp.transactionid,
-			{Sql,Evnum,Crc,_NewVers} = P#dp.replicate_sql,
-			NP = P#dp{verified = true,verifypid = undefined, mors = Mors, 
+			{Sql,Evnum,Crc,_NewVers} = P#dp.replicate_sql, 
+			NP = P#dp{verified = true,verifypid = undefined, mors = Mors, dowlog = wlog_stillneed(P,AllSynced),
 					 masternode = MasterNode,masternodedist = bkdcore:dist_name(MasterNode), cbstate = do_cb_init(P)},
 			case actordb:rpc(Node,Updid,{actordb_multiupdate,transaction_state,[Updid,Tid]}) of
 				{ok,State} when State == 0; State == 1 ->
@@ -1584,7 +1594,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 					case State of
 						0 ->
 							{_CheckPid,CheckRef} = start_transaction_checker(Tid,Updid,Node),
-							{noreply,P#dp{transactioncheckref = CheckRef}};
+							{noreply,NP#dp{transactioncheckref = CheckRef}};
 						1 ->
 							CQ = queue:in({undefined,{commit,true,{Tid,Updid,Node}}},NP#dp.callqueue),
 							handle_info(doqueue,NP#dp{callqueue = CQ})
@@ -1894,6 +1904,18 @@ abandon_locks(P,[H|T],L) ->
 abandon_locks(_,[],L) ->
 	L.
 
+wlog_stillneed(P,AllSynced) ->
+	case ok of
+		_ when AllSynced, P#dp.dowlog ->
+			[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+															{dbcopy_op,undefined,wlog_unneeded,undefined}])
+							|| Nd <- bkdcore:cluster_nodes_connected()],
+			actordb_sqlite:exec(P#dp.db,<<"DELETE * FROM __wlog;">>),
+			false;
+		_ ->
+			P#dp.dowlog
+	end.
+
 
 terminate(_, _) ->
 	ok.
@@ -1961,12 +1983,6 @@ init([_|_] = Opts) ->
 
 							case SchemaTables of
 								[_|_] ->
-									case lists:member({<<"__wlog">>},SchemaTables) of
-										true ->
-											ok;
-										false ->
-											actordb_sqlite:exec(Db,<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>)
-									end,
 									?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
 									?DBLOG(Db,"init normal have schema",[]),
 									{ok,[[{columns,_},{rows,Transaction}],
@@ -1978,6 +1994,15 @@ init([_|_] = Opts) ->
 									Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 									MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 									CopyFrom = butil:ds_val(?COPYFROMI,Rows),
+									case actordb_sqlite:exec(Db,<<"SELECT count(*) FROM __wlog;">>,read) of
+										{sql_error,_,_} ->
+											HaveWlog = false,
+											actordb_sqlite:exec(Db,<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>);
+										[{columns,_},{rows,[{undefined}]}] ->
+											HaveWlog = false;
+										[{columns,_},{rows,[{NW}]}] ->
+											HaveWlog = NW > 0
+									end,
 									case Transaction of
 										[] when CopyFrom /= undefined ->
 											CPFrom = binary_to_term(base64:decode(CopyFrom)),
@@ -1990,7 +2015,7 @@ init([_|_] = Opts) ->
 													TypeOfMove = false
 											end,
 											self() ! {check_redirect,Db,TypeOfMove},
-											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState}};
+											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState, dowlog = HaveWlog}};
 										[] ->
 											case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
 												{_,[]} ->
@@ -2002,7 +2027,7 @@ init([_|_] = Opts) ->
 																		"' WHERE id=",?SCHEMA_VERS/binary,";",
 																"COMMIT;">>,write))
 											end,
-											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,
+											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers, dowlog = HaveWlog,
 																	movedtonode = MovedToNode1})};
 										[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
 											case base64:decode(MSql1) of
@@ -2015,7 +2040,7 @@ init([_|_] = Opts) ->
 											ReplSql = {MSql,Evnum+1,CrcSql,SchemaVers},
 											Transid = {Tid,Updid,Node},
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, replicate_sql = ReplSql, 
-															transactionid = Transid, 
+															transactionid = Transid, dowlog = HaveWlog, 
 															movedtonode = MovedToNode1,
 															schemavers = SchemaVers})}
 									end;
@@ -2328,18 +2353,18 @@ delactorfile(P) ->
 			file:delete(P#dp.dbpath++"-shm")
 	end.
 
-verified_response(MeMors,MasterNode) ->
+verified_response(MeMors,MasterNode,AllSynced) ->
 	?ADBG("verified_response ~p ~p",[MeMors,MasterNode]),
 	Me = bkdcore:node_name(),
 	case ok of
 		_ when MeMors == master, MasterNode == undefined ->
-			exit({verified,master,Me});
+			exit({verified,master,Me,AllSynced});
 		_ when MeMors == master, MasterNode /= Me, MasterNode /= undefined ->
-			exit({verified,slave,MasterNode});
+			exit({verified,slave,MasterNode,AllSynced});
 		_ when MasterNode /= undefined ->
-			exit({verified,MeMors,MasterNode});
+			exit({verified,MeMors,MasterNode,AllSynced});
 		_ when MeMors == master ->
-			exit({verified,master,Me});
+			exit({verified,master,Me,AllSynced});
 		_ ->
 			exit(nomaster)
 	end.
@@ -2426,7 +2451,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 				true ->
 					case butil:findtrue(fun({ok,_,_,NodeEvnum,_}) -> NodeEvnum > 0 end,Results) of
 						false ->
-							verified_response(MeMorsOut,MasterNode);
+							verified_response(MeMorsOut,MasterNode,Yes == LenCluster);
 						_ ->
 							?ADBG("Node does not have db some other node does! ~p",[Actor]),
 							% Majority has evnum 0, but there is more than one group.
@@ -2435,7 +2460,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 							verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc)
 					end;
 				_ ->
-					verified_response(MeMorsOut,MasterNode)
+					verified_response(MeMorsOut,MasterNode,Yes == LenCluster)
 			end;
 		false ->
 			Grouped = butil:group(fun({ok,_Node,NodeCrc,NodeEvnum,_NodeMors}) -> {NodeEvnum,NodeCrc} end,
@@ -2477,7 +2502,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 									[{ok,Oknode,_,_,_}|_]  = OtherGroup,
 									verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc);
 								{_,_ZeroGroup} ->
-									verified_response(MeMorsOut,MasterNode)
+									verified_response(MeMorsOut,MasterNode,false)
 							end;
 						_ ->
 							exit({nomajority,Grouped,GetFailed})
