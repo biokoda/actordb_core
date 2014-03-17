@@ -163,8 +163,7 @@ prestart() ->
 					NProcs = length(actordb_conf:paths())
 			end,
 			esqlite3:init(NProcs),
-			emurmur3:init(),
-			spawn(fun() -> check_rowid() end)
+			emurmur3:init()
 	end.
 
 start() ->
@@ -178,15 +177,6 @@ start(_Type, _Args) ->
 
 	Res = actordb_sup:start_link(),
 	Res.
-
-check_rowid() ->
-	{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
-	case actordb_sqlite:exec(Db,"CREATE TABLE t (id TEXT PRIMARY KEY) WITHOUT ROWID;") of
-		ok ->
-			application:set_env(actordb_core,withoutrowid,<<"WITHOUT ROWID">>);
-		_ ->
-			application:set_env(actordb_core,withoutrowid,<<>>)
-	end.
 
 stop(_State) ->
 	ok.

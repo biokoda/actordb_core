@@ -548,15 +548,11 @@ schema_version() ->
 schema(1,Idtype1) ->
 	case Idtype1 of
 		string ->
-			Idtype = <<"TEXT">>,
-			% If sqlite is up-to-date it supports withoutrowid. This was checked
-			%  at actordb startup.
-			{ok,Id} = application:get_env(actordb_core,withoutrowid);
+			Idtype = <<"TEXT">>;
 		integer ->
-			Idtype = <<"INTEGER">>,
-			Id = <<>>
+			Idtype = <<"INTEGER">>
 	end,
-	<<"CREATE TABLE actors (id ",Idtype/binary," PRIMARY KEY, hash INTEGER) ",Id/binary,";",
+	<<"CREATE TABLE actors (id ",Idtype/binary," PRIMARY KEY, hash INTEGER) WITHOUT ROWID;",
 	  "CREATE INDEX __hind ON actors (hash);">>;
 schema(2,_Idtype1) ->
 	<<"CREATE TABLE __meta (id INTEGER PRIMARY KEY, val TEXT);">>.
