@@ -473,11 +473,12 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 			{reply,apply(M,F,[P#dp.cbstate,check|A]),P};
 		wlog_unneeded ->
 			?ADBG("Received wlog_unneeded ~p, have it? ~p",[{P#dp.actorname,P#dp.actortype},P#dp.wlog_status]),
+			% Data is either ?WLOG_NONE or ?WLOG_ABANDONDED
 			case ok of
 				_ when (P#dp.wlog_status == ?WLOG_ACTIVE orelse P#dp.wlog_status == ?WLOG_ABANDONDED) 
 							andalso P#dp.dbcopy_to == [] ->
 					ok = actordb_sqlite:exec(P#dp.db,[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,
-									?WLOG_STATUS,$,,butil:tobin(?WLOG_NONE),<<");">>,
+									?WLOG_STATUS,$,,butil:tobin(Data),<<");">>,
 									<<"$DELETE * FROM __wlog;">>]),
 					{reply,ok,P#dp{wlog_status = ?WLOG_NONE, wlog_len = 0}};
 				_ ->
@@ -1402,38 +1403,6 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 	end),
 	Commiter.
 
-% get_from_wlog(FEv,FCrc,Bin) ->
-% 	get_from_wlog(FEv,FCrc,Bin,undefined).
-% get_from_wlog(FEv,_,<<Evn:64,_/binary>>,undefined) when FEv < Evn ->
-% 	% FEv too far behind
-% 	undefined;
-% get_from_wlog(FEv,_,<<Evn:64,Evcrc:32,Size:32/unsigned,Sql:Size/binary>>,Out) when FEv < Evn ->
-% 	% Reached the end of wlog and have something to return.
-% 	{Evn,Evcrc,<<Out/binary,Sql/binary>>};
-% get_from_wlog(FEv,FCrc,<<Evn:64,_:32,Size:32/unsigned,Sql:Size/binary,Rem/binary>>,Out) when FEv < Evn ->
-% 	% We went past FEv == Evn and are building the sql statement
-% 	get_from_wlog(FEv,FCrc,Rem,<<Out/binary,Sql/binary>>);
-% get_from_wlog(FEv,FCrc,<<Evn:64,_:32,Size:32/unsigned,_:Size/binary,Rem/binary>>,L) when FEv > Evn ->
-% 	% wlog is bigger than missing events, move upto FEv == Evn
-% 	get_from_wlog(FEv,FCrc,Rem,L);
-% get_from_wlog(FEv,FCrc,<<FEv:64,Crc:32,Size:32/unsigned,_:Size/binary,Rem/binary>>,undefined) ->
-% 	% FEv == Evn, if crcs match, then we can start extracting sql statements
-% 	case FCrc == Crc of
-% 		true ->
-% 			get_from_wlog(FEv,FCrc,Rem,<<>>);
-% 		% something went seriously wrong. Crcs don't match for evnums.
-% 		false ->
-% 			undefined
-% 	end;
-% get_from_wlog(_,_,<<>>,undefined) ->
-% 	undefined.
-
-% trim_wlog(B) when byte_size(B) < ?WLOG_LIMIT ->
-% 	B;
-% trim_wlog(<<_Evnum:64,_Crc:32,Size:32/unsigned,_Sql:Size/binary,Rem/binary>>) ->
-% 	trim_wlog(Rem).
-
-
 handle_cast({diepls,Reason},P) ->
 	?ADBG("diepls ~p",[{P#dp.actorname,P#dp.actortype}]),
 	case Reason of
@@ -1617,7 +1586,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 				_ ->
 					NS = P#dp.cbstate
 			end,
-			handle_info(doqueue,wlog_stillneed(AllSynced,
+			handle_info(doqueue,wlog_stillneed(AllSynced,?WLOG_NONE,
 									P#dp{verified = true, verifypid = undefined, mors = Mors, masternode = MasterNode, 
 									masternodedist = bkdcore:dist_name(MasterNode),
 									cbstate = NS}));
@@ -1628,7 +1597,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			actordb_local:actor_mors(Mors,MasterNode),
 			{Tid,Updid,Node} = P#dp.transactionid,
 			{Sql,Evnum,Crc,_NewVers} = P#dp.replicate_sql, 
-			NP = wlog_stillneed(AllSynced,
+			NP = wlog_stillneed(AllSynced,?WLOG_NONE,
 								P#dp{verified = true,verifypid = undefined, mors = Mors,
 					 			masternode = MasterNode,masternodedist = bkdcore:dist_name(MasterNode), cbstate = do_cb_init(P)}),
 			case actordb:rpc(Node,Updid,{actordb_multiupdate,transaction_state,[Updid,Tid]}) of
@@ -1957,29 +1926,40 @@ abandon_locks(P,[H|T],L) ->
 abandon_locks(_,[],L) ->
 	L.
 
-
-add_wlog(P,DoWlog,Sql,Evnum,Crc) when P#dp.wlog_status == ?WLOG_ACTIVE; DoWlog ->
+% Once wlog started continue untill we know all nodes are in sync.
+add_wlog(P,DoWlog,Sql,Evnum,Crc) when P#dp.wlog_status == ?WLOG_ACTIVE; 
+									  DoWlog, P#dp.wlog_status /= ?WLOG_ABANDONDED ->
 	[Sql,<<"$INSERT INTO __wlog VALUES (">>,butil:tobin(Evnum),$,,butil:tobin(Crc),$,,$',base64:encode(Sql),$',");"];
+% If status ?WLOG_NONE, ?WLOG_ABANDONED or dowlog == false do not do it.
 add_wlog(_P,_DoWlog,Sql,_Evnum,_Crc) ->
 	Sql.
 
 wlog_after_write(DoWlog,P) ->
 	case ok of
-		_ when P#dp.wlog_status == ?WLOG_ACTIVE; DoWlog ->
-			P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1};
+		_ when P#dp.wlog_status == ?WLOG_ACTIVE; DoWlog,P#dp.wlog_status /= ?WLOG_ABANDONDED ->
+			case P#dp.wlog_len >= 10000 of
+				true when P#dp.dbcopy_to /= [] ->
+					wlog_stillneed(true,?WLOG_ABANDONDED,P);
+				_ ->
+					P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1}
+			end;
 		true ->
 			P
 	end.
 
 
-wlog_stillneed(AllSynced,P) ->
+% Either log has been abandonded for being too large or all nodes are in sync. Thus there are
+%  two reasons for abandoning, ?WLOG_NONE or ?WLOG_ABANDONED.
+wlog_stillneed(AllSynced,How,P) ->
 	case ok of
 		_ when AllSynced andalso (P#dp.wlog_status == ?WLOG_ACTIVE orelse P#dp.wlog_status == ?WLOG_ABANDONDED) ->
 			[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-															{dbcopy_op,undefined,wlog_unneeded,undefined}])
+															{dbcopy_op,undefined,wlog_unneeded,How}])
 							|| Nd <- bkdcore:cluster_nodes_connected()],
-			actordb_sqlite:exec(P#dp.db,<<"DELETE * FROM __wlog;">>),
-			P#dp{wlog_status = ?WLOG_NONE, wlog_len = 0};
+			actordb_sqlite:exec(P#dp.db,[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,
+									?WLOG_STATUS,$,,butil:tobin(How),<<");">>,
+									<<"$DELETE * FROM __wlog;">>]),
+			P#dp{wlog_status = How, wlog_len = 0};
 		_ ->
 			P
 	end.
@@ -2065,10 +2045,14 @@ init([_|_] = Opts) ->
 									case actordb_sqlite:exec(Db,<<"SELECT min(id),max(id) FROM __wlog;">>,read) of
 										{sql_error,_,_} ->
 											HaveWlog = ?WLOG_NONE,
+											WlogLen = 0,
 											actordb_sqlite:exec(Db,<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>);
-										[{columns,_},{rows,[{},{NW}]}] when is_integer(NW), NW > 0 ->
+										[{columns,_},{rows,[{MinWL,MaxWL}]}] when is_integer(MinWL), 
+																					MinWL > 0, MinWL < MaxWL ->
+											WlogLen = MaxWL - MinWL,
 											HaveWlog = ?WLOG_ACTIVE;
 										_ ->
+											WlogLen = 0,
 											HaveWlog = ?WLOG_NONE
 									end,
 									case butil:toint(butil:ds_val(?WLOG_STATUSI,Rows,?WLOG_NONE)) of
@@ -2089,7 +2073,8 @@ init([_|_] = Opts) ->
 													TypeOfMove = false
 											end,
 											self() ! {check_redirect,Db,TypeOfMove},
-											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState, wlog_status = WlogStatus}};
+											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState, 
+													 wlog_status = WlogStatus,wlog_len = WlogLen}};
 										[] ->
 											case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
 												{_,[]} ->
@@ -2103,6 +2088,7 @@ init([_|_] = Opts) ->
 											end,
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,
 																	wlog_status = WlogStatus,
+																	wlog_len = WlogLen,
 																	movedtonode = MovedToNode1})};
 										[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
 											case base64:decode(MSql1) of
@@ -2116,7 +2102,7 @@ init([_|_] = Opts) ->
 											Transid = {Tid,Updid,Node},
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, replicate_sql = ReplSql, 
 															transactionid = Transid, wlog_status = WlogStatus, 
-															movedtonode = MovedToNode1,
+															movedtonode = MovedToNode1,wlog_len = WlogLen,
 															schemavers = SchemaVers})}
 									end;
 								[] when (P#dp.flags band ?FLAG_CREATE) > 0 ->

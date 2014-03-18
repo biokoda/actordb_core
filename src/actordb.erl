@@ -17,15 +17,6 @@
 -include("actordb.hrl").
 -compile(export_all).
 
-t() ->
-	spawn(fun() ->
-			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(":memory:",off),
-			ok = actordb_sqlite:exec(Db,<<"$CREATE TABLE a (id integer primary key, v text);">>),
-			?AINF("~p",[actordb_sqlite:exec(Db,<<"CREATE TABLE t (id TEXT PRIMARY KEY) WITHOUT ROWID;">>)]),
-			?AINF("~p",[actordb_sqlite:exec(Db,<<"insert into a values (1,'aa') , (2,'bb');">>)]),
-			?AINF("~p",[actordb_sqlite:exec(Db,"select * from a;")]),
-			?AINF("~p",[actordb_sqlite:exec(Db,"select min(id),max(id) from a;")])
-	end).
 
 is_ready() ->
 	case application:get_env(actordb_core,isready) of
