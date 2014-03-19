@@ -361,7 +361,7 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 			case P#dp.verified of
 				true ->
 					case P#dp.wlog_status of
-						?WLOG_ACTIVE when IsMove == false ->
+						?WLOG_ACTIVE when IsMove == false, RemoteEvNum > 0 ->
 							case actordb_sqlite:exec(P#dp.db,["SELECT id FROM __wlog WHERE id=",butil:tobin(RemoteEvNum)," AND ",
 															" crc=",butil:tobin(RemoteEvCrc)]) of
 								[{columns,_},{rows,[{_}]}] ->
@@ -446,9 +446,27 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 			IdFrom = butil:tobin(Data),
 			case actordb_sqlite:exec(P#dp.db,[<<"SELECT sum(length(sql)) FROM __wlog WHERE id>">>,IdFrom," and id<",IdFrom,
 														"+100;"]) of
-				[{columns,_},{rows,[{_}]}] ->
-					ok;
-				[{columns,_},{rows,[]}] ->
+				{ok,[{columns,_},{rows,[{N}]}]} when is_integer(N), N < 1024*1024*10 ->
+					{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db,
+												[<<"SELECT * FROM __wlog WHERE id>">>,IdFrom," and id<",IdFrom,
+														"+100;"]),
+					case length(Rows) < 100 of
+						true ->
+							{reply,{ok,done,Rows},P#dp{locked = butil:lists_add({FromPid,Ref},P#dp.locked)}};
+						false ->
+							{reply,{ok,continue,Rows}}
+					end;
+				{ok,[{columns,_},{rows,[{N}]}]} when is_integer(N) ->
+					{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db,
+												[<<"SELECT * FROM __wlog WHERE id>">>,IdFrom," and id<",IdFrom,
+														"+10;"]),
+					case length(Rows) < 10 of
+						true ->
+							{reply,{ok,done,Rows},P#dp{locked = butil:lists_add({FromPid,Ref},P#dp.locked)}};
+						false ->
+							{reply,{ok,continue,Rows},P}
+					end;
+				{ok,[{columns,_},{rows,[{undefined}]}]} ->
 					case P#dp.transactionid of
 						undefined ->
 							{reply,done,P#dp{locked = butil:lists_add({FromPid,Ref},P#dp.locked)}};
@@ -1083,10 +1101,19 @@ write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P)
 
 wlog_dbcopy(P,Home,ActorTo) ->
 	case gen_server:call(Home,{dbcopy_op,{self(),P#dp.dbcopyref},wlog_read,P#dp.evnum}) of
-		{ok,LastNum,LastCrc,Bin} ->
-			wlog_dbcopy(P#dp{evnum = LastNum},Home,ActorTo);
+		{ok,Done,Rows} ->
+			{LastNum,LastCrc,CompleteSql} = lists:foldl(fun({Id,Crc,Sql},{_,_,Sqls}) ->
+				{Id,Crc,[Sqls,base64:decode(Sql)]}
+			end,{0,0,[]},Rows),
+			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,{LastNum,LastCrc,CompleteSql},sql,original]}),
+			case Done of
+				done ->
+					exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}));
+				continue ->
+					wlog_dbcopy(P#dp{evnum = LastNum},Home,ActorTo)
+			end;
 		done ->
-			ok
+			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}))
 	end.
 
 dbcopy(P,Home,ActorTo) ->
@@ -1098,14 +1125,7 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 		{_Walname,Offset} ->
 			?ADBG("dbsend done ",[]),
 			% case rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,<<>>,done}]}) of
-			case rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}) of
-				ok ->
-					exit(ok);
-				false ->
-					exit(false);
-				Err ->
-					exit(Err)
-			end;
+			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}));
 		{_Walname,Walsize} when Offset > Walsize ->
 			?AERR("Offset larger than walsize ~p ~p",[{ActorTo,P#dp.actortype},Offset,Walsize]),
 			% case rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,<<>>,done}]}) of
@@ -1190,8 +1210,6 @@ start_copyrec(P) ->
 			ok ->
 				?ADBG("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
 				Home ! {StartRef,self()},
-				file:delete(P#dp.dbpath++"-wal"),
-				file:delete(P#dp.dbpath++"-shm"),
 				case ok of
 					% if copyfrom binary, it's a restore within a cluster.
 					% if copyfrom tuple, it's moving/copying from one cluster to another 
@@ -1234,10 +1252,29 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 					ok
 			end,
 			case CurStatus == Status of
+				true when Status == sql ->
+					{EvNum,Crc,Sql} = Bin,
+					ok = okornot(actordb_sqlite:exec(F,<<"$SAVEPOINT 'adb';">>,
+						 Sql,
+						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
+						 <<"$RELEASE SAVEPOINT 'adb';">>)),
+					F1 = F;
 				true ->
 					ok = file:write(F,Bin),
 					F1 = F;
+				false when Status == sql ->
+					{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					{EvNum,Crc,Sql} = Bin,
+					ok = okornot(actordb_sqlite:exec(Db,<<"$SAVEPOINT 'adb';">>,
+						 Sql,
+						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
+						 <<"$RELEASE SAVEPOINT 'adb';">>)),
+					F1 = Db;
 				false when Status == db ->
+					file:delete(P#dp.dbpath++"-wal"),
+					file:delete(P#dp.dbpath++"-shm"),
 					{ok,F1} = file:open(P#dp.dbpath,[write,raw]),
 					ok = file:write(F1,Bin);
 				false when Status == wal ->
@@ -1245,7 +1282,12 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 					{ok,F1} = file:open(P#dp.dbpath++"-wal",[write,raw]),
 					ok = file:write(F1,Bin);
 				false when Status == done ->
-					file:close(F),
+					case ok of
+						_ when element(1,F) == connection ->
+							actordb_sqlite:stop(F);
+						_ ->
+							file:close(F)
+					end,
 					F1 = undefined,
 					{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 					case SchemaTables of
