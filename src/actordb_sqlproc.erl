@@ -364,12 +364,20 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 						?WLOG_ACTIVE when IsMove == false, RemoteEvNum > 0 ->
 							case actordb_sqlite:exec(P#dp.db,["SELECT id FROM __wlog WHERE id=",butil:tobin(RemoteEvNum)," AND ",
 															" crc=",butil:tobin(RemoteEvCrc)]) of
-								[{columns,_},{rows,[{_}]}] ->
+								{ok,[{columns,_},{rows,[{_}]}]} ->
+									?AINF("Sending from wlog ~p",[{P#dp.actorname,P#dp.actortype}]),
 									% actordb_sqlite:exec(Db,["SELECT count(*) FROM __wlog WHERE id>",
 									% 		butil:tobin(RemoteEvNum),";"],read)
 									SendFromWlog = true;
 								_ ->
-									SendFromWlog = false
+									SS = ["SELECT min(id) FROM __wlog WHERE prevev=",butil:tobin(RemoteEvNum)," AND ",
+															" prevcrc=",butil:tobin(RemoteEvCrc)],
+									case actordb_sqlite:exec(P#dp.db,SS) of
+										{ok,[{columns,_},{rows,[{_}]}]} ->
+											SendFromWlog = true;
+										_ ->
+											SendFromWlog = false
+									end
 							end;
 						_ ->
 							SendFromWlog = false
@@ -395,7 +403,7 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 							case file:read_file_info(P#dp.dbpath) of
 								{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
 												IsMove /= false orelse P#dp.journal_mode == wal ->
-									?ADBG("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
+									?AINF("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
 											[{P#dp.actorname,P#dp.actortype},ActornameToCopyto,
 																	{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
 									?DBLOG(P#dp.db,"senddb to ~p ~p",[ActornameToCopyto,Node]),
@@ -750,7 +758,7 @@ handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} 
 	end;
 % Called from master
 handle_call({replicate_commit,StoreLog},From,P) ->
-	?ADBG("Replicate commit! ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.replicate_sql]),
+	?ADBG("Replicate commit! ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.replicate_sql]),
 	case P#dp.replicate_sql of
 		<<>> ->
 			?DBLOG(P#dp.db,"replicatecommit empty",[]),
@@ -771,9 +779,10 @@ handle_call({replicate_commit,StoreLog},From,P) ->
 					reply(From,ok),
 					{stop,normal,P};
 				_ ->
+					Sql1 = semicolon(Sql),
 					Res = actordb_sqlite:exec(P#dp.db,[
 						 <<"$SAVEPOINT 'adb';">>,
-						 add_wlog(P,StoreLog,semicolon(Sql),EvNum,Crc),
+						 Sql1,add_wlog(P,StoreLog,Sql1,EvNum,Crc),
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
 						 <<"$RELEASE SAVEPOINT 'adb';">>
@@ -1100,7 +1109,7 @@ write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P)
 wlog_dbcopy(P,Home,ActorTo) ->
 	case gen_server:call(Home,{dbcopy_op,{self(),P#dp.dbcopyref},wlog_read,P#dp.evnum}) of
 		{ok,Done,Rows} ->
-			{LastNum,LastCrc,CompleteSql} = lists:foldl(fun({Id,Crc,Sql},{_,_,Sqls}) ->
+			{LastNum,LastCrc,CompleteSql} = lists:foldl(fun({Id,Crc,_,_,Sql},{_,_,Sqls}) ->
 				{Id,Crc,[Sqls,base64:decode(Sql)]}
 			end,{0,0,[]},Rows),
 			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,{LastNum,LastCrc,CompleteSql},sql,original]}),
@@ -1252,11 +1261,11 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 			case CurStatus == Status of
 				true when Status == sql ->
 					{EvNum,Crc,Sql} = Bin,
-					ok = okornot(actordb_sqlite:exec(F,<<"$SAVEPOINT 'adb';">>,
-						 Sql,
-						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
-						 <<"$RELEASE SAVEPOINT 'adb';">>)),
+					ok = okornot(actordb_sqlite:exec(F,[<<"$SAVEPOINT 'adb';">>,
+											 Sql,
+											 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+											 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
+											 <<"$RELEASE SAVEPOINT 'adb';">>])),
 					F1 = F;
 				true ->
 					ok = file:write(F,Bin),
@@ -1264,11 +1273,11 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 				false when Status == sql ->
 					{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 					{EvNum,Crc,Sql} = Bin,
-					ok = okornot(actordb_sqlite:exec(Db,<<"$SAVEPOINT 'adb';">>,
+					ok = okornot(actordb_sqlite:exec(Db,[<<"$SAVEPOINT 'adb';">>,
 						 Sql,
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
-						 <<"$RELEASE SAVEPOINT 'adb';">>)),
+						 <<"$RELEASE SAVEPOINT 'adb';">>])),
 					F1 = Db;
 				false when Status == db ->
 					file:delete(P#dp.dbpath++"-wal"),
@@ -1384,9 +1393,9 @@ rpc(Nd,MFA) ->
 	% Printer ! done,
 	Res.
 
-checkfail(_A,_T,_,[]) ->
+printfail(_A,_T,_,[]) ->
 	ok;
-checkfail(A,T,N,L) ->
+printfail(A,T,N,L) ->
 	?AERR("commit failed on ~p ~p  ~p",[{A,T},N,L]).
 
 commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
@@ -1403,7 +1412,7 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 			{ResultsStart,StartFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
 						[Cbmod,Actor,Type,{replicate_start,Ref,node(),OldEvnum,
 																	OldCrc,SqlBin,EvNum,Crc,SchemaVers},[{flags,Flags}]]),
-			checkfail(Actor,Type,1,StartFailed),
+			printfail(Actor,Type,1,StartFailed),
 			% Only count ok responses
 			{LenStarted,NProblems} = lists:foldl(fun(X,{NRes,NProblems}) -> 
 									case X of 
@@ -1415,17 +1424,20 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 			case (LenStarted+1)*2 > LenCluster+1 of
 				true ->
 					NodesToCommit = lists:subtract(ConnectedNodes,StartFailed),
+					DoWlog = LenCluster > length(ConnectedNodes) orelse 
+							StartFailed /= [] orelse 
+							NProblems > 0,
 					{ResultsCommit,CommitFailedOn} = rpc:multicall(NodesToCommit,?MODULE,call_slave,
-										[Cbmod,Actor,Type,{replicate_commit,StartFailed /= [] orelse 
-																			NProblems > 0},[{flags,Flags}]]),
-					checkfail(Actor,Type,2,CommitFailedOn),
+										[Cbmod,Actor,Type,{replicate_commit,DoWlog},[{flags,Flags}]]),
+					CommitBadres = [X || X <- ResultsCommit, X /= ok],
+					printfail(Actor,Type,2,CommitFailedOn),
 					LenCommited = length(ResultsCommit),
 					case (LenCommited+1)*2 > LenCluster+1 of
 						true ->
 							% WLog = <<(trim_wlog(WL))/binary,
 							% 					EvNum:64/unsigned,Crc:32/unsigned,(byte_size(SqlBin)):32/unsigned,
 							% 						(SqlBin)/binary>>,
-							exit({ok, EvNum, Crc, StartFailed /= [] orelse CommitFailedOn /= [] orelse NProblems > 0});
+							exit({ok, EvNum, Crc, DoWlog orelse CommitFailedOn /= [] orelse CommitBadres /= []});
 						false ->
 							CommitOkOn = lists:subtract(NodesToCommit,CommitFailedOn),
 							[rpc:async_call(Nd,?MODULE,call_slave,
@@ -1550,7 +1562,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 					delactorfile(P#dp{movedtonode = MovedTo});
 				_ ->
 					Die = false,
-					ok = okornot(actordb_sqlite:exec(P#dp.db,[add_wlog(P,DoWlog,<<>>,EvNum,Crc),<<"RELEASE SAVEPOINT 'adb';">>]))
+					ok = okornot(actordb_sqlite:exec(P#dp.db,[add_wlog(P,DoWlog,Sql,EvNum,Crc),<<"RELEASE SAVEPOINT 'adb';">>]))
 			end,
 			case P#dp.transactionid of
 				undefined ->
@@ -1673,7 +1685,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 					exit({error,{unable_to_verify_transaction,_Err}})
 			end;
 		{update_from,Node,Mors,MasterNode,Ref} ->
-			?ADBG("Verify down ~p ~p ~p master ~p, update from ~p",[P#dp.actorname,PID,Reason,MasterNode,Node]),
+			?AINF("Verify down ~p ~p ~p master ~p, update from ~p",[P#dp.actorname,PID,Reason,MasterNode,Node]),
 			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
 			case P#dp.copyfrom of
 				undefined ->
@@ -1688,7 +1700,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 							verifypid = undefined, verified = false, mors = Mors, masternode = MasterNode,
 							masternodedist = bkdcore:dist_name(MasterNode),dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}};
 		{update_direct,Mors,Bin} ->
-			?ADBG("Verify down update direct ~p ~p ~p",[Mors,P#dp.actorname,P#dp.actortype]),
+			?AINF("Verify down update direct ~p ~p ~p",[Mors,P#dp.actorname,P#dp.actortype]),
 			actordb_sqlite:stop(P#dp.db),
 			delactorfile(P),
 			ok = file:write_file(P#dp.dbpath,Bin),
@@ -1970,10 +1982,11 @@ abandon_locks(_,[],L) ->
 % Once wlog started continue untill we know all nodes are in sync.
 add_wlog(P,DoWlog,Sql,Evnum,Crc) when P#dp.wlog_status == ?WLOG_ACTIVE; 
 									  DoWlog, P#dp.wlog_status /= ?WLOG_ABANDONDED ->
-	[Sql,<<"$INSERT INTO __wlog VALUES (">>,butil:tobin(Evnum),$,,butil:tobin(Crc),$,,$',base64:encode(Sql),$',");"];
+	[<<"$INSERT INTO __wlog VALUES (">>,butil:tobin(Evnum),$,,butil:tobin(Crc),$,,butil:tobin(P#dp.evnum),$,,butil:tobin(P#dp.evcrc),$,,
+			$',base64:encode(iolist_to_binary(Sql)),$',");"];
 % If status ?WLOG_NONE, ?WLOG_ABANDONED or dowlog == false do not do it.
-add_wlog(_P,_DoWlog,Sql,_Evnum,_Crc) ->
-	Sql.
+add_wlog(_P,_DoWlog,_Sql,_Evnum,_Crc) ->
+	[].
 
 wlog_after_write(DoWlog,P) ->
 	case ok of
@@ -1984,6 +1997,8 @@ wlog_after_write(DoWlog,P) ->
 				_ ->
 					P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1}
 			end;
+		_ when DoWlog ->
+			P;
 		_ ->
 			P
 	end.
@@ -2343,7 +2358,7 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	[<<"BEGIN;">>,(?LOGTABLE),
 	 <<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
-	 "CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);",
+	 "CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER,prevev INTEGER,prevcrc INTEGER, sql TEXT);",
 	 "CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
 	 <<"INSERT INTO __adb (id,val) VALUES ">>,
 	 	butil:iolist_join(DefVals,$,),$;].
@@ -2477,7 +2492,7 @@ verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo},[{flags,Flags}]]),
 	?ADBG("verify from others ~p",[Results]),
-	checkfail(Actor,Type,3,GetFailed),
+	printfail(Actor,Type,3,GetFailed),
 	Me = bkdcore:node_name(),
 	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
 	{Yes,Masters} = lists:foldl(
