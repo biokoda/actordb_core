@@ -365,15 +365,14 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 							case actordb_sqlite:exec(P#dp.db,["SELECT id FROM __wlog WHERE id=",butil:tobin(RemoteEvNum)," AND ",
 															" crc=",butil:tobin(RemoteEvCrc)]) of
 								{ok,[{columns,_},{rows,[{_}]}]} ->
-									?AINF("Sending from wlog ~p",[{P#dp.actorname,P#dp.actortype}]),
-									% actordb_sqlite:exec(Db,["SELECT count(*) FROM __wlog WHERE id>",
-									% 		butil:tobin(RemoteEvNum),";"],read)
+									?ADBG("dbcopy sending from wlog ~p",[{P#dp.actorname,P#dp.actortype}]),
 									SendFromWlog = true;
 								_ ->
 									SS = ["SELECT min(id) FROM __wlog WHERE prevev=",butil:tobin(RemoteEvNum)," AND ",
 															" prevcrc=",butil:tobin(RemoteEvCrc)],
 									case actordb_sqlite:exec(P#dp.db,SS) of
 										{ok,[{columns,_},{rows,[{_}]}]} ->
+											?ADBG("dbcopy sending from wlog ~p",[{P#dp.actorname,P#dp.actortype}]),
 											SendFromWlog = true;
 										_ ->
 											SendFromWlog = false
@@ -403,7 +402,7 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 							case file:read_file_info(P#dp.dbpath) of
 								{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
 												IsMove /= false orelse P#dp.journal_mode == wal ->
-									?AINF("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
+									?ADBG("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
 											[{P#dp.actorname,P#dp.actortype},ActornameToCopyto,
 																	{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
 									?DBLOG(P#dp.db,"senddb to ~p ~p",[ActornameToCopyto,Node]),
@@ -751,7 +750,7 @@ handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} 
 					{ok,NP} = init(P,replicate_conflict),
 					{noreply,NP};
 				_ ->
-					?AINF("Reinit to reastablish master node ~p",[{P#dp.actorname,P#dp.actortype}]),
+					?ADBG("Reinit to reastablish master node ~p",[{P#dp.actorname,P#dp.actortype}]),
 					{ok,NP} = init(P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)},replicate_conflict),
 					{reply,ok,NP}
 			end
@@ -1001,7 +1000,7 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
 					Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,ReplSql,Crc,NewVers),
 					{noreply,P#dp{callfrom = From,callres = Res, commiter = Commiter, activity = P#dp.activity + 1,
-									replicate_sql = {ComplSql,EvNum,Crc,NewVers}}};
+									replicate_sql = {ReplSql,EvNum,Crc,NewVers}}};
 				_ ->
 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					{reply,{error,{replication_failed_1,LenConnected,LenCluster}},P}
@@ -1095,7 +1094,6 @@ write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P)
 					Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,TransactionInfo,CrcTransaction,P#dp.schemavers),
 					{noreply,P#dp{callfrom = From,callres = undefined, commiter = Commiter, 
 								  activity = P#dp.activity + 1,replicate_sql = {Sql,EvNum+1,Crc,NewVers},
-								  % evnum = EvNum,evcrc = CrcTransaction,
 								  transactioncheckref = CheckRef,
 								  transactionid = TransactionId,
 								  write_bytes = P#dp.write_bytes + byte_size(Sql)}};
@@ -1304,7 +1302,8 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 							actordb_sqlite:move_to_trash(P#dp.dbpath),
 							exit(copynoschema);
 						_ ->
-							% ?AINF("Copyreceive done ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},{Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELECT * FROM __adb;")]),
+							?ADBG("Copyreceive done ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},
+								 {Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELECT * FROM __adb;")]),
 							ok = okornot(actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
 											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,
 																				P#dp.cbstate})))/binary,"');">>,write)),
@@ -1685,7 +1684,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 					exit({error,{unable_to_verify_transaction,_Err}})
 			end;
 		{update_from,Node,Mors,MasterNode,Ref} ->
-			?AINF("Verify down ~p ~p ~p master ~p, update from ~p",[P#dp.actorname,PID,Reason,MasterNode,Node]),
+			?ADBG("Verify down ~p ~p ~p master ~p, update from ~p",[P#dp.actorname,PID,Reason,MasterNode,Node]),
 			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
 			case P#dp.copyfrom of
 				undefined ->
