@@ -510,13 +510,12 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 					?AERR("Unlock attempt on non existing lock ~p ~p, locks ~p",[{P#dp.actorname,P#dp.actortype},Data,P#dp.locked]),
 					{reply,false,P};
 				{wait_copy,Data,IsMove,Node,_TimeOfLock} ->
-					?ADBG("Actor unlocked ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Data,P#dp.dbcopy_to]),
+					?DBG("Actor unlocked ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum,Data,P#dp.dbcopy_to]),
 					DbCopyTo = lists:keydelete(Data,3,P#dp.dbcopy_to),
 					case IsMove of
 						true ->
 							write_call({undefined,0,{moved,Node},undefined},CallFrom,
 												P#dp{locked = lists:keydelete(Data,2,P#dp.locked),dbcopy_to = DbCopyTo});
-						% {split,{M,F,A}} ->	
 						_ ->
 							self() ! doqueue,
 							WithoutLock = [Tuple || Tuple <- P#dp.locked, element(2,Tuple) /= Data],
@@ -539,7 +538,7 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 													 journal_mode = P#dp.def_journal_mode});
 										_ ->
 											CQ = queue:in_r({CallFrom,{write,WriteMsg}},P#dp.callqueue),
-											{reply,ok,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
+											{noreply,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
 									end;
 								_ ->
 									case ok of
@@ -554,7 +553,6 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 							end
 					end;
 				{_FromPid,Data} ->
-					?ADBG("Early unlock attempt ~p ~p ~p",[P#dp.actorname,Data,P#dp.locked]),
 					% Check if race condition
 					case lists:keyfind(Data,3,P#dp.dbcopy_to) of
 						{Node,_PID,Data,IsMove} ->
@@ -1297,7 +1295,7 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 							actordb_sqlite:move_to_trash(P#dp.dbpath),
 							exit(copynoschema);
 						_ ->
-							?ADBG("Copyreceive done ~p",[{P#dp.actorname,P#dp.actortype,Origin,P#dp.copyfrom}]),
+							% ?AINF("Copyreceive done ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},{Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELECT * FROM __adb;")]),
 							ok = okornot(actordb_sqlite:exec(Db,<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
 											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,
 																				P#dp.cbstate})))/binary,"');">>,write)),
@@ -1534,7 +1532,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 	case Result of
 		{ok,EvNum,Crc,DoWlog} ->
 			?DBLOG(P#dp.db,"commiterdown ok ~p ~p",[EvNum,Crc]),
-			?DBG("Commiter down ok ~p callres ~p ~p",[EvNum,P#dp.callres,P#dp.callqueue]),
+			?DBG("Commiter down ~p ok ~p callres ~p ~p",[{P#dp.actorname,P#dp.actortype},EvNum,P#dp.callres,P#dp.callqueue]),
 			{Sql,EvNumNew,CrcSql,NewVers} = P#dp.replicate_sql,
 			case Sql of 
 				<<"delete">> ->
@@ -1552,7 +1550,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 					delactorfile(P#dp{movedtonode = MovedTo});
 				_ ->
 					Die = false,
-					actordb_sqlite:exec(P#dp.db,[add_wlog(P,DoWlog,Sql,EvNum,Crc),<<"RELEASE SAVEPOINT 'adb';">>])
+					ok = okornot(actordb_sqlite:exec(P#dp.db,[add_wlog(P,DoWlog,<<>>,EvNum,Crc),<<"RELEASE SAVEPOINT 'adb';">>]))
 			end,
 			case P#dp.transactionid of
 				undefined ->
@@ -1603,6 +1601,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 			{noreply,NP};
 		% Should always be: {replication_failed,HasNodes,NeedsNodes}
 		Err ->
+			?AERR("Commiter down ~p error ~p",[{P#dp.actorname,P#dp.actortype},Err]),
 			?DBLOG(P#dp.db,"commiterdown error ~p",[Err]),
 			{Sql,_EvNumNew,_CrcSql,_NewVers} = P#dp.replicate_sql,
 			case Sql of
@@ -1985,7 +1984,7 @@ wlog_after_write(DoWlog,P) ->
 				_ ->
 					P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1}
 			end;
-		true ->
+		_ ->
 			P
 	end.
 
@@ -2340,13 +2339,13 @@ base_schema(SchemaVers,Type,MovedTo) ->
 		_ ->
 			Moved = [{?MOVEDTO,MovedTo}]
 	end,
-	DefVals = [[$(,K,$,,butil:tobin(V),$)] || {K,V} <- [{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVCRC,0}|Moved]],
+	DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- [{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVCRC,0}|Moved]],
 	[<<"BEGIN;">>,(?LOGTABLE),
 	 <<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
 	 "CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);",
 	 "CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
-	 <<"INSERT INTO __adb (id,val) VALUES (">>,
+	 <<"INSERT INTO __adb (id,val) VALUES ">>,
 	 	butil:iolist_join(DefVals,$,),$;].
 
 
