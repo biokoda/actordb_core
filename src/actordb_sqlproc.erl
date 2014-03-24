@@ -2017,8 +2017,6 @@ can_stop_wlog(Home,P) ->
 			{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{getinfo,verifyinfo},[{flags,P#dp.flags}]]),
 			case GetFailed of
 				[] ->
-					ok;
-				_ ->
 					MatchingResults = [ok || {ok,_,Crc,Evnum,_} <- Results, Crc == P#dp.evcrc, Evnum == P#dp.evnum],
 					case length(MatchingResults) == LenConnected of
 						true ->
@@ -2029,7 +2027,9 @@ can_stop_wlog(Home,P) ->
 							gen_server:call(Home,{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE});
 						false ->
 							ok
-					end
+					end;
+				_ ->
+					ok
 			end;
 		false ->
 			ok
