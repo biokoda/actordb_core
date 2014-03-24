@@ -551,6 +551,12 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 									case ok of
 										_ when WithoutLock == [], DbCopyTo == [] ->
 											actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
+											case P#dp.wlog_status of
+												?WLOG_ACTIVE ->
+													can_stop_wlog(P);
+												_ ->
+													ok
+											end,
 											{reply,ok,P#dp{locked = WithoutLock, 
 														dbcopy_to = DbCopyTo,
 													 journal_mode = P#dp.def_journal_mode}};
@@ -959,10 +965,10 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 	end,
 	case Sql of
 		delete ->
-			ReplSql = ComplSql = <<"delete">>,
+			ReplSql = <<"delete">>,
 			Res = ok;
 		{moved,Node} ->
-			ReplSql = ComplSql = <<"moved,",Node/binary>>,
+			ReplSql = <<"moved,",Node/binary>>,
 			Res = ok;
 		_ ->
 			case actornum(P) of
@@ -1989,19 +1995,45 @@ add_wlog(_P,_DoWlog,_Sql,_Evnum,_Crc) ->
 
 wlog_after_write(DoWlog,P) ->
 	case ok of
-		_ when P#dp.wlog_status == ?WLOG_ACTIVE; DoWlog,P#dp.wlog_status /= ?WLOG_ABANDONDED ->
-			case P#dp.wlog_len >= 10000 of
-				true when P#dp.dbcopy_to /= [] ->
-					wlog_stillneed(true,?WLOG_ABANDONDED,P);
-				_ ->
-					P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1}
-			end;
-		_ when DoWlog ->
-			P;
+		_ when P#dp.wlog_status == ?WLOG_ACTIVE, P#dp.wlog_len >= 10000 ->
+			wlog_stillneed(true,?WLOG_ABANDONDED,P);
+		_ when DoWlog, P#dp.wlog_status == ?WLOG_NONE ->
+			P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1};
+		_ when P#dp.wlog_status == ?WLOG_ACTIVE ->
+			P#dp{wlog_len = P#dp.wlog_len + 1};
 		_ ->
 			P
 	end.
 
+can_stop_wlog(P) ->
+	Home = self(),
+	spawn(fun() -> can_stop_wlog(Home,P) end).
+can_stop_wlog(Home,P) ->
+	ClusterNodes = bkdcore:cluster_nodes(),
+	ConnectedNodes = bkdcore:cluster_nodes_connected(),
+	LenConnected = length(ConnectedNodes),
+	case LenConnected  == length(ClusterNodes) of
+		true ->
+			{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{getinfo,verifyinfo},[{flags,P#dp.flags}]]),
+			case GetFailed of
+				[] ->
+					ok;
+				_ ->
+					MatchingResults = [ok || {ok,_,Crc,Evnum,_} <- Results, Crc == P#dp.evcrc, Evnum == P#dp.evnum],
+					case length(MatchingResults) == LenConnected of
+						true ->
+							% If all nodes match, there is no need to still be doing wlog
+							[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+															{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE}])
+								|| Nd <- ConnectedNodes],
+							gen_server:call(Home,{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE});
+						false ->
+							ok
+					end
+			end;
+		false ->
+			ok
+	end.
 
 % Either log has been abandonded for being too large or all nodes are in sync. Thus there are
 %  two reasons for abandoning, ?WLOG_NONE or ?WLOG_ABANDONED.
@@ -2062,6 +2094,7 @@ init([_|_] = Opts) ->
 					% end
 			end;
 		P ->
+			random:seed(P#dp.start_time),
 			ClusterNodes = bkdcore:cluster_nodes(),
 			?ADBG("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
