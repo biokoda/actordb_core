@@ -140,7 +140,13 @@ process_ev(Evnum,[{Id,Data}|T]) when Id > Evnum ->
 						{ok,Path,NumNow} when is_binary(NumNow) ->
 							Pid = undefined;
 						{ok,Pid} when is_pid(Pid) ->
-							{ok,Path,NumNow} = actordb_sqlproc:call({Name,Type},[],{getinfo,actornum},actordb_actor)
+							case actordb_sqlproc:call({Name,Type},[],{getinfo,actornum},actordb_actor) of
+								{error,nocreate} ->
+									Path = "",
+									NumNow = undefined;
+								{ok,Path,NumNow} ->
+									ok
+							end
 					end,
 					case NumNow == NumDeleted of
 						true ->
@@ -150,7 +156,12 @@ process_ev(Evnum,[{Id,Data}|T]) when Id > Evnum ->
 								_ ->
 									actordb_sqlproc:stop(Pid)
 							end,
-							file:delete(Path);
+							case Path of
+								[_|_] ->
+									file:delete(Path);
+								_ ->
+									ok
+							end;
 						false ->
 							ok
 					end

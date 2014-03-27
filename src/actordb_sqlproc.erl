@@ -655,6 +655,8 @@ handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; 
 			reply(From,reinit),
 			{ok,NP} = init(P,replicate_conflict),
 			{noreply,NP};
+		_ when element(1,Msg) == replicate_start, P#dp.copyproc /= undefined ->
+			{reply,notready,P};
 		_ ->
 			?DBG("Queueing msg ~p ~p, because ~p",[Msg,P#dp.mors,{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = P#dp.activity+1}}
@@ -1469,7 +1471,7 @@ commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
 							exit({replication_failed_3,LenCommited,LenCluster})
 					end;
 				false ->
-					?AERR("replicate failed ~p ~p",[Sql,{Actor,Type},{ResultsStart,StartFailed}]),
+					?AERR("replicate failed ~p ~p ~p",[Sql,{Actor,Type},{ResultsStart,StartFailed}]),
 					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cbmod,Actor,
 																Type,replicate_rollback,[{flags,Flags}]]),
 					exit({replication_failed_4,LenStarted,LenCluster})
@@ -1718,8 +1720,20 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			actordb_sqlite:stop(P#dp.db),
 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, mors = master, dbcopyref = Ref}),
 			erlang:monitor(process,RecvPid),
+
+			% In case db needs to be restored from another node, reject any writes in callqueue
+			QL = butil:sparsemap(fun({MsgFrom,Msg}) ->
+				case ok of
+					_ when element(1,Msg) == replicate_start ->
+						reply(MsgFrom,notready),
+						undefined;
+					_ ->
+						{MsgFrom,Msg}
+				end
+			end,queue:to_list(P#dp.callqueue)),
+
 			{noreply,P#dp{db = undefined,
-							verifypid = undefined, verified = false, mors = Mors, masternode = MasterNode,
+							verifypid = undefined, verified = false, mors = Mors, masternode = MasterNode,callqueue = queue:from_list(QL),
 							masternodedist = bkdcore:dist_name(MasterNode),dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}};
 		{update_direct,Mors,Bin} ->
 			?AINF("Verify down update direct ~p ~p ~p",[Mors,P#dp.actorname,P#dp.actortype]),
@@ -1730,19 +1744,7 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 			{noreply,NP};
 		{redirect,Nd} ->
 			?AINF("verify redirect ~p ~p",[P#dp.actorname,Nd]),
-			% case lists:member(Nd,bkdcore:)
 			{stop,normal,P};
-		{wlog,Crc,EvNum,Sql} ->
-			?ADBG("Verify wlog sql ~p ~p",[P#dp.actorname,P#dp.actortype]),
-			ok = okornot(actordb_sqlite:exec(P#dp.db,[
-					 <<"$SAVEPOINT 'adb';">>,
-					 Sql,
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=",?EVNUM/binary,";">>,
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=",?EVCRC/binary,";">>,
-					 <<"$RELEASE SAVEPOINT 'adb';">>
-					 ],write)),
-			{ok,NP} = init(P#dp{evnum = EvNum, evcrc = Crc},update_wlog),
-			{noreply,NP};
 		{nomajority,Groups} ->
 			?AERR("Verify nomajority ~p ~p",[{P#dp.actorname,P#dp.actortype},Groups]),
 			% self() ! stop,
