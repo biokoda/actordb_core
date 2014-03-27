@@ -748,7 +748,12 @@ handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} 
 		_ when Trump; P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.evnum == PrevEvnum, P#dp.evcrc == PrevCrc ->
 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
 		_ when P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.prev_evnum == PrevEvnum, P#dp.prev_evcrc == PrevCrc ->
-			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
+			case forget_write(P) of
+				ok ->
+					{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
+				_ ->
+					handle_call(Msg,From,P#dp{prev_evnum = -1})
+			end;
 		_ ->
 			actordb_sqlite:stop(P#dp.db),
 			case ok of
