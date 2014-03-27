@@ -22,135 +22,6 @@ test_real() ->
 	% multiupdate_write(),
 	% multiupdate_read().
 
-l(N) ->
-	spawn(fun() ->
-		D = <<"actor type1(ac",(butil:tobin(1))/binary,");",
-				"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",
-				(binary:copy(<<"a">>,1024*1))/binary,"');",
-				"insert into tab2 values (1,2,3,4,5);",
-				"select * from what where id=1 and id=2 or id=10 and id=11;">>,
-		
-		% cprof:start(),
-		Start = now(),
-		l1(N,D),
-		% cprof:pause(),
-		io:format("Diff ~p~n",[timer:now_diff(now(),Start)])
-	end).
-	% io:format("~p~n",[cprof:analyse()]).
-
-l1(0,_) ->
-	ok;
-l1(N,X) ->
-	% actordb_sqlparse:parse_statements(X),
-	% base64:encode(X),
-	butil:hex(X),
-	% os:timestamp(),
-	l1(N-1,X).
-
-
-t(Conc,PerWorker) ->
-	t(Conc,PerWorker,1).
-t(Conc,PerWorker,Size) ->
-	spawn(fun() -> runt1(Conc,PerWorker,Size)	end).
-% neverend (reload module to kill it)
-tnv(C,P,S) ->
-	spawn(fun() -> runt(C,P,S)	end).
-
-runt(C,P,S) ->
-	runt1(C,P,S),
-	runt(C,P,S).
-
-runt1(Concurrency,PerWorker,S) ->
-	Start = now(),
-	[spawn_monitor(fun() -> {A,B,C} = now(),
-							random:seed(A,B,C), 
-							run(binary:copy(<<"a">>,1024*S),actordb:start_bp(),N,PerWorker) 
-					end)
-			 || N <- lists:seq(1,Concurrency)],
-	wait_t_response(Concurrency),
-	St = now(),
-	erase(),
-	Time = timer:now_diff(St,Start),
-	io:format("~p~n~ps,~pms,~pmics~n", [Time,Time div 1000000, ((Time rem 1000000)  div 1000),
-										((Time rem 1000000)  rem 1000)]).
-
-wait_t_response(0) ->
-	ok;
-wait_t_response(N) ->
-	receive
-		{'DOWN',_Monitor,_,_PID,_Result} ->
-			wait_t_response(N-1)
-	end.
-
-run(D,_P,_W,0) ->
-	D;
-run(D,P,W,N) ->
-	% butil:tobin(random:uniform(100000))
-		Sql = {[{{<<"type1">>,[<<"ac.",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary>>],[create]},
-		   true,
-		   [<<"insert into tab values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>]}],
-		 true},
-		 case actordb:exec_bp1(P,byte_size(D),Sql) of
-		 % case actordb:exec1(Sql) of
-		 	{sleep,_} ->
-		 		actordb:sleep_bp(P);
-		 		% ok;
-		 	_ ->
-		 		ok
-		 end,
-		% exec(<<"actor type1(ac",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary,");",
-		% 					"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>),
-		
-	run(D,P,W,N-1).
-
-
-tsingle(N) ->
-	spawn_monitor(fun() -> 
-			Start = now(),
-			file:delete("tt"),
-			{ok,Db,Schema,_} = actordb_sqlite:init("tt",wal),
-			Pragmas = actordb_sqlite:exec(Db,<<"PRAGMA cache_size;PRAGMA mmap_size;PRAGMA page_size;",
-								"PRAGMA synchronous=0;PRAGMA locking_mode;">>),
-			io:format("PRagmas ~p~n",[Pragmas]),
-			case Schema of
-				[_|_] ->
-					ok;
-				[] ->
-					% actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>)
-					XX = actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id TEXT PRIMARY KEY, txt TEXT);">>),
-					io:format("~p~n",[XX])
-			end,
-			
-			
-			io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
-			tsingle(Db,N),
-			io:format("Time ~p~n",[timer:now_diff(now(),Start)])
-		end),
-	receive
-		{'DOWN',_Monitor,_,_PID,normal} ->
-			ok;
-		{'DOWN',_Monitor,_,_PID,Reason} ->
-			Reason
-		after 1000 ->
-			timeout
-	end.
-tsingle(_,0) ->
-	ok;
-tsingle(Db,N) ->
-	actordb_sqlite:exec(Db,<<"SAVEPOINT 'adb';",
-						"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'HAHAHAFR');",
-						"RELEASE SAVEPOINT 'adb';"
-						>>),
-	io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
-	tsingle(Db,N-1).
-
-filltkv(N) ->
-	filltkv(N,binary:copy(<<"a">>,1024*1024)).
-filltkv(N,B) when N > 0 ->
-	actordb:exec(["ACTOR textkv(",butil:tobin(N),");","INSERT OR IGNORE INTO actors VALUES ('",butil:tobin(N),"',","{{hash(",butil:tobin(N),")}},'",B,"')"]),
-	filltkv(N-1,B);
-filltkv(0,_) ->
-	ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 % 
@@ -844,6 +715,196 @@ schema() ->
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+% 
+% 		Experiments
+% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+
+l(N) ->
+	spawn(fun() ->
+		D = <<"actor type1(ac",(butil:tobin(1))/binary,");",
+				"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",
+				(binary:copy(<<"a">>,1024*1))/binary,"');",
+				"insert into tab2 values (1,2,3,4,5);",
+				"select * from what where id=1 and id=2 or id=10 and id=11;">>,
+		
+		% cprof:start(),
+		Start = now(),
+		l1(N,D),
+		% cprof:pause(),
+		io:format("Diff ~p~n",[timer:now_diff(now(),Start)])
+	end).
+	% io:format("~p~n",[cprof:analyse()]).
+
+l1(0,_) ->
+	ok;
+l1(N,X) ->
+	% actordb_sqlparse:parse_statements(X),
+	% base64:encode(X),
+	butil:hex(X),
+	% os:timestamp(),
+	l1(N-1,X).
+
+
+t(Conc,PerWorker) ->
+	t(Conc,PerWorker,1).
+t(Conc,PerWorker,Size) ->
+	spawn(fun() -> runt1(Conc,PerWorker,Size)	end).
+% neverend (reload module to kill it)
+tnv(C,P,S) ->
+	spawn(fun() -> runt(C,P,S)	end).
+
+runt(C,P,S) ->
+	runt1(C,P,S),
+	runt(C,P,S).
+
+runt1(Concurrency,PerWorker,S) ->
+	Start = now(),
+	[spawn_monitor(fun() -> {A,B,C} = now(),
+							random:seed(A,B,C), 
+							run(binary:copy(<<"a">>,1024*S),actordb:start_bp(),N,PerWorker) 
+					end)
+			 || N <- lists:seq(1,Concurrency)],
+	wait_t_response(Concurrency),
+	St = now(),
+	erase(),
+	Time = timer:now_diff(St,Start),
+	io:format("~p~n~ps,~pms,~pmics~n", [Time,Time div 1000000, ((Time rem 1000000)  div 1000),
+										((Time rem 1000000)  rem 1000)]).
+
+wait_t_response(0) ->
+	ok;
+wait_t_response(N) ->
+	receive
+		{'DOWN',_Monitor,_,_PID,_Result} ->
+			wait_t_response(N-1)
+	end.
+
+run(D,_P,_W,0) ->
+	D;
+run(D,P,W,N) ->
+	% butil:tobin(random:uniform(100000))
+		Sql = {[{{<<"type1">>,[<<"ac.",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary>>],[create]},
+		   true,
+		   [<<"insert into tab values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>]}],
+		 true},
+		 case actordb:exec_bp1(P,byte_size(D),Sql) of
+		 % case actordb:exec1(Sql) of
+		 	{sleep,_} ->
+		 		actordb:sleep_bp(P);
+		 		% ok;
+		 	_ ->
+		 		ok
+		 end,
+		% exec(<<"actor type1(ac",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary,");",
+		% 					"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>),
+		
+	run(D,P,W,N-1).
+
+
+tsingle(N) ->
+	spawn_monitor(fun() -> 
+			Start = now(),
+			file:delete("tt"),
+			{ok,Db,Schema,_} = actordb_sqlite:init("tt",wal),
+			Pragmas = actordb_sqlite:exec(Db,<<"PRAGMA cache_size;PRAGMA mmap_size;PRAGMA page_size;",
+								"PRAGMA synchronous=0;PRAGMA locking_mode;">>),
+			io:format("PRagmas ~p~n",[Pragmas]),
+			case Schema of
+				[_|_] ->
+					ok;
+				[] ->
+					% actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>)
+					XX = actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id TEXT PRIMARY KEY, txt TEXT);">>),
+					io:format("~p~n",[XX])
+			end,
+			
+			
+			io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
+			tsingle(Db,N),
+			io:format("Time ~p~n",[timer:now_diff(now(),Start)])
+		end),
+	receive
+		{'DOWN',_Monitor,_,_PID,normal} ->
+			ok;
+		{'DOWN',_Monitor,_,_PID,Reason} ->
+			Reason
+		after 1000 ->
+			timeout
+	end.
+tsingle(_,0) ->
+	ok;
+tsingle(Db,N) ->
+	actordb_sqlite:exec(Db,<<"SAVEPOINT 'adb';",
+						"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'HAHAHAFR');",
+						"RELEASE SAVEPOINT 'adb';"
+						>>),
+	io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
+	tsingle(Db,N-1).
+
+wal_test() ->
+	{PID,_} = spawn_monitor(fun() -> wal_test1() end),
+	receive
+		{'DOWN',_Monitor,_,PID,normal} ->
+			ok;
+		{'DOWN',_Monitor,_,PID,Reason} ->
+			Reason
+		after 1000 ->
+			timeout
+	end.
+wal_test1() ->
+	file:delete("tt"),
+	{ok,DbPre,_Schema,PageSize} = actordb_sqlite:init("tt",wal),
+	{ok,_} = actordb_sqlite:exec(DbPre,<<"CREATE TABLE tab (id TEXT PRIMARY KEY, v INTEGER);INSERT INTO tab VALUES (1,0);">>),
+	DbPost = wl(DbPre,PageSize,0),
+	Print = fun() -> io:format("After ~p~n",[actordb_sqlite:exec(DbPost,"SELECT * FROM tab;")]) end,
+	Print(),
+	actordb_sqlite:stop(DbPost),
+	file:delete("tt"),
+	ok.
+
+wl(Db,PgSize,N) ->
+	{ok,_} = actordb_sqlite:exec(Db,[<<"UPDATE tab SET v=">>,butil:tobin(N), <<" WHERE id=1;">>]),
+	{NPrev,NPages} = actordb_sqlite:wal_pages(Db),
+	io:format("~p ~p ~p~n",[N,{NPrev,NPages},actordb_sqlite:exec(Db,"SELECT * FROM tab;")]),
+	case N of
+		10 ->
+			% Make the last write magically dissappear.
+			{ok,File} = file:open("tt-wal",[write,read,binary,raw]),
+			{ok,FileSize} = file:position(File,eof),
+			io:format("Filesize ~p, truncating at ~p~n",[FileSize,32+(PgSize+24)*NPrev]),
+			{ok,_} = file:position(File,32+(PgSize+24)*NPrev),
+			ok = file:truncate(File),
+			file:close(File),
+			actordb_sqlite:stop(Db),
+			{ok,DbPost,_Schema,_PageSize} = actordb_sqlite:init("tt",wal),
+			DbPost;
+		_ ->
+			wl(Db,PgSize,N+1)
+	end.
+
+filltkv(N) ->
+	filltkv(N,binary:copy(<<"a">>,1024*1024)).
+filltkv(N,B) when N > 0 ->
+	actordb:exec(["ACTOR textkv(",butil:tobin(N),");","INSERT OR IGNORE INTO actors VALUES ('",butil:tobin(N),"',","{{hash(",butil:tobin(N),")}},'",B,"')"]),
+	filltkv(N-1,B);
+filltkv(0,_) ->
+	ok.
 
 
 

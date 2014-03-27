@@ -250,7 +250,7 @@ print_info(Pid) ->
 
 
 -record(dp,{db, actorname,actortype, evnum = 0,evcrc = 0, activity = 0, timerref, start_time,
-			page_size = 1024, activity_now,write_bytes = 0,schemanum,schemavers,flags = 0,
+			page_size = 1024, activity_now,schemanum,schemavers,flags = 0,
 			% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
 			locked = [],
 	% Multiupdate id, set to {Multiupdateid,TransactionNum} if in the middle of a distributed transaction
@@ -804,8 +804,26 @@ handle_call({replicate_bad_commit,EvNum,Crc},_,P) ->
 	?ERR("replicate_bad_commit in ~p, my ~p",[{EvNum,Crc},{P#dp.evnum,P#dp.evcrc}]),
 	case P#dp.evnum == EvNum andalso P#dp.evcrc == Crc of
 		true ->
-			actordb_sqlite:stop(P#dp.db),
-	 		delactorfile(P),
+			% We can find out how many pages last write contained and truncate wal file manually.
+			% After closing db handle, last write will be lost and bad commit will be forgotten.
+			ForgetWrite = fun() ->
+				wal = P#dp.journal_mode,
+				{NPrev,NPages} = actordb_sqlite:wal_pages(P#dp.db),
+				true = NPages > NPrev,
+				{ok,File} = file:open(P#dp.dbpath++"-wal",[write,read,binary,raw]),
+				{ok,_} = file:position(File,32+(P#dp.page_size+24)*NPrev),
+				ok = file:truncate(File),
+				file:close(File),
+				actordb_sqlite:stop(P#dp.db),
+				ok
+			end,
+			case catch ForgetWrite() of
+				ok ->
+					ok;
+				_ ->
+					actordb_sqlite:stop(P#dp.db),
+					delactorfile(P)
+			end,
 	 		{ok,NP} = init(P,replicate_bad_commit),
 	 		{reply,ok,NP#dp{callqueue = P#dp.callqueue}};
 		_ ->
@@ -1013,7 +1031,7 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 			end;
 		Resp ->
 			actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-			{reply,Resp,P#dp{activity = P#dp.activity+1, write_bytes = P#dp.write_bytes + iolist_size(Sql)}}
+			{reply,Resp,P#dp{activity = P#dp.activity+1}}
 	end;
 write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 	?DBLOG(P#dp.db,"writetransaction ~p ~p ~p ~p",[P#dp.evnum,Crc,{Tid,Updaterid,Node},P#dp.dbcopy_to]),
@@ -1101,8 +1119,7 @@ write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P)
 					{noreply,P#dp{callfrom = From,callres = undefined, commiter = Commiter, 
 								  activity = P#dp.activity + 1,replicate_sql = {Sql,EvNum+1,Crc,NewVers},
 								  transactioncheckref = CheckRef,
-								  transactionid = TransactionId,
-								  write_bytes = P#dp.write_bytes + byte_size(Sql)}};
+								  transactionid = TransactionId}};
 				_ ->
 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					erlang:demonitor(CheckRef),
@@ -1914,14 +1931,20 @@ handle_info({check_inactivity,N}, P) ->
 			end;
 		_ ->
 			Now = actordb_local:actor_activity(P#dp.activity_now),
-			case P#dp.write_bytes > 1024*32 of
+
+			case P#dp.journal_mode == wal of
 				true when P#dp.dbcopyref == undefined, P#dp.dbcopy_to == [] ->
-					actordb_sqlite:checkpoint(P#dp.db),
-					WB = 0;
+					{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
+					case NPages*(P#dp.page_size+24) > 1024*1024 of
+						true ->
+							actordb_sqlite:checkpoint(P#dp.db);
+						_ ->
+							ok
+					end;
 				_ ->
-					WB = P#dp.write_bytes
+					ok
 			end,
-			{noreply,check_timer(P#dp{activity_now = Now, write_bytes = WB, locked = abandon_locks(P,P#dp.locked,[])})}
+			{noreply,check_timer(P#dp{activity_now = Now, locked = abandon_locks(P,P#dp.locked,[])})}
 	end;
 handle_info(check_inactivity,P) ->
 	handle_info({check_inactivity,P#dp.activity+1},P#dp{activity = P#dp.activity + 1});
@@ -2099,14 +2122,15 @@ init([_|_] = Opts) ->
 			?ADBG("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name(),butil:ds_val(startreason,Opts)]),
-			case P#dp.mors of
-				master when ClusterNodes == [] ->
-					JournalMode = actordb_conf:journal_mode();
-				master ->
-					JournalMode = actordb_conf:journal_mode();
-				slave ->
-					JournalMode = off
-			end,
+			% case P#dp.mors of
+			% 	master when ClusterNodes == [] ->
+			% 		JournalMode = actordb_conf:journal_mode();
+			% 	master ->
+			% 		JournalMode = actordb_conf:journal_mode();
+			% 	slave ->
+			% 		JournalMode = off
+			% end,
+			JournalMode = actordb_conf:journal_mode(),
 			case P#dp.copyfrom of
 				undefined ->
 					MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
