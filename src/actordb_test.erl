@@ -26,7 +26,9 @@ l(N) ->
 	spawn(fun() ->
 		D = <<"actor type1(ac",(butil:tobin(1))/binary,");",
 				"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",
-				(binary:copy(<<"a">>,1024*1))/binary,"');">>,
+				(binary:copy(<<"a">>,1024*1))/binary,"');",
+				"insert into tab2 values (1,2,3,4,5);",
+				"select * from what where id=1 and id=2 or id=10 and id=11;">>,
 		
 		% cprof:start(),
 		Start = now(),
@@ -41,7 +43,7 @@ l1(0,_) ->
 l1(N,X) ->
 	% actordb_sqlparse:parse_statements(X),
 	% base64:encode(X),
-	% butil:dec2hex(X),
+	butil:hex(X),
 	% os:timestamp(),
 	l1(N-1,X).
 
@@ -103,10 +105,13 @@ run(D,P,W,N) ->
 
 
 tsingle(N) ->
-	spawn(fun() -> 
+	spawn_monitor(fun() -> 
 			Start = now(),
 			file:delete("tt"),
-			{ok,Db,Schema,_} = actordb_sqlite:init("tt",delete),
+			{ok,Db,Schema,_} = actordb_sqlite:init("tt",wal),
+			Pragmas = actordb_sqlite:exec(Db,<<"PRAGMA cache_size;PRAGMA mmap_size;PRAGMA page_size;",
+								"PRAGMA synchronous=0;PRAGMA locking_mode;">>),
+			io:format("PRagmas ~p~n",[Pragmas]),
 			case Schema of
 				[_|_] ->
 					ok;
@@ -115,12 +120,20 @@ tsingle(N) ->
 					XX = actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id TEXT PRIMARY KEY, txt TEXT);">>),
 					io:format("~p~n",[XX])
 			end,
-			Pragmas = actordb_sqlite:exec(Db,<<"PRAGMA cache_size;PRAGMA mmap_size;PRAGMA page_size;",
-								"PRAGMA synchronous=0;PRAGMA locking_mode;SELECT * from tab1;">>),
-			io:format("PRagmas ~p~n",[Pragmas]),
+			
+			
+			io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
 			tsingle(Db,N),
 			io:format("Time ~p~n",[timer:now_diff(now(),Start)])
-		end).
+		end),
+	receive
+		{'DOWN',_Monitor,_,_PID,normal} ->
+			ok;
+		{'DOWN',_Monitor,_,_PID,Reason} ->
+			Reason
+		after 1000 ->
+			timeout
+	end.
 tsingle(_,0) ->
 	ok;
 tsingle(Db,N) ->
@@ -128,6 +141,7 @@ tsingle(Db,N) ->
 						"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'HAHAHAFR');",
 						"RELEASE SAVEPOINT 'adb';"
 						>>),
+	io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
 	tsingle(Db,N-1).
 
 filltkv(N) ->
