@@ -745,7 +745,9 @@ l(N) ->
 		
 		% cprof:start(),
 		Start = now(),
-		l1(N,D),
+		{ok,Db,_Schema,_} = actordb_sqlite:init(":memory:",off),
+		l1(N,Db),
+		% actordb_sqlite:stop(Db),
 		% cprof:pause(),
 		io:format("Diff ~p~n",[timer:now_diff(now(),Start)])
 	end).
@@ -754,9 +756,10 @@ l(N) ->
 l1(0,_) ->
 	ok;
 l1(N,X) ->
+	esqlite3:noop(X),
 	% actordb_sqlparse:parse_statements(X),
 	% base64:encode(X),
-	butil:hex(X),
+	% butil:hex(X),
 	% os:timestamp(),
 	l1(N-1,X).
 
@@ -871,14 +874,14 @@ wal_test1() ->
 	file:delete("tt"),
 	{ok,DbPre,_Schema,PageSize} = actordb_sqlite:init("tt",wal),
 	{ok,_} = actordb_sqlite:exec(DbPre,<<"CREATE TABLE tab (id TEXT PRIMARY KEY, v INTEGER);INSERT INTO tab VALUES (1,0);">>),
-	DbPost = wl(DbPre,PageSize,0),
+	DbPost = wlcut(DbPre,PageSize,0),
 	Print = fun() -> io:format("After ~p~n",[actordb_sqlite:exec(DbPost,"SELECT * FROM tab;")]) end,
 	Print(),
 	actordb_sqlite:stop(DbPost),
 	file:delete("tt"),
 	ok.
 
-wl(Db,PgSize,N) ->
+wlcut(Db,PgSize,N) ->
 	{ok,_} = actordb_sqlite:exec(Db,[<<"UPDATE tab SET v=">>,butil:tobin(N), <<" WHERE id=1;">>]),
 	{NPrev,NPages} = actordb_sqlite:wal_pages(Db),
 	io:format("~p ~p ~p~n",[N,{NPrev,NPages},actordb_sqlite:exec(Db,"SELECT * FROM tab;")]),
@@ -895,8 +898,10 @@ wl(Db,PgSize,N) ->
 			{ok,DbPost,_Schema,_PageSize} = actordb_sqlite:init("tt",wal),
 			DbPost;
 		_ ->
-			wl(Db,PgSize,N+1)
+			wlcut(Db,PgSize,N+1)
 	end.
+
+
 
 filltkv(N) ->
 	filltkv(N,binary:copy(<<"a">>,1024*1024)).

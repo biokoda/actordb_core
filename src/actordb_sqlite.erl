@@ -108,7 +108,7 @@ exec(Db,Sql,write) ->
 exec(undefined,_) ->
 	ok;
 exec(Db,Sql) ->
-	Res = esqlite3:exec_script(Sql,Db),
+	Res = esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout()),
 	case Res of
 		{ok,[[{columns,_},_] = Res1]} ->
 			{ok,Res1};

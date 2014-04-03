@@ -43,6 +43,12 @@ init([]) ->
 			 permanent,
 			 100,
 			 worker,
-			[actordb_events]}
+			[actordb_events]},
+		{actordb_catchup,
+			{actordb_catchup, start, []},
+			 permanent,
+			 100,
+			 worker,
+			[actordb_catchup]}
 			]
 	}}.

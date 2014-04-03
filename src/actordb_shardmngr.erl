@@ -7,7 +7,7 @@
 -define(LAGERDBG,true).
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/0,reload/0,deser_prop/1]).
--export([whereis/0,find_local_shard/2,find_local_shard/3,is_local_shard/1,is_local_shard/2,find_global_shard/1,find_global_shard/2,steal_shard/3,
+-export([find_local_shard/2,find_local_shard/3,is_local_shard/1,is_local_shard/2,find_global_shard/1,find_global_shard/2,steal_shard/3,
 			set_shard_border/5,shard_moved/3,shard_started/3,shard_has_split/2,get_local_shards/0,schema_changed/0]).
 % for testing
 -export([create_shards/1]).
@@ -125,19 +125,6 @@ find_shard(_, _) ->
 shard_started(Pid,Shard,Type) ->
 	gen_server:cast(?MODULE,{shard_started,Pid,Shard,Type}).
 
-whereis() ->
-	case whereis(?MODULE) of
-		undefined ->
-			case butil:is_app_running(actordb_core) of
-				true ->
-					timer:sleep(10),
-					whereis();
-				false ->
-					undefined
-			end;
-		P ->
-			P
-	end.
 
 stop() ->
 	gen_server:call(?MODULE, stop).
@@ -425,15 +412,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},P) ->
 		{PID,_,_} ->
 			{noreply,P#dp{localshardpids = lists:keydelete(PID,1,P#dp.localshardpids)}}
 	end;
-handle_info({bkdcore_sharedstate,Nd,State},P) ->
-	case State of
-		init ->
-			bkdcore_sharedstate:app_vote_done(actordb,Nd);
-		reconnect ->
-			bkdcore_sharedstate:app_vote_done(actordb,Nd);
-		_ ->
-			ok
-	end,
+handle_info({bkdcore_sharedstate,_Nd,_State},P) ->
 	{noreply,P};
 handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
 	case bkdcore:nodelist() /= [] andalso bkdcore_sharedstate:is_ok() andalso P#dp.localshards == [] of
@@ -472,7 +451,7 @@ code_change(_, P, _) ->
 	{ok, P}.
 init([]) ->
 	% register and wait for cluster_connected message.
-	ok = bkdcore_sharedstate:register_app(?MODULE,{?MODULE,whereis,[]}),
+	ok = bkdcore_sharedstate:subscribe_changes(?MODULE),
 	case ets:info(?BORDERETS,size) of
 		undefined ->
 			ets:new(?BORDERETS, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]);

@@ -5,7 +5,7 @@
 -module(actordb_shardmvr).
 -behaviour(gen_server).
 -define(LAGERDBG,true).
--export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,whereis/0]).
+-export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/0,reload/0,deser_prop/1]).
 -export([local_shards_changed/2,shard_moved/3,shard_has_split/3]).
 -include_lib("actordb.hrl").
@@ -170,15 +170,7 @@ handle_info(can_start,P) ->
 			erlang:send_after(300,self(),can_start)
 	end,
 	{noreply,P};
-handle_info({bkdcore_sharedstate,Nd,State},P) ->
-	case State of
-		init ->
-			bkdcore_sharedstate:app_vote_done(actordb,Nd);
-		reconnect ->
-			bkdcore_sharedstate:app_vote_done(actordb,Nd);
-		_ ->
-			ok
-	end,
+handle_info({bkdcore_sharedstate,_Nd,_State},P) ->
 	{noreply,P};
 handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
 	{noreply,P};
@@ -217,22 +209,9 @@ code_change(_, P, _) ->
 init([]) ->
 	erlang:send_after(60000,self(),check_steal),
 	erlang:send_after(400,self(),can_start),
-	ok = bkdcore_sharedstate:register_app(?MODULE,{?MODULE,whereis,[]}),
+	ok = bkdcore_sharedstate:subscribe_changes(?MODULE),
 	{ok,#dp{}}.
 
-whereis() ->
-	case whereis(?MODULE) of
-		undefined ->
-			case butil:is_app_running(actordb_core) of
-				true ->
-					timer:sleep(10),
-					whereis();
-				false ->
-					undefined
-			end;
-		P ->
-			P
-	end.
 
 store_toget(TG) ->
 	ok = bkdcore_sharedstate:set_cluster_state(shardmngr,{shardstoget,bkdcore:node_name()},TG),

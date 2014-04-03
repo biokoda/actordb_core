@@ -7,7 +7,7 @@
   {vsn, "0.5.2"},
   {modules, [
             ]},
-  {registered, [actordb_sup,actordb_shardmngr,actordb_shardmvr]},
+  {registered, [actordb_sup,actordb_shardmngr,actordb_shardmvr,actordb_local,actordb_catchup,actordb_backpressure,actordb_events]},
   {mod, {actordb_core, []}},
   {applications, [kernel,stdlib]},
   {start_phases,[]}

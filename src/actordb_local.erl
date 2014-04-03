@@ -5,7 +5,7 @@
 -module(actordb_local).
 -behaviour(gen_server).
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, 
-		terminate/2, code_change/3,print_info/0,whereis/0,killactors/0,ulimit/0]).
+		terminate/2, code_change/3,print_info/0,killactors/0,ulimit/0]).
 % Multiupdaters
 -export([pick_mupdate/0,mupdate_busy/2,get_mupdaters_state/0,reg_mupdater/2,local_mupdaters/0]).
 % Actor activity
@@ -350,7 +350,7 @@ init(_) ->
 	erlang:send_after(100,self(),timeout),
 	erlang:send_after(10000,self(),check_mem),
 	erlang:send_after(1000,self(),read_ref),
-	ok = bkdcore_sharedstate:register_app(?MODULE,{?MODULE,whereis,[]}),
+	ok = bkdcore_sharedstate:subscribe_changes(?MODULE),
 	case ets:info(multiupdaters,size) of
 		undefined ->
 			ets:new(multiupdaters, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{write_concurrency,true}]);
@@ -412,20 +412,6 @@ init(_) ->
 	end,
 	{ok,#dp{memlimit = Memlimit, ulimit = Ulimit, proclimit = Proclimit, prev_sec_from = make_ref(),prev_sec_to = make_ref()}}.
 
-
-whereis() ->
-	case whereis(?MODULE) of
-		undefined ->
-			case butil:is_app_running(actordb_core) of
-				true ->
-					timer:sleep(10),
-					whereis();
-				false ->
-					undefined
-			end;
-		P ->
-			P
-	end.
 
 create_mupdaters(0,L) ->
 	L;

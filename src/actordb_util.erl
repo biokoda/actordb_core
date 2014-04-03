@@ -68,12 +68,13 @@ type_schema(Type,Version) ->
 			{Version,[]}
 	end.
 
-createcfg(Main,Extra,Level,Journal,Sync) ->
-	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},{journal_mode,Journal},{sync,Sync}]).
+createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout) ->
+	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},
+								   {journal_mode,Journal},{sync,Sync},{query_timeout,QueryTimeout}]).
 
 change_journal(Journal,Sync) ->
 	bkdcore:mkmodule(actordb_conf,[{db_path,actordb_conf:db_path()},{paths,actordb_conf:paths()},
-								   {level_size,actordb_conf:level_size()},{journal_mode,Journal},{sync,butil:tobin(Sync)}]).
+								   {level_size,actordb_conf:level_size()},{journal_mode,Journal},{sync,butil:tobin(Sync)},{query_timeout,actordb_conf:query_timeout()}]).
 
 % Out of schema.cfg create module with functions:
 % types() -> [actortype1,actortype2,...]
