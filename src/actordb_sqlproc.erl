@@ -271,7 +271,7 @@ print_info(Pid) ->
   mors, 
   % Sql statement received from master in first step of 2 phase commit. Only kept in memory.
   replicate_sql = <<>>,
-  wlog_status = ?WLOG_NONE,wlog_len = 0,
+  % wlog_status = ?WLOG_NONE,wlog_len = 0,
   % Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
   % If local db is being restored, verified will be on false.
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
@@ -357,48 +357,48 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 			% File is sent in 1MB chunks. If db is =< 1MB, send the file directly.
 			% If file > 1MB, switch to journal mode wal. This will caue writes to go to a WAL file not into the db.
 			%  Which means the sqlite file can be read from safely.
-			{Node,Ref,IsMove,RemoteEvNum,RemoteEvCrc,ActornameToCopyto} = Data,
+			{Node,Ref,IsMove,_RemoteEvNum,_RemoteEvCrc,ActornameToCopyto} = Data,
 			case P#dp.verified of
 				true ->
-					case P#dp.wlog_status of
-						?WLOG_ACTIVE when IsMove == false, RemoteEvNum > 0 ->
-							case actordb_sqlite:exec(P#dp.db,["SELECT id FROM __wlog WHERE id=",butil:tobin(RemoteEvNum)," AND ",
-															" crc=",butil:tobin(RemoteEvCrc)]) of
-								{ok,[{columns,_},{rows,[{_}]}]} ->
-									?ADBG("dbcopy sending from wlog ~p",[{P#dp.actorname,P#dp.actortype}]),
-									SendFromWlog = true;
-								_ ->
-									SS = ["SELECT min(id) FROM __wlog WHERE prevev=",butil:tobin(RemoteEvNum)," AND ",
-															" prevcrc=",butil:tobin(RemoteEvCrc)],
-									case actordb_sqlite:exec(P#dp.db,SS) of
-										{ok,[{columns,_},{rows,[{_}]}]} ->
-											?ADBG("dbcopy sending from wlog ~p",[{P#dp.actorname,P#dp.actortype}]),
-											SendFromWlog = true;
-										_ ->
-											SendFromWlog = false
-									end
-							end;
-						_ ->
-							SendFromWlog = false
-					end,
-					case SendFromWlog of
-						true ->
-							Me = self(),
-							case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
-								false ->
-									?COPYTRASH,
-									Db = P#dp.db,
-									{Pid,_} = spawn_monitor(fun() -> 
-											wlog_dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref,
-															evnum = RemoteEvNum},Me,ActornameToCopyto) end),
-									{reply,{ok,Ref},check_timer(P#dp{db = Db,
-																	dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
-																	activity = P#dp.activity + 1})};
-								{_,_Pid,Ref,_} ->
-									?DBG("senddb already exists with same ref!"),
-									{reply,{ok,Ref},P}
-							end;
-						false ->
+					% case P#dp.wlog_status of
+					% 	?WLOG_ACTIVE when IsMove == false, RemoteEvNum > 0 ->
+					% 		case actordb_sqlite:exec(P#dp.db,["SELECT id FROM __wlog WHERE id=",butil:tobin(RemoteEvNum)," AND ",
+					% 										" crc=",butil:tobin(RemoteEvCrc)]) of
+					% 			{ok,[{columns,_},{rows,[{_}]}]} ->
+					% 				?ADBG("dbcopy sending from wlog ~p",[{P#dp.actorname,P#dp.actortype}]),
+					% 				SendFromWlog = true;
+					% 			_ ->
+					% 				SS = ["SELECT min(id) FROM __wlog WHERE prevev=",butil:tobin(RemoteEvNum)," AND ",
+					% 										" prevcrc=",butil:tobin(RemoteEvCrc)],
+					% 				case actordb_sqlite:exec(P#dp.db,SS) of
+					% 					{ok,[{columns,_},{rows,[{_}]}]} ->
+					% 						?ADBG("dbcopy sending from wlog ~p",[{P#dp.actorname,P#dp.actortype}]),
+					% 						SendFromWlog = true;
+					% 					_ ->
+					% 						SendFromWlog = false
+					% 				end
+					% 		end;
+					% 	_ ->
+					% 		SendFromWlog = false
+					% end,
+					% case SendFromWlog of
+					% 	true ->
+					% 		Me = self(),
+					% 		case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
+					% 			false ->
+					% 				?COPYTRASH,
+					% 				Db = P#dp.db,
+					% 				{Pid,_} = spawn_monitor(fun() -> 
+					% 						wlog_dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref,
+					% 										evnum = RemoteEvNum},Me,ActornameToCopyto) end),
+					% 				{reply,{ok,Ref},check_timer(P#dp{db = Db,
+					% 												dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
+					% 												activity = P#dp.activity + 1})};
+					% 			{_,_Pid,Ref,_} ->
+					% 				?DBG("senddb already exists with same ref!"),
+					% 				{reply,{ok,Ref},P}
+					% 		end;
+					% 	false ->
 							case file:read_file_info(P#dp.dbpath) of
 								{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
 												IsMove /= false orelse P#dp.journal_mode == wal ->
@@ -435,8 +435,8 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 									{stop,normal,P};
 								Err ->
 									{reply,Err,P}
-							end
-					end;
+							end;
+					% end;
 				_ when P#dp.masternode /= undefined ->
 					case P#dp.masternode == bkdcore:node_name() of
 						true ->
@@ -496,19 +496,19 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 		checksplit ->
 			{M,F,A} = Data,
 			{reply,apply(M,F,[P#dp.cbstate,check|A]),P};
-		wlog_unneeded ->
-			?ADBG("Received wlog_unneeded ~p, have it? ~p",[{P#dp.actorname,P#dp.actortype},P#dp.wlog_status]),
-			% Data is either ?WLOG_NONE or ?WLOG_ABANDONDED
-			case ok of
-				_ when (P#dp.wlog_status == ?WLOG_ACTIVE orelse P#dp.wlog_status == ?WLOG_ABANDONDED) 
-							andalso P#dp.dbcopy_to == [] ->
-					ok = actordb_sqlite:exec(P#dp.db,[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,
-									?WLOG_STATUS,$,,butil:tobin(Data),<<");">>,
-									<<"$DELETE * FROM __wlog;">>]),
-					{reply,ok,P#dp{wlog_status = ?WLOG_NONE, wlog_len = 0}};
-				_ ->
-					{reply,ok,P}
-			end;
+		% wlog_unneeded ->
+		% 	?ADBG("Received wlog_unneeded ~p, have it? ~p",[{P#dp.actorname,P#dp.actortype},P#dp.wlog_status]),
+		% 	% Data is either ?WLOG_NONE or ?WLOG_ABANDONDED
+		% 	case ok of
+		% 		_ when (P#dp.wlog_status == ?WLOG_ACTIVE orelse P#dp.wlog_status == ?WLOG_ABANDONDED) 
+		% 					andalso P#dp.dbcopy_to == [] ->
+		% 			ok = actordb_sqlite:exec(P#dp.db,[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,
+		% 							?WLOG_STATUS,$,,butil:tobin(Data),<<");">>,
+		% 							<<"$DELETE * FROM __wlog;">>]),
+		% 			{reply,ok,P#dp{wlog_status = ?WLOG_NONE, wlog_len = 0}};
+		% 		_ ->
+		% 			{reply,ok,P}
+		% 	end;
 		% Copy done ok, release lock.
 		unlock ->
 			% For unlock data = copyref
@@ -551,12 +551,12 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 									case ok of
 										_ when WithoutLock == [], DbCopyTo == [] ->
 											actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
-											case P#dp.wlog_status of
-												?WLOG_ACTIVE ->
-													can_stop_wlog(P);
-												_ ->
-													ok
-											end,
+											% case P#dp.wlog_status of
+											% 	?WLOG_ACTIVE ->
+											% 		can_stop_wlog(P);
+											% 	_ ->
+											% 		ok
+											% end,
 											{reply,ok,P#dp{locked = WithoutLock, 
 														dbcopy_to = DbCopyTo,
 													 journal_mode = P#dp.def_journal_mode}};
@@ -588,7 +588,7 @@ handle_call({getinfo,What},_,P) ->
 			{stop,conflicted,P}
 	end;
 handle_call({commit,Doit,Id},From, P) ->
-	?ADBG("Commit ~p ~p ~p",[Doit,Id,P#dp.transactionid]),
+	?ADBG("Commit ~p ~p ~p ~p",[Doit,Id,From,P#dp.transactionid]),
 	case P#dp.transactionid == Id of
 		true ->
 			case P#dp.transactioncheckref of
@@ -605,8 +605,13 @@ handle_call({commit,Doit,Id},From, P) ->
 					case Sql of
 						delete ->
 							delete_actor(P),
-							reply(From,ok),
-							{stop,normal,P};
+							case From of
+								undefined ->
+									{reply,ok,P#dp{transactionid = undefined, replicate_sql = undefined, db = undefined}};
+								_ ->
+									reply(From,ok),
+									{stop,normal,P}
+							end;
 						_ ->
 							ok = okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
 							{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
@@ -636,6 +641,9 @@ handle_call({commit,Doit,Id},From, P) ->
 					handle_call({write,{undefined,erlang:crc32(NewSql),NewSql,undefined}},From,P#dp{callfrom = undefined,
 										transactionid = undefined,replicate_sql = undefined,transactioncheckref = undefined})
 			end;
+		_ when P#dp.db == undefined ->
+			reply(From,ok),
+			{stop,normal,P};
 		_ ->
 			{reply,ok,P}
 	end;
@@ -647,7 +655,8 @@ handle_call({delete,Moved},From,P) ->
 	reply(From,ok),
 	{stop,normal,P};
 % If we are not ready to process calls atm (in the middle of a write or db not verified yet). Queue requests.
-handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; P#dp.transactionid /= undefined; P#dp.locked /= [] ->
+handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; 
+								P#dp.transactionid /= undefined; P#dp.locked /= [] ->
 	case Msg of
 		{write,{_,_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,P);
@@ -747,13 +756,13 @@ handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} 
 	case ok of
 		_ when Trump; P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.evnum == PrevEvnum, P#dp.evcrc == PrevCrc ->
 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
-		_ when P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.prev_evnum == PrevEvnum, P#dp.prev_evcrc == PrevCrc ->
-			case forget_write(P) of
-				ok ->
-					{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
-				_ ->
-					handle_call(Msg,From,P#dp{prev_evnum = -1})
-			end;
+		% _ when P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.prev_evnum == PrevEvnum, P#dp.prev_evcrc == PrevCrc ->
+		% 	case forget_write(P) of
+		% 		ok ->
+		% 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
+		% 		_ ->
+		% 			handle_call(Msg,From,P#dp{prev_evnum = -1})
+		% 	end;
 		_ ->
 			actordb_sqlite:stop(P#dp.db),
 			case ok of
@@ -771,7 +780,7 @@ handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} 
 			end
 	end;
 % Called from master
-handle_call({replicate_commit,StoreLog},From,P) ->
+handle_call({replicate_commit,_StoreLog},From,P) ->
 	?ADBG("Replicate commit! ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.replicate_sql]),
 	case P#dp.replicate_sql of
 		<<>> ->
@@ -796,14 +805,14 @@ handle_call({replicate_commit,StoreLog},From,P) ->
 					Sql1 = semicolon(Sql),
 					Res = actordb_sqlite:exec(P#dp.db,[
 						 <<"$SAVEPOINT 'adb';">>,
-						 Sql1,add_wlog(P,StoreLog,Sql1,EvNum,Crc),
+						 Sql1,%add_wlog(P,StoreLog,Sql1,EvNum,Crc),
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
 						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
 						 <<"$RELEASE SAVEPOINT 'adb';">>
 						 ],write),
-					{reply,okornot(Res),check_timer(wlog_after_write(StoreLog,
+					{reply,okornot(Res),check_timer(%wlog_after_write(StoreLog,
 									P#dp{replicate_sql = <<>>,evnum = EvNum, prev_evnum = P#dp.evnum,prev_evcrc = P#dp.evcrc,
-										 evcrc = Crc, activity = P#dp.activity + 1, schemavers = NewVers}))}
+										 evcrc = Crc, activity = P#dp.activity + 1, schemavers = NewVers})}
 			end
 	end;
 handle_call(replicate_rollback,_,P) ->
@@ -813,15 +822,15 @@ handle_call({replicate_bad_commit,EvNum,Crc},_,P) ->
 	?ERR("replicate_bad_commit in ~p, my ~p",[{EvNum,Crc},{P#dp.evnum,P#dp.evcrc}]),
 	case P#dp.evnum == EvNum andalso P#dp.evcrc == Crc of
 		true ->
-			case forget_write(P) of
-				ok ->
-					{reply,ok,P#dp{evcrc = P#dp.prev_evcrc, evnum = P#dp.prev_evnum}};
-				_ ->
+			% case forget_write(P) of
+			% 	ok ->
+			% 		{reply,ok,P#dp{evcrc = P#dp.prev_evcrc, evnum = P#dp.prev_evnum}};
+			% 	_ ->
 					actordb_sqlite:stop(P#dp.db),
 					delactorfile(P),
 					{ok,NP} = init(P,replicate_bad_commit),
-	 				{reply,ok,NP#dp{callqueue = P#dp.callqueue}}
-			end;
+	 				{reply,ok,NP#dp{callqueue = P#dp.callqueue}};
+			% end;
 		_ ->
 			{reply,ok,P#dp{}}
 	end;
@@ -846,24 +855,24 @@ handle_call(_Msg,_,P) ->
 	{reply,{error,unhandled_call},P}.
 
 
-forget_write(P) ->
-	% We can find out how many pages last write contained and truncate wal file manually.
-	% After closing db handle, last write will be lost and bad commit will be forgotten.
-	ForgetWrite = fun() ->
-		wal = P#dp.journal_mode,
-		{NPrev,NPages} = actordb_sqlite:wal_pages(P#dp.db),
-		true = NPages > NPrev,
-		{ok,File} = file:open(P#dp.dbpath++"-wal",[write,read,binary,raw]),
-		{ok,_} = file:position(File,32+(P#dp.page_size+24)*NPrev),
-		ok = file:truncate(File),
-		file:close(File),
-		actordb_sqlite:stop(P#dp.db),
-		ok
-	end,
-	case catch ForgetWrite() of
-		Res ->
-			Res
-	end.
+% forget_write(P) ->
+% 	% We can find out how many pages last write contained and truncate wal file manually.
+% 	% After closing db handle, last write will be lost and bad commit will be forgotten.
+% 	ForgetWrite = fun() ->
+% 		wal = P#dp.journal_mode,
+% 		{NPrev,NPages} = actordb_sqlite:wal_pages(P#dp.db),
+% 		true = NPages > NPrev,
+% 		{ok,File} = file:open(P#dp.dbpath++"-wal",[write,read,binary,raw]),
+% 		{ok,_} = file:position(File,32+(P#dp.page_size+24)*NPrev),
+% 		ok = file:truncate(File),
+% 		file:close(File),
+% 		actordb_sqlite:stop(P#dp.db),
+% 		ok
+% 	end,
+% 	case catch ForgetWrite() of
+% 		Res ->
+% 			Res
+% 	end.
 
 check_timer(P) ->
 	case P#dp.timerref of
@@ -877,7 +886,7 @@ check_timer(P) ->
 
 
 delete_actor(P) ->
-	?ADBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
+	?AINF("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
 	case (P#dp.flags band ?FLAG_TEST == 0) of
 		true ->
 			case actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype) of
@@ -952,7 +961,7 @@ check_schema(P,Sql) ->
 	end.
 
 write_call({MFA,Crc,Sql,Transaction} = OrigMsg,From,P) ->
-	?DBG("writecall ~p ~p ~p",[MFA,Sql,Transaction]),	
+	?ADBG("writecall ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},MFA,Sql,Transaction]),	
 	case MFA of
 		undefined ->
 			case check_schema(P,Sql) of
@@ -1029,14 +1038,17 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 				_ when LenCluster == 0 ->
 					case Sql of
 						delete ->
-							delete_actor(P);
+							delete_actor(P),
+							reply(From,Res),
+							{stop,normal,P};
 						{moved,MovedTo} ->
 							actordb_sqlite:stop(P#dp.db),
-							delactorfile(P#dp{movedtonode = MovedTo});
+							reply(From,Res),
+							delactorfile(P#dp{movedtonode = MovedTo}),
+							{stop,normal,P};
 						_ ->
-							ok
-					end,
-					{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = Crc, schemavers = NewVers}};
+							{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = Crc, schemavers = NewVers}}
+					end;
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
 					Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,ReplSql,Crc,NewVers),
 					{noreply,P#dp{callfrom = From,callres = Res, commiter = Commiter, activity = P#dp.activity + 1,
@@ -1143,22 +1155,22 @@ write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P)
 			end
 	end.
 
-wlog_dbcopy(P,Home,ActorTo) ->
-	case gen_server:call(Home,{dbcopy_op,{self(),P#dp.dbcopyref},wlog_read,P#dp.evnum}) of
-		{ok,Done,Rows} ->
-			{LastNum,LastCrc,CompleteSql} = lists:foldl(fun({Id,Crc,_,_,Sql},{_,_,Sqls}) ->
-				{Id,Crc,[Sqls,base64:decode(Sql)]}
-			end,{0,0,[]},Rows),
-			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,{LastNum,LastCrc,CompleteSql},sql,original]}),
-			case Done of
-				done ->
-					exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}));
-				continue ->
-					wlog_dbcopy(P#dp{evnum = LastNum},Home,ActorTo)
-			end;
-		done ->
-			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}))
-	end.
+% wlog_dbcopy(P,Home,ActorTo) ->
+% 	case gen_server:call(Home,{dbcopy_op,{self(),P#dp.dbcopyref},wlog_read,P#dp.evnum}) of
+% 		{ok,Done,Rows} ->
+% 			{LastNum,LastCrc,CompleteSql} = lists:foldl(fun({Id,Crc,_,_,Sql},{_,_,Sqls}) ->
+% 				{Id,Crc,[Sqls,base64:decode(Sql)]}
+% 			end,{0,0,[]},Rows),
+% 			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,{LastNum,LastCrc,CompleteSql},sql,original]}),
+% 			case Done of
+% 				done ->
+% 					exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}));
+% 				continue ->
+% 					wlog_dbcopy(P#dp{evnum = LastNum},Home,ActorTo)
+% 			end;
+% 		done ->
+% 			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}))
+% 	end.
 
 dbcopy(P,Home,ActorTo) ->
 	{ok,F} = file:open(P#dp.dbpath,[read,binary,raw]),
@@ -1580,7 +1592,7 @@ handle_info(doqueue,P) ->
 % 	handle_info({'DOWN',_Monitor,Ref,PID,_Result},P#dp{callfrom = undefined,commiter = undefined});
 handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 	case Result of
-		{ok,EvNum,Crc,DoWlog} ->
+		{ok,EvNum,Crc,_DoWlog} ->
 			?DBLOG(P#dp.db,"commiterdown ok ~p ~p",[EvNum,Crc]),
 			?DBG("Commiter down ~p ok ~p callres ~p ~p",[{P#dp.actorname,P#dp.actortype},EvNum,P#dp.callres,P#dp.callqueue]),
 			{Sql,EvNumNew,CrcSql,NewVers} = P#dp.replicate_sql,
@@ -1600,7 +1612,8 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 					delactorfile(P#dp{movedtonode = MovedTo});
 				_ ->
 					Die = false,
-					ok = okornot(actordb_sqlite:exec(P#dp.db,[add_wlog(P,DoWlog,Sql,EvNum,Crc),<<"RELEASE SAVEPOINT 'adb';">>]))
+					% add_wlog(P,DoWlog,Sql,EvNum,Crc),
+					ok = okornot(actordb_sqlite:exec(P#dp.db,[<<"RELEASE SAVEPOINT 'adb';">>]))
 			end,
 			case P#dp.transactionid of
 				undefined ->
@@ -1639,11 +1652,12 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 				_ when Die ->
 					{stop,normal,P};
 				_ ->
-					handle_info(doqueue,check_timer(wlog_after_write(DoWlog,P#dp{commiter = undefined,callres = undefined, 
+					handle_info(doqueue,check_timer(%wlog_after_write(DoWlog,
+												P#dp{commiter = undefined,callres = undefined, 
 												callfrom = undefined,activity = P#dp.activity+1, 
 												evnum = EvNum, evcrc = Crc,
 												schemavers = NewVers,
-												replicate_sql = ReplicateSql})))
+												replicate_sql = ReplicateSql}))
 			end;
 		{reinit,Msg} ->
 			ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
@@ -1665,7 +1679,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 	case Reason of
-		{verified,Mors,MasterNode,AllSynced} when P#dp.transactionid == undefined; Mors == slave ->
+		{verified,Mors,MasterNode,_AllSynced} when P#dp.transactionid == undefined; Mors == slave ->
 			actordb_local:actor_mors(Mors,MasterNode),
 			?ADBG("Verify down ~p ~p ~p ~p ~p ~p",[P#dp.actorname, P#dp.actortype, P#dp.evnum,
 						Reason, P#dp.mors, queue:is_empty(P#dp.callqueue)]),
@@ -1677,20 +1691,20 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
 				_ ->
 					NS = P#dp.cbstate
 			end,
-			handle_info(doqueue,wlog_stillneed(AllSynced,?WLOG_NONE,
+			handle_info(doqueue,%wlog_stillneed(AllSynced,?WLOG_NONE,
 									P#dp{verified = true, verifypid = undefined, mors = Mors, masternode = MasterNode, 
 									masternodedist = bkdcore:dist_name(MasterNode),
-									cbstate = NS}));
-		{verified,Mors,MasterNode,AllSynced} ->
+									cbstate = NS});
+		{verified,Mors,MasterNode,_AllSynced} ->
 			?ADBG("Verify down ~p ~p ~p ~p ~p ~p",[P#dp.actorname, P#dp.actortype, P#dp.evnum,
 						Reason, P#dp.mors, queue:is_empty(P#dp.callqueue)]),
 			?DBLOG(P#dp.db,"verified ~p ~p",[Mors,MasterNode]),
 			actordb_local:actor_mors(Mors,MasterNode),
 			{Tid,Updid,Node} = P#dp.transactionid,
 			{Sql,Evnum,Crc,_NewVers} = P#dp.replicate_sql, 
-			NP = wlog_stillneed(AllSynced,?WLOG_NONE,
-								P#dp{verified = true,verifypid = undefined, mors = Mors,
-					 			masternode = MasterNode,masternodedist = bkdcore:dist_name(MasterNode), cbstate = do_cb_init(P)}),
+			% NP = wlog_stillneed(AllSynced,?WLOG_NONE,
+			NP = P#dp{verified = true,verifypid = undefined, mors = Mors,
+					 			masternode = MasterNode,masternodedist = bkdcore:dist_name(MasterNode), cbstate = do_cb_init(P)},
 			case actordb:rpc(Node,Updid,{actordb_multiupdate,transaction_state,[Updid,Tid]}) of
 				{ok,State} when State == 0; State == 1 ->
 					ComplSql = 
@@ -1949,7 +1963,7 @@ handle_info({check_inactivity,N}, P) ->
 			Now = actordb_local:actor_activity(P#dp.activity_now),
 
 			case P#dp.journal_mode == wal of
-				true when P#dp.dbcopyref == undefined, P#dp.dbcopy_to == [] ->
+				true when P#dp.dbcopyref == undefined, P#dp.dbcopy_to == [], P#dp.db /= undefined ->
 					{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
 					case NPages*(P#dp.page_size+24) > 1024*1024 of
 						true ->
@@ -2023,72 +2037,73 @@ abandon_locks(P,[H|T],L) ->
 abandon_locks(_,[],L) ->
 	L.
 
-% Once wlog started continue untill we know all nodes are in sync.
-add_wlog(P,DoWlog,Sql,Evnum,Crc) when P#dp.wlog_status == ?WLOG_ACTIVE; 
-									  DoWlog, P#dp.wlog_status /= ?WLOG_ABANDONDED ->
-	[<<"$INSERT INTO __wlog VALUES (">>,butil:tobin(Evnum),$,,butil:tobin(Crc),$,,butil:tobin(P#dp.evnum),$,,butil:tobin(P#dp.evcrc),$,,
-			$',base64:encode(iolist_to_binary(Sql)),$',");"];
-% If status ?WLOG_NONE, ?WLOG_ABANDONED or dowlog == false do not do it.
-add_wlog(_P,_DoWlog,_Sql,_Evnum,_Crc) ->
-	[].
+% % Once wlog started continue untill we know all nodes are in sync.
+% add_wlog(P,DoWlog,Sql,Evnum,Crc) when P#dp.wlog_status == ?WLOG_ACTIVE; 
+% 									  DoWlog, P#dp.wlog_status /= ?WLOG_ABANDONDED ->
+% 	[<<"$INSERT INTO __wlog VALUES (">>,butil:tobin(Evnum),$,,butil:tobin(Crc),$,,butil:tobin(P#dp.evnum),$,,butil:tobin(P#dp.evcrc),$,,
+% 			$',base64:encode(iolist_to_binary(Sql)),$',");"];
+% % If status ?WLOG_NONE, ?WLOG_ABANDONED or dowlog == false do not do it.
+% add_wlog(_P,_DoWlog,_Sql,_Evnum,_Crc) ->
+% 	[].
 
-wlog_after_write(DoWlog,P) ->
-	case ok of
-		_ when P#dp.wlog_status == ?WLOG_ACTIVE, P#dp.wlog_len >= 10000 ->
-			wlog_stillneed(true,?WLOG_ABANDONDED,P);
-		_ when DoWlog, P#dp.wlog_status == ?WLOG_NONE ->
-			P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1};
-		_ when P#dp.wlog_status == ?WLOG_ACTIVE ->
-			P#dp{wlog_len = P#dp.wlog_len + 1};
-		_ ->
-			P
-	end.
+% wlog_after_write(DoWlog,P) ->
+% 	case ok of
+% 		_ when P#dp.wlog_status == ?WLOG_ACTIVE, P#dp.wlog_len >= 10000 ->
+% 			wlog_stillneed(true,?WLOG_ABANDONDED,P);
+% 		_ when DoWlog, P#dp.wlog_status == ?WLOG_NONE ->
+% 			P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1};
+% 		_ when P#dp.wlog_status == ?WLOG_ACTIVE ->
+% 			P#dp{wlog_len = P#dp.wlog_len + 1};
+% 		_ ->
+% 			P
+% 	end.
 
-can_stop_wlog(P) ->
-	Home = self(),
-	spawn(fun() -> can_stop_wlog(Home,P) end).
-can_stop_wlog(Home,P) ->
-	ClusterNodes = bkdcore:cluster_nodes(),
-	ConnectedNodes = bkdcore:cluster_nodes_connected(),
-	LenConnected = length(ConnectedNodes),
-	case LenConnected  == length(ClusterNodes) of
-		true ->
-			{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{getinfo,verifyinfo},[{flags,P#dp.flags}]]),
-			case GetFailed of
-				[] ->
-					MatchingResults = [ok || {ok,_,Crc,Evnum,_} <- Results, Crc == P#dp.evcrc, Evnum == P#dp.evnum],
-					case length(MatchingResults) == LenConnected of
-						true ->
-							% If all nodes match, there is no need to still be doing wlog
-							[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-															{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE}])
-								|| Nd <- ConnectedNodes],
-							gen_server:call(Home,{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE});
-						false ->
-							ok
-					end;
-				_ ->
-					ok
-			end;
-		false ->
-			ok
-	end.
+% can_stop_wlog(P) ->
+% 	Home = self(),
+% 	spawn(fun() -> can_stop_wlog(Home,P) end).
+% can_stop_wlog(Home,P) ->
+% 	ClusterNodes = bkdcore:cluster_nodes(),
+% 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
+% 	LenConnected = length(ConnectedNodes),
+% 	case LenConnected  == length(ClusterNodes) of
+% 		true ->
+% 			{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+% 															{getinfo,verifyinfo},[{flags,P#dp.flags}]]),
+% 			case GetFailed of
+% 				[] ->
+% 					MatchingResults = [ok || {ok,_,Crc,Evnum,_} <- Results, Crc == P#dp.evcrc, Evnum == P#dp.evnum],
+% 					case length(MatchingResults) == LenConnected of
+% 						true ->
+% 							% If all nodes match, there is no need to still be doing wlog
+% 							[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+% 															{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE}])
+% 								|| Nd <- ConnectedNodes],
+% 							gen_server:call(Home,{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE});
+% 						false ->
+% 							ok
+% 					end;
+% 				_ ->
+% 					ok
+% 			end;
+% 		false ->
+% 			ok
+% 	end.
 
 % Either log has been abandonded for being too large or all nodes are in sync. Thus there are
 %  two reasons for abandoning, ?WLOG_NONE or ?WLOG_ABANDONED.
-wlog_stillneed(AllSynced,How,P) ->
-	case ok of
-		_ when AllSynced andalso (P#dp.wlog_status == ?WLOG_ACTIVE orelse P#dp.wlog_status == ?WLOG_ABANDONDED) ->
-			[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-															{dbcopy_op,undefined,wlog_unneeded,How}])
-							|| Nd <- bkdcore:cluster_nodes_connected()],
-			actordb_sqlite:exec(P#dp.db,[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,
-									?WLOG_STATUS,$,,butil:tobin(How),<<");">>,
-									<<"$DELETE * FROM __wlog;">>]),
-			P#dp{wlog_status = How, wlog_len = 0};
-		_ ->
-			P
-	end.
+% wlog_stillneed(AllSynced,How,P) ->
+% 	case ok of
+% 		_ when AllSynced andalso (P#dp.wlog_status == ?WLOG_ACTIVE orelse P#dp.wlog_status == ?WLOG_ABANDONDED) ->
+% 			[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+% 															{dbcopy_op,undefined,wlog_unneeded,How}])
+% 							|| Nd <- bkdcore:cluster_nodes_connected()],
+% 			actordb_sqlite:exec(P#dp.db,[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,
+% 									?WLOG_STATUS,$,,butil:tobin(How),<<");">>,
+% 									<<"$DELETE * FROM __wlog;">>]),
+% 			P#dp{wlog_status = How, wlog_len = 0};
+% 		_ ->
+% 			P
+% 	end.
 
 
 terminate(_, _) ->
@@ -2126,11 +2141,6 @@ init([_|_] = Opts) ->
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					erlang:monitor(process,Pid),
 					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}}
-					% receive
-					% 	{'DOWN',_Monitor,_,Pid,_Reason} ->
-					% 		?AINF("Copy process for slave died ~p",[_Reason]),
-					% 		{stop,normal}
-					% end
 			end;
 		P ->
 			random:seed(P#dp.start_time),
@@ -2138,14 +2148,6 @@ init([_|_] = Opts) ->
 			?ADBG("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					bkdcore:node_name(),butil:ds_val(startreason,Opts)]),
-			% case P#dp.mors of
-			% 	master when ClusterNodes == [] ->
-			% 		JournalMode = actordb_conf:journal_mode();
-			% 	master ->
-			% 		JournalMode = actordb_conf:journal_mode();
-			% 	slave ->
-			% 		JournalMode = off
-			% end,
 			JournalMode = actordb_conf:journal_mode(),
 			case P#dp.copyfrom of
 				undefined ->
@@ -2170,25 +2172,25 @@ init([_|_] = Opts) ->
 									Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 									MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 									CopyFrom = butil:ds_val(?COPYFROMI,Rows),
-									case actordb_sqlite:exec(Db,<<"SELECT min(id),max(id) FROM __wlog;">>,read) of
-										{sql_error,_,_} ->
-											HaveWlog = ?WLOG_NONE,
-											WlogLen = 0,
-											actordb_sqlite:exec(Db,<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>);
-										[{columns,_},{rows,[{MinWL,MaxWL}]}] when is_integer(MinWL), 
-																					MinWL > 0, MinWL < MaxWL ->
-											WlogLen = MaxWL - MinWL,
-											HaveWlog = ?WLOG_ACTIVE;
-										_ ->
-											WlogLen = 0,
-											HaveWlog = ?WLOG_NONE
-									end,
-									case butil:toint(butil:ds_val(?WLOG_STATUSI,Rows,?WLOG_NONE)) of
-										?WLOG_ABANDONDED ->
-											WlogStatus = ?WLOG_ABANDONDED;
-										_ ->
-											WlogStatus = HaveWlog
-									end,
+									% case actordb_sqlite:exec(Db,<<"SELECT min(id),max(id) FROM __wlog;">>,read) of
+									% 	{sql_error,_,_} ->
+									% 		HaveWlog = ?WLOG_NONE,
+									% 		WlogLen = 0,
+									% 		actordb_sqlite:exec(Db,<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>);
+									% 	[{columns,_},{rows,[{MinWL,MaxWL}]}] when is_integer(MinWL), 
+									% 												MinWL > 0, MinWL < MaxWL ->
+									% 		WlogLen = MaxWL - MinWL,
+									% 		HaveWlog = ?WLOG_ACTIVE;
+									% 	_ ->
+									% 		WlogLen = 0,
+									% 		HaveWlog = ?WLOG_NONE
+									% end,
+									% case butil:toint(butil:ds_val(?WLOG_STATUSI,Rows,?WLOG_NONE)) of
+									% 	?WLOG_ABANDONDED ->
+									% 		WlogStatus = ?WLOG_ABANDONDED;
+									% 	_ ->
+									% 		WlogStatus = HaveWlog
+									% end,
 									case Transaction of
 										[] when CopyFrom /= undefined ->
 											CPFrom = binary_to_term(base64:decode(CopyFrom)),
@@ -2201,8 +2203,9 @@ init([_|_] = Opts) ->
 													TypeOfMove = false
 											end,
 											self() ! {check_redirect,Db,TypeOfMove},
-											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState, 
-													 wlog_status = WlogStatus,wlog_len = WlogLen}};
+											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState
+													 % wlog_status = WlogStatus,wlog_len = WlogLen
+													 }};
 										[] ->
 											case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
 												{_,[]} ->
@@ -2215,8 +2218,8 @@ init([_|_] = Opts) ->
 																"COMMIT;">>,write))
 											end,
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,
-																	wlog_status = WlogStatus,
-																	wlog_len = WlogLen,
+																	% wlog_status = WlogStatus,
+																	% wlog_len = WlogLen,
 																	movedtonode = MovedToNode1})};
 										[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
 											case base64:decode(MSql1) of
@@ -2229,8 +2232,8 @@ init([_|_] = Opts) ->
 											ReplSql = {MSql,Evnum+1,CrcSql,SchemaVers},
 											Transid = {Tid,Updid,Node},
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, replicate_sql = ReplSql, 
-															transactionid = Transid, wlog_status = WlogStatus, 
-															movedtonode = MovedToNode1,wlog_len = WlogLen,
+															transactionid = Transid, %wlog_status = WlogStatus, wlog_len = WlogLen,
+															movedtonode = MovedToNode1,
 															schemavers = SchemaVers})}
 									end;
 								[] when (P#dp.flags band ?FLAG_CREATE) > 0 ->

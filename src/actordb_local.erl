@@ -65,7 +65,8 @@ get_nactors() ->
 reg_mupdater(Id,Pid) ->
 	gen_server:call(?MODULE,{regupdater,Id,Pid}).
 pick_mupdate() ->
-	case butil:findtrue(fun(Id) -> V = butil:ds_val(Id,multiupdaters), V == true orelse V == undefined end,butil:ds_val(all,multiupdaters)) of
+	case butil:findtrue(fun(Id) -> V = butil:ds_val(Id,multiupdaters), V == true orelse V == undefined end,
+						butil:ds_val(all,multiupdaters)) of
 		false ->
 			% They are all busy. Pick one at random and queue the request on it.
 			actordb:hash_pick([self(),os:timestamp()],butil:ds_val(all,multiupdaters));
@@ -168,7 +169,10 @@ print_info() ->
 			% Every second do make_ref. Since ref is always incrementing it's a simple+fast way
 			%  to find out which actors were active during prev second.
 			prev_sec_from, prev_sec_to,
-			stat_readers = [],prev_reads = 0, prev_writes = 0}).
+			stat_readers = [],prev_reads = 0, prev_writes = 0,
+			% slots for 8 raft cluster connections
+			% Set element is: {NodeName,BoolConnected,ReconnectRef}
+			raft_connections = {undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined}}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
@@ -196,6 +200,15 @@ handle_cast(killactors,P) ->
 	NProc = ets:info(actoractivity,size),
 	killactors(NProc,ets:last(actoractivity)),
 	{noreply,P};
+handle_cast({connection_dead,N},P) ->
+	case element(N,P#dp.raft_connections) of
+		undefined ->
+			{noreply,P};
+		{_Nd,false,_} ->
+			{noreply,P};
+		{Nd,true,_} ->
+			{noreply,P#dp{raft_connections = nodechange(Nd,P#dp.raft_connections,false)}}
+	end;
 handle_cast(_, P) ->
 	{noreply, P}.
 
@@ -248,6 +261,9 @@ handle_info(check_limits,P) ->
 			end
 	end,
 	{noreply,P#dp{lastcull = LastCull}};
+handle_info(reconnect_raft,P) ->
+	erlang:send_after(500,self(),reconnect_raft),
+	{noreply,P#dp{raft_connections = reconnect_raft(P#dp.raft_connections,1)}};
 handle_info(read_ref,P) ->
 	erlang:send_after(1000,self(),read_ref),
 	Ref = make_ref(),
@@ -322,24 +338,123 @@ handle_info(save_updaters,P) ->
 			erlang:send_after(1000,self(),save_updaters),
 			{noreply,P#dp{updaters_saved = false}}
 	end;
+handle_info({nodeup,Nd},P) ->
+	case bkdcore:name_from_dist_name(Nd) of
+		undefined ->
+			{noreply,P};
+		Nm ->
+			case lists:member(Nd,bkdcore:cluster_nodes()) of
+				true ->
+					{noreply,P#dp{raft_connections = nodechange(Nm,P#dp.raft_connections,true)}};
+				false ->
+					{noreply,P}
+			end
+	end;
 handle_info({nodedown, Nd},P) ->
 	case bkdcore:name_from_dist_name(Nd) of
 		undefined ->
-			ok;
+			{noreply,P};
 		Nm ->
 			% Some node has gone down, kill all slaves on this node.
 			spawn(fun() -> 
 				L = ets:match(actorsalive, #actor{masternode=Nm, pid = '$1', _='_'}),
 				[actordb_sqlproc:diepls(Pid,masterdown) || [Pid] <- L]
-			end)
-	end,
-	{noreply,P};
+			end),
+			{noreply,P}
+	end;
+% Result of async call to tcp_connect for raft.
+handle_info({Ref,Result},P) when is_reference((Ref)) ->
+	% Find which connection this result belongs to
+	case getpos(P#dp.raft_connections,1,Ref) of
+		Pos when is_integer(Pos), Result == ok ->
+			% Connection established
+			{Nd,_,_} = element(Pos,P#dp.raft_connections),
+			{noreply,P#dp{raft_connections = setelement(Pos,P#dp.raft_connections,{Nd,true,undefined})}};
+		_ ->
+			{noreply,P}
+	end;
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
 handle_info(_, P) -> 
 	{noreply, P}.
+
+nodechange(Nd,ConnTuple,IsOnline) ->
+	case getpos(ConnTuple,1,Nd) of
+		% New server appeared online.
+		undefined when IsOnline ->
+			Pos = getempty(ConnTuple,1),
+			start_raft_connection(ConnTuple,Nd,Pos);
+		% Unknown server went offline
+		undefined ->
+			ConnTuple;
+		Pos ->
+			case element(2,element(Pos,ConnTuple)) of
+				% no change
+				IsOnline ->
+					ConnTuple;
+				% node came online (set to offline atm)
+				_ when IsOnline ->
+					start_raft_connection(ConnTuple,Nd,Pos);
+				% node went offline (set to online atm)
+				_ ->
+					setelement(Pos,ConnTuple,{Nd,false,undefined})
+			end
+	end.
+
+start_raft_connection(ConnTuple,Nd,Pos) ->
+	case element(Pos,ConnTuple) of
+		undefined ->
+			Doit = true;
+		{_,_,undefined} ->
+			Doit = true;
+		_ ->
+			Doit = false
+	end,
+	case Doit of
+		true ->
+			{IP,Port} = bkdcore:node_address(Nd),
+			case esqlite3:tcp_connect_async(IP,Port,<<>>,Pos-1) of
+				Ref when is_reference(Ref) ->
+					setelement(Pos,ConnTuple,{Nd,false,Ref});
+				_ ->
+					?AERR("Unable to establish replication connection to ~p",[Nd]),
+					ConnTuple
+			end;
+		_ ->
+			ConnTuple
+	end.
+
+getempty(T,N) ->
+	case element(N,T) of
+		undefined ->
+			N;
+		_ ->
+			getempty(T,N+1)
+	end.
+
+getpos(T,N,Nd) when tuple_size(T) >= N ->
+	case element(N,T) of
+		{Nd,_CurOnline,_} when is_binary(Nd) ->
+			N;
+		{_,_CurOnline,Nd} when is_reference(Nd) ->
+			N;
+		_ ->
+			getpos(T,N+1,Nd)
+	end;
+getpos(_,_,_) ->
+	undefined.
+
+reconnect_raft(T,N) when tuple_size(T) >= N ->
+	case element(N,T) of
+		{Nd,false,undefined} ->
+			reconnect_raft(start_raft_connection(T,Nd,N),N+1);
+		_ ->
+			reconnect_raft(T,N+1)
+	end;
+reconnect_raft(T,_) ->
+	T.
 	
 terminate(_, _) ->
 	ok.
@@ -350,6 +465,7 @@ init(_) ->
 	erlang:send_after(100,self(),timeout),
 	erlang:send_after(10000,self(),check_mem),
 	erlang:send_after(1000,self(),read_ref),
+	erlang:send_after(500,self(),reconnect_raft),
 	ok = bkdcore_sharedstate:subscribe_changes(?MODULE),
 	case ets:info(multiupdaters,size) of
 		undefined ->

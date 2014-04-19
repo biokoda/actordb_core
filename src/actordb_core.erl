@@ -112,9 +112,10 @@ prestart() ->
 					case catch file:consult(Cfgfile) of
 						{ok,[L]} ->
 							ActorParam = butil:ds_val(actordb_core,L),
-							[Main,Extra,Level,Journal,Sync,NumMngrs,QueryTimeout1] = butil:ds_vals([main_db_folder,extra_db_folders,level_size,
-																				journal_mode,sync,num_transaction_managers,query_timeout],ActorParam,
-																			["db",[],0,wal,0,12,60000]),
+							[Main,Extra,Level,_Journal,Sync,NumMngrs,QueryTimeout1] = 
+								butil:ds_vals([main_db_folder,extra_db_folders,level_size,
+													journal_mode,sync,num_transaction_managers,query_timeout],ActorParam,
+												["db",[],0,wal,0,12,60000]),
 							case QueryTimeout1 of
 								0 ->
 									QueryTimeout = infinity;
@@ -138,7 +139,7 @@ prestart() ->
 								_ ->
 									application:set_env(bkdcore,statepath,Statep)
 							end,
-							actordb_util:createcfg(Main,Extra,Level,Journal,butil:tobin(Sync),QueryTimeout);
+							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout);
 						Err ->
 							?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
 							init:stop()

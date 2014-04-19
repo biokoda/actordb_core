@@ -13,7 +13,7 @@ init(Path,JournalMode) ->
 	init(Path,JournalMode,actordb_util:hash(Path)).
 init(Path,JournalMode,Thread) ->
 	Sql = <<"select name, sql from sqlite_master where type='table';",
-			"PRAGMA page_size;"
+			"PRAGMA page_size=4096;"
 			% Exclusive locking is faster but unrealiable. 
 			% "$PRAGMA locking_mode=EXCLUSIVE;",
 			"$PRAGMA foreign_keys=1;",
@@ -24,8 +24,9 @@ init(Path,JournalMode,Thread) ->
 	case esqlite3:open(Path,Thread,Sql) of
 		{ok,Db,Res} ->
 			case Res of
-				[[_,{rows,[{Size}]}],[{columns,_},{rows,Tables}]] ->
-					{ok,Db,Tables,Size};
+				% [_,{rows,[{Size}]}]
+				[_,[{columns,_},{rows,Tables}]] ->
+					{ok,Db,Tables,4096};
 				% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
 				% 	{ok,Db,true,Size};
 				{ok,[]} ->
@@ -33,8 +34,8 @@ init(Path,JournalMode,Thread) ->
 					stop(Db),
 					{ok,Db1,Res1} = esqlite3:open(Path,Thread,Sql),
 					case Res1 of
-						[[_,{rows,[{Size}]}],[{columns,_},{rows,Tables}]] ->
-							{ok,Db1,Tables,Size}
+						[_,[{rows,[{Size}]}],[{columns,_},{rows,Tables}]] ->
+							{ok,Db1,Tables,4096}
 						% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
 						% 	{ok,Db1,true,Size}
 					end
