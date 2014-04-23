@@ -21,6 +21,7 @@
 -define(MOVEDTO,<<"6">>).
 -define(ANUM,<<"7">>).
 -define(WLOG_STATUS,<<"8">>).
+-define(EVTERM,<<"9">>).
 -define(EVNUMI,1).
 -define(EVCRCI,2).
 -define(SCHEMA_VERSI,3).
@@ -29,6 +30,7 @@
 -define(MOVEDTOI,6).
 -define(ANUMI,7).
 -define(WLOG_STATUSI,8).
+-define(EVTERMI,9).
 
 -define(WLOG_NONE,0).
 -define(WLOG_ABANDONDED,-1).
@@ -249,10 +251,13 @@ print_info(Pid) ->
 
 
 
--record(dp,{db, actorname,actortype, evnum = 0,evcrc = 0,prev_evnum = 0, prev_evcrc = 0, activity = 0, timerref, start_time,
+-record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,evcrc = 0,prev_evnum = 0, prev_evcrc = 0, 
+			activity = 0, timerref, start_time,
 			page_size = 1024, activity_now,schemanum,schemavers,flags = 0,
-			% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
-			locked = [],
+	% Raft parameters 
+	current_term = 0,voted_for, commit_index = 0, last_applied = 0,next_index = [],match_index = [],
+	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
+	locked = [],
 	% Multiupdate id, set to {Multiupdateid,TransactionNum} if in the middle of a distributed transaction
 	transactionid, transactioncheckref,
   % actordb_sqlproc is not used directly, it always has a callback module that sits in front of it,
@@ -584,69 +589,109 @@ handle_call({getinfo,What},_,P) ->
 			{reply,{ok,P#dp.dbpath,read_num(P)},P};
 		donothing ->
 			{reply,ok,P};
+		{request_vote,Candidate,NewTerm,LastTerm,LastEvnum} ->
+			TrueResp = {reply, {true,bkdcore:node_name(),NewTerm}, P#dp{voted_for = Candidate, current_term = NewTerm}},
+			case ok of
+				% Candidates term is lower than current_term, ignore.
+				_ when NewTerm < P#dp.current_term ->
+					{reply, {outofdate,bkdcore:node_name(),P#dp.current_term},P};
+				% We've already seen this term, only vote yes if we have not voted
+				%  or have voted for this candidate already.
+				_ when NewTerm == P#dp.current_term ->
+					case (P#dp.voted_for == undefined orelse P#dp.voted_for == Candidate) of
+						true when (P#dp.evterm =< LastTerm andalso P#dp.evnum =< LastEvnum) ->
+							ok = butil:savetermfile([P#dp.dbpath,"-term"],{Candidate,NewTerm}),
+							TrueResp;
+						true ->
+							ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,NewTerm}),
+							{reply, {outofdate,bkdcore:node_name(),NewTerm},
+									 P#dp{voted_for = undefined, current_term = NewTerm}};
+						false ->
+							{reply, {alreadyvoted,bkdcore:node_name(),P#dp.current_term},P}
+					end;
+				% New candidates term is higher than ours, is he as up to date?
+				_ when P#dp.evterm =< LastTerm andalso P#dp.evnum =< LastEvnum ->
+					ok = butil:savetermfile([P#dp.dbpath,"-term"],{Candidate,NewTerm}),
+					TrueResp;
+				% Higher term, but not as up to date. We can not vote for him.
+				% We do have to remember new term index though.
+				_ ->
+					ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,NewTerm}),
+					{reply, {outofdate,bkdcore:node_name(),NewTerm},
+									 P#dp{voted_for = undefined, current_term = NewTerm}}
+			end;
+		% Hint from a candidate that this node should start new election, because
+		%  it is more up to date.
+		doelection ->
+			case P#dp.verified == false andalso P#dp.verifypid == undefined of
+				true ->
+					{reply,ok,start_verify(P,false)};
+				false ->
+					{reply,ok,P}
+			end;
 		conflicted ->
 			{stop,conflicted,P}
 	end;
-handle_call({commit,Doit,Id},From, P) ->
-	?ADBG("Commit ~p ~p ~p ~p",[Doit,Id,From,P#dp.transactionid]),
-	case P#dp.transactionid == Id of
-		true ->
-			case P#dp.transactioncheckref of
-				undefined ->
-					ok;
-				_ ->
-					erlang:demonitor(P#dp.transactioncheckref)
-			end,
-			?ADBG("Commit write ~p ~p",[bkdcore:cluster_nodes_connected(),P#dp.replicate_sql]),
-			{ConnectedNodes,LenCluster,_LenConnected} = nodes_for_replication(P),
-			{Sql,EvNum,Crc,NewVers} = P#dp.replicate_sql,
-			case Doit of
-				true when LenCluster == 0 ->
-					case Sql of
-						delete ->
-							delete_actor(P),
-							case From of
-								undefined ->
-									{reply,ok,P#dp{transactionid = undefined, replicate_sql = undefined, db = undefined}};
-								_ ->
-									reply(From,ok),
-									{stop,normal,P}
-							end;
-						_ ->
-							ok = okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
-							{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
-									 replicate_sql = undefined, activity = P#dp.activity + 1}}
-					end;
-				true ->
-					Commiter = commit_write({commit,Doit,Id},P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,NewVers),
-					{noreply,P#dp{callfrom = From, commiter = Commiter, activity = P#dp.activity + 1,
-								  callres = ok,
-								 transactionid = undefined,transactioncheckref = undefined}};
-				false when LenCluster == 0 ->
-					self() ! doqueue,
-					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-					{reply,ok,P#dp{transactionid = undefined, replicate_sql = undefined,
-									transactioncheckref = undefined}};
-				false ->
-					self() ! doqueue,
-					{Tid,Updaterid,_} = P#dp.transactionid,
-					case Sql of
-						<<"delete">> ->
-							ok;
-						_ ->
-							actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
-					end,
-					NewSql = <<"DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary," AND updater=",
-										(butil:tobin(Updaterid))/binary,";">>,
-					handle_call({write,{undefined,erlang:crc32(NewSql),NewSql,undefined}},From,P#dp{callfrom = undefined,
-										transactionid = undefined,replicate_sql = undefined,transactioncheckref = undefined})
-			end;
-		_ when P#dp.db == undefined ->
-			reply(From,ok),
-			{stop,normal,P};
-		_ ->
-			{reply,ok,P}
-	end;
+% handle_call({commit,Doit,Id},From, P) ->
+% 	?ADBG("Commit ~p ~p ~p ~p",[Doit,Id,From,P#dp.transactionid]),
+% 	case P#dp.transactionid == Id of
+% 		true ->
+% 			case P#dp.transactioncheckref of
+% 				undefined ->
+% 					ok;
+% 				_ ->
+% 					erlang:demonitor(P#dp.transactioncheckref)
+% 			end,
+% 			?ADBG("Commit write ~p ~p",[bkdcore:cluster_nodes_connected(),P#dp.replicate_sql]),
+% 			{ConnectedNodes,LenCluster,_LenConnected} = nodes_for_replication(P),
+% 			{Sql,EvNum,Crc,NewVers} = P#dp.replicate_sql,
+% 			case Doit of
+% 				true when LenCluster == 0 ->
+% 					case Sql of
+% 						delete ->
+% 							delete_actor(P),
+% 							case From of
+% 								undefined ->
+% 									{reply,ok,P#dp{transactionid = undefined, replicate_sql = undefined, db = undefined}};
+% 								_ ->
+% 									reply(From,ok),
+% 									{stop,normal,P}
+% 							end;
+% 						_ ->
+% 							ok = okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
+% 							{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
+% 									 replicate_sql = undefined, activity = P#dp.activity + 1}}
+% 					end;
+% 				true ->
+% 					Commiter = commit_write({commit,Doit,Id},P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,NewVers),
+% 					{noreply,P#dp{callfrom = From, commiter = Commiter, activity = P#dp.activity + 1,
+% 								  callres = ok,
+% 								 transactionid = undefined,transactioncheckref = undefined}};
+% 				false when LenCluster == 0 ->
+% 					self() ! doqueue,
+% 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+% 					{reply,ok,P#dp{transactionid = undefined, replicate_sql = undefined,
+% 									transactioncheckref = undefined}};
+% 				false ->
+% 					self() ! doqueue,
+% 					{Tid,Updaterid,_} = P#dp.transactionid,
+% 					case Sql of
+% 						<<"delete">> ->
+% 							ok;
+% 						_ ->
+% 							actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
+% 					end,
+% 					NewSql = <<"DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary," AND updater=",
+% 										(butil:tobin(Updaterid))/binary,";">>,
+% 					handle_call({write,{undefined,erlang:crc32(NewSql),NewSql,undefined}},From,P#dp{callfrom = undefined,
+% 										transactionid = undefined,replicate_sql = undefined,transactioncheckref = undefined})
+% 			end;
+% 		_ when P#dp.db == undefined ->
+% 			reply(From,ok),
+% 			{stop,normal,P};
+% 		_ ->
+% 			{reply,ok,P}
+% 	end;
 handle_call({delete,Moved},From,P) ->
 	?ADBG("deleting actor from node ~p ~p",[P#dp.actorname,P#dp.actortype]),
 	actordb_sqlite:stop(P#dp.db),
@@ -742,98 +787,98 @@ handle_call({write,_},_,#dp{mors = slave} = P) ->
 	?DBG("Redirect not master ~p",[P#dp.masternode]),
 	redirect_master(P);
 % Called from master
-handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} = Msg,From,P) ->
-	?ADBG("Replicate start ~p ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,Sql]),
-	?DBLOG(P#dp.db,"replicatestart ~p ~p ~p ~p",[_Ref,butil:encode_percent(_Node),EvNum,Crc]),
-	case Sql of
-		<<"delete">> ->
-			Trump = true;
-		<<"moved,",_/binary>> ->
-			Trump = true;
-		_ ->
-			Trump = false
-	end,
-	case ok of
-		_ when Trump; P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.evnum == PrevEvnum, P#dp.evcrc == PrevCrc ->
-			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
-		% _ when P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.prev_evnum == PrevEvnum, P#dp.prev_evcrc == PrevCrc ->
-		% 	case forget_write(P) of
-		% 		ok ->
-		% 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
-		% 		_ ->
-		% 			handle_call(Msg,From,P#dp{prev_evnum = -1})
-		% 	end;
-		_ ->
-			actordb_sqlite:stop(P#dp.db),
-			case ok of
-				_ when Node == P#dp.masternodedist ->
-					?DBLOG(P#dp.db,"replicate conflict!!! ~p ~p in ~p ~p, cur ~p ~p",[_Ref,_Node,EvNum,Crc,P#dp.evnum,P#dp.evcrc]),
-					?AERR("Replicate conflict!!!!! ~p ~p ~p ~p ~p, master ~p",[{P#dp.actorname,P#dp.actortype},
-												P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,{Node,P#dp.masternodedist}]),
-					reply(From,desynced),
-					{ok,NP} = init(P,replicate_conflict),
-					{noreply,NP};
-				_ ->
-					?ADBG("Reinit to reastablish master node ~p",[{P#dp.actorname,P#dp.actortype}]),
-					{ok,NP} = init(P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)},replicate_conflict),
-					{reply,ok,NP}
-			end
-	end;
-% Called from master
-handle_call({replicate_commit,_StoreLog},From,P) ->
-	?ADBG("Replicate commit! ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.replicate_sql]),
-	case P#dp.replicate_sql of
-		<<>> ->
-			?DBLOG(P#dp.db,"replicatecommit empty",[]),
-			{reply,false,check_timer(P#dp{activity = P#dp.activity+1})};
-		_ ->
-			{Sql,EvNum,Crc,NewVers} = P#dp.replicate_sql,
-			?DBLOG(P#dp.db,"replicatecommit ok ~p ~p",[EvNum,Crc]),
-			case Sql of
-				<<"delete">> ->
-					actordb_sqlite:stop(P#dp.db),
-					delactorfile(P),
-					reply(From,ok),
-					{stop,normal,P};
-				<<"moved,",MovedTo/binary>> ->
-					actordb_sqlite:stop(P#dp.db),
-					?DBG("Stopping because moved ~p ~p",[P#dp.actorname,MovedTo]),
-					delactorfile(P#dp{movedtonode = MovedTo}),
-					reply(From,ok),
-					{stop,normal,P};
-				_ ->
-					Sql1 = semicolon(Sql),
-					Res = actordb_sqlite:exec(P#dp.db,[
-						 <<"$SAVEPOINT 'adb';">>,
-						 Sql1,%add_wlog(P,StoreLog,Sql1,EvNum,Crc),
-						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
-						 <<"$RELEASE SAVEPOINT 'adb';">>
-						 ],write),
-					{reply,okornot(Res),check_timer(%wlog_after_write(StoreLog,
-									P#dp{replicate_sql = <<>>,evnum = EvNum, prev_evnum = P#dp.evnum,prev_evcrc = P#dp.evcrc,
-										 evcrc = Crc, activity = P#dp.activity + 1, schemavers = NewVers})}
-			end
-	end;
-handle_call(replicate_rollback,_,P) ->
-	?ERR("replicate_rollback"),
-	{reply,ok,P#dp{replicate_sql = <<>>}};
-handle_call({replicate_bad_commit,EvNum,Crc},_,P) ->
-	?ERR("replicate_bad_commit in ~p, my ~p",[{EvNum,Crc},{P#dp.evnum,P#dp.evcrc}]),
-	case P#dp.evnum == EvNum andalso P#dp.evcrc == Crc of
-		true ->
-			% case forget_write(P) of
-			% 	ok ->
-			% 		{reply,ok,P#dp{evcrc = P#dp.prev_evcrc, evnum = P#dp.prev_evnum}};
-			% 	_ ->
-					actordb_sqlite:stop(P#dp.db),
-					delactorfile(P),
-					{ok,NP} = init(P,replicate_bad_commit),
-	 				{reply,ok,NP#dp{callqueue = P#dp.callqueue}};
-			% end;
-		_ ->
-			{reply,ok,P#dp{}}
-	end;
+% handle_call({replicate_start,_Ref,Node,PrevEvnum,PrevCrc,Sql,EvNum,Crc,NewVers} = Msg,From,P) ->
+% 	?ADBG("Replicate start ~p ~p ~p ~p ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,Sql]),
+% 	?DBLOG(P#dp.db,"replicatestart ~p ~p ~p ~p",[_Ref,butil:encode_percent(_Node),EvNum,Crc]),
+% 	case Sql of
+% 		<<"delete">> ->
+% 			Trump = true;
+% 		<<"moved,",_/binary>> ->
+% 			Trump = true;
+% 		_ ->
+% 			Trump = false
+% 	end,
+% 	case ok of
+% 		_ when Trump; P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.evnum == PrevEvnum, P#dp.evcrc == PrevCrc ->
+% 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
+% 		% _ when P#dp.mors == slave, Node == P#dp.masternodedist, P#dp.prev_evnum == PrevEvnum, P#dp.prev_evcrc == PrevCrc ->
+% 		% 	case forget_write(P) of
+% 		% 		ok ->
+% 		% 			{reply,ok,check_timer(P#dp{replicate_sql = {Sql,EvNum,Crc,NewVers}, activity = P#dp.activity + 1})};
+% 		% 		_ ->
+% 		% 			handle_call(Msg,From,P#dp{prev_evnum = -1})
+% 		% 	end;
+% 		_ ->
+% 			actordb_sqlite:stop(P#dp.db),
+% 			case ok of
+% 				_ when Node == P#dp.masternodedist ->
+% 					?DBLOG(P#dp.db,"replicate conflict!!! ~p ~p in ~p ~p, cur ~p ~p",[_Ref,_Node,EvNum,Crc,P#dp.evnum,P#dp.evcrc]),
+% 					?AERR("Replicate conflict!!!!! ~p ~p ~p ~p ~p, master ~p",[{P#dp.actorname,P#dp.actortype},
+% 												P#dp.evnum, PrevEvnum, P#dp.evcrc, PrevCrc,{Node,P#dp.masternodedist}]),
+% 					reply(From,desynced),
+% 					{ok,NP} = init(P,replicate_conflict),
+% 					{noreply,NP};
+% 				_ ->
+% 					?ADBG("Reinit to reastablish master node ~p",[{P#dp.actorname,P#dp.actortype}]),
+% 					{ok,NP} = init(P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)},replicate_conflict),
+% 					{reply,ok,NP}
+% 			end
+% 	end;
+% % Called from master
+% handle_call({replicate_commit,_StoreLog},From,P) ->
+% 	?ADBG("Replicate commit! ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.replicate_sql]),
+% 	case P#dp.replicate_sql of
+% 		<<>> ->
+% 			?DBLOG(P#dp.db,"replicatecommit empty",[]),
+% 			{reply,false,check_timer(P#dp{activity = P#dp.activity+1})};
+% 		_ ->
+% 			{Sql,EvNum,Crc,NewVers} = P#dp.replicate_sql,
+% 			?DBLOG(P#dp.db,"replicatecommit ok ~p ~p",[EvNum,Crc]),
+% 			case Sql of
+% 				<<"delete">> ->
+% 					actordb_sqlite:stop(P#dp.db),
+% 					delactorfile(P),
+% 					reply(From,ok),
+% 					{stop,normal,P};
+% 				<<"moved,",MovedTo/binary>> ->
+% 					actordb_sqlite:stop(P#dp.db),
+% 					?DBG("Stopping because moved ~p ~p",[P#dp.actorname,MovedTo]),
+% 					delactorfile(P#dp{movedtonode = MovedTo}),
+% 					reply(From,ok),
+% 					{stop,normal,P};
+% 				_ ->
+% 					Sql1 = semicolon(Sql),
+% 					Res = actordb_sqlite:exec(P#dp.db,[
+% 						 <<"$SAVEPOINT 'adb';">>,
+% 						 Sql1,%add_wlog(P,StoreLog,Sql1,EvNum,Crc),
+% 						 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+% 						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
+% 						 <<"$RELEASE SAVEPOINT 'adb';">>
+% 						 ],write),
+% 					{reply,okornot(Res),check_timer(%wlog_after_write(StoreLog,
+% 									P#dp{replicate_sql = <<>>,evnum = EvNum, prev_evnum = P#dp.evnum,prev_evcrc = P#dp.evcrc,
+% 										 evcrc = Crc, activity = P#dp.activity + 1, schemavers = NewVers})}
+% 			end
+% 	end;
+% handle_call(replicate_rollback,_,P) ->
+% 	?ERR("replicate_rollback"),
+% 	{reply,ok,P#dp{replicate_sql = <<>>}};
+% handle_call({replicate_bad_commit,EvNum,Crc},_,P) ->
+% 	?ERR("replicate_bad_commit in ~p, my ~p",[{EvNum,Crc},{P#dp.evnum,P#dp.evcrc}]),
+% 	case P#dp.evnum == EvNum andalso P#dp.evcrc == Crc of
+% 		true ->
+% 			% case forget_write(P) of
+% 			% 	ok ->
+% 			% 		{reply,ok,P#dp{evcrc = P#dp.prev_evcrc, evnum = P#dp.prev_evnum}};
+% 			% 	_ ->
+% 					actordb_sqlite:stop(P#dp.db),
+% 					delactorfile(P),
+% 					{ok,NP} = init(P,replicate_bad_commit),
+% 	 				{reply,ok,NP#dp{callqueue = P#dp.callqueue}};
+% 			% end;
+% 		_ ->
+% 			{reply,ok,P#dp{}}
+% 	end;
 handle_call(stop, _, P) ->
 	actordb_sqlite:stop(P#dp.db),
 	distreg:unreg(self()),
@@ -996,16 +1041,11 @@ write_call({MFA,Crc,Sql,Transaction} = OrigMsg,From,P) ->
 					write_call(OrigMsg,erlang:crc32(OutSql),OutSql,Transaction,From,NewVers,P)
 			end
 	end.
+% Not a multiactor transaction write
 write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	?DBLOG(P#dp.db,"writecall ~p ~p ~p ~p ~p",[EvNum,Crc,P#dp.dbcopy_to,From,Sql]),
 	{ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
-	case LenCluster of
-		0 -> 
-			Tail = <<"$RELEASE SAVEPOINT 'adb';">>;
-		_ ->
-			Tail = []
-	end,
 	case Sql of
 		delete ->
 			ReplSql = <<"delete">>,
@@ -1024,8 +1064,8 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 					[<<"$SAVEPOINT 'adb';">>,
 					 ReplSql,
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";",
-					 Tail
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.evterm),<<"' WHERE id=">>,?EVTERM,";",
+					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
 	end,
@@ -1050,9 +1090,10 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 							{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = Crc, schemavers = NewVers}}
 					end;
 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
-					Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,ReplSql,Crc,NewVers),
-					{noreply,P#dp{callfrom = From,callres = Res, commiter = Commiter, activity = P#dp.activity + 1,
-									replicate_sql = {ReplSql,EvNum,Crc,NewVers}}};
+					% Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,ReplSql,Crc,NewVers),
+					% {noreply,P#dp{callfrom = From,callres = Res, commiter = Commiter, activity = P#dp.activity + 1,
+					% 				replicate_sql = {ReplSql,EvNum,Crc,NewVers}}};
+					{noreply,P};
 				_ ->
 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					{reply,{error,{replication_failed_1,LenConnected,LenCluster}},P}
@@ -1060,100 +1101,100 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 		Resp ->
 			actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 			{reply,Resp,P#dp{activity = P#dp.activity+1}}
-	end;
-write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
-	?DBLOG(P#dp.db,"writetransaction ~p ~p ~p ~p",[P#dp.evnum,Crc,{Tid,Updaterid,Node},P#dp.dbcopy_to]),
-	{_CheckPid,CheckRef} = start_transaction_checker(Tid,Updaterid,Node),
-	{ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
-	?ADBG("Starting transaction write ~p, id ~p, curtr ~p, sql ~p",[LenCluster,TransactionId,P#dp.transactionid,Sql1]),
-	case LenCluster of
-		0 ->
-			% If single node cluster, no need to store sql first.
-			case P#dp.transactionid of
-				TransactionId ->
-					% Transaction can write to single actor more than once (especially for KV stores)
-					% if we are already in this transaction, just update sql.
-					{_OldSql,EvNum,EvCrc,_} = P#dp.replicate_sql,
-					ComplSql = Sql1,
-					Res = actordb_sqlite:exec(P#dp.db,ComplSql,write);
-				undefined ->
-					EvNum = P#dp.evnum+1,
-					EvCrc = Crc,
-					case Sql1 of
-						delete ->
-							Res = ok,
-							ComplSql = delete;
-						_ ->
-							ComplSql = 
-								[<<"$SAVEPOINT 'adb';">>,
-								 semicolon(Sql1),actornum(P),
-								 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-								 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";"
-								 ],
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
-					end
-			end,
-			case okornot(Res) of
-				ok ->
-					?ADBG("Transaction ok"),
-					{reply, Res, P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = EvCrc,
-								 transactionid = TransactionId, schemavers = NewVers,
-								transactioncheckref = CheckRef,replicate_sql = {ComplSql,EvNum,EvCrc,NewVers}}};
-				_Err ->
-					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
-					erlang:demonitor(CheckRef),
-					?ADBG("Transaction not ok ~p",[_Err]),
-					{reply,Res,P#dp{actortype = P#dp.activity + 1, transactionid = undefined}}
-			end;
-		_ ->
-			EvNum = P#dp.evnum+1,
-			case P#dp.transactionid of
-				TransactionId ->
-					% Rollback prev version of sql.
-					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
-					{OldSql,_EvNum,_EvCrc,NewVers} = P#dp.replicate_sql,
-					% Combine prev sql with new one.
-					Sql = iolist_to_binary([OldSql,Sql1]),
-					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
-											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
-								 				(butil:tobin(NewVers)),",",
-								 				"'",(base64:encode(Sql)),"');"];
-				_ ->
-					case Sql1 of
-						delete ->
-							Sql = <<"delete">>;
-						_ ->
-							Sql = iolist_to_binary(Sql1)
-					end,
-					% First store transaction info 
-					% Once that is stored (on all nodes), execute the sql to see if there are errors (but only on this master node).
-					TransactionInfo = [<<"$INSERT INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
-											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
-											(butil:tobin(NewVers)),",",
-								 				"'",(base64:encode(Sql)),"');"]
-			end,
-			CrcTransaction = erlang:crc32(TransactionInfo),
-			ComplSql = 
-					[<<"$SAVEPOINT 'adb';">>,
-					 TransactionInfo,
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(CrcTransaction),<<"' WHERE id=">>,?EVCRC,";"
-					 ],
-			ok = okornot(actordb_sqlite:exec(P#dp.db,ComplSql,write)),
-			?DBG("Replicating transaction write, connected ~p",[ConnectedNodes]),
-			case ok of
-				_ when (LenConnected+1)*2 > (LenCluster+1) ->
-					Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,TransactionInfo,CrcTransaction,P#dp.schemavers),
-					{noreply,P#dp{callfrom = From,callres = undefined, commiter = Commiter, 
-								  activity = P#dp.activity + 1,replicate_sql = {Sql,EvNum+1,Crc,NewVers},
-								  transactioncheckref = CheckRef,
-								  transactionid = TransactionId}};
-				_ ->
-					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-					erlang:demonitor(CheckRef),
-					{reply,{error,{replication_failed_2,LenConnected,LenCluster}},P}
-			end
 	end.
+% write_call(OrigMsg,Crc,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
+% 	?DBLOG(P#dp.db,"writetransaction ~p ~p ~p ~p",[P#dp.evnum,Crc,{Tid,Updaterid,Node},P#dp.dbcopy_to]),
+% 	{_CheckPid,CheckRef} = start_transaction_checker(Tid,Updaterid,Node),
+% 	{ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
+% 	?ADBG("Starting transaction write ~p, id ~p, curtr ~p, sql ~p",[LenCluster,TransactionId,P#dp.transactionid,Sql1]),
+% 	case LenCluster of
+% 		0 ->
+% 			% If single node cluster, no need to store sql first.
+% 			case P#dp.transactionid of
+% 				TransactionId ->
+% 					% Transaction can write to single actor more than once (especially for KV stores)
+% 					% if we are already in this transaction, just update sql.
+% 					{_OldSql,EvNum,EvCrc,_} = P#dp.replicate_sql,
+% 					ComplSql = Sql1,
+% 					Res = actordb_sqlite:exec(P#dp.db,ComplSql,write);
+% 				undefined ->
+% 					EvNum = P#dp.evnum+1,
+% 					EvCrc = Crc,
+% 					case Sql1 of
+% 						delete ->
+% 							Res = ok,
+% 							ComplSql = delete;
+% 						_ ->
+% 							ComplSql = 
+% 								[<<"$SAVEPOINT 'adb';">>,
+% 								 semicolon(Sql1),actornum(P),
+% 								 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+% 								 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";"
+% 								 ],
+% 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
+% 					end
+% 			end,
+% 			case okornot(Res) of
+% 				ok ->
+% 					?ADBG("Transaction ok"),
+% 					{reply, Res, P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = EvCrc,
+% 								 transactionid = TransactionId, schemavers = NewVers,
+% 								transactioncheckref = CheckRef,replicate_sql = {ComplSql,EvNum,EvCrc,NewVers}}};
+% 				_Err ->
+% 					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
+% 					erlang:demonitor(CheckRef),
+% 					?ADBG("Transaction not ok ~p",[_Err]),
+% 					{reply,Res,P#dp{actortype = P#dp.activity + 1, transactionid = undefined}}
+% 			end;
+% 		_ ->
+% 			EvNum = P#dp.evnum+1,
+% 			case P#dp.transactionid of
+% 				TransactionId ->
+% 					% Rollback prev version of sql.
+% 					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
+% 					{OldSql,_EvNum,_EvCrc,NewVers} = P#dp.replicate_sql,
+% 					% Combine prev sql with new one.
+% 					Sql = iolist_to_binary([OldSql,Sql1]),
+% 					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
+% 											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
+% 								 				(butil:tobin(NewVers)),",",
+% 								 				"'",(base64:encode(Sql)),"');"];
+% 				_ ->
+% 					case Sql1 of
+% 						delete ->
+% 							Sql = <<"delete">>;
+% 						_ ->
+% 							Sql = iolist_to_binary(Sql1)
+% 					end,
+% 					% First store transaction info 
+% 					% Once that is stored (on all nodes), execute the sql to see if there are errors (but only on this master node).
+% 					TransactionInfo = [<<"$INSERT INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
+% 											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
+% 											(butil:tobin(NewVers)),",",
+% 								 				"'",(base64:encode(Sql)),"');"]
+% 			end,
+% 			CrcTransaction = erlang:crc32(TransactionInfo),
+% 			ComplSql = 
+% 					[<<"$SAVEPOINT 'adb';">>,
+% 					 TransactionInfo,
+% 					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+% 					 <<"$UPDATE __adb SET val='">>,butil:tobin(CrcTransaction),<<"' WHERE id=">>,?EVCRC,";"
+% 					 ],
+% 			ok = okornot(actordb_sqlite:exec(P#dp.db,ComplSql,write)),
+% 			?DBG("Replicating transaction write, connected ~p",[ConnectedNodes]),
+% 			case ok of
+% 				_ when (LenConnected+1)*2 > (LenCluster+1) ->
+% 					Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,TransactionInfo,CrcTransaction,P#dp.schemavers),
+% 					{noreply,P#dp{callfrom = From,callres = undefined, commiter = Commiter, 
+% 								  activity = P#dp.activity + 1,replicate_sql = {Sql,EvNum+1,Crc,NewVers},
+% 								  transactioncheckref = CheckRef,
+% 								  transactionid = TransactionId}};
+% 				_ ->
+% 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+% 					erlang:demonitor(CheckRef),
+% 					{reply,{error,{replication_failed_2,LenConnected,LenCluster}},P}
+% 			end
+% 	end.
 
 % wlog_dbcopy(P,Home,ActorTo) ->
 % 	case gen_server:call(Home,{dbcopy_op,{self(),P#dp.dbcopyref},wlog_read,P#dp.evnum}) of
@@ -1448,62 +1489,62 @@ printfail(_A,_T,_,[]) ->
 printfail(A,T,N,L) ->
 	?AERR("commit failed on ~p ~p  ~p",[{A,T},N,L]).
 
-commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
-	Actor = P1#dp.actorname,
-	Type = P1#dp.actortype,
-	OldEvnum = P1#dp.evnum,
-	OldCrc = P1#dp.evcrc,
-	Flags = P1#dp.flags,
-	Cbmod = P1#dp.cbmod,
-	% WL = P1#dp.writelog,
-	{Commiter,_} = spawn_monitor(fun() ->
-			Ref = make_ref(),
-			SqlBin = iolist_to_binary(Sql),
-			{ResultsStart,StartFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
-						[Cbmod,Actor,Type,{replicate_start,Ref,node(),OldEvnum,
-																	OldCrc,SqlBin,EvNum,Crc,SchemaVers},[{flags,Flags}]]),
-			printfail(Actor,Type,1,StartFailed),
-			% Only count ok responses
-			{LenStarted,NProblems} = lists:foldl(fun(X,{NRes,NProblems}) -> 
-									case X of 
-										ok -> {NRes+1,NProblems}; 
-										reinit -> exit({reinit,OrigMsg});
-										_ -> {NRes,NProblems+1}
-									end
-									end,{0,0},ResultsStart),
-			case (LenStarted+1)*2 > LenCluster+1 of
-				true ->
-					NodesToCommit = lists:subtract(ConnectedNodes,StartFailed),
-					DoWlog = LenCluster > length(ConnectedNodes) orelse 
-							StartFailed /= [] orelse 
-							NProblems > 0,
-					{ResultsCommit,CommitFailedOn} = rpc:multicall(NodesToCommit,?MODULE,call_slave,
-										[Cbmod,Actor,Type,{replicate_commit,DoWlog},[{flags,Flags}]]),
-					CommitBadres = [X || X <- ResultsCommit, X /= ok],
-					printfail(Actor,Type,2,CommitFailedOn),
-					LenCommited = length(ResultsCommit),
-					case (LenCommited+1)*2 > LenCluster+1 of
-						true ->
-							% WLog = <<(trim_wlog(WL))/binary,
-							% 					EvNum:64/unsigned,Crc:32/unsigned,(byte_size(SqlBin)):32/unsigned,
-							% 						(SqlBin)/binary>>,
-							exit({ok, EvNum, Crc, DoWlog orelse CommitFailedOn /= [] orelse CommitBadres /= []});
-						false ->
-							CommitOkOn = lists:subtract(NodesToCommit,CommitFailedOn),
-							[rpc:async_call(Nd,?MODULE,call_slave,
-										[Cbmod,Actor,Type,
-													{replicate_bad_commit,EvNum,Crc},[{flags,Flags}]]) || 
-														Nd <- CommitOkOn],
-							exit({replication_failed_3,LenCommited,LenCluster})
-					end;
-				false ->
-					?AERR("replicate failed ~p ~p ~p",[Sql,{Actor,Type},{ResultsStart,StartFailed}]),
-					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cbmod,Actor,
-																Type,replicate_rollback,[{flags,Flags}]]),
-					exit({replication_failed_4,LenStarted,LenCluster})
-			end
-	end),
-	Commiter.
+% commit_write(OrigMsg,P1,LenCluster,ConnectedNodes,EvNum,Sql,Crc,SchemaVers) ->
+% 	Actor = P1#dp.actorname,
+% 	Type = P1#dp.actortype,
+% 	OldEvnum = P1#dp.evnum,
+% 	OldCrc = P1#dp.evcrc,
+% 	Flags = P1#dp.flags,
+% 	Cbmod = P1#dp.cbmod,
+% 	% WL = P1#dp.writelog,
+% 	{Commiter,_} = spawn_monitor(fun() ->
+% 			Ref = make_ref(),
+% 			SqlBin = iolist_to_binary(Sql),
+% 			{ResultsStart,StartFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
+% 						[Cbmod,Actor,Type,{replicate_start,Ref,node(),OldEvnum,
+% 																	OldCrc,SqlBin,EvNum,Crc,SchemaVers},[{flags,Flags}]]),
+% 			printfail(Actor,Type,1,StartFailed),
+% 			% Only count ok responses
+% 			{LenStarted,NProblems} = lists:foldl(fun(X,{NRes,NProblems}) -> 
+% 									case X of 
+% 										ok -> {NRes+1,NProblems}; 
+% 										reinit -> exit({reinit,OrigMsg});
+% 										_ -> {NRes,NProblems+1}
+% 									end
+% 									end,{0,0},ResultsStart),
+% 			case (LenStarted+1)*2 > LenCluster+1 of
+% 				true ->
+% 					NodesToCommit = lists:subtract(ConnectedNodes,StartFailed),
+% 					DoWlog = LenCluster > length(ConnectedNodes) orelse 
+% 							StartFailed /= [] orelse 
+% 							NProblems > 0,
+% 					{ResultsCommit,CommitFailedOn} = rpc:multicall(NodesToCommit,?MODULE,call_slave,
+% 										[Cbmod,Actor,Type,{replicate_commit,DoWlog},[{flags,Flags}]]),
+% 					CommitBadres = [X || X <- ResultsCommit, X /= ok],
+% 					printfail(Actor,Type,2,CommitFailedOn),
+% 					LenCommited = length(ResultsCommit),
+% 					case (LenCommited+1)*2 > LenCluster+1 of
+% 						true ->
+% 							% WLog = <<(trim_wlog(WL))/binary,
+% 							% 					EvNum:64/unsigned,Crc:32/unsigned,(byte_size(SqlBin)):32/unsigned,
+% 							% 						(SqlBin)/binary>>,
+% 							exit({ok, EvNum, Crc, DoWlog orelse CommitFailedOn /= [] orelse CommitBadres /= []});
+% 						false ->
+% 							CommitOkOn = lists:subtract(NodesToCommit,CommitFailedOn),
+% 							[rpc:async_call(Nd,?MODULE,call_slave,
+% 										[Cbmod,Actor,Type,
+% 													{replicate_bad_commit,EvNum,Crc},[{flags,Flags}]]) || 
+% 														Nd <- CommitOkOn],
+% 							exit({replication_failed_3,LenCommited,LenCluster})
+% 					end;
+% 				false ->
+% 					?AERR("replicate failed ~p ~p ~p",[Sql,{Actor,Type},{ResultsStart,StartFailed}]),
+% 					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cbmod,Actor,
+% 																Type,replicate_rollback,[{flags,Flags}]]),
+% 					exit({replication_failed_4,LenStarted,LenCluster})
+% 			end
+% 	end),
+% 	Commiter.
 
 handle_cast({diepls,Reason},P) ->
 	?ADBG("diepls ~p",[{P#dp.actorname,P#dp.actortype}]),
@@ -1590,219 +1631,219 @@ handle_info(doqueue,P) ->
 	end;
 % handle_info({'DOWN',_Monitor,Ref,PID,_Result},#dp{commiter = PID, callfrom = dbcopy} = P) ->
 % 	handle_info({'DOWN',_Monitor,Ref,PID,_Result},P#dp{callfrom = undefined,commiter = undefined});
-handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
-	case Result of
-		{ok,EvNum,Crc,_DoWlog} ->
-			?DBLOG(P#dp.db,"commiterdown ok ~p ~p",[EvNum,Crc]),
-			?DBG("Commiter down ~p ok ~p callres ~p ~p",[{P#dp.actorname,P#dp.actortype},EvNum,P#dp.callres,P#dp.callqueue]),
-			{Sql,EvNumNew,CrcSql,NewVers} = P#dp.replicate_sql,
-			case Sql of 
-				<<"delete">> ->
-					case P#dp.transactionid == undefined of
-						true ->
-							Die = true,
-							delete_actor(P);
-						false ->
-							Die = false
-					end;
-				<<"moved,",MovedTo/binary>> ->
-					?DBG("Stopping because moved ~p ~p",[P#dp.actorname,MovedTo]),
-					Die = true,
-					actordb_sqlite:stop(P#dp.db),
-					delactorfile(P#dp{movedtonode = MovedTo});
-				_ ->
-					Die = false,
-					% add_wlog(P,DoWlog,Sql,EvNum,Crc),
-					ok = okornot(actordb_sqlite:exec(P#dp.db,[<<"RELEASE SAVEPOINT 'adb';">>]))
-			end,
-			case P#dp.transactionid of
-				undefined ->
-					ReplicateSql = undefined,
-					reply(P#dp.callfrom,P#dp.callres);
-				_ ->
-					{Tid,Updaterid,_} = P#dp.transactionid,
-					case Sql of
-						<<"delete">> ->
-							ReplicateSql = {<<"delete">>,EvNumNew,CrcSql,NewVers},
-							reply(P#dp.callfrom,ok);
-						_ ->
-							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
-												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
-							% Execute transaction sql and at the same time delete transaction sql from table.
-							ComplSql = 
-									[<<"$SAVEPOINT 'adb';">>,
-									 NewSql,
-									 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
-									 <<"$UPDATE __adb SET val='">>,butil:tobin(CrcSql),<<"' WHERE id=">>,?EVCRC,";"
-									 ],
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write),
-							reply(P#dp.callfrom,Res),
-							% Store sql for later execution on slave nodes.
-							ReplicateSql = {NewSql,EvNumNew,CrcSql,NewVers},
-							case okornot(Res) of
-								ok ->
-									ok;
-								_ ->
-									Me = self(),
-									spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end)
-							end
-					end
-			end,
-			case ok of
-				_ when Die ->
-					{stop,normal,P};
-				_ ->
-					handle_info(doqueue,check_timer(%wlog_after_write(DoWlog,
-												P#dp{commiter = undefined,callres = undefined, 
-												callfrom = undefined,activity = P#dp.activity+1, 
-												evnum = EvNum, evcrc = Crc,
-												schemavers = NewVers,
-												replicate_sql = ReplicateSql}))
-			end;
-		{reinit,Msg} ->
-			ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
-			{ok,NP} = init(P#dp{callqueue = queue:in_r({P#dp.callfrom,Msg},P#dp.callqueue)}),
-			{noreply,NP};
-		% Should always be: {replication_failed,HasNodes,NeedsNodes}
-		Err ->
-			?AERR("Commiter down ~p error ~p",[{P#dp.actorname,P#dp.actortype},Err]),
-			?DBLOG(P#dp.db,"commiterdown error ~p",[Err]),
-			{Sql,_EvNumNew,_CrcSql,_NewVers} = P#dp.replicate_sql,
-			case Sql of
-				<<"delete">> ->
-					ok;
-				_ ->
-					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>))
-			end,
-			reply(P#dp.callfrom,{error,Err}),
-			handle_info(doqueue,P#dp{callfrom = undefined,commiter = undefined, transactionid = undefined, replicate_sql = undefined})
-	end;
-handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
-	case Reason of
-		{verified,Mors,MasterNode,_AllSynced} when P#dp.transactionid == undefined; Mors == slave ->
-			actordb_local:actor_mors(Mors,MasterNode),
-			?ADBG("Verify down ~p ~p ~p ~p ~p ~p",[P#dp.actorname, P#dp.actortype, P#dp.evnum,
-						Reason, P#dp.mors, queue:is_empty(P#dp.callqueue)]),
-			?DBLOG(P#dp.db,"verified ~p ~p",[Mors,MasterNode]),
-			case Mors of
-				master ->
-					% If any uncommited transactions, check if they are abandonded or to be executed
-					NS = do_cb_init(P);
-				_ ->
-					NS = P#dp.cbstate
-			end,
-			handle_info(doqueue,%wlog_stillneed(AllSynced,?WLOG_NONE,
-									P#dp{verified = true, verifypid = undefined, mors = Mors, masternode = MasterNode, 
-									masternodedist = bkdcore:dist_name(MasterNode),
-									cbstate = NS});
-		{verified,Mors,MasterNode,_AllSynced} ->
-			?ADBG("Verify down ~p ~p ~p ~p ~p ~p",[P#dp.actorname, P#dp.actortype, P#dp.evnum,
-						Reason, P#dp.mors, queue:is_empty(P#dp.callqueue)]),
-			?DBLOG(P#dp.db,"verified ~p ~p",[Mors,MasterNode]),
-			actordb_local:actor_mors(Mors,MasterNode),
-			{Tid,Updid,Node} = P#dp.transactionid,
-			{Sql,Evnum,Crc,_NewVers} = P#dp.replicate_sql, 
-			% NP = wlog_stillneed(AllSynced,?WLOG_NONE,
-			NP = P#dp{verified = true,verifypid = undefined, mors = Mors,
-					 			masternode = MasterNode,masternodedist = bkdcore:dist_name(MasterNode), cbstate = do_cb_init(P)},
-			case actordb:rpc(Node,Updid,{actordb_multiupdate,transaction_state,[Updid,Tid]}) of
-				{ok,State} when State == 0; State == 1 ->
-					ComplSql = 
-						[<<"$SAVEPOINT 'adb';">>,
-						 semicolon(Sql),actornum(P),
-						 <<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
-						 		<<" AND updater=">>,(butil:tobin(Updid)),";",
-						 <<"$UPDATE __adb SET val='">>,butil:tobin(Evnum),<<"' WHERE id=">>,?EVNUM,";",
-						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";"
-						 ],
-					actordb_sqlite:exec(P#dp.db,ComplSql,write),
-					% 0 - transaction still running, wait for done.
-					% 1 - finished, do commit straight away.
-					case State of
-						0 ->
-							{_CheckPid,CheckRef} = start_transaction_checker(Tid,Updid,Node),
-							{noreply,NP#dp{transactioncheckref = CheckRef}};
-						1 ->
-							CQ = queue:in({undefined,{commit,true,{Tid,Updid,Node}}},NP#dp.callqueue),
-							handle_info(doqueue,NP#dp{callqueue = CQ})
-					end;
-				% Lets forget this ever happened.
-				{ok,-1} ->
-					Sql = <<"DELETE FROM __transactions id=",(butil:tobin(Tid))/binary,
-								" AND updater=",(butil:tobin(Updid))/binary,";">>,
-					CQ = queue:in({undefined,{write,{erlang:crc32(Sql),Sql,undefined}}},NP#dp.callqueue),
-					handle_info(doqueue,NP#dp{callqueue = CQ});
-				% In case of error, process should crash, because it can not process sql if it can not verify last transaction
-				_Err ->
-					exit({error,{unable_to_verify_transaction,_Err}})
-			end;
-		{update_from,Node,Mors,MasterNode,Ref} ->
-			?ADBG("Verify down ~p ~p ~p master ~p, update from ~p",[P#dp.actorname,PID,Reason,MasterNode,Node]),
-			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
-			case P#dp.copyfrom of
-				undefined ->
-					Copyfrom = Node;
-				Copyfrom ->
-					ok
-			end,
-			actordb_sqlite:stop(P#dp.db),
-			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, mors = master, dbcopyref = Ref}),
-			erlang:monitor(process,RecvPid),
+% handle_info({'DOWN',_Monitor,_,PID,Result},#dp{commiter = PID} = P) ->
+% 	case Result of
+% 		{ok,EvNum,Crc,_DoWlog} ->
+% 			?DBLOG(P#dp.db,"commiterdown ok ~p ~p",[EvNum,Crc]),
+% 			?DBG("Commiter down ~p ok ~p callres ~p ~p",[{P#dp.actorname,P#dp.actortype},EvNum,P#dp.callres,P#dp.callqueue]),
+% 			{Sql,EvNumNew,CrcSql,NewVers} = P#dp.replicate_sql,
+% 			case Sql of 
+% 				<<"delete">> ->
+% 					case P#dp.transactionid == undefined of
+% 						true ->
+% 							Die = true,
+% 							delete_actor(P);
+% 						false ->
+% 							Die = false
+% 					end;
+% 				<<"moved,",MovedTo/binary>> ->
+% 					?DBG("Stopping because moved ~p ~p",[P#dp.actorname,MovedTo]),
+% 					Die = true,
+% 					actordb_sqlite:stop(P#dp.db),
+% 					delactorfile(P#dp{movedtonode = MovedTo});
+% 				_ ->
+% 					Die = false,
+% 					% add_wlog(P,DoWlog,Sql,EvNum,Crc),
+% 					ok = okornot(actordb_sqlite:exec(P#dp.db,[<<"RELEASE SAVEPOINT 'adb';">>]))
+% 			end,
+% 			case P#dp.transactionid of
+% 				undefined ->
+% 					ReplicateSql = undefined,
+% 					reply(P#dp.callfrom,P#dp.callres);
+% 				_ ->
+% 					{Tid,Updaterid,_} = P#dp.transactionid,
+% 					case Sql of
+% 						<<"delete">> ->
+% 							ReplicateSql = {<<"delete">>,EvNumNew,CrcSql,NewVers},
+% 							reply(P#dp.callfrom,ok);
+% 						_ ->
+% 							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+% 												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
+% 							% Execute transaction sql and at the same time delete transaction sql from table.
+% 							ComplSql = 
+% 									[<<"$SAVEPOINT 'adb';">>,
+% 									 NewSql,
+% 									 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
+% 									 <<"$UPDATE __adb SET val='">>,butil:tobin(CrcSql),<<"' WHERE id=">>,?EVCRC,";"
+% 									 ],
+% 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write),
+% 							reply(P#dp.callfrom,Res),
+% 							% Store sql for later execution on slave nodes.
+% 							ReplicateSql = {NewSql,EvNumNew,CrcSql,NewVers},
+% 							case okornot(Res) of
+% 								ok ->
+% 									ok;
+% 								_ ->
+% 									Me = self(),
+% 									spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end)
+% 							end
+% 					end
+% 			end,
+% 			case ok of
+% 				_ when Die ->
+% 					{stop,normal,P};
+% 				_ ->
+% 					handle_info(doqueue,check_timer(%wlog_after_write(DoWlog,
+% 												P#dp{commiter = undefined,callres = undefined, 
+% 												callfrom = undefined,activity = P#dp.activity+1, 
+% 												evnum = EvNum, evcrc = Crc,
+% 												schemavers = NewVers,
+% 												replicate_sql = ReplicateSql}))
+% 			end;
+% 		{reinit,Msg} ->
+% 			ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
+% 			{ok,NP} = init(P#dp{callqueue = queue:in_r({P#dp.callfrom,Msg},P#dp.callqueue)}),
+% 			{noreply,NP};
+% 		% Should always be: {replication_failed,HasNodes,NeedsNodes}
+% 		Err ->
+% 			?AERR("Commiter down ~p error ~p",[{P#dp.actorname,P#dp.actortype},Err]),
+% 			?DBLOG(P#dp.db,"commiterdown error ~p",[Err]),
+% 			{Sql,_EvNumNew,_CrcSql,_NewVers} = P#dp.replicate_sql,
+% 			case Sql of
+% 				<<"delete">> ->
+% 					ok;
+% 				_ ->
+% 					ok = okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>))
+% 			end,
+% 			reply(P#dp.callfrom,{error,Err}),
+% 			handle_info(doqueue,P#dp{callfrom = undefined,commiter = undefined, transactionid = undefined, replicate_sql = undefined})
+% 	end;
+% handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P) ->
+% 	case Reason of
+% 		{verified,Mors,MasterNode,_AllSynced} when P#dp.transactionid == undefined; Mors == slave ->
+% 			actordb_local:actor_mors(Mors,MasterNode),
+% 			?ADBG("Verify down ~p ~p ~p ~p ~p ~p",[P#dp.actorname, P#dp.actortype, P#dp.evnum,
+% 						Reason, P#dp.mors, queue:is_empty(P#dp.callqueue)]),
+% 			?DBLOG(P#dp.db,"verified ~p ~p",[Mors,MasterNode]),
+% 			case Mors of
+% 				master ->
+% 					% If any uncommited transactions, check if they are abandonded or to be executed
+% 					NS = do_cb_init(P);
+% 				_ ->
+% 					NS = P#dp.cbstate
+% 			end,
+% 			handle_info(doqueue,%wlog_stillneed(AllSynced,?WLOG_NONE,
+% 									P#dp{verified = true, verifypid = undefined, mors = Mors, masternode = MasterNode, 
+% 									masternodedist = bkdcore:dist_name(MasterNode),
+% 									cbstate = NS});
+% 		{verified,Mors,MasterNode,_AllSynced} ->
+% 			?ADBG("Verify down ~p ~p ~p ~p ~p ~p",[P#dp.actorname, P#dp.actortype, P#dp.evnum,
+% 						Reason, P#dp.mors, queue:is_empty(P#dp.callqueue)]),
+% 			?DBLOG(P#dp.db,"verified ~p ~p",[Mors,MasterNode]),
+% 			actordb_local:actor_mors(Mors,MasterNode),
+% 			{Tid,Updid,Node} = P#dp.transactionid,
+% 			{Sql,Evnum,Crc,_NewVers} = P#dp.replicate_sql, 
+% 			% NP = wlog_stillneed(AllSynced,?WLOG_NONE,
+% 			NP = P#dp{verified = true,verifypid = undefined, mors = Mors,
+% 					 			masternode = MasterNode,masternodedist = bkdcore:dist_name(MasterNode), cbstate = do_cb_init(P)},
+% 			case actordb:rpc(Node,Updid,{actordb_multiupdate,transaction_state,[Updid,Tid]}) of
+% 				{ok,State} when State == 0; State == 1 ->
+% 					ComplSql = 
+% 						[<<"$SAVEPOINT 'adb';">>,
+% 						 semicolon(Sql),actornum(P),
+% 						 <<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+% 						 		<<" AND updater=">>,(butil:tobin(Updid)),";",
+% 						 <<"$UPDATE __adb SET val='">>,butil:tobin(Evnum),<<"' WHERE id=">>,?EVNUM,";",
+% 						 <<"$UPDATE __adb SET val='">>,butil:tobin(Crc),<<"' WHERE id=">>,?EVCRC,";"
+% 						 ],
+% 					actordb_sqlite:exec(P#dp.db,ComplSql,write),
+% 					% 0 - transaction still running, wait for done.
+% 					% 1 - finished, do commit straight away.
+% 					case State of
+% 						0 ->
+% 							{_CheckPid,CheckRef} = start_transaction_checker(Tid,Updid,Node),
+% 							{noreply,NP#dp{transactioncheckref = CheckRef}};
+% 						1 ->
+% 							CQ = queue:in({undefined,{commit,true,{Tid,Updid,Node}}},NP#dp.callqueue),
+% 							handle_info(doqueue,NP#dp{callqueue = CQ})
+% 					end;
+% 				% Lets forget this ever happened.
+% 				{ok,-1} ->
+% 					Sql = <<"DELETE FROM __transactions id=",(butil:tobin(Tid))/binary,
+% 								" AND updater=",(butil:tobin(Updid))/binary,";">>,
+% 					CQ = queue:in({undefined,{write,{erlang:crc32(Sql),Sql,undefined}}},NP#dp.callqueue),
+% 					handle_info(doqueue,NP#dp{callqueue = CQ});
+% 				% In case of error, process should crash, because it can not process sql if it can not verify last transaction
+% 				_Err ->
+% 					exit({error,{unable_to_verify_transaction,_Err}})
+% 			end;
+% 		{update_from,Node,Mors,MasterNode,Ref} ->
+% 			?ADBG("Verify down ~p ~p ~p master ~p, update from ~p",[P#dp.actorname,PID,Reason,MasterNode,Node]),
+% 			% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
+% 			case P#dp.copyfrom of
+% 				undefined ->
+% 					Copyfrom = Node;
+% 				Copyfrom ->
+% 					ok
+% 			end,
+% 			actordb_sqlite:stop(P#dp.db),
+% 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, mors = master, dbcopyref = Ref}),
+% 			erlang:monitor(process,RecvPid),
 
-			% In case db needs to be restored from another node, reject any writes in callqueue
-			QL = butil:sparsemap(fun({MsgFrom,Msg}) ->
-				case ok of
-					_ when element(1,Msg) == replicate_start ->
-						reply(MsgFrom,notready),
-						undefined;
-					_ ->
-						{MsgFrom,Msg}
-				end
-			end,queue:to_list(P#dp.callqueue)),
+% 			% In case db needs to be restored from another node, reject any writes in callqueue
+% 			QL = butil:sparsemap(fun({MsgFrom,Msg}) ->
+% 				case ok of
+% 					_ when element(1,Msg) == replicate_start ->
+% 						reply(MsgFrom,notready),
+% 						undefined;
+% 					_ ->
+% 						{MsgFrom,Msg}
+% 				end
+% 			end,queue:to_list(P#dp.callqueue)),
 
-			{noreply,P#dp{db = undefined,
-							verifypid = undefined, verified = false, mors = Mors, masternode = MasterNode,callqueue = queue:from_list(QL),
-							masternodedist = bkdcore:dist_name(MasterNode),dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}};
-		{update_direct,Mors,Bin} ->
-			?AINF("Verify down update direct ~p ~p ~p",[Mors,P#dp.actorname,P#dp.actortype]),
-			actordb_sqlite:stop(P#dp.db),
-			delactorfile(P),
-			ok = file:write_file(P#dp.dbpath,Bin),
-			{ok,NP} = init(P#dp{mors = Mors},update_direct),
-			{noreply,NP};
-		{redirect,Nd} ->
-			?AINF("verify redirect ~p ~p",[P#dp.actorname,Nd]),
-			{stop,normal,P};
-		{nomajority,Groups} ->
-			?AERR("Verify nomajority ~p ~p",[{P#dp.actorname,P#dp.actortype},Groups]),
-			% self() ! stop,
-			% handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
-			{stop,nomajority,P};
-		{nomajority,Groups,Failed} ->
-			?AERR("Verify nomajority ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Groups,Failed]),
-			% self() ! stop,
-			% handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
-			{stop,nomajority,P};
-		{error,enoent} ->
-			?AERR("error enoent result of verify ~p ~p",[P#dp.actorname,P#dp.actortype]),
-			distreg:unreg(self()),
-			{stop,normal,P};
-		nomaster ->
-			?AERR("No master found for verify ~p ~p",[?R2P(P),get()]),
-			{stop,nomaster,P};
-		_ ->
-			case queue:is_empty(P#dp.callqueue) of
-				true ->
-					?AERR("Verify down for ~p error ~p",[P#dp.actorname,Reason]);
-				false ->
-					?AERR("Verify down for ~p error ~p ~p",[P#dp.actorname,Reason,queue:out_r(P#dp.callqueue)])
-			end,
-			{Verifypid,_} = spawn_monitor(fun() -> timer:sleep(500), 
-													verifydb(P#dp.actorname,P#dp.actortype,P#dp.evcrc,
-																P#dp.evnum,P#dp.mors,P#dp.cbmod,P#dp.flags) 
-												end),
-			{noreply,P#dp{verified = false, verifypid = Verifypid}}
-	end;
+% 			{noreply,P#dp{db = undefined,
+% 							verifypid = undefined, verified = false, mors = Mors, masternode = MasterNode,callqueue = queue:from_list(QL),
+% 							masternodedist = bkdcore:dist_name(MasterNode),dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}};
+% 		{update_direct,Mors,Bin} ->
+% 			?AINF("Verify down update direct ~p ~p ~p",[Mors,P#dp.actorname,P#dp.actortype]),
+% 			actordb_sqlite:stop(P#dp.db),
+% 			delactorfile(P),
+% 			ok = file:write_file(P#dp.dbpath,Bin),
+% 			{ok,NP} = init(P#dp{mors = Mors},update_direct),
+% 			{noreply,NP};
+% 		{redirect,Nd} ->
+% 			?AINF("verify redirect ~p ~p",[P#dp.actorname,Nd]),
+% 			{stop,normal,P};
+% 		{nomajority,Groups} ->
+% 			?AERR("Verify nomajority ~p ~p",[{P#dp.actorname,P#dp.actortype},Groups]),
+% 			% self() ! stop,
+% 			% handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
+% 			{stop,nomajority,P};
+% 		{nomajority,Groups,Failed} ->
+% 			?AERR("Verify nomajority ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Groups,Failed]),
+% 			% self() ! stop,
+% 			% handle_info(doqueue,P#dp{verified = failed, verifypid = undefined});
+% 			{stop,nomajority,P};
+% 		{error,enoent} ->
+% 			?AERR("error enoent result of verify ~p ~p",[P#dp.actorname,P#dp.actortype]),
+% 			distreg:unreg(self()),
+% 			{stop,normal,P};
+% 		nomaster ->
+% 			?AERR("No master found for verify ~p ~p",[?R2P(P),get()]),
+% 			{stop,nomaster,P};
+% 		_ ->
+% 			case queue:is_empty(P#dp.callqueue) of
+% 				true ->
+% 					?AERR("Verify down for ~p error ~p",[P#dp.actorname,Reason]);
+% 				false ->
+% 					?AERR("Verify down for ~p error ~p ~p",[P#dp.actorname,Reason,queue:out_r(P#dp.callqueue)])
+% 			end,
+% 			{Verifypid,_} = spawn_monitor(fun() -> timer:sleep(500), 
+% 													verifydb(P#dp.actorname,P#dp.actortype,P#dp.evcrc,
+% 																P#dp.evnum,P#dp.mors,P#dp.cbmod,P#dp.flags) 
+% 												end),
+% 			{noreply,P#dp{verified = false, verifypid = Verifypid}}
+% 	end;
 handle_info({'DOWN',Ref,_,_PID,Reason},#dp{transactioncheckref = Ref} = P) ->
 	?ADBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
 	case P#dp.transactionid of
@@ -2150,7 +2191,9 @@ init([_|_] = Opts) ->
 					bkdcore:node_name(),butil:ds_val(startreason,Opts)]),
 			JournalMode = actordb_conf:journal_mode(),
 			case P#dp.copyfrom of
+				% Normal start (not start and copy/move actor from another node)
 				undefined ->
+					% Could be normal start after moving to another node though.
 					MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 					RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
 					case ok of
@@ -2172,6 +2215,15 @@ init([_|_] = Opts) ->
 									Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 									MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 									CopyFrom = butil:ds_val(?COPYFROMI,Rows),
+									EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
+									case butil:readtermfile([P#dp.dbpath,"-term"]) of
+										{VotedFor,VotedForTerm} ->
+											ok;
+										_ ->
+											VotedFor = undefined,
+											VotedForTerm = 0
+									end,
+
 									% case actordb_sqlite:exec(Db,<<"SELECT min(id),max(id) FROM __wlog;">>,read) of
 									% 	{sql_error,_,_} ->
 									% 		HaveWlog = ?WLOG_NONE,
@@ -2203,7 +2255,8 @@ init([_|_] = Opts) ->
 													TypeOfMove = false
 											end,
 											self() ! {check_redirect,Db,TypeOfMove},
-											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState
+											{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState,
+														current_term = VotedForTerm,voted_for = VotedFor,evterm = EvTerm
 													 % wlog_status = WlogStatus,wlog_len = WlogLen
 													 }};
 										[] ->
@@ -2220,7 +2273,9 @@ init([_|_] = Opts) ->
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, schemavers = SchemaVers,
 																	% wlog_status = WlogStatus,
 																	% wlog_len = WlogLen,
-																	movedtonode = MovedToNode1})};
+																	evterm = EvTerm,
+																	current_term = VotedForTerm,voted_for = VotedFor,
+																	movedtonode = MovedToNode1},true)};
 										[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
 											case base64:decode(MSql1) of
 												<<"delete">> ->
@@ -2234,7 +2289,9 @@ init([_|_] = Opts) ->
 											{ok,start_verify(NP#dp{evnum = Evnum, evcrc = Evcrc, replicate_sql = ReplSql, 
 															transactionid = Transid, %wlog_status = WlogStatus, wlog_len = WlogLen,
 															movedtonode = MovedToNode1,
-															schemavers = SchemaVers})}
+															evterm = EvTerm,
+															current_term = VotedForTerm,voted_for = VotedFor,
+															schemavers = SchemaVers},true)}
 									end;
 								[] when (P#dp.flags band ?FLAG_CREATE) > 0 ->
 									?ADBG("Opening NO schema create ~p",[{P#dp.actorname,P#dp.actortype}]),
@@ -2244,7 +2301,7 @@ init([_|_] = Opts) ->
 												 <<"COMMIT;">>],
 									ok = okornot(actordb_sqlite:exec(Db,CreateDb,write)),
 									?DBLOG(Db,"init normal created schema",[]),
-									{ok,start_verify(NP#dp{schemavers = SchemaVers})};
+									{ok,start_verify(NP#dp{schemavers = SchemaVers},true)};
 								[] ->
 									actordb_sqlite:stop(NP#dp.db),
 									?ADBG("Opening NO schema nocreate ~p",[{P#dp.actorname,P#dp.actortype}]),
@@ -2267,7 +2324,6 @@ init([_|_] = Opts) ->
 						_ ->
 							TypeOfMove = false
 					end,
-					% IsMove = element(1,P#dp.copyfrom) == move orelse element(1,P#dp.copyfrom) == split,
 					% First check if movement is already done.
 					case actordb_sqlite:init(P#dp.dbpath,JournalMode) of
 						{ok,Db,[_|_],_PageSize} ->
@@ -2373,17 +2429,29 @@ do_copy_reset(MoveType,Copyreset,State) ->
 			ResetSql
 	end.
 
-start_verify(P) ->
+start_verify(P,JustStarted) ->
 	ClusterNodes = bkdcore:cluster_nodes(),
 	case ok of
 		_ when P#dp.movedtonode /= undefined; ClusterNodes == [] ->
 			P#dp{verified = true,cbstate = do_cb_init(P), activity_now = actor_start(P)};
+		% Actor was started with mode slave. It will remain in slave(follower) mode and
+		%  not attempt to become candidate for now.
+		_ when P#dp.mors == slave, JustStarted ->
+			P;
 		_ ->
+			CurrentTerm = P#dp.current_term+1,
+			ok = butil:savetermfile([P#dp.dbpath,"-term"],{bkdcore:node_name(),CurrentTerm}),
+			NP = P#dp{current_term = CurrentTerm, voted_for = bkdcore:node_name()},
 			{Verifypid,_} = spawn_monitor(fun() -> 
-							verifydb(P#dp.actorname,P#dp.actortype,P#dp.evcrc,P#dp.evnum,P#dp.mors,P#dp.cbmod,P#dp.flags) 
+							start_election(NP)
 								end),
-			P#dp{verifypid = Verifypid, verified = false, activity_now = actor_start(P)}
+			NP#dp{verifypid = Verifypid, verified = false, activity_now = actor_start(P)}
+			% {Verifypid,_} = spawn_monitor(fun() -> 
+			% 				verifydb(P#dp.actorname,P#dp.actortype,P#dp.evcrc,P#dp.evnum,P#dp.mors,P#dp.cbmod,P#dp.flags) 
+			% 					end),
+			% P#dp{verifypid = Verifypid, verified = false, activity_now = actor_start(P)}
 	end.
+
 
 actor_start(P) ->
 	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,P#dp.page_size*?DEF_CACHE_PAGES).
@@ -2429,7 +2497,8 @@ base_schema(SchemaVers,Type,MovedTo) ->
 		_ ->
 			Moved = [{?MOVEDTO,MovedTo}]
 	end,
-	DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- [{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVCRC,0}|Moved]],
+	DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
+		[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVCRC,0},{?EVTERM,0}|Moved]],
 	[<<"BEGIN;">>,(?LOGTABLE),
 	 <<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
@@ -2545,162 +2614,201 @@ delactorfile(P) ->
 			file:delete(P#dp.dbpath++"-shm")
 	end.
 
-verified_response(MeMors,MasterNode,AllSynced) ->
-	?ADBG("verified_response ~p ~p",[MeMors,MasterNode]),
-	Me = bkdcore:node_name(),
-	case ok of
-		_ when MeMors == master, MasterNode == undefined ->
-			exit({verified,master,Me,AllSynced});
-		_ when MeMors == master, MasterNode /= Me, MasterNode /= undefined ->
-			exit({verified,slave,MasterNode,AllSynced});
-		_ when MasterNode /= undefined ->
-			exit({verified,MeMors,MasterNode,AllSynced});
-		_ when MeMors == master ->
-			exit({verified,master,Me,AllSynced});
-		_ ->
-			exit(nomaster)
-	end.
-verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
-	?ADBG("Verifydb ~p ~p ~p ~p ~p ~p",[Actor,Type,Evcrc,Evnum,MeMors,Cb]),
-	ClusterNodes = bkdcore:cluster_nodes(),
-	LenCluster = length(ClusterNodes),
+
+% Call RequestVote RPC on cluster nodes. 
+% This should be called in an async process and current_term and voted_for should have
+%  been set for this election (incremented current_term, voted_for = Me)
+start_election(P) ->
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
-	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo},[{flags,Flags}]]),
-	?ADBG("verify from others ~p",[Results]),
-	printfail(Actor,Type,3,GetFailed),
+	ClusterSize = length(bkdcore:cluster_nodes()) + 1,
 	Me = bkdcore:node_name(),
-	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
-	{Yes,Masters} = lists:foldl(
-			fun({redirect,Nd},_) -> 
-				exit({redirect,Nd});
-			 ({ok,Node,NodeCrc,NodeEvnum,NodeMors},{YesVotes,Masters}) -> 
-			 	case NodeMors of
-			 		{master,true} ->
-			 			Masters1 = [{Node,true}|Masters];
-			 		{_,failed} ->
-			 			Masters1 = Masters;
-			 		{master,false} ->
-			 			Masters1 = [{Node,false}|Masters];
-			 		{slave,_} ->
-			 			Masters1 = Masters;
-			 		master ->
-			 			Masters1 = [{Node,true}|Masters];
-			 		slave ->
-			 			Masters1 = Masters
-			 	end,
-				case Evcrc == NodeCrc andalso Evnum == NodeEvnum of
-					true ->
-						{YesVotes+1,Masters1};
-					false ->
-						{YesVotes,Masters1}
-				end;
-			(_,{YesVotes,Masters}) ->
-				{YesVotes,Masters}
-			end,
-			{0,[]},Results),
-	case Masters of
-		[] when MeMors == master ->
-			MasterNode = bkdcore:node_name();
-		[] ->
-			?AERR("No master node set ~p ~p ~p",[{Actor,Type},MeMors,Results]),
-			MasterNode = undefined,
-			exit(nomaster);
-		[{MasterNode,true}] ->
-			ok;
-		[{MasterNode1,_}] when MeMors == master, Me < MasterNode1 ->
-			MasterNode = Me;
-		[{MasterNode,_}] ->
-			ok;
-		[_,_|_] ->
-			case [MN || {MN,true} <- Masters] of
-				[MasterNode] ->
-					ok;
-				% This should not be possible, kill all actors on all nodes
-				[_,_|_] ->
-					?AERR("Received multiple confirmed masters?? ~p ~p",[{Actor,Type},Results]),
-					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,conflicted},[{flags,Flags}]]),
-					MasterNode = undefined,
-					exit(nomaster);
-				[] ->
-					case MeMors of
-						master ->
-							[MasterNode|_] = lists:sort([Me|[MN || {MN,_} <- Masters]]);
-						_ ->
-							[MasterNode|_] = lists:sort([MN || {MN,_} <- Masters])
-					end
-			end
-	end,
-	case MasterNode == Me of
-		true ->
-			MeMorsOut = master;
-		_ ->
-			MeMorsOut = slave
-	end,
-	% This node is in majority group.
-	case (Yes+1)*2 > (LenCluster+1) of
-		true ->
-			case Evnum == 0 of
+	Msg = {getinfo,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
+	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
+			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[]]),	
+	% Sum votes. Start with 1 (we vote for ourselves)
+	case count_votes(Results,1) of
+		{outofdate,Node,_NewerTerm} ->
+			rpc:call(bkdcore:dist_name(Node),?MODULE,call_slave,
+						[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{getinfo,doelection,[]}]),
+			exit(false);
+		NumVotes when is_integer(NumVotes) ->
+			case NumVotes*2 > ClusterSize of
 				true ->
-					case butil:findtrue(fun({ok,_,_,NodeEvnum,_}) -> NodeEvnum > 0 end,Results) of
-						false ->
-							verified_response(MeMorsOut,MasterNode,Yes == LenCluster);
-						_ ->
-							?ADBG("Node does not have db some other node does! ~p",[Actor]),
-							% Majority has evnum 0, but there is more than one group.
-							% This is an exception. In this case highest evnum db is the right one.
-							[{ok,Oknode,_,_,_}|_] = lists:reverse(lists:keysort(4,Results)),
-							verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc)
-					end;
-				_ ->
-					verified_response(MeMorsOut,MasterNode,Yes == LenCluster)
-			end;
-		false ->
-			Grouped = butil:group(fun({ok,_Node,NodeCrc,NodeEvnum,_NodeMors}) -> {NodeEvnum,NodeCrc} end,
-										[{ok,bkdcore:node_name(),Evcrc,Evnum,MeMors}|Results]),
-			case butil:find(fun({Key,Group}) -> 
-					case length(Group)*2 > (LenCluster+1) of
-						true ->
-							{Key,Group};
-						false ->
-							undefined
-					end
-				 end,Grouped) of
-				% Group with a majority of nodes and evnum > 0. This is winner.
-				{MajorityKey,MajorityGroup} when element(1,MajorityKey) > 0 ->
-					% There is a group with a majority of nodes, if it has a node running set as master, 
-					% 		then local node must be slave
-					% If it does not have master and no master found, master for local node is unchanged.
-					case butil:findtrue(fun({ok,Node,_,_,_}) -> Node == MasterNode end,MajorityGroup) of
-						false ->
-							[{ok,Oknode,_,_,_}|_]  = MajorityGroup,
-							?ADBG("Restoring db from another node ~p",[Actor]),
-							verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc);
-						{ok,MasterNode,_,_,_} ->
-							verify_getdb(Actor,Type,MasterNode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc)
-					end;
-				% No clear majority or majority has no writes.
-				_ ->
-					% If only two types of actors and one has no events, the other type must
-					%   have some events and consider it correct.
-					% If local node part of that group db is verified. If not it needs to restore from that node.
-					case Grouped of
-						[_,_] ->
-							case lists:keyfind({0,0},1,Grouped) of
-								false ->
-									exit({nomajority,Grouped});
-								{_,_ZeroGroup} when Evnum == 0 ->
-									?ADBG("Node does not have db some other node does! ~p",[Actor]),
-									[{_,OtherGroup}] = lists:keydelete({0,0},1,Grouped),
-									[{ok,Oknode,_,_,_}|_]  = OtherGroup,
-									verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc);
-								{_,_ZeroGroup} ->
-									verified_response(MeMorsOut,MasterNode,false)
-							end;
-						_ ->
-							exit({nomajority,Grouped,GetFailed})
-					end
+					exit(ok);
+				false ->
+					exit(false)
 			end
 	end.
+count_votes([{What,Node,HisLatestTerm}|T],N) ->
+	case What of
+		true ->
+			count_votes(T,N+1);
+		outofdate ->
+			{outofdate,Node,HisLatestTerm};
+		% already voted or something crashed
+		_ ->
+			count_votes(T,N)
+	end;
+count_votes([],N) ->
+	N.
+
+
+% verified_response(MeMors,MasterNode,AllSynced) ->
+% 	?ADBG("verified_response ~p ~p",[MeMors,MasterNode]),
+% 	Me = bkdcore:node_name(),
+% 	case ok of
+% 		_ when MeMors == master, MasterNode == undefined ->
+% 			exit({verified,master,Me,AllSynced});
+% 		_ when MeMors == master, MasterNode /= Me, MasterNode /= undefined ->
+% 			exit({verified,slave,MasterNode,AllSynced});
+% 		_ when MasterNode /= undefined ->
+% 			exit({verified,MeMors,MasterNode,AllSynced});
+% 		_ when MeMors == master ->
+% 			exit({verified,master,Me,AllSynced});
+% 		_ ->
+% 			exit(nomaster)
+% 	end.
+% verifydb(Actor,Type,Evcrc,Evnum,MeMors,Cb,Flags) ->
+% 	?ADBG("Verifydb ~p ~p ~p ~p ~p ~p",[Actor,Type,Evcrc,Evnum,MeMors,Cb]),
+% 	ClusterNodes = bkdcore:cluster_nodes(),
+% 	LenCluster = length(ClusterNodes),
+% 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
+% 	{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,verifyinfo},[{flags,Flags}]]),
+% 	?ADBG("verify from others ~p",[Results]),
+% 	printfail(Actor,Type,3,GetFailed),
+% 	Me = bkdcore:node_name(),
+% 	% Count how many nodes have db with same last evnum and evcrc and gather nodes that are different.
+% 	{Yes,Masters} = lists:foldl(
+% 			fun({redirect,Nd},_) -> 
+% 				exit({redirect,Nd});
+% 			 ({ok,Node,NodeCrc,NodeEvnum,NodeMors},{YesVotes,Masters}) -> 
+% 			 	case NodeMors of
+% 			 		{master,true} ->
+% 			 			Masters1 = [{Node,true}|Masters];
+% 			 		{_,failed} ->
+% 			 			Masters1 = Masters;
+% 			 		{master,false} ->
+% 			 			Masters1 = [{Node,false}|Masters];
+% 			 		{slave,_} ->
+% 			 			Masters1 = Masters;
+% 			 		master ->
+% 			 			Masters1 = [{Node,true}|Masters];
+% 			 		slave ->
+% 			 			Masters1 = Masters
+% 			 	end,
+% 				case Evcrc == NodeCrc andalso Evnum == NodeEvnum of
+% 					true ->
+% 						{YesVotes+1,Masters1};
+% 					false ->
+% 						{YesVotes,Masters1}
+% 				end;
+% 			(_,{YesVotes,Masters}) ->
+% 				{YesVotes,Masters}
+% 			end,
+% 			{0,[]},Results),
+% 	case Masters of
+% 		[] when MeMors == master ->
+% 			MasterNode = bkdcore:node_name();
+% 		[] ->
+% 			?AERR("No master node set ~p ~p ~p",[{Actor,Type},MeMors,Results]),
+% 			MasterNode = undefined,
+% 			exit(nomaster);
+% 		[{MasterNode,true}] ->
+% 			ok;
+% 		[{MasterNode1,_}] when MeMors == master, Me < MasterNode1 ->
+% 			MasterNode = Me;
+% 		[{MasterNode,_}] ->
+% 			ok;
+% 		[_,_|_] ->
+% 			case [MN || {MN,true} <- Masters] of
+% 				[MasterNode] ->
+% 					ok;
+% 				% This should not be possible, kill all actors on all nodes
+% 				[_,_|_] ->
+% 					?AERR("Received multiple confirmed masters?? ~p ~p",[{Actor,Type},Results]),
+% 					rpc:multicall(ConnectedNodes,?MODULE,call_slave,[Cb,Actor,Type,{getinfo,conflicted},[{flags,Flags}]]),
+% 					MasterNode = undefined,
+% 					exit(nomaster);
+% 				[] ->
+% 					case MeMors of
+% 						master ->
+% 							[MasterNode|_] = lists:sort([Me|[MN || {MN,_} <- Masters]]);
+% 						_ ->
+% 							[MasterNode|_] = lists:sort([MN || {MN,_} <- Masters])
+% 					end
+% 			end
+% 	end,
+% 	case MasterNode == Me of
+% 		true ->
+% 			MeMorsOut = master;
+% 		_ ->
+% 			MeMorsOut = slave
+% 	end,
+% 	% This node is in majority group.
+% 	case (Yes+1)*2 > (LenCluster+1) of
+% 		true ->
+% 			case Evnum == 0 of
+% 				true ->
+% 					case butil:findtrue(fun({ok,_,_,NodeEvnum,_}) -> NodeEvnum > 0 end,Results) of
+% 						false ->
+% 							verified_response(MeMorsOut,MasterNode,Yes == LenCluster);
+% 						_ ->
+% 							?ADBG("Node does not have db some other node does! ~p",[Actor]),
+% 							% Majority has evnum 0, but there is more than one group.
+% 							% This is an exception. In this case highest evnum db is the right one.
+% 							[{ok,Oknode,_,_,_}|_] = lists:reverse(lists:keysort(4,Results)),
+% 							verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc)
+% 					end;
+% 				_ ->
+% 					verified_response(MeMorsOut,MasterNode,Yes == LenCluster)
+% 			end;
+% 		false ->
+% 			Grouped = butil:group(fun({ok,_Node,NodeCrc,NodeEvnum,_NodeMors}) -> {NodeEvnum,NodeCrc} end,
+% 										[{ok,bkdcore:node_name(),Evcrc,Evnum,MeMors}|Results]),
+% 			case butil:find(fun({Key,Group}) -> 
+% 					case length(Group)*2 > (LenCluster+1) of
+% 						true ->
+% 							{Key,Group};
+% 						false ->
+% 							undefined
+% 					end
+% 				 end,Grouped) of
+% 				% Group with a majority of nodes and evnum > 0. This is winner.
+% 				{MajorityKey,MajorityGroup} when element(1,MajorityKey) > 0 ->
+% 					% There is a group with a majority of nodes, if it has a node running set as master, 
+% 					% 		then local node must be slave
+% 					% If it does not have master and no master found, master for local node is unchanged.
+% 					case butil:findtrue(fun({ok,Node,_,_,_}) -> Node == MasterNode end,MajorityGroup) of
+% 						false ->
+% 							[{ok,Oknode,_,_,_}|_]  = MajorityGroup,
+% 							?ADBG("Restoring db from another node ~p",[Actor]),
+% 							verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc);
+% 						{ok,MasterNode,_,_,_} ->
+% 							verify_getdb(Actor,Type,MasterNode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc)
+% 					end;
+% 				% No clear majority or majority has no writes.
+% 				_ ->
+% 					% If only two types of actors and one has no events, the other type must
+% 					%   have some events and consider it correct.
+% 					% If local node part of that group db is verified. If not it needs to restore from that node.
+% 					case Grouped of
+% 						[_,_] ->
+% 							case lists:keyfind({0,0},1,Grouped) of
+% 								false ->
+% 									exit({nomajority,Grouped});
+% 								{_,_ZeroGroup} when Evnum == 0 ->
+% 									?ADBG("Node does not have db some other node does! ~p",[Actor]),
+% 									[{_,OtherGroup}] = lists:keydelete({0,0},1,Grouped),
+% 									[{ok,Oknode,_,_,_}|_]  = OtherGroup,
+% 									verify_getdb(Actor,Type,Oknode,MasterNode,MeMorsOut,Cb,Evnum,Evcrc);
+% 								{_,_ZeroGroup} ->
+% 									verified_response(MeMorsOut,MasterNode,false)
+% 							end;
+% 						_ ->
+% 							exit({nomajority,Grouped,GetFailed})
+% 					end
+% 			end
+% 	end.
 verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 	Ref = make_ref(),
 	case MasterNode of

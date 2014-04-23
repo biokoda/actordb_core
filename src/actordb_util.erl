@@ -29,6 +29,10 @@ typeatom(<<_/binary>> = Type) ->
 typeatom(T) when is_atom(T) ->
 	T.
 
+
+tunnel_bin(Bin) ->
+	ok.
+
 shard_path(Name) ->
 	[drive(Name), "/shards/"].
 
