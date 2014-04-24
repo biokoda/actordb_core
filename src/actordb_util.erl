@@ -30,7 +30,21 @@ typeatom(T) when is_atom(T) ->
 	T.
 
 
-tunnel_bin(Bin) ->
+tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
+             LenVarPrefix:16/unsigned,VarPrefix:LenVarPrefix/binary,
+             LenHeader,Header:LenHeader/binary,
+             LenPage:16,Page:LenPage/binary>>) ->
+	{Cb,Actor,Type,Term} = binary_to_term(FixedPrefix),
+	case VarPrefix of
+		<<>> ->
+			ok;
+		_ ->
+			{Term,Leader,PrevEvnum,PrevTerm,LeaderCommit} = binary_to_term(VarPrefix),
+			actordb_sqlproc:call_slave(Cb,Actor,Type,
+					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,LeaderCommit,
+											Header == Page andalso Header == <<>>}})
+	end,
+	actordb_sqlproc:call_slave(Cb,Actor,Type,{appendentries_wal,Term,Header,Page}),
 	ok.
 
 shard_path(Name) ->

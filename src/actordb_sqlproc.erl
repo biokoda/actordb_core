@@ -254,8 +254,8 @@ print_info(Pid) ->
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,evcrc = 0,prev_evnum = 0, prev_evcrc = 0, 
 			activity = 0, timerref, start_time,
 			page_size = 1024, activity_now,schemanum,schemavers,flags = 0,
-	% Raft parameters 
-	current_term = 0,voted_for, commit_index = 0, last_applied = 0,next_index = [],match_index = [],
+	% Raft parameters  (lastApplied = evnum)
+	current_term = 0,voted_for, commit_index = 0, next_index = [],match_index = [],
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
 	locked = [],
 	% Multiupdate id, set to {Multiupdateid,TransactionNum} if in the middle of a distributed transaction
@@ -273,6 +273,9 @@ print_info(Pid) ->
   %  or is being restored from another node.
   callqueue,
   % (short for masterorslave): slave/master
+  % mors = slave                     -> follower
+  % mors = master, verified == false -> candidate
+  % mors == master, verified == true -> leader
   mors, 
   % Sql statement received from master in first step of 2 phase commit. Only kept in memory.
   replicate_sql = <<>>,
@@ -581,16 +584,59 @@ handle_call({dbcopy_op,From1,What,Data} = Msg,CallFrom,P) ->
 					end
 			end
 	end;
-handle_call({getinfo,What},_,P) ->
+handle_call({state_rw,What},From,P) ->
 	case What of
-		verifyinfo ->
-			{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,{P#dp.mors,P#dp.verified}},P};
+		% verifyinfo ->
+		% 	{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,{P#dp.mors,P#dp.verified}},P};
 		actornum ->
 			{reply,{ok,P#dp.dbpath,read_num(P)},P};
 		donothing ->
 			{reply,ok,P};
+		% AE is split into multiple calls (because wal is sent page by page as it is written)
+		% Start sets parameters. It may also be empty, which means there will be no
+		% wal calls after start.
+		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,LeaderCommit,Empty} ->
+			case ok of
+				_ when Term < P#dp.current_term ->
+					{reply,false,P};
+				% This node is candidate or leader but someone with newer term is sending us log
+				_ when P#dp.mors == master ->
+					ok = butil:savetermfile([P#dp.dbpath,"-term"],{LeaderNode,Term}),
+					handle_call({state_rw,What},From,P#dp{mors = slave, verified = true, 
+									current_term = Term});
+				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
+					{reply,false,P};
+				_ ->
+					{reply,ok,P}
+			end;
+		% sqlite wal, header tells you if done (it has db size in header)
+		{appendentries_wal,Term,Header,Body} ->
+			case ok of
+				_ when Term == P#dp.current_term ->
+					% Not that simple....
+					file:write_file([P#dp.dbpath,"-wal"],[Header,Body],[write,binary,append,raw]),
+					{reply,ok,P};
+				_ ->
+					{reply,false,P}
+			end;
+		% called back to leader from every follower that received call
+		{appendentries_response,Node,CurrentTerm,Success} ->
+			{reply,ok,P};
 		{request_vote,Candidate,NewTerm,LastTerm,LastEvnum} ->
 			TrueResp = {reply, {true,bkdcore:node_name(),NewTerm}, P#dp{voted_for = Candidate, current_term = NewTerm}},
+			Uptodate = 
+				case ok of
+					_ when P#dp.evterm < LastTerm ->
+						true;
+					_ when P#dp.evterm > LastTerm ->
+						false;
+					_ when P#dp.evnum < LastEvnum ->
+						true;
+					_ when P#dp.evnum > LastEvnum ->
+						false;
+					_ ->
+						true
+				end,
 			case ok of
 				% Candidates term is lower than current_term, ignore.
 				_ when NewTerm < P#dp.current_term ->
@@ -599,7 +645,7 @@ handle_call({getinfo,What},_,P) ->
 				%  or have voted for this candidate already.
 				_ when NewTerm == P#dp.current_term ->
 					case (P#dp.voted_for == undefined orelse P#dp.voted_for == Candidate) of
-						true when (P#dp.evterm =< LastTerm andalso P#dp.evnum =< LastEvnum) ->
+						true when Uptodate ->
 							ok = butil:savetermfile([P#dp.dbpath,"-term"],{Candidate,NewTerm}),
 							TrueResp;
 						true ->
@@ -610,7 +656,7 @@ handle_call({getinfo,What},_,P) ->
 							{reply, {alreadyvoted,bkdcore:node_name(),P#dp.current_term},P}
 					end;
 				% New candidates term is higher than ours, is he as up to date?
-				_ when P#dp.evterm =< LastTerm andalso P#dp.evnum =< LastEvnum ->
+				_ when Uptodate ->
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{Candidate,NewTerm}),
 					TrueResp;
 				% Higher term, but not as up to date. We can not vote for him.
@@ -623,14 +669,15 @@ handle_call({getinfo,What},_,P) ->
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
 		doelection ->
+			reply(From,ok),
 			case P#dp.verified == false andalso P#dp.verifypid == undefined of
 				true ->
-					{reply,ok,start_verify(P,false)};
+					{noreply,start_verify(P,false)};
 				false ->
-					{reply,ok,P}
-			end;
-		conflicted ->
-			{stop,conflicted,P}
+					{noreply,P}
+			end
+		% conflicted ->
+		% 	{stop,conflicted,P}
 	end;
 % handle_call({commit,Doit,Id},From, P) ->
 % 	?ADBG("Commit ~p ~p ~p ~p",[Doit,Id,From,P#dp.transactionid]),
@@ -1045,7 +1092,9 @@ write_call({MFA,Crc,Sql,Transaction} = OrigMsg,From,P) ->
 write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	?DBLOG(P#dp.db,"writecall ~p ~p ~p ~p ~p",[EvNum,Crc,P#dp.dbcopy_to,From,Sql]),
-	{ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
+	% {ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
+	ClusterNodes = bkcore:cluster_nodes(),
+	LenCluster = length(ClusterNodes),
 	case Sql of
 		delete ->
 			ReplSql = <<"delete">>,
@@ -1070,12 +1119,12 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
 	end,
 	% ConnectedNodes = bkdcore:cluster_nodes_connected(),
-	?DBG("Replicating write ~p    connected ~p",[Sql,ConnectedNodes]),
+	?DBG("Replicating write ~p",[Sql]),
 	case okornot(Res) of
 		ok ->
 			?DBG("Write result ~p",[Res]),
 			case ok of
-				_ when LenCluster == 0 ->
+				_ when ClusterNodes == [] ->
 					case Sql of
 						delete ->
 							delete_actor(P),
@@ -1089,14 +1138,21 @@ write_call(OrigMsg,Crc,Sql,undefined,From,NewVers,P) ->
 						_ ->
 							{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, evcrc = Crc, schemavers = NewVers}}
 					end;
-				_ when (LenConnected+1)*2 > (LenCluster+1) ->
+				_ -> %when (LenConnected+1)*2 > (LenCluster+1) ->
+					{NSent,FailFlags} = esqlite3:replicate_status(P#dp.db),
+					case NSent*2 > LenCluster of
+						true ->
+							{noreply,P};
+						false ->
+							handle_call({state_rw,doelection},undefined,
+											P#dp{callfrom = From, callres = Res, activity = P#dp.activity + 1, 
+													verified = false})
+					end
 					% Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,ReplSql,Crc,NewVers),
 					% {noreply,P#dp{callfrom = From,callres = Res, commiter = Commiter, activity = P#dp.activity + 1,
 					% 				replicate_sql = {ReplSql,EvNum,Crc,NewVers}}};
-					{noreply,P};
-				_ ->
-					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-					{reply,{error,{replication_failed_1,LenConnected,LenCluster}},P}
+				% _ ->
+				% 	{reply,{error,{replication_failed_1,LenConnected,LenCluster}},P}
 			end;
 		Resp ->
 			actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
@@ -1844,6 +1900,28 @@ handle_info(doqueue,P) ->
 % 												end),
 % 			{noreply,P#dp{verified = false, verifypid = Verifypid}}
 % 	end;
+handle_info({'DOWN',_Monitor,_,PID,Reason},#dp{verifypid = PID} = P1) ->
+	case Reason of
+		ok ->
+			P = P1#dp{mors = master, verifypid = undefined},
+			case P#dp.evnum of
+				0 ->
+					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
+					CreateDb = [base_schema(P#dp.schemavers,P#dp.actortype),
+								 Schema],
+					case write_call({undefined,0,CreateDb,undefined},undefined,P) of
+						{noreply,NP} ->
+							{noreply,NP};
+						{reply,_,NP} ->
+							{noreply,NP}
+					end;
+				_ ->
+					% empty write
+					{noreply,P}
+			end;
+		false ->
+			{noreply,P1#dp{verifypid = undefined}}
+	end;
 handle_info({'DOWN',Ref,_,_PID,Reason},#dp{transactioncheckref = Ref} = P) ->
 	?ADBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
 	case P#dp.transactionid of
@@ -2295,13 +2373,8 @@ init([_|_] = Opts) ->
 									end;
 								[] when (P#dp.flags band ?FLAG_CREATE) > 0 ->
 									?ADBG("Opening NO schema create ~p",[{P#dp.actorname,P#dp.actortype}]),
-									{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
-									CreateDb = [base_schema(SchemaVers,P#dp.actortype),
-												 Schema,
-												 <<"COMMIT;">>],
-									ok = okornot(actordb_sqlite:exec(Db,CreateDb,write)),
 									?DBLOG(Db,"init normal created schema",[]),
-									{ok,start_verify(NP#dp{schemavers = SchemaVers},true)};
+									{ok,start_verify(NP,true)};
 								[] ->
 									actordb_sqlite:stop(NP#dp.db),
 									?ADBG("Opening NO schema nocreate ~p",[{P#dp.actorname,P#dp.actortype}]),
@@ -2370,7 +2443,7 @@ check_redirect(P,Copyfrom) ->
 	case Copyfrom of
 		{move,NewShard,Node} ->
 			case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-											{getinfo,donothing}]}) of
+											{state_rw,donothing,[]}]}) of
 				{redirect,SomeNode} ->
 					case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
 						true ->
@@ -2499,7 +2572,7 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	end,
 	DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
 		[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVCRC,0},{?EVTERM,0}|Moved]],
-	[<<"BEGIN;">>,(?LOGTABLE),
+	[(?LOGTABLE),
 	 <<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
 	 "CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER,prevev INTEGER,prevcrc INTEGER, sql TEXT);",
@@ -2606,7 +2679,7 @@ delactorfile(P) ->
 			% Leave behind redirect marker.
 			% Create a file with "1" attached to end
 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath++"1",off),
-			ok = okornot(actordb_sqlite:exec(Db,[base_schema(0,P#dp.actortype,P#dp.movedtonode),<<"COMMIT;">>],write)),
+			ok = okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,base_schema(0,P#dp.actortype,P#dp.movedtonode),<<"COMMIT;">>],write)),
 			actordb_sqlite:stop(Db),
 			% Rename into the actual dbfile (should be atomic op)
 			ok = file:rename(P#dp.dbpath++"1",P#dp.dbpath),
@@ -2622,14 +2695,14 @@ start_election(P) ->
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	ClusterSize = length(bkdcore:cluster_nodes()) + 1,
 	Me = bkdcore:node_name(),
-	Msg = {getinfo,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
+	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[]]),	
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of
 		{outofdate,Node,_NewerTerm} ->
 			rpc:call(bkdcore:dist_name(Node),?MODULE,call_slave,
-						[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{getinfo,doelection,[]}]),
+						[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}]),
 			exit(false);
 		NumVotes when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
