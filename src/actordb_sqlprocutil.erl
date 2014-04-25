@@ -10,6 +10,41 @@ reply(undefined,_Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
+reopen_db(#dp{mors = master} = P) ->
+	case ok of
+		% we are master but db not open or open as file descriptor to -wal file
+		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
+			file:close(P#dp.db),
+			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,P#dp.def_journal_mode),
+			P#dp{db = Db};
+		_ ->
+			P
+	end;
+% slaves should either have undefined for db or file descriptor.
+% Once they need to append wal, file will be opened if needed. 
+% We don't open here because we need to know the salt value (if no -wal present)
+reopen_db(P) ->
+	case ok of
+		_ when element(1,P#dp.db) == connection; P#dp.db == undefined ->
+			actordb_sqlite:stop(P#dp.db),
+			P#dp{db = undefined};
+		_ ->
+			P
+	end.
+
+append_wal(#dp{db = undefined} = P,Header,Bin) ->
+	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
+	case file:position(F,eof) of
+		{ok,0} ->
+			<<_:16/binary,Salt:8/binary,_/binary>> = Header,
+			append_wal(P#dp{db = F},[esqlite3:make_wal_header(4096,Salt),Header],Bin);
+		{ok,_WalSize} ->
+			append_wal(P#dp{db = F},Header,Bin)
+	end,
+	append_wal(P,Header,Bin);
+append_wal(P,Header,Bin) ->
+	ok = file:write(P#dp.db,[Header,Bin]),
+	ok.
 
 verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 	Ref = make_ref(),
@@ -103,7 +138,7 @@ transaction_checker1(Id,Uid,Node) ->
 		_ ->
 			transaction_checker1(Id,Uid,Node)
 	end.
-	
+
 
 check_redirect(P,Copyfrom) ->
 	case Copyfrom of
@@ -229,10 +264,6 @@ start_verify(P,JustStarted) ->
 							start_election(NP)
 								end),
 			NP#dp{verifypid = Verifypid, verified = false, activity_now = actor_start(P)}
-			% {Verifypid,_} = spawn_monitor(fun() -> 
-			% 				verifydb(P#dp.actorname,P#dp.actortype,P#dp.evcrc,P#dp.evnum,P#dp.mors,P#dp.cbmod,P#dp.flags) 
-			% 					end),
-			% P#dp{verifypid = Verifypid, verified = false, activity_now = actor_start(P)}
 	end.
 % Call RequestVote RPC on cluster nodes. 
 % This should be called in an async process and current_term and voted_for should have
@@ -243,19 +274,19 @@ start_election(P) ->
 	Me = bkdcore:node_name(),
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
-			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[]]),	
+			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]),
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of
 		{outofdate,Node,_NewerTerm} ->
 			rpc:call(bkdcore:dist_name(Node),?MODULE,call_slave,
 						[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}]),
-			exit(false);
+			exit(follower);
 		NumVotes when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
 				true ->
-					exit(ok);
+					exit(leader);
 				false ->
-					exit(false)
+					exit(follower)
 			end
 	end.
 count_votes([{What,Node,HisLatestTerm}|T],N) ->

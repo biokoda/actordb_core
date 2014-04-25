@@ -4,6 +4,7 @@
 
 -compile([{parse_transform, lager_transform}]).
 -define(NUM_SHARDS,6).
+-define(PAGESIZE,4096).
 % -define(NAMESPACE_MAX,134217728).
 -define(NAMESPACE_MAX,4294967295).
 -define(MULTIUPDATE_TYPE,'__mupdate__').

@@ -13,7 +13,7 @@ init(Path,JournalMode) ->
 	init(Path,JournalMode,actordb_util:hash(Path)).
 init(Path,JournalMode,Thread) ->
 	Sql = <<"select name, sql from sqlite_master where type='table';",
-			"PRAGMA page_size=4096;"
+			"PRAGMA page_size=",(?PAGESIZE)/binary,";"
 			% Exclusive locking is faster but unrealiable. 
 			% "$PRAGMA locking_mode=EXCLUSIVE;",
 			"$PRAGMA foreign_keys=1;",

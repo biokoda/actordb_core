@@ -40,11 +40,19 @@ tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 			ok;
 		_ ->
 			{Term,Leader,PrevEvnum,PrevTerm,LeaderCommit} = binary_to_term(VarPrefix),
-			actordb_sqlproc:call_slave(Cb,Actor,Type,
+			Res = actordb_sqlproc:call_slave(Cb,Actor,Type,
 					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,LeaderCommit,
-											Header == Page andalso Header == <<>>}})
+											Header == Page andalso Header == <<>>}}),
+			put(proceed,Res)
 	end,
-	actordb_sqlproc:call_slave(Cb,Actor,Type,{appendentries_wal,Term,Header,Page}),
+	% When header arrives, we check parameters if all ok.
+	% If not, ignore wal pages untill next header.
+	case get(proceed) of
+		ok ->
+			actordb_sqlproc:call_slave(Cb,Actor,Type,{appendentries_wal,Term,Header,Page});
+		_ ->
+			ok
+	end,
 	ok.
 
 shard_path(Name) ->
