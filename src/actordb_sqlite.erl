@@ -130,4 +130,18 @@ exec(Db,Sql) ->
 	end.
 
 
-
+okornot(Res) ->
+	case Res of
+		ok ->
+			ok;
+		{rowid,_} ->
+			ok;
+		{changes,_} ->
+			ok;
+		{ok,_} ->
+			ok;
+		{sql_error,Err,_Sql} ->
+			{sql_error,Err};
+		{sql_error,Err} ->
+			{sql_error,Err}
+	end.
