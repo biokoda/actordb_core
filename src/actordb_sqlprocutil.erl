@@ -10,41 +10,119 @@ reply(undefined,_Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
+ae_respond(P,LeaderNode,Success) ->
+	Resp = {appendentries_response,bkdcore:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm},
+	bkdcore:rpc(LeaderNode,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+									{state_rw,Resp}]}).
+
+% follower_indexes(Node,Evnum,[{Node,LastEvnum,NextEvnum}|T],L) ->
+% 	case Evnum >= NextEvnum of
+% 		true ->
+% 			T ++ [{Node,Evnum,Evnum+1}|L];
+% 		false ->
+% 			T ++ [{Node,Evnum,NextEvnum}|L]
+% 	end;
+% follower_indexes(Node,Evnum,[H|T],L) ->
+% 	follower_indexes(Node,Evnum,T,[H|L]);
+% follower_indexes(Node,Evnum,[],L) ->
+% 	[{Node,Evnum,Evnum+1}|L].
+
+reply_maybe(#dp{callfrom = undefined} = P) ->
+	P;
+reply_maybe(P) ->
+	reply_maybe(P,1,P#dp.follower_indexes).
+reply_maybe(P,N,[H|T]) ->
+	case H of
+		_ when H#flw.next_index > P#dp.evnum ->
+			reply_maybe(P,N+1,T);
+		_ ->
+			reply_maybe(P,N,T)
+	end;
+reply_maybe(P,N,[]) ->
+	case N*2 > (length(P#dp.follower_indexes)+1) of
+		true ->
+			reply(P#dp.callfrom,P#dp.callres),
+			P#dp{callfrom = undefined, callres = undefined};
+		false ->
+			P
+	end.
+
+
 reopen_db(#dp{mors = master} = P) ->
 	case ok of
 		% we are master but db not open or open as file descriptor to -wal file
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
-			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,P#dp.def_journal_mode),
-			P#dp{db = Db};
+			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+			P#dp{db = Db, wal_from = wal_from([P#dp.dbpath,"-wal"])};
 		_ ->
-			P
+			case P#dp.wal_from == {0,0} of
+				true ->
+					P#dp{wal_from = wal_from([P#dp.dbpath,"-wal"])};
+				false ->
+					P
+			end
 	end;
-% slaves should either have undefined for db or file descriptor.
-% Once they need to append wal, file will be opened if needed. 
-% We don't open here because we need to know the salt value (if no -wal present)
 reopen_db(P) ->
 	case ok of
 		_ when element(1,P#dp.db) == connection; P#dp.db == undefined ->
 			actordb_sqlite:stop(P#dp.db),
-			P#dp{db = undefined};
+			{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
+			case file:position(F,eof) of
+				{ok,0} ->
+					ok = file:write(F,esqlite3:make_wal_header(?PAGESIZE));
+				{ok,_WalSize} ->
+					ok
+			end,
+			P#dp{db = F};
 		_ ->
 			P
 	end.
 
-append_wal(#dp{db = undefined} = P,Header,Bin) ->
-	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
-	case file:position(F,eof) of
-		{ok,0} ->
-			<<_:16/binary,Salt:8/binary,_/binary>> = Header,
-			append_wal(P#dp{db = F},[esqlite3:make_wal_header(4096,Salt),Header],Bin);
-		{ok,_WalSize} ->
-			append_wal(P#dp{db = F},Header,Bin)
-	end,
-	append_wal(P,Header,Bin);
+% Find first valid evnum,evterm in wal (from beginning)
+wal_from([_|_] = Path) ->
+	{ok,F} = file:open(Path,[read,binary,raw]),
+	{ok,_} = file:position(F,32),
+	wal_from(F);
+wal_from(F) ->
+	case file:read(F,40) of
+		eof ->
+			file:close(F),
+			{0,0};
+		% Non commit page
+		{ok,<<_:32,0:32,_/binary>>} ->
+			{ok,_} = file:position(F,{cur,?PAGESIZE}),
+			wal_from(F);
+		% Commit page, we can read evnum evterm safely
+		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
+			file:close(F),
+			{Evnum,Evterm}
+	end.
+
+
 append_wal(P,Header,Bin) ->
-	ok = file:write(P#dp.db,[Header,Bin]),
-	ok.
+	ok = file:write(P#dp.db,[Header,esqlite3:lz4_decompress(Bin,?PAGESIZE)]).
+
+% Go back one entry
+rewind_wal(P) ->
+	case file:position(P#dp.db,{cur,-(?PAGESIZE+40)}) of
+		{ok,NPos} ->
+			{ok,<<_:32,Commit:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>>} = file:read(P#dp.db,40),
+			case ok of
+				_ when P#dp.evnum /= Evnum, Commit /= 0 ->
+					{ok,_} = file:position(P#dp.db,{cur,?PAGESIZE}),
+					file:truncate(P#dp.db),
+					P#dp{evnum = Evnum, evterm = Evterm};
+				_ ->
+					{ok,_} = file:position(P#dp.db,{cur,-40}),
+					rewind_wal(P)
+			end;
+		{error,_} ->
+			file:close(P#dp.db),
+			file:delete([P#dp.dbpath,"-wal"]),
+			% rewind to 0, causing a complete restore from another node
+			reopen_db(P#dp{evnum = 0, evterm = 0, db = undefined})
+	end.
 
 verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 	Ref = make_ref(),
@@ -245,7 +323,7 @@ do_cb_init(P) ->
 	end.
 
 actor_start(P) ->
-	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,P#dp.page_size*?DEF_CACHE_PAGES).
+	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,?PAGESIZE*?DEF_CACHE_PAGES).
 
 start_verify(P,JustStarted) ->
 	ClusterNodes = bkdcore:cluster_nodes(),
@@ -305,7 +383,7 @@ count_votes([],N) ->
 read_num(P) ->
 	case P#dp.db of
 		undefined ->
-			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,actordb_conf:journal_mode());
+			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal);
 		Db ->
 			SchemaTables = true
 	end,
@@ -331,13 +409,8 @@ delactorfile(P) ->
 	case P#dp.movedtonode of
 		undefined ->
 			file:delete(P#dp.dbpath),
-			case P#dp.journal_mode of
-				wal ->
-					file:delete(P#dp.dbpath++"-wal"),
-					file:delete(P#dp.dbpath++"-shm");
-				_ ->
-					ok
-			end;
+			file:delete(P#dp.dbpath++"-wal"),
+			file:delete(P#dp.dbpath++"-shm");
 		_ ->
 			% Leave behind redirect marker.
 			% Create a file with "1" attached to end
@@ -565,17 +638,11 @@ dbcopy_op_call({dbcopy_op,_,send_db,Data} = Msg,CallFrom,P) ->
 			% 	false ->
 					case file:read_file_info(P#dp.dbpath) of
 						{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
-										IsMove /= false orelse P#dp.journal_mode == wal ->
+										IsMove /= false  ->
 							?ADBG("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
 									[{P#dp.actorname,P#dp.actortype},ActornameToCopyto,
 															{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
 							?DBLOG(P#dp.db,"senddb to ~p ~p",[ActornameToCopyto,Node]),
-							case P#dp.journal_mode of
-								wal ->
-									ok;
-								_ ->
-									actordb_sqlite:set_pragmas(P#dp.db,wal)
-							end,
 							Me = self(),
 							case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
 								false ->
@@ -583,9 +650,9 @@ dbcopy_op_call({dbcopy_op,_,send_db,Data} = Msg,CallFrom,P) ->
 									Db = P#dp.db,
 									{Pid,_} = spawn_monitor(fun() -> 
 											dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
-									{reply,{ok,Ref},P#dp{db = Db,journal_mode = wal, 
-																		dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
-																		activity = P#dp.activity + 1}};
+									{reply,{ok,Ref},P#dp{db = Db,
+														dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
+														activity = P#dp.activity + 1}};
 								{_,_Pid,Ref,_} ->
 									?DBG("senddb already exists with same ref!"),
 									{reply,{ok,Ref},P}
@@ -702,11 +769,9 @@ dbcopy_op_call({dbcopy_op,From1,unlock,Data},CallFrom,P) ->
 							WriteMsg = {undefined,erlang:crc32(Sql),Sql,undefined},
 							case ok of
 								_ when WithoutLock == [], DbCopyTo == [] ->
-									actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
 									actordb_sqlproc:write_call(WriteMsg,CallFrom,P#dp{locked = WithoutLock, 
 												dbcopy_to = DbCopyTo,
-												cbstate = NS,
-											 journal_mode = P#dp.def_journal_mode});
+												cbstate = NS});
 								_ ->
 									CQ = queue:in_r({CallFrom,{write,WriteMsg}},P#dp.callqueue),
 									{noreply,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
@@ -714,7 +779,6 @@ dbcopy_op_call({dbcopy_op,From1,unlock,Data},CallFrom,P) ->
 						_ ->
 							case ok of
 								_ when WithoutLock == [], DbCopyTo == [] ->
-									actordb_sqlite:set_pragmas(P#dp.db,P#dp.def_journal_mode),
 									% case P#dp.wlog_status of
 									% 	?WLOG_ACTIVE ->
 									% 		can_stop_wlog(P);
@@ -722,8 +786,7 @@ dbcopy_op_call({dbcopy_op,From1,unlock,Data},CallFrom,P) ->
 									% 		ok
 									% end,
 									{reply,ok,P#dp{locked = WithoutLock, 
-												dbcopy_to = DbCopyTo,
-											 journal_mode = P#dp.def_journal_mode}};
+												dbcopy_to = DbCopyTo}};
 								_ ->
 									{reply,ok,P#dp{locked = WithoutLock, dbcopy_to = DbCopyTo}}
 							end

@@ -44,11 +44,18 @@
 % -define(DODBLOG,1).
 % -compile(export_all).
 
--record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,evcrc = 0,prev_evnum = 0, prev_evcrc = 0, 
+-record(flw,{node,match_index, next_index, file}).
+
+-record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,evcrc = 0,prev_evnum = 0, prev_evterm = 0, 
 			activity = 0, timerref, start_time,
-			page_size = 1024, activity_now,schemanum,schemavers,flags = 0,
+			activity_now,schemanum,schemavers,flags = 0,
 	% Raft parameters  (lastApplied = evnum)
-	current_term = 0,voted_for, commit_index = 0, next_index = [],match_index = [],
+	% follower_indexes: [#flw,..]
+	current_term = 0,voted_for, commit_index = 0, follower_indexes = [],
+	% leader parameters
+	start_write = {0,0,0},confirmations_left = 0,
+	% EvNum,EvTerm of first item in wal
+	wal_from = {0,0},
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
 	locked = [],
 	% Multiupdate id, set to {Multiupdateid,TransactionNum} if in the middle of a distributed transaction
@@ -72,18 +79,12 @@
   mors, 
   % Sql statement received from master in first step of 2 phase commit. Only kept in memory.
   replicate_sql = <<>>,
-  % wlog_status = ?WLOG_NONE,wlog_len = 0,
   % Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
   % If local db is being restored, verified will be on false.
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
   verified = false,
   % Verification of db is done asynchronously in a monitored process. This holds pid.
   verifypid,
-  % Current journal mode. It can switch to wal if another sqlproc is 
-  %   restoring it's sqlite file from current one.
-  journal_mode, 
-  % Configured default journal mode.
-  def_journal_mode,
   % Path to sqlite file.
   dbpath,
   % Which nodes current process is sending dbfile to.

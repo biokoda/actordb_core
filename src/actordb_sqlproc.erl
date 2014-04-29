@@ -214,7 +214,7 @@ handle_call(_Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
 handle_call({dbcopy_op,_From1,_What,_Data} = Msg,CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_op_call(Msg,CallFrom,P);
 handle_call({state_rw,What},From,P) ->
-	actordb_sqlprocutil:state_rw_call(What,From,P);
+	state_rw_call(What,From,P);
 % handle_call({commit,Doit,Id},From, P) ->
 % 	?ADBG("Commit ~p ~p ~p ~p",[Doit,Id,From,P#dp.transactionid]),
 % 	case P#dp.transactionid == Id of
@@ -335,11 +335,11 @@ state_rw_call(What,From,P) ->
 		donothing ->
 			{reply,ok,P};
 		% AE is split into multiple calls (because wal is sent page by page as it is written)
-		% Start sets parameters. It may also be empty, which means there will be no
-		% wal calls after start.
-		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,LeaderCommit,Empty} ->
+		% Start sets parameters. There may not be any wal append calls after if empty write.
+		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,_LeaderCommit,IsEmpty} ->
 			case ok of
 				_ when Term < P#dp.current_term ->
+					actordb_sqlprocutil:ae_respond(P,LeaderNode,false),
 					{reply,false,P};
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
@@ -347,12 +347,30 @@ state_rw_call(What,From,P) ->
 					state_rw_call(What,From,
 									actordb_sqlprocutil:reopen_db(P#dp{mors = slave, verified = true, 
 																		voted_for = undefined,
+																		masternode = LeaderNode,
+																		masternodedist = bkdcore:dist_name(LeaderNode),
 																		current_term = Term}));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
+					case P#dp.evnum < PrevEvnum of
+						% This node is behind. Return false and 
+						%  wait for leader to send an earlier event.
+						true ->
+							NP = P;
+						% Node is conflicted, delete last entry
+						false ->
+							NP = actordb_sqlprocutil:rewind_wal(P)
+					end,
+					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false),
 					{reply,false,P};
 				_ when Term > P#dp.current_term ->
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Term}),
-					state_rw_call(What,From,P#dp{current_term = Term,voted_for = undefined});
+					state_rw_call(What,From,P#dp{current_term = Term,voted_for = undefined,
+												 masternode = LeaderNode, 
+												 masternodedist = bkdcore:dist_name(LeaderNode)});
+				_ when IsEmpty ->
+					actordb_sqlprocutil:ae_respond(P,LeaderNode,true),
+					{reply,ok,P};
+				% Ok, now it will start receiving wal pages
 				_ ->
 					{reply,ok,P}
 			end;
@@ -360,13 +378,51 @@ state_rw_call(What,From,P) ->
 		{appendentries_wal,Term,Header,Body} ->
 			case ok of
 				_ when Term == P#dp.current_term ->
-					{reply,ok,actordb_sqlprocutil:append_wal(P,Header,Body)};
+					actordb_sqlprocutil:append_wal(P,Header,Body),
+					case Header of
+						% dbsize == 0, not last page
+						<<_:32,0:32,_/binary>> ->
+							{reply,ok,P};
+						% last page
+						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
+							NP = P#dp{evnum = Evnum, evterm = Evterm},
+							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true),
+							{reply,ok,NP}
+					end;
 				_ ->
 					{reply,false,P}
 			end;
 		% called back to leader from every follower that received call
-		{appendentries_response,Node,CurrentTerm,Success} ->
-			{reply,ok,P};
+		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm} ->
+			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
+			% Node is either:
+			%  - ok
+			case Success of
+				% An earlier response.
+				_ when P#dp.mors == slave ->
+					{reply,ok,P};
+				true ->
+					NP = P#dp{follower_indexes = lists:keystore(Node,#flw.node,P#dp.follower_indexes,
+													Follower#flw{next_index = Follower#flw.next_index+1})},
+					{reply,ok,actordb_sqlprocutil:reply_maybe(NP)};
+				% What we thought was follower is ahead of us and we need to step down
+				false when P#dp.current_term < CurrentTerm ->
+					ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,CurrentTerm}),
+					{reply,ok,actordb_sqlprocutil:reopen_db(P#dp{mors = slave,
+						current_term = CurrentTerm,voted_for = undefined, follower_indexes = []})};
+				false ->
+					{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
+					case EvNum < WalEvfrom of
+						% Too far behind
+						true ->
+							{reply,ok,P};
+						% We can recover from wal
+						false ->
+							Flw = Follower#flw{next_index = Follower#flw.next_index-1},
+							NP = P#dp{follower_indexes = lists:keystore(Node,#flw.node,P#dp.follower_indexes,Flw)},
+							{reply,ok,NP}
+					end
+			end;
 		{request_vote,Candidate,NewTerm,LastTerm,LastEvnum} ->
 			TrueResp = {reply, {true,bkdcore:node_name(),NewTerm}, P#dp{voted_for = Candidate, current_term = NewTerm}},
 			Uptodate = 
@@ -929,10 +985,10 @@ timer_info(N,P) ->
 		_ ->
 			Now = actordb_local:actor_activity(P#dp.activity_now),
 
-			case P#dp.journal_mode == wal of
-				true when P#dp.dbcopyref == undefined, P#dp.dbcopy_to == [], P#dp.db /= undefined ->
+			case ok of
+				_ when P#dp.dbcopyref == undefined, P#dp.dbcopy_to == [], P#dp.db /= undefined ->
 					{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
-					case NPages*(P#dp.page_size+24) > 1024*1024 of
+					case NPages*(?PAGESIZE+24) > 1024*1024 of
 						true ->
 							actordb_sqlite:checkpoint(P#dp.db);
 						_ ->
@@ -949,10 +1005,14 @@ down_info(PID,_Ref,Reason,#dp{verifypid = PID} = P1) ->
 	% TODO: - unfinished transaction
 	% 		- copy/move from another node
 	case Reason of
+		% We are leader, evnum == 0, which means no other node has any data.
+		% If create flag not set stop.
 		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.evnum == 0 ->
 			{stop,nocreate,P1};
 		leader ->
-			P = P1#dp{mors = master, verifypid = undefined, evterm = P1#dp.current_term},
+			FollowerIndexes = [#flw{node = Nd,match_index = 0,next_index = P1#dp.evnum+1} || Nd <- bkdcore:cluster_nodes()],
+			P = P1#dp{mors = master, verifypid = undefined, evterm = P1#dp.current_term,
+					  follower_indexes = FollowerIndexes},
 			% After election is won a write needs to be executed.
 			% If empty db or schema not up to date use that.
 			% Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
@@ -1068,10 +1128,8 @@ init(#dp{} = P,_Why) ->
 % started actor is blocking waiting for init to finish.
 init([_|_] = Opts) ->
 	% put(opt,Opts),
-	JournalMode = actordb_conf:journal_mode(),
 	case actordb_sqlprocutil:parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), start_time = os:timestamp(), 
-									schemanum = actordb_schema:num(), page_size = ?PAGESIZE,
-									journal_mode = JournalMode, def_journal_mode = JournalMode}),Opts) of
+									schemanum = actordb_schema:num()}),Opts) of
 		{registered,Pid} ->
 			?ADBG("die already registered"),
 			explain({registered,Pid},Opts),
@@ -1080,7 +1138,7 @@ init([_|_] = Opts) ->
 			explain({actornum,P#dp.dbpath,actordb_sqlprocutil:read_num(P)},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_EXISTS) > 0 ->
-			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,actordb_conf:journal_mode()),
+			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 			actordb_sqlite:stop(Db),
 			explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(SchemaTables /= [])}]}]},Opts),
 			{stop,normal};
@@ -1146,7 +1204,7 @@ init(#dp{} = P) ->
 
 
 init_opendb(P) ->
-	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,P#dp.journal_mode),
+	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 	NP = P#dp{db = Db},
 	case SchemaTables of
 		[_|_] ->
@@ -1245,7 +1303,7 @@ init_copy(P) ->
 			TypeOfMove = false
 	end,
 	% First check if movement is already done.
-	case actordb_sqlite:init(P#dp.dbpath,P#dp.journal_mode) of
+	case actordb_sqlite:init(P#dp.dbpath,wal) of
 		{ok,Db,[_|_],_PageSize} ->
 			?DBLOG(P#dp.db,"init copyfrom ~p",[P#dp.copyfrom]),
 			case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"],read) of

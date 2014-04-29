@@ -41,8 +41,7 @@ tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 		_ ->
 			{Term,Leader,PrevEvnum,PrevTerm,LeaderCommit} = binary_to_term(VarPrefix),
 			Res = actordb_sqlproc:call_slave(Cb,Actor,Type,
-					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,LeaderCommit,
-											Header == Page andalso Header == <<>>}}),
+					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,LeaderCommit}}),
 			put(proceed,Res)
 	end,
 	% When header arrives, we check parameters if all ok.
