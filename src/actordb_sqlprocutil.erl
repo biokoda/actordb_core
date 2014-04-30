@@ -128,14 +128,15 @@ continue_maybe(P,F) ->
 		true ->
 			StartRes = bkdcore:rpc(F#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 						{state_rw,{appendentries_start,P#dp.current_term,bkdcore:node_name(),
-									F#flw.file}}]}),
+									F#flw.match_index,F#flw.match_term,P#dp.commit_index,false}}]}),
 			case StartRes of
 				false ->
 					file:close(F#flw.file),
 					NF = F#flw{file = undefined};
 				ok ->
 					% Send wal
-					NF = F
+					NF = F,
+					send_wal(P,F)
 			end;
 		% Follower uptodate
 		false when F#flw.file == undefined ->
@@ -159,6 +160,23 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 			{ok,_} = file:position(F,?PAGESIZE),
 			open_wal_at(P,Index,F,Evnum,Evterm)
 	end.
+
+send_wal(P,#flw{file = File} = F) ->
+	{ok,<<Header:40/binary,Page/binary>>} = file:read(F,40+?PAGESIZE),
+	case Header of
+		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,_/binary>> when Evnum == F#flw.next_index ->
+			{Compressed1,CompressedSize} = esqlite3:lz4_compress(Page),
+			<<Compressed:CompressedSize/binary,_/binary>> = Compressed1,
+			WalRes = bkdcore:rpc(F#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+						{state_rw,{appendentries_wal,P#dp.current_term,Header,Compressed}}]}),
+			case WalRes of
+				ok when Commit == 0 ->
+					send_wal(P,F);
+				_ ->
+					ok
+			end
+	end.
+
 
 append_wal(P,Header,Bin) ->
 	ok = file:write(P#dp.db,[Header,esqlite3:lz4_decompress(Bin,?PAGESIZE)]).

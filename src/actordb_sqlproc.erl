@@ -339,8 +339,9 @@ state_rw_call(What,From,P) ->
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,_LeaderCommit,IsEmpty} ->
 			case ok of
 				_ when Term < P#dp.current_term ->
+					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,false),
-					{reply,false,P};
+					{noreply,P};
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Term}),
@@ -360,16 +361,18 @@ state_rw_call(What,From,P) ->
 						false ->
 							NP = actordb_sqlprocutil:rewind_wal(P)
 					end,
+					reply(From,false),
 					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false),
-					{reply,false,P};
+					{noreply,P};
 				_ when Term > P#dp.current_term ->
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Term}),
 					state_rw_call(What,From,P#dp{current_term = Term,voted_for = undefined,
 												 masternode = LeaderNode, 
 												 masternodedist = bkdcore:dist_name(LeaderNode)});
 				_ when IsEmpty ->
+					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true),
-					{reply,ok,P};
+					{noreply,P};
 				% Ok, now it will start receiving wal pages
 				_ ->
 					{reply,ok,P}
@@ -386,11 +389,14 @@ state_rw_call(What,From,P) ->
 						% last page
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
 							NP = P#dp{evnum = Evnum, evterm = Evterm},
+							reply(From,ok),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true),
-							{reply,ok,NP}
+							{noreply,NP}
 					end;
 				_ ->
-					{reply,false,P}
+					reply(From,false),
+					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false),
+					{noreply,P}
 			end;
 		% called back to leader from every follower that received call
 		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm} ->
