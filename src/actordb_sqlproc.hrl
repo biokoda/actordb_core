@@ -44,7 +44,7 @@
 % -define(DODBLOG,1).
 % -compile(export_all).
 
--record(flw,{node,match_index, next_index, file}).
+-record(flw,{node,match_index, match_term, next_index, file}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,evcrc = 0,prev_evnum = 0, prev_evterm = 0, 
 			activity = 0, timerref, start_time,

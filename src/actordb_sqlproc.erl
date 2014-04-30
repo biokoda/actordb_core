@@ -395,32 +395,25 @@ state_rw_call(What,From,P) ->
 		% called back to leader from every follower that received call
 		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm} ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
-			% Node is either:
-			%  - ok
+			NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1},
 			case Success of
 				% An earlier response.
 				_ when P#dp.mors == slave ->
 					{reply,ok,P};
 				true ->
-					NP = P#dp{follower_indexes = lists:keystore(Node,#flw.node,P#dp.follower_indexes,
-													Follower#flw{next_index = Follower#flw.next_index+1})},
-					{reply,ok,actordb_sqlprocutil:reply_maybe(NP)};
+					{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw))};
 				% What we thought was follower is ahead of us and we need to step down
 				false when P#dp.current_term < CurrentTerm ->
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,CurrentTerm}),
 					{reply,ok,actordb_sqlprocutil:reopen_db(P#dp{mors = slave,
 						current_term = CurrentTerm,voted_for = undefined, follower_indexes = []})};
 				false ->
-					{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
-					case EvNum < WalEvfrom of
-						% Too far behind
-						true ->
-							{reply,ok,P};
-						% We can recover from wal
-						false ->
-							Flw = Follower#flw{next_index = Follower#flw.next_index-1},
-							NP = P#dp{follower_indexes = lists:keystore(Node,#flw.node,P#dp.follower_indexes,Flw)},
-							{reply,ok,NP}
+					case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
+						{false,NP,_NF} ->
+							% Send entire db
+							{reply,ok,NP};
+						{true,NP,NF} ->
+							{reply,ok,actordb_sqlprocutil:continue_maybe(NP,NF)}
 					end
 			end;
 		{request_vote,Candidate,NewTerm,LastTerm,LastEvnum} ->

@@ -15,18 +15,6 @@ ae_respond(P,LeaderNode,Success) ->
 	bkdcore:rpc(LeaderNode,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 									{state_rw,Resp}]}).
 
-% follower_indexes(Node,Evnum,[{Node,LastEvnum,NextEvnum}|T],L) ->
-% 	case Evnum >= NextEvnum of
-% 		true ->
-% 			T ++ [{Node,Evnum,Evnum+1}|L];
-% 		false ->
-% 			T ++ [{Node,Evnum,NextEvnum}|L]
-% 	end;
-% follower_indexes(Node,Evnum,[H|T],L) ->
-% 	follower_indexes(Node,Evnum,T,[H|L]);
-% follower_indexes(Node,Evnum,[],L) ->
-% 	[{Node,Evnum,Evnum+1}|L].
-
 reply_maybe(#dp{callfrom = undefined} = P) ->
 	P;
 reply_maybe(P) ->
@@ -99,6 +87,78 @@ wal_from(F) ->
 			{Evnum,Evterm}
 	end.
 
+try_wal_recover(P,F) when F#flw.file /= undefined ->
+	file:close(F#flw.file),
+	try_wal_recover(P,F#flw{file = undefined});
+try_wal_recover(P,F) ->
+	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
+	% Compare match_index not next_index because we need to send prev term as well
+	case F#flw.match_index >= WalEvfrom of
+		% We can recover from wal if terms match
+		true ->
+			{File,PrevNum,PrevTerm} = open_wal_at(P,P#flw.next_index),
+			case PrevNum == F#flw.match_index andalso PrevTerm == F#flw.match_term of
+				true ->
+					Res = true,
+					NF = F#flw{file = File};
+				false ->
+					% follower in conflict
+					% this will cause a failed appendentries_start and a rewind on follower
+					Res = true,
+					NF = F#flw{file = File, match_term = PrevTerm, match_index = PrevNum}
+			end;
+		% Too far behind
+		false ->
+			Res = false,
+			NF = F
+	end,
+	{Res,
+	 P#dp{follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)},
+	 NF}.
+
+continue_maybe(P,F) ->
+	case P#dp.evnum >= F#flw.next_index of
+		true when F#flw.file == undefined ->
+			case try_wal_recover(P,F) of
+				{true,NP,NF} ->
+					continue_maybe(NP,NF);
+				{false,_NP,NF} ->
+					ok
+			end;
+		true ->
+			StartRes = bkdcore:rpc(F#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+						{state_rw,{appendentries_start,P#dp.current_term,bkdcore:node_name(),
+									F#flw.file}}]}),
+			case StartRes of
+				false ->
+					file:close(F#flw.file),
+					NF = F#flw{file = undefined};
+				ok ->
+					% Send wal
+					NF = F
+			end;
+		% Follower uptodate
+		false when F#flw.file == undefined ->
+			NF = F;
+		false ->
+			file:close(F#flw.file),
+			NF = F#flw{file = undefined}
+	end,
+	P#dp{follower_indexes = lists:keystore(F#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
+
+open_wal_at(P,Index) ->
+	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
+	{ok,_} = file:position(F,32),
+	open_wal_at(P,Index,F,undefined,undefined).
+open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
+	case file:read(F,40) of
+		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} when Index == Evnum ->
+			{ok,_} = file:position(F,{cur,-40}),
+			{F,PrevNum,PrevTerm};
+		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
+			{ok,_} = file:position(F,?PAGESIZE),
+			open_wal_at(P,Index,F,Evnum,Evterm)
+	end.
 
 append_wal(P,Header,Bin) ->
 	ok = file:write(P#dp.db,[Header,esqlite3:lz4_decompress(Bin,?PAGESIZE)]).
@@ -415,7 +475,8 @@ delactorfile(P) ->
 			% Leave behind redirect marker.
 			% Create a file with "1" attached to end
 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath++"1",off),
-			ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,base_schema(0,P#dp.actortype,P#dp.movedtonode),<<"COMMIT;">>],write)),
+			ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,base_schema(0,P#dp.actortype,P#dp.movedtonode),
+								<<"COMMIT;">>],write)),
 			actordb_sqlite:stop(Db),
 			% Rename into the actual dbfile (should be atomic op)
 			ok = file:rename(P#dp.dbpath++"1",P#dp.dbpath),
