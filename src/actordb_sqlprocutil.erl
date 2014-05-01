@@ -116,6 +116,21 @@ try_wal_recover(P,F) ->
 	 P#dp{follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)},
 	 NF}.
 
+open_wal_at(P,Index) ->
+	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
+	{ok,_} = file:position(F,32),
+	open_wal_at(P,Index,F,undefined,undefined).
+open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
+	case file:read(F,40) of
+		{ok,<<_:32,_:32,Evnum:64/big-unsigned,_Evterm:64/big-unsigned,_/binary>>} when Index == Evnum ->
+			{ok,_} = file:position(F,{cur,-40}),
+			{F,PrevNum,PrevTerm};
+		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
+			{ok,_} = file:position(F,?PAGESIZE),
+			open_wal_at(P,Index,F,Evnum,Evterm)
+	end.
+
+
 continue_maybe(P,F) ->
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
@@ -147,28 +162,13 @@ continue_maybe(P,F) ->
 	end,
 	P#dp{follower_indexes = lists:keystore(F#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
 
-open_wal_at(P,Index) ->
-	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
-	{ok,_} = file:position(F,32),
-	open_wal_at(P,Index,F,undefined,undefined).
-open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
-	case file:read(F,40) of
-		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} when Index == Evnum ->
-			{ok,_} = file:position(F,{cur,-40}),
-			{F,PrevNum,PrevTerm};
-		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
-			{ok,_} = file:position(F,?PAGESIZE),
-			open_wal_at(P,Index,F,Evnum,Evterm)
-	end.
-
+% Read untill commit set in header.
 send_wal(P,#flw{file = File} = F) ->
-	{ok,<<Header:40/binary,Page/binary>>} = file:read(F,40+?PAGESIZE),
+	{ok,<<Header:40/binary,Page/binary>>} = file:read(File,40+?PAGESIZE),
 	case Header of
 		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,_/binary>> when Evnum == F#flw.next_index ->
-			{Compressed1,CompressedSize} = esqlite3:lz4_compress(Page),
-			<<Compressed:CompressedSize/binary,_/binary>> = Compressed1,
 			WalRes = bkdcore:rpc(F#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-						{state_rw,{appendentries_wal,P#dp.current_term,Header,Compressed}}]}),
+						{state_rw,{appendentries_wal,P#dp.current_term,Header,Page}}]}),
 			case WalRes of
 				ok when Commit == 0 ->
 					send_wal(P,F);
@@ -184,7 +184,7 @@ append_wal(P,Header,Bin) ->
 % Go back one entry
 rewind_wal(P) ->
 	case file:position(P#dp.db,{cur,-(?PAGESIZE+40)}) of
-		{ok,NPos} ->
+		{ok,_NPos} ->
 			{ok,<<_:32,Commit:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>>} = file:read(P#dp.db,40),
 			case ok of
 				_ when P#dp.evnum /= Evnum, Commit /= 0 ->
@@ -201,6 +201,10 @@ rewind_wal(P) ->
 			% rewind to 0, causing a complete restore from another node
 			reopen_db(P#dp{evnum = 0, evterm = 0, db = undefined})
 	end.
+
+save_term(P) ->
+	ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term}),
+	P.
 
 verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 	Ref = make_ref(),
@@ -419,7 +423,7 @@ start_verify(P,JustStarted) ->
 			{Verifypid,_} = spawn_monitor(fun() -> 
 							start_election(NP)
 								end),
-			NP#dp{verifypid = Verifypid, verified = false, activity_now = actor_start(P)}
+			NP#dp{electionpid = Verifypid, verified = false, activity_now = actor_start(P)}
 	end.
 % Call RequestVote RPC on cluster nodes. 
 % This should be called in an async process and current_term and voted_for should have

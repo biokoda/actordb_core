@@ -46,7 +46,7 @@
 
 -record(flw,{node,match_index, match_term, next_index, file}).
 
--record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,evcrc = 0,prev_evnum = 0, prev_evterm = 0, 
+-record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,prev_evnum = 0, prev_evterm = 0, 
 			activity = 0, timerref, start_time,
 			activity_now,schemanum,schemavers,flags = 0,
 	% Raft parameters  (lastApplied = evnum)
@@ -64,10 +64,8 @@
   %  providing an external interface
   %  to a sqlite backed process.
   cbmod, cbstate,
-  % callfrom and commiter are either both set or none of them are. callfrom is who is calling, 
-  % commiter is PID of process doing the processing.
-  % Set when a write call is going through a 2 phase commit.
-  callfrom, commiter,callres,
+  % callfrom is who is calling, callres result of sqlite call (need to replicate before replying)
+  callfrom,callres,
   % queue which holds gen_server:calls that can not be processed immediately because db has not 
   %  been verified, is in the middle of a 2phase commit
   %  or is being restored from another node.
@@ -84,7 +82,7 @@
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
   verified = false,
   % Verification of db is done asynchronously in a monitored process. This holds pid.
-  verifypid,
+  electionpid,
   % Path to sqlite file.
   dbpath,
   % Which nodes current process is sending dbfile to.
