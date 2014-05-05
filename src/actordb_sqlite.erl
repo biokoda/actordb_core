@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -module(actordb_sqlite).
--export([init/1,init/2,init/3,exec/2,exec/3,set_pragmas/2,set_pragmas/3,
+-export([init/1,init/2,init/3,exec/2,exec/3,exec/5,set_pragmas/2,set_pragmas/3,okornot/1,
 		 stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1,wal_pages/1]). 
 -include("actordb.hrl").
 
@@ -13,7 +13,7 @@ init(Path,JournalMode) ->
 	init(Path,JournalMode,actordb_util:hash(Path)).
 init(Path,JournalMode,Thread) ->
 	Sql = <<"select name, sql from sqlite_master where type='table';",
-			"PRAGMA page_size=",(?PAGESIZE)/binary,";"
+			"PRAGMA page_size=",(butil:tobin(?PAGESIZE))/binary,";"
 			% Exclusive locking is faster but unrealiable. 
 			% "$PRAGMA locking_mode=EXCLUSIVE;",
 			"$PRAGMA foreign_keys=1;",
@@ -34,7 +34,7 @@ init(Path,JournalMode,Thread) ->
 					stop(Db),
 					{ok,Db1,Res1} = esqlite3:open(Path,Thread,Sql),
 					case Res1 of
-						[_,[{rows,[{Size}]}],[{columns,_},{rows,Tables}]] ->
+						[_,[{rows,[{_Size}]}],[{columns,_},{rows,Tables}]] ->
 							{ok,Db1,Tables,4096}
 						% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
 						% 	{ok,Db1,true,Size}
@@ -100,16 +100,22 @@ set_pragmas(Db,JournalMode,Sync) ->
 						"PRAGMA journal_size_limit=0;">>),
 	ok.
 
-exec(Db,Sql,read) ->
+
+exec(Db,S,read) ->
 	actordb_local:report_read(),
-	exec(Db,Sql);
-exec(Db,Sql,write) ->
+	exec(Db,S);
+exec(Db,S,write) ->
 	actordb_local:report_write(),
-	exec(Db,Sql).
-exec(undefined,_) ->
-	ok;
+	exec(Db,S).
 exec(Db,Sql) ->
 	Res = esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout()),
+	exec_res(Res,Sql).
+exec(Db,Sql,Evnum,Evterm,VarHeader) ->
+	actordb_local:report_write(),
+	Res = esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
+	exec_res(Res,Sql).
+
+exec_res(Res,Sql) ->
 	case Res of
 		{ok,[[{columns,_},_] = Res1]} ->
 			{ok,Res1};

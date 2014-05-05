@@ -11,14 +11,41 @@
 % Actor activity
 -export([actor_started/3,actor_mors/2,actor_cachesize/1,actor_activity/1]).
 -export([subscribe_stat/0,report_write/0, report_read/0,get_nreads/0,get_nactors/0]).
+% Ref age
+-export([min_ref_age/1]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
 -define(MB,1024*1024).
 -define(GB,1024*1024*1024).
 -define(STATS,runningstats).
+-define(REF_TIMES,reftimes).
 
 killactors() ->
 	gen_server:cast(?MODULE,killactors).
+
+
+
+% Tells you at least how old a ref is. Precision is only ~200ms and it goes up to 2s.
+% After 2s, it goes to 10s with precision 1s.
+
+% Definitely not for precise measurements. Just when you need to know a rough age of some event.
+% Keeping time is very fast because it's only a make_ref() call. Figuring out how old it is
+%  is slower though (but the frequency of that should be much lower).
+min_ref_age(Ref) ->
+	T = butil:ds_val(twoseconds,?REF_TIMES),
+	case Ref < element(10,T) of
+		true ->
+			min_ref_age(Ref,butil:ds_val(tenseconds,?REF_TIMES),1000,3,2000);
+		false ->
+			min_ref_age(Ref,T,200,1,0)
+	end.
+
+min_ref_age(_,_,_,Pos,Age) when Pos > 10 ->
+	Age;
+min_ref_age(Ref,T,_Inc,Pos,Age) when element(Pos,T) < Ref ->
+	Age;
+min_ref_age(Ref,T,Increment,Pos,Age) ->
+	min_ref_age(Ref,T,Increment,Pos+1,Age+Increment).
 
 
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
@@ -26,7 +53,7 @@ killactors() ->
 % 						stats
 % 
 % 	- public ETS: runningstats (?STATS)
-% 		[{reads,N} {writes,N},{time_refs,RefFrom,RefTo}]
+% 		[{reads,N} {writes,N}
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
 subscribe_stat() ->
 	gen_server:call(?MODULE,{subscribe_stat,self()}).
@@ -250,8 +277,17 @@ handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 			ets:update_counter(actorsalive,whereis(?MODULE),{#actor.cachesize,-Actor#actor.cachesize}),
 			{noreply,P}
 	end;
-handle_info(timeout,P) ->
-	erlang:send_after(100,self(),timeout),
+handle_info({timeout,N},P) ->
+	erlang:send_after(200,self(),{timeout,N+1}),
+	{T1,T2,T3,T4,T5,T6,T7,T8,T9,_} = butil:ds_val(twoseconds,?REF_TIMES),
+	butil:ds_add(twoseconds,{make_ref(),T1,T2,T3,T4,T5,T6,T7,T8,T9},?REF_TIMES),
+	case N rem 5 == 0 of
+		true ->
+			{S1,S2,S3,S4,S5,S6,S7,S8,S9,_} = butil:ds_val(tenseconds,?REF_TIMES),
+			butil:ds_add(tenseconds,{make_ref(),S1,S2,S3,S4,S5,S6,S7,S8,S9},?REF_TIMES);
+		false ->
+			ok
+	end,
 	handle_info(check_limits,P);
 handle_info(check_limits,P) ->
 	NProc = ets:info(actoractivity,size),
@@ -275,13 +311,11 @@ handle_info(check_limits,P) ->
 	{noreply,P#dp{lastcull = LastCull}};
 handle_info(reconnect_raft,P) ->
 	erlang:send_after(500,self(),reconnect_raft),
-	% {noreply,P#dp{raft_connections = reconnect_raft(P#dp.raft_connections,1)}};
 	esqlite3:tcp_reconnect(),
 	{noreply,P};
 handle_info(read_ref,P) ->
 	erlang:send_after(1000,self(),read_ref),
 	Ref = make_ref(),
-	butil:ds_add(time_refs,{P#dp.prev_sec_to,Ref},?STATS),
 	AllReads = get_nreads(),
 	AllWrites = get_nwrites(),
 	case P#dp.stat_readers of
@@ -416,7 +450,7 @@ code_change(_, P, _) ->
 	{ok, P}.
 init(_) ->
 	net_kernel:monitor_nodes(true),
-	erlang:send_after(100,self(),timeout),
+	erlang:send_after(200,self(),{timeout,0}),
 	erlang:send_after(10000,self(),check_mem),
 	erlang:send_after(1000,self(),read_ref),
 	erlang:send_after(500,self(),reconnect_raft),
@@ -446,6 +480,16 @@ init(_) ->
 									{write_concurrency,true}]),
 			butil:ds_add(writes,0,?STATS),
 			butil:ds_add(reads,0,?STATS);
+		_ ->
+			ok
+	end,
+	case ets:info(?REF_TIMES,size) of
+		undefined ->
+			ets:new(?REF_TIMES, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},
+									{read_concurrency,true}]),
+			R = make_ref(),
+			butil:ds_add(twoseconds,{R,R,R,R,R,R,R,R,R,R},?REF_TIMES),
+			butil:ds_add(tenseconds,{R,R,R,R,R,R,R,R,R,R},?REF_TIMES);
 		_ ->
 			ok
 	end,

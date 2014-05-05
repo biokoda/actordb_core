@@ -214,7 +214,7 @@ handle_call(_Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
 handle_call({dbcopy_op,_From1,_What,_Data} = Msg,CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_op_call(Msg,CallFrom,P);
 handle_call({state_rw,What},From,P) ->
-	state_rw_call(What,From,P);
+	state_rw_call(What,From,P#dp{activity = P#dp.activity + 1});
 % handle_call({commit,Doit,Id},From, P) ->
 % 	?ADBG("Commit ~p ~p ~p ~p",[Doit,Id,From,P#dp.transactionid]),
 % 	case P#dp.transactionid == Id of
@@ -282,29 +282,49 @@ handle_call({delete,Moved},From,P) ->
 	distreg:unreg(self()),
 	reply(From,ok),
 	{stop,normal,P};
-% If we are not ready to process calls atm (in the middle of a write or db not verified yet). Queue requests.
-handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; 
-								P#dp.transactionid /= undefined; P#dp.locked /= [] ->
+handle_call(Msg,From,P) when element(1,Msg) == read; element(1,Msg) == write ->
 	case Msg of
+		_ when P#dp.mors == slave ->
+			case P#dp.masternode of
+				undefined ->
+					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
+				_ ->
+					actordb_sqlprocutil:redirect_master(P)
+			end;
+		_ when P#dp.verified == false ->
+			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 		{write,{_,_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,P);
-		_ when element(1,Msg) == replicate_start, P#dp.mors == master, P#dp.verified ->
-			reply(From,reinit),
-			{ok,NP} = init(P,replicate_conflict),
-			{noreply,NP};
-		_ when element(1,Msg) == replicate_start, P#dp.copyproc /= undefined ->
-			{reply,notready,P};
-		_ ->
-			?DBG("Queueing msg ~p ~p, because ~p",[Msg,P#dp.mors,{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
-			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = P#dp.activity+1}}
+		_ when P#dp.callres /= undefined; P#dp.locked /= [] ->
+			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
+		{write,Msg1} ->
+			write_call(Msg1,From,P);
+		{read,Msg1} ->
+			read_call(Msg1,From,P)
 	end;
-handle_call({read,Msg},From,P) ->
-	read_call(Msg,From,P);
-handle_call({write,Msg},From, #dp{mors = master} = P) ->
-	write_call(Msg,From,P);
-handle_call({write,_},_,#dp{mors = slave} = P) ->
-	?DBG("Redirect not master ~p",[P#dp.masternode]),
-	actordb_sqlprocutil:redirect_master(P);
+% If we are not ready to process calls atm (in the middle of a write or db not verified yet). Queue requests.
+% handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; 
+% 								P#dp.transactionid /= undefined; P#dp.locked /= [] ->
+% 	case Msg of
+% 		{write,{_,_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
+% 			write_call(Msg1,From,P);
+% 		% _ when element(1,Msg) == replicate_start, P#dp.mors == master, P#dp.verified ->
+% 		% 	reply(From,reinit),
+% 		% 	{ok,NP} = init(P,replicate_conflict),
+% 		% 	{noreply,NP};
+% 		% _ when element(1,Msg) == replicate_start, P#dp.copyproc /= undefined ->
+% 		% 	{reply,notready,P};
+% 		_ ->
+% 			?DBG("Queueing msg ~p ~p, because ~p",[Msg,P#dp.mors,{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
+% 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = P#dp.activity+1}}
+% 	end;
+% handle_call({read,Msg},From,P) ->
+% 	read_call(Msg,From,P#dp{activity = P#dp.activity + 1});
+% handle_call({write,Msg},From, #dp{mors = master} = P) ->
+% 	write_call(Msg,From,P#dp{activity = P#dp.activity + 1});
+% handle_call({write,_},_,#dp{mors = slave} = P) ->
+% 	?DBG("Redirect not master ~p",[P#dp.masternode]),
+% 	actordb_sqlprocutil:redirect_master(P);
 handle_call(stop, _, P) ->
 	actordb_sqlite:stop(P#dp.db),
 	distreg:unreg(self()),
@@ -334,14 +354,19 @@ state_rw_call(What,From,P) ->
 			{reply,{ok,P#dp.dbpath,actordb_sqlprocutil:read_num(P)},P};
 		donothing ->
 			{reply,ok,P};
+		% Executed on follower.
 		% AE is split into multiple calls (because wal is sent page by page as it is written)
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,_LeaderCommit,IsEmpty} ->
 			case ok of
 				_ when Term < P#dp.current_term ->
 					reply(From,false),
-					actordb_sqlprocutil:ae_respond(P,LeaderNode,false),
+					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum),
 					{noreply,P};
+				_ when P#dp.mors == slave, P#dp.masternode == undefined ->
+					actordb_local:actor_mors(slave,LeaderNode),
+					self() ! doqueue,
+					state_rw_call(What,From,P#dp{masternode = LeaderNode, masternodedist = bkdcore:dist_name(LeaderNode)});
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
 					state_rw_call(What,From,
@@ -352,31 +377,32 @@ state_rw_call(What,From,P) ->
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term})));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
-					case P#dp.evnum < PrevEvnum of
-						% This node is behind. Return false and 
-						%  wait for leader to send an earlier event.
-						true ->
-							NP = P;
+					case P#dp.evnum > PrevEvnum andalso PrevEvnum > 0 of
 						% Node is conflicted, delete last entry
-						false ->
-							NP = actordb_sqlprocutil:rewind_wal(P)
+						true when IsEmpty == false ->
+							NP = actordb_sqlprocutil:rewind_wal(P);
+						% If false this node is behind. If empty this is just check call.
+						% Wait for leader to send an earlier event.
+						_ ->
+							NP = P
 					end,
 					reply(From,false),
-					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false),
-					{noreply,P};
+					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum),
+					{noreply,NP};
 				_ when Term > P#dp.current_term ->
 					state_rw_call(What,From,actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
-												 masternode = LeaderNode, 
+												 masternode = LeaderNode,verified = true,
 												 masternodedist = bkdcore:dist_name(LeaderNode)}));
 				_ when IsEmpty ->
 					reply(From,ok),
-					actordb_sqlprocutil:ae_respond(P,LeaderNode,true),
-					{noreply,P};
+					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum),
+					{noreply,P#dp{verified = true}};
 				% Ok, now it will start receiving wal pages
 				_ ->
-					{reply,ok,P}
+					{reply,ok,P#dp{verified = true}}
 			end;
+		% Executed on follower.
 		% sqlite wal, header tells you if done (it has db size in header)
 		{appendentries_wal,Term,Header,Body} ->
 			case ok of
@@ -390,7 +416,7 @@ state_rw_call(What,From,P) ->
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
 							NP = P#dp{evnum = Evnum, evterm = Evterm},
 							reply(From,ok),
-							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true),
+							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum),
 							{noreply,NP}
 					end;
 				_ ->
@@ -398,27 +424,38 @@ state_rw_call(What,From,P) ->
 					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false),
 					{noreply,P}
 			end;
-		% called back to leader from every follower that received call
-		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm} ->
+		% Executed on leader.
+		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum} ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
-			NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1},
-			case Success of
-				% An earlier response.
-				_ when P#dp.mors == slave ->
-					{reply,ok,P};
-				true ->
-					{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw))};
-				% What we thought was follower is ahead of us and we need to step down
-				false when P#dp.current_term < CurrentTerm ->
-					{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
-						P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
-				false ->
-					case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
-						{false,NP,_NF} ->
-							% Send entire db
-							{reply,ok,NP};
-						{true,NP,NF} ->
-							{reply,ok,actordb_sqlprocutil:continue_maybe(NP,NF)}
+			case Follower of
+				undefined ->
+					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
+				_ ->			
+					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
+											wait_for_response_since = undefined},
+					case Success of
+						% An earlier response.
+						_ when P#dp.mors == slave ->
+							{reply,ok,P};
+						true ->
+							{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw))};
+						% What we thought was follower is ahead of us and we need to step down
+						false when P#dp.current_term < CurrentTerm ->
+							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
+								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
+						% In case of overlapping responses for appendentries rpc. We do not care about responses
+						%  for appendentries with a match index different than current match index.
+						false when Follower#flw.match_index /= MatchEvnum, Follower#flw.match_index > 0 ->
+							{reply,ok,P};
+						false ->
+							case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
+								{false,NP,_NF} ->
+									% Send entire db
+									{reply,ok,NP};
+								{true,NP,NF} ->
+									% we can recover from wal
+									{reply,ok,actordb_sqlprocutil:continue_maybe(NP,NF)}
+							end
 					end
 			end;
 		{request_vote,Candidate,NewTerm,LastTerm,LastEvnum} ->
@@ -585,7 +622,6 @@ write_call(_OrigMsg,Sql,undefined,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	?DBLOG(P#dp.db,"writecall ~p ~p ~p ~p",[EvNum,P#dp.dbcopy_to,From,Sql]),
 	% {ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
-	ClusterNodes = bkcore:cluster_nodes(),
 	case Sql of
 		delete ->
 			ReplSql = <<"delete">>,
@@ -604,10 +640,13 @@ write_call(_OrigMsg,Sql,undefined,From,NewVers,P) ->
 					[<<"$SAVEPOINT 'adb';">>,
 					 ReplSql,
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.evterm),<<"' WHERE id=">>,?EVTERM,";",
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
 					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
-			Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
+			% We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only 
+			%  when election is won and this is first write after it.
+			VarHeader = term_to_binary({P#dp.evterm,bkdcore:node_name(),P#dp.evnum,P#dp.evterm,P#dp.commit_index}),
+			Res = actordb_sqlite:exec(P#dp.db,ComplSql,EvNum,P#dp.evterm,VarHeader)
 	end,
 	% ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	?DBG("Replicating write ~p",[Sql]),
@@ -615,7 +654,7 @@ write_call(_OrigMsg,Sql,undefined,From,NewVers,P) ->
 		ok ->
 			?DBG("Write result ~p",[Res]),
 			case ok of
-				_ when ClusterNodes == [] ->
+				_ when P#dp.follower_indexes == [] ->
 					case Sql of
 						delete ->
 							actordb_sqlprocutil:delete_actor(P),
@@ -627,11 +666,15 @@ write_call(_OrigMsg,Sql,undefined,From,NewVers,P) ->
 							actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedTo}),
 							{stop,normal,P};
 						_ ->
-							{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, schemavers = NewVers}}
+							{reply,Res,P#dp{activity = P#dp.activity+1, evnum = EvNum, 	
+											schemavers = NewVers,evterm = P#dp.current_term}}
 					end;
 				_ ->
+					Ref = make_ref(),
 					% reply on appendentries response or later if nodes are behind.
-					{noreply, P#dp{callfrom = From, callres = Res, activity = P#dp.activity + 1}}
+					{noreply, P#dp{callfrom = From, callres = Res, 
+									follower_indexes = [F#flw{wait_for_response_since = Ref} || F <- P#dp.follower_indexes],
+								evterm = P#dp.current_term}}
 			end;
 		Resp ->
 			actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
@@ -886,13 +929,14 @@ abandon_locks(P,[H|T],L) ->
 abandon_locks(_,[],L) ->
 	L.
 
-timer_info(N,P) ->
+timer_info(PrevActivity,P) ->
 		% ?AINF("check_inactivity ~p ~p ~p~n",[{N,P#dp.activity},{P#dp.actorname,P#dp.callfrom},
 	% 				{P#dp.dbcopyref,P#dp.dbcopy_to,P#dp.locked,P#dp.copyproc,P#dp.verified,P#dp.transactionid}]),
 	Empty = queue:is_empty(P#dp.callqueue),
+	Now = os:timestamp(),
 	case P of
 		% If true, process is inactive and can die (or go to sleep)
-		#dp{activity = N, callfrom = undefined, verified = true, transactionid = undefined,
+		#dp{activity = PrevActivity, callfrom = undefined, verified = true, transactionid = undefined,
 			dbcopyref = undefined, dbcopy_to = [], locked = [], copyproc = undefined} when Empty ->
 			case P#dp.movedtonode of
 				undefined ->
@@ -903,7 +947,7 @@ timer_info(N,P) ->
 							?DBLOG(P#dp.db,"die temporary ",[]),
 							{stop,normal,P};
 						_ when P#dp.activity == 0 ->
-							case timer:now_diff(os:timestamp(),P#dp.start_time) > 10*1000000 of
+							case timer:now_diff(Now,P#dp.start_time) > 10*1000000 of
 								true ->
 									?ADBG("die after 10sec inactive"),
 									?DBLOG(P#dp.db,"die 0 after 10sec",[]),
@@ -940,7 +984,7 @@ timer_info(N,P) ->
 																	{delete,P#dp.movedtonode},[{flags,P#dp.flags}]]) 
 									|| Nd <- bkdcore:cluster_nodes_connected()]
 					end,
-					case timer:now_diff(os:timestamp(),P#dp.start_time) > 10*1000000 of
+					case timer:now_diff(Now,P#dp.start_time) > 10*1000000 of
 						true ->
 							?ADBG("Die because moved"),
 							?DBLOG(P#dp.db,"die moved ",[]),
@@ -958,7 +1002,7 @@ timer_info(N,P) ->
 				_ ->
 					ok
 			end,
-			case timer:now_diff(os:timestamp(),P#dp.start_time) > 20*1000000 of
+			case timer:now_diff(Now,P#dp.start_time) > 20*1000000 of
 				true ->
 					{stop,verifyfail,P};
 				false ->
@@ -992,9 +1036,11 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.evnum == 0 ->
 			{stop,nocreate,P1};
 		leader ->
+			actordb_local:actor_mors(master,bkdcore:node_name()),
 			FollowerIndexes = [#flw{node = Nd,match_index = 0,next_index = P1#dp.evnum+1} || Nd <- bkdcore:cluster_nodes()],
 			P = P1#dp{mors = master, electionpid = undefined, evterm = P1#dp.current_term,
 					  follower_indexes = FollowerIndexes},
+			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
 			% After election is won a write needs to be executed.
 			% If empty db or schema not up to date use that.
 			% Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
@@ -1234,7 +1280,7 @@ init_opendb(P) ->
 					end,
 					self() ! {check_redirect,Db,TypeOfMove},
 					{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState,
-								evterm = EvTerm,
+								evterm = EvTerm,current_term = EvTerm,
 								schemavers = Vers
 							 % wlog_status = WlogStatus,wlog_len = WlogLen
 							 }};
@@ -1243,7 +1289,7 @@ init_opendb(P) ->
 								NP#dp{evnum = Evnum, schemavers = Vers,
 											% wlog_status = WlogStatus,
 											% wlog_len = WlogLen,
-											evterm = EvTerm,
+											evterm = EvTerm,current_term = EvTerm,
 											movedtonode = MovedToNode1},true)};
 				[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
 					case base64:decode(MSql1) of
@@ -1258,7 +1304,7 @@ init_opendb(P) ->
 								NP#dp{evnum = Evnum, replicate_sql = ReplSql, 
 									transactionid = Transid, %wlog_status = WlogStatus, wlog_len = WlogLen,
 									movedtonode = MovedToNode1,
-									evterm = EvTerm,
+									evterm = EvTerm,current_term = EvTerm,
 									schemavers = SchemaVers},true)}
 			end;
 		[] -> %when (P#dp.flags band ?FLAG_CREATE) > 0 ->
@@ -1286,7 +1332,7 @@ init_copy(P) ->
 	case actordb_sqlite:init(P#dp.dbpath,wal) of
 		{ok,Db,[_|_],_PageSize} ->
 			?DBLOG(P#dp.db,"init copyfrom ~p",[P#dp.copyfrom]),
-			case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"],read) of
+			case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"]) of
 				{ok,[{columns,_},{rows,[]}]} ->
 					case TypeOfMove of
 						false ->

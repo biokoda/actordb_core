@@ -10,13 +10,15 @@ reply(undefined,_Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
-ae_respond(P,LeaderNode,Success) ->
-	Resp = {appendentries_response,bkdcore:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm},
+ae_respond(P,LeaderNode,Success,PrevEvnum) ->
+	Resp = {appendentries_response,bkdcore:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum},
 	bkdcore:rpc(LeaderNode,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 									{state_rw,Resp}]}).
 
-reply_maybe(#dp{callfrom = undefined} = P) ->
+reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	P;
+reply_maybe(#dp{callfrom = undefined} = P) ->
+	P#dp{callres = undefined};
 reply_maybe(P) ->
 	reply_maybe(P,1,P#dp.follower_indexes).
 reply_maybe(P,N,[H|T]) ->
@@ -112,9 +114,7 @@ try_wal_recover(P,F) ->
 			Res = false,
 			NF = F
 	end,
-	{Res,
-	 P#dp{follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)},
-	 NF}.
+	{Res,store_follower(P,NF),NF}.
 
 open_wal_at(P,Index) ->
 	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
@@ -132,35 +132,36 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 
 
 continue_maybe(P,F) ->
+	% Check if follower behind
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
-			case try_wal_recover(P,F) of
-				{true,NP,NF} ->
-					continue_maybe(NP,NF);
-				{false,_NP,NF} ->
-					ok
-			end;
+			{true,NP,NF} = try_wal_recover(P,F),
+			continue_maybe(NP,NF);
 		true ->
 			StartRes = bkdcore:rpc(F#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 						{state_rw,{appendentries_start,P#dp.current_term,bkdcore:node_name(),
 									F#flw.match_index,F#flw.match_term,P#dp.commit_index,false}}]}),
 			case StartRes of
 				false ->
+					% to be continued in appendentries_response
 					file:close(F#flw.file),
-					NF = F#flw{file = undefined};
+					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref()});
 				ok ->
 					% Send wal
-					NF = F,
-					send_wal(P,F)
+					send_wal(P,F),
+					store_follower(P,F#flw{wait_for_response_since = make_ref()})
 			end;
-		% Follower uptodate
+		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
-			NF = F;
+			P;
 		false ->
 			file:close(F#flw.file),
-			NF = F#flw{file = undefined}
-	end,
-	P#dp{follower_indexes = lists:keystore(F#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
+			store_follower(P,F#flw{file = undefined})
+	end.
+
+store_follower(P,NF) ->
+	P#dp{follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
+
 
 % Read untill commit set in header.
 send_wal(P,#flw{file = File} = F) ->
@@ -172,8 +173,10 @@ send_wal(P,#flw{file = File} = F) ->
 			case WalRes of
 				ok when Commit == 0 ->
 					send_wal(P,F);
+				ok ->
+					ok;
 				_ ->
-					ok
+					error
 			end
 	end.
 
@@ -553,7 +556,7 @@ semicolon(S) ->
 % getting deleted, but later created new. A server that was offline during delete missed
 % the delete call and relies on actordb_events.
 actornum(#dp{evnum = 0} = P) ->
-	ActorNum = butil:md5(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
+	ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
 	[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>];
 actornum(_) ->
 	<<>>.

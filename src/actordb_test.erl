@@ -756,7 +756,9 @@ l(N) ->
 l1(0,_) ->
 	ok;
 l1(N,X) ->
-	esqlite3:noop(X),
+	butil:ds_val(twoseconds,reftimes),
+	% os:timestamp(),
+	% esqlite3:noop(X),
 	% actordb_sqlparse:parse_statements(X),
 	% base64:encode(X),
 	% butil:hex(X),
