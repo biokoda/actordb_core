@@ -47,13 +47,11 @@
 -record(flw,{node,match_index = 0, match_term = 0, next_index, file, wait_for_response_since}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0, 
-			activity = 0, timerref, start_time,
+			activity, timerref = {undefined,0}, 
 			activity_now,schemanum,schemavers,flags = 0,
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]
-	current_term = 0,voted_for, commit_index = 0, follower_indexes = [],
-	% leader parameters
-	start_write = {0,0,0},confirmations_left = 0,
+	current_term = 0,voted_for, follower_indexes = [],
 	% EvNum,EvTerm of first item in wal
 	wal_from = {0,0},
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
@@ -117,19 +115,3 @@
 -define(ERR(F,A),ok).
 -endif.
 
--ifdef(DODBLOG).
--define(DBLOG(Db,LogFormat,LogArgs),actordb_sqlite:exec(Db,<<"INSERT INTO __evlog (line,pid,node,actor,type,txt) ",
-											  "VALUES (",(butil:tobin(?LINE))/binary,",",
-											  	"'",(list_to_binary(pid_to_list(self())))/binary,"',",
-											  	"'",(bkdcore:node_name())/binary,"',",
-											  	"'",(butil:tobin(P#dp.actorname))/binary,"',",
-											  	"'",(butil:tobin(P#dp.actortype))/binary,"',",
-											  "'",(butil:tobin(io_lib:fwrite(LogFormat,LogArgs)))/binary,"');">>)).
--define(LOGTABLE,<<"CREATE TABLE __evlog (id INTEGER PRIMARY KEY AUTOINCREMENT,line INTEGER,pid TEXT, node TEXT,",
-						" actor TEXT, type TEXT, txt TEXT);">>).
--define(COPYTRASH,actordb_sqlite:copy_to_trash(P#dp.dbpath),actordb_sqlite:copy_to_trash(P#dp.dbpath++"-wal")).
--else.
--define(LOGTABLE,<<>>).
--define(DBLOG(_a,_b,_c),ok).
--define(COPYTRASH,ok).
--endif.

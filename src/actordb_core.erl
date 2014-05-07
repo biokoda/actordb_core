@@ -182,6 +182,10 @@ start(_Type, _Args) ->
 	bkdcore:start(actordb:configfiles()),
 	butil:wait_for_app(bkdcore),
 
+	% this is actually for node_name to be set in conf.
+	% Since it gets called so much, better it is in a module than ets like bkdcore:node_name() call.
+	actordb_util:change_journal(actordb_conf:journal_mode(),actordb_conf:sync()),
+
 	Res = actordb_sup:start_link(),
 	Res.
 

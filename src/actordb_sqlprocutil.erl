@@ -11,7 +11,7 @@ reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
 ae_respond(P,LeaderNode,Success,PrevEvnum) ->
-	Resp = {appendentries_response,bkdcore:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum},
+	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum},
 	bkdcore:rpc(LeaderNode,{?MODULE,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 									{state_rw,Resp}]}).
 
@@ -139,8 +139,8 @@ continue_maybe(P,F) ->
 			continue_maybe(NP,NF);
 		true ->
 			StartRes = bkdcore:rpc(F#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-						{state_rw,{appendentries_start,P#dp.current_term,bkdcore:node_name(),
-									F#flw.match_index,F#flw.match_term,P#dp.commit_index,false}}]}),
+						{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
+									F#flw.match_index,F#flw.match_term,false}}]}),
 			case StartRes of
 				false ->
 					% to be continued in appendentries_response
@@ -221,16 +221,16 @@ verify_getdb(Actor,Type,Node1,MasterNode,MeMors,Cb,Evnum,Evcrc) ->
 	case Node1 of
 		{Node,ActorFrom} ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,ActorFrom,Type,
-											{dbcopy_op,undefined, send_db,{bkdcore:node_name(),Ref,false,Evnum,Evcrc,Actor}}]});
+											{dbcopy_op,undefined, send_db,{actordb_conf:node_name(),Ref,false,Evnum,Evcrc,Actor}}]});
 		{split,MFA,Node,ActorFrom} ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,ActorFrom,Type,
-											{dbcopy_op,undefined, send_db,{bkdcore:node_name(),Ref,{split,MFA},Evnum,Evcrc,Actor}}]});
+											{dbcopy_op,undefined, send_db,{actordb_conf:node_name(),Ref,{split,MFA},Evnum,Evcrc,Actor}}]});
 		{move,_NewShard,Node} ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,Actor,Type,
-											{dbcopy_op,undefined, send_db,{bkdcore:node_name(),Ref,true,Evnum,Evcrc,Actor}}]});
+											{dbcopy_op,undefined, send_db,{actordb_conf:node_name(),Ref,true,Evnum,Evcrc,Actor}}]});
 		Node when is_binary(Node) ->
 			RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,Actor,Type,
-											{dbcopy_op,undefined, send_db,{bkdcore:node_name(),Ref,false,Evnum,Evcrc,Actor}}]})
+											{dbcopy_op,undefined, send_db,{actordb_conf:node_name(),Ref,false,Evnum,Evcrc,Actor}}]})
 	end,
 	% ?AINF("Verify getdb ~p ~p ~p ~p ~p",[Actor,Type,Node1,MasterNode,{element(1,RpcRes),butil:type(element(2,RpcRes))}]),
 	case RpcRes of
@@ -377,8 +377,7 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	end,
 	DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
 		[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVCRC,0},{?EVTERM,0}|Moved]],
-	[(?LOGTABLE),
-	 <<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
+	[<<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
 	 "CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER,prevev INTEGER,prevcrc INTEGER, sql TEXT);",
 	 "CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
@@ -421,8 +420,8 @@ start_verify(P,JustStarted) ->
 			P;
 		_ ->
 			CurrentTerm = P#dp.current_term+1,
-			ok = butil:savetermfile([P#dp.dbpath,"-term"],{bkdcore:node_name(),CurrentTerm}),
-			NP = P#dp{current_term = CurrentTerm, voted_for = bkdcore:node_name()},
+			ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm}),
+			NP = P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name()},
 			{Verifypid,_} = spawn_monitor(fun() -> 
 							start_election(NP)
 								end),
@@ -434,7 +433,7 @@ start_verify(P,JustStarted) ->
 start_election(P) ->
 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
 	ClusterSize = length(bkdcore:cluster_nodes()) + 1,
-	Me = bkdcore:node_name(),
+	Me = actordb_conf:node_name(),
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]),
@@ -509,6 +508,18 @@ delactorfile(P) ->
 			file:delete(P#dp.dbpath++"-shm")
 	end.
 
+do_checkpoint(P) ->
+	case P#dp.mors of
+		master ->
+			actordb_sqlite:checkpoint(P#dp.db),
+			[rpc:cast(bkdcore:dist_name(F#flw.node),
+						?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}])
+					 || F <- P#dp.follower_indexes, F#flw.match_index == P#dp.evnum];
+		_ ->
+			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+			actordb_sqlite:checkpoint(Db),
+			actordb_sqlite:stop(Db)
+	end.
 
 delete_actor(P) ->
 	?AINF("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
@@ -615,7 +626,7 @@ parse_opts(P,[H|T]) ->
 		{slave,true} ->
 			parse_opts(P#dp{mors = slave},T);
 		{slave,false} ->
-			parse_opts(P#dp{mors = master,masternode = bkdcore:node_name(),masternodedist = node()},T);
+			parse_opts(P#dp{mors = master,masternode = actordb_conf:node_name(),masternodedist = node()},T);
 		{copyfrom,Node} ->
 			parse_opts(P#dp{copyfrom = Node},T);
 		{copyreset,What} ->
@@ -728,11 +739,9 @@ dbcopy_op_call({dbcopy_op,_,send_db,Data} = Msg,CallFrom,P) ->
 							?ADBG("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
 									[{P#dp.actorname,P#dp.actortype},ActornameToCopyto,
 															{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
-							?DBLOG(P#dp.db,"senddb to ~p ~p",[ActornameToCopyto,Node]),
 							Me = self(),
 							case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
 								false ->
-									?COPYTRASH,
 									Db = P#dp.db,
 									{Pid,_} = spawn_monitor(fun() -> 
 											dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
@@ -755,7 +764,7 @@ dbcopy_op_call({dbcopy_op,_,send_db,Data} = Msg,CallFrom,P) ->
 					end;
 			% end;
 		_ when P#dp.masternode /= undefined ->
-			case P#dp.masternode == bkdcore:node_name() of
+			case P#dp.masternode == actordb_conf:node_name() of
 				true ->
 					{noreply,P#dp{callqueue = queue:in_r({CallFrom,Msg},P#dp.callqueue)}};
 				_ ->
@@ -1090,7 +1099,7 @@ callback_unlock(P) ->
 		{Node,ActorName} ->
 			ok;
 		Node when is_binary(Node) ->
-			true = Node /= bkdcore:node_name(),
+			true = Node /= actordb_conf:node_name(),
 			ActorName = P#dp.actorname
 	end,
 	% Unlock database on source side

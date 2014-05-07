@@ -39,9 +39,9 @@ tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 		<<>> ->
 			ok;
 		_ ->
-			{Term,Leader,PrevEvnum,PrevTerm,LeaderCommit} = binary_to_term(VarPrefix),
+			{Term,Leader,PrevEvnum,PrevTerm} = binary_to_term(VarPrefix),
 			Res = actordb_sqlproc:call_slave(Cb,Actor,Type,
-					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,LeaderCommit,false}}),
+					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,false}}),
 			put(proceed,Res)
 	end,
 	% When header arrives, we check parameters if all ok.
@@ -95,10 +95,10 @@ type_schema(Type,Version) ->
 
 createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout) ->
 	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},
-								   {journal_mode,Journal},{sync,Sync},{query_timeout,QueryTimeout}]).
+								   {journal_mode,Journal},{sync,Sync},{query_timeout,QueryTimeout},{node_name,bkdcore:node_name()}]).
 
 change_journal(Journal,Sync) ->
-	bkdcore:mkmodule(actordb_conf,[{db_path,actordb_conf:db_path()},{paths,actordb_conf:paths()},
+	bkdcore:mkmodule(actordb_conf,[{db_path,actordb_conf:db_path()},{paths,actordb_conf:paths()},{node_name,bkdcore:node_name()},
 								   {level_size,actordb_conf:level_size()},{journal_mode,Journal},{sync,butil:tobin(Sync)},{query_timeout,actordb_conf:query_timeout()}]).
 
 % Out of schema.cfg create module with functions:
