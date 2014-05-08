@@ -215,66 +215,8 @@ handle_call({dbcopy_op,_From1,_What,_Data} = Msg,CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_op_call(Msg,CallFrom,P);
 handle_call({state_rw,What},From,P) ->
 	state_rw_call(What,From,P#dp{activity = make_ref()});
-% handle_call({commit,Doit,Id},From, P) ->
-% 	?ADBG("Commit ~p ~p ~p ~p",[Doit,Id,From,P#dp.transactionid]),
-% 	case P#dp.transactionid == Id of
-% 		true ->
-% 			case P#dp.transactioncheckref of
-% 				undefined ->
-% 					ok;
-% 				_ ->
-% 					erlang:demonitor(P#dp.transactioncheckref)
-% 			end,
-% 			?ADBG("Commit write ~p ~p",[bkdcore:cluster_nodes_connected(),P#dp.replicate_sql]),
-% 			{ConnectedNodes,LenCluster,_LenConnected} = nodes_for_replication(P),
-% 			{Sql,EvNum,Crc,NewVers} = P#dp.replicate_sql,
-% 			case Doit of
-% 				true when LenCluster == 0 ->
-% 					case Sql of
-% 						delete ->
-% 							delete_actor(P),
-% 							case From of
-% 								undefined ->
-% 									{reply,ok,P#dp{transactionid = undefined, replicate_sql = undefined, db = undefined}};
-% 								_ ->
-% 									reply(From,ok),
-% 									{stop,normal,P}
-% 							end;
-% 						_ ->
-% 							ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
-% 							{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
-% 									 replicate_sql = undefined, activity = make_ref()}}
-% 					end;
-% 				true ->
-% 					Commiter = commit_write({commit,Doit,Id},P,LenCluster,ConnectedNodes,EvNum,Sql,Crc,NewVers),
-% 					{noreply,P#dp{callfrom = From, commiter = Commiter, activity = make_ref(),
-% 								  callres = ok,
-% 								 transactionid = undefined,transactioncheckref = undefined}};
-% 				false when LenCluster == 0 ->
-% 					self() ! doqueue,
-% 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-% 					{reply,ok,P#dp{transactionid = undefined, replicate_sql = undefined,
-% 									transactioncheckref = undefined}};
-% 				false ->
-% 					self() ! doqueue,
-% 					{Tid,Updaterid,_} = P#dp.transactionid,
-% 					case Sql of
-% 						<<"delete">> ->
-% 							ok;
-% 						_ ->
-% 							actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
-% 					end,
-% 					NewSql = <<"DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary," AND updater=",
-% 										(butil:tobin(Updaterid))/binary,";">>,
-% 					handle_call({write,{undefined,erlang:crc32(NewSql),NewSql,undefined}},From,P#dp{callfrom = undefined,
-% 										transactionid = undefined,replicate_sql = undefined,transactioncheckref = undefined})
-% 			end;
-% 		_ when P#dp.db == undefined ->
-% 			reply(From,ok),
-% 			{stop,normal,P};
-% 		_ ->
-% 			{reply,ok,P}
-% 	end;
+handle_call({commit,Doit,Id},From, P) ->
+	commit_call(Doit,Id,From,P);
 handle_call({delete,Moved},From,P) ->
 	?ADBG("deleting actor from node ~p ~p",[P#dp.actorname,P#dp.actortype]),
 	actordb_sqlite:stop(P#dp.db),
@@ -344,6 +286,80 @@ handle_call(_Msg,_From,#dp{mors = slave, verified = true} = P) ->
 handle_call(_Msg,_,P) ->
 	?AINF("sqlproc ~p unhandled call ~p mors ~p verified ~p",[P#dp.cbmod,_Msg,P#dp.mors,P#dp.verified]),
 	{reply,{error,unhandled_call},P}.
+
+
+
+
+commit_call(Doit,Id,From,P) ->
+	?ADBG("Commit ~p ~p ~p ~p",[Doit,Id,From,P#dp.transactionid]),
+	case P#dp.transactionid == Id of
+		true ->
+			case P#dp.transactioncheckref of
+				undefined ->
+					ok;
+				_ ->
+					erlang:demonitor(P#dp.transactioncheckref)
+			end,
+			?ADBG("Commit write ~p",[P#dp.transactioninfo]),
+			{Sql,EvNum,_NewVers} = P#dp.transactioninfo,
+			case Doit of
+				true when P#dp.follower_indexes == [] ->
+					case Sql of
+						delete ->
+							actordb_sqlprocutil:delete_actor(P),
+							case From of
+								undefined ->
+									{reply,ok,P#dp{transactionid = undefined, transactioninfo = undefined, db = undefined}};
+								_ ->
+									reply(From,ok),
+									{stop,normal,P}
+							end;
+						_ ->
+							ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
+							{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
+									 transactioninfo = undefined, activity = make_ref(),
+									 evnum = EvNum, evterm = P#dp.current_term}}
+					end;
+				true ->
+					% We can safely release savepoint.
+					% This will send the remaining WAL pages to followers that have commit flag set.
+					% Followers will then rpc back appendentries_response.
+					% We can also set #dp.evnum now.
+					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
+					Ref = make_ref(),
+					{noreply,P#dp{callfrom = From, activity = make_ref(),
+								  callres = ok,evnum = EvNum,
+								  follower_indexes = [F#flw{wait_for_response_since = Ref} || F <- P#dp.follower_indexes],
+								 transactionid = undefined, transactioninfo = undefined,transactioncheckref = undefined}};
+				false when P#dp.follower_indexes == [] ->
+					self() ! doqueue,
+					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+					{reply,ok,P#dp{transactionid = undefined, transactioninfo = undefined,
+									transactioncheckref = undefined}};
+				false ->
+					% Transaction failed.
+					% Delete it from __transactions.
+					% EvNum will actually be the same as transactionsql that we have not finished.
+					%  Thus this EvNum section of WAL contains pages from failed transaction and cleanup of transaction from __transactions.
+					self() ! doqueue,
+					{Tid,Updaterid,_} = P#dp.transactionid,
+					case Sql of
+						<<"delete">> ->
+							ok;
+						_ ->
+							actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
+					end,
+					NewSql = <<"DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary," AND updater=",
+										(butil:tobin(Updaterid))/binary,";">>,
+					write_call({undefined,NewSql,undefined},From,P#dp{callfrom = undefined,
+										transactionid = undefined,transactioninfo = undefined,transactioncheckref = undefined})
+			end;
+		_ when P#dp.db == undefined ->
+			reply(From,ok),
+			{stop,normal,P};
+		_ ->
+			{reply,ok,P}
+	end.
 
 
 state_rw_call(What,From,P) ->
@@ -563,7 +579,7 @@ read_call(Msg,From,P) ->
 				% Schema has changed. Execute write on schema update.
 				% Place this read in callqueue for later execution.
 				{NewVers,Sql1} ->
-					case write_call(undefined,Sql1,undefined,undefined,NewVers,P) of
+					case write_call(Sql1,undefined,undefined,NewVers,P) of
 						{reply,Reply,NP} ->
 							case actordb_sqlite:okornot(Reply) of
 								ok ->
@@ -581,15 +597,15 @@ read_call(Msg,From,P) ->
 	end.
 
 
-write_call({MFA,Sql,Transaction} = OrigMsg,From,P) ->
+write_call({MFA,Sql,Transaction},From,P) ->
 	?ADBG("writecall ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},MFA,Sql,Transaction]),	
 	case MFA of
 		undefined ->
 			case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 				ok ->
-					write_call(OrigMsg,Sql,Transaction,From,P#dp.schemavers,P);
+					write_call(Sql,Transaction,From,P#dp.schemavers,P);
 				{NewVers,Sql1} ->
-					write_call(OrigMsg,Sql1,Transaction,From,NewVers,P)
+					write_call(Sql1,Transaction,From,NewVers,P)
 			end;
 		{Mod,Func,Args} ->
 			case actordb_sqlprocutil:has_schema_updated(P,[]) of
@@ -603,21 +619,21 @@ write_call({MFA,Sql,Transaction} = OrigMsg,From,P) ->
 				{reply,What,OutSql1,NS} ->
 					reply(From,What),
 					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(OrigMsg,OutSql,Transaction,undefined,NewVers,P#dp{cbstate = NS});
+					write_call(OutSql,Transaction,undefined,NewVers,P#dp{cbstate = NS});
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
 					{reply,What,P};
 				{OutSql1,State} ->
 					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(OrigMsg,OutSql,Transaction,From,NewVers,P#dp{cbstate = State});
+					write_call(OutSql,Transaction,From,NewVers,P#dp{cbstate = State});
 				OutSql1 ->
 					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(OrigMsg,OutSql,Transaction,From,NewVers,P)
+					write_call(OutSql,Transaction,From,NewVers,P)
 			end
 	end.
 % Not a multiactor transaction write
-write_call(_OrigMsg,Sql,undefined,From,NewVers,P) ->
+write_call(Sql,undefined,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	% {ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
 	case Sql of
@@ -671,13 +687,13 @@ write_call(_OrigMsg,Sql,undefined,From,NewVers,P) ->
 					% reply on appendentries response or later if nodes are behind.
 					{noreply, P#dp{callfrom = From, callres = Res, 
 									follower_indexes = [F#flw{wait_for_response_since = Ref} || F <- P#dp.follower_indexes],
-								evterm = P#dp.current_term}}
+								evterm = P#dp.current_term, evnum = EvNum}}
 			end;
 		Resp ->
 			actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 			{reply,Resp,P}
 	end;
-write_call(OrigMsg,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
+write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 	?ADBG("Starting transaction write id ~p, curtr ~p, sql ~p",[TransactionId,P#dp.transactionid,Sql1]),
 	case P#dp.follower_indexes of
@@ -687,7 +703,7 @@ write_call(OrigMsg,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 				TransactionId ->
 					% Transaction can write to single actor more than once (especially for KV stores)
 					% if we are already in this transaction, just update sql.
-					{_OldSql,EvNum,_} = P#dp.replicate_sql,
+					{_OldSql,EvNum,_} = P#dp.transactioninfo,
 					ComplSql = Sql1,
 					Res = actordb_sqlite:exec(P#dp.db,ComplSql,write);
 				undefined ->
@@ -709,14 +725,13 @@ write_call(OrigMsg,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?ADBG("Transaction ok"),
-					{reply, Res, P#dp{evnum = EvNum, evterm = P#dp.current_term,
-								 transactionid = TransactionId, schemavers = NewVers,
-								transactioncheckref = CheckRef,replicate_sql = {ComplSql,EvNum,NewVers}}};
+					{reply, Res, P#dp{transactionid = TransactionId, schemavers = NewVers,
+								transactioncheckref = CheckRef,transactioninfo = {ComplSql,EvNum,NewVers}}};
 				_Err ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					erlang:demonitor(CheckRef),
 					?ADBG("Transaction not ok ~p",[_Err]),
-					{reply,Res,P#dp{actortype = P#dp.activity + 1, transactionid = undefined}}
+					{reply,Res,P#dp{actortype = P#dp.activity + 1, transactionid = undefined, evterm = P#dp.current_term}}
 			end;
 		_ ->
 			EvNum = P#dp.evnum+1,
@@ -724,7 +739,7 @@ write_call(OrigMsg,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 				TransactionId ->
 					% Rollback prev version of sql.
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
-					{OldSql,_EvNum,_EvCrc,NewVers} = P#dp.replicate_sql,
+					{OldSql,_EvNum,NewVers} = P#dp.transactioninfo,
 					% Combine prev sql with new one.
 					Sql = iolist_to_binary([OldSql,Sql1]),
 					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
@@ -738,35 +753,27 @@ write_call(OrigMsg,Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 						_ ->
 							Sql = iolist_to_binary(Sql1)
 					end,
-					% First store transaction info 
-					% Once that is stored (on all nodes), execute the sql to see if there are errors (but only on this master node).
+					% First store transaction info. Then run actual sql of transaction.
 					TransactionInfo = [<<"$INSERT INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
 											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
 											(butil:tobin(NewVers)),",",
 								 				"'",(base64:encode(Sql)),"');"]
 			end,
-			CrcTransaction = erlang:crc32(TransactionInfo),
 			ComplSql = 
 					[<<"$SAVEPOINT 'adb';">>,
 					 TransactionInfo,
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
+					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
+					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
-			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,write)),
-			case ok of
-				_ when (LenConnected+1)*2 > (LenCluster+1) ->
-					Ref = make_ref(),
-					% Commiter = commit_write(OrigMsg,P,LenCluster,ConnectedNodes,EvNum,TransactionInfo,CrcTransaction,P#dp.schemavers),
-					{noreply,P#dp{callfrom = From,callres = undefined, commiter = Commiter, 
-								  replicate_sql = {Sql,EvNum+1,Crc,NewVers},
-								  follower_indexes = [F#flw{wait_for_response_since = Ref} || F <- P#dp.follower_indexes],
-								  transactioncheckref = CheckRef,
-								  transactionid = TransactionId}};
-				_ ->
-					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-					erlang:demonitor(CheckRef),
-					{reply,{error,{replication_failed_2,LenConnected,LenCluster}},P}
-			end
+			VarHeader = term_to_binary({P#dp.evterm,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
+			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,EvNum,P#dp.evterm,VarHeader)),
+			Ref = make_ref(),
+			{noreply,P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
+						  transactioninfo = {Sql,EvNum+1,NewVers},
+						  follower_indexes = [F#flw{wait_for_response_since = Ref} || F <- P#dp.follower_indexes],
+						  transactioncheckref = CheckRef,
+						  transactionid = TransactionId}}
 	end.
 
 
@@ -1123,27 +1130,38 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 			P = P1#dp{mors = master, electionpid = undefined, evterm = P1#dp.current_term,
 					  follower_indexes = FollowerIndexes},
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
+			
 			% After election is won a write needs to be executed.
-			% If empty db or schema not up to date use that.
+			% If transaction active, empty db or schema not up to date use that.
 			% Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
-			case P#dp.evnum of
-				0 ->
-					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
-					Sql = [actordb_sqlprocutil:base_schema(SchemaVers,P#dp.actortype),
-								 Schema];
+			case P#dp.transactionid of
+				{_Tid,_Updid,_Node} ->
+					{Sql,Evnum,NewVers} = P#dp.transactioninfo,
+					SchemaVers = P#dp.schemavers,
+					% Put empty sql in transactioninfo. Since sqls get appended for existing transactions in write_call.
+					% This way sql does not get written twice to it.
+					NewInfo = {<<>>,Evnum,NewVers};
 				_ ->
-					case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
-						{_,[]} ->
-							SchemaVers = P#dp.schemavers,
-							Sql = <<>>;
-						{SchemaVers,Schema} ->
-							Sql = [Schema,
-									<<"UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
-										<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
+					NewInfo = undefined,
+					case P#dp.evnum of
+						0 ->
+							{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
+							Sql = [actordb_sqlprocutil:base_schema(SchemaVers,P#dp.actortype),
+										 Schema];
+						_ ->
+							case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
+								{_,[]} ->
+									SchemaVers = P#dp.schemavers,
+									Sql = <<>>;
+								{SchemaVers,Schema} ->
+									Sql = [Schema,
+											<<"UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
+												<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
+							end
 					end
 			end,
-			case write_call({undefined,Sql,undefined},undefined,
-								actordb_sqlprocutil:reopen_db(P#dp{schemavers = SchemaVers})) of
+			case write_call({undefined,Sql,P#dp.transactionid},undefined,
+								actordb_sqlprocutil:do_cb_init(actordb_sqlprocutil:reopen_db(P#dp{schemavers = SchemaVers, transactioninfo = NewInfo}))) of
 				{noreply,NP} ->
 					{noreply,NP};
 				{reply,_,NP} ->
@@ -1328,25 +1346,6 @@ init_opendb(P) ->
 			CopyFrom = butil:ds_val(?COPYFROMI,Rows),
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
 
-			% case actordb_sqlite:exec(Db,<<"SELECT min(id),max(id) FROM __wlog;">>,read) of
-			% 	{sql_error,_,_} ->
-			% 		HaveWlog = ?WLOG_NONE,
-			% 		WlogLen = 0,
-			% 		actordb_sqlite:exec(Db,<<"CREATE TABLE __wlog (id INTEGER PRIMARY KEY, crc INTEGER, sql TEXT);">>);
-			% 	[{columns,_},{rows,[{MinWL,MaxWL}]}] when is_integer(MinWL), 
-			% 												MinWL > 0, MinWL < MaxWL ->
-			% 		WlogLen = MaxWL - MinWL,
-			% 		HaveWlog = ?WLOG_ACTIVE;
-			% 	_ ->
-			% 		WlogLen = 0,
-			% 		HaveWlog = ?WLOG_NONE
-			% end,
-			% case butil:toint(butil:ds_val(?WLOG_STATUSI,Rows,?WLOG_NONE)) of
-			% 	?WLOG_ABANDONDED ->
-			% 		WlogStatus = ?WLOG_ABANDONDED;
-			% 	_ ->
-			% 		WlogStatus = HaveWlog
-			% end,
 			case Transaction of
 				[] when CopyFrom /= undefined ->
 					CPFrom = binary_to_term(base64:decode(CopyFrom)),
@@ -1362,13 +1361,10 @@ init_opendb(P) ->
 					{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState,
 								evterm = EvTerm,current_term = EvTerm,
 								schemavers = Vers
-							 % wlog_status = WlogStatus,wlog_len = WlogLen
 							 }};
 				[] ->
 					{ok,actordb_sqlprocutil:start_verify(
 								NP#dp{evnum = Evnum, schemavers = Vers,
-											% wlog_status = WlogStatus,
-											% wlog_len = WlogLen,
 											evterm = EvTerm,current_term = EvTerm,
 											movedtonode = MovedToNode1},true)};
 				[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
@@ -1381,20 +1377,15 @@ init_opendb(P) ->
 					ReplSql = {MSql,Evnum+1,SchemaVers},
 					Transid = {Tid,Updid,Node},
 					{ok,actordb_sqlprocutil:start_verify(
-								NP#dp{evnum = Evnum, replicate_sql = ReplSql, 
-									transactionid = Transid, %wlog_status = WlogStatus, wlog_len = WlogLen,
+								NP#dp{evnum = Evnum, transactioninfo = ReplSql, 
+									transactionid = Transid, 
 									movedtonode = MovedToNode1,
 									evterm = EvTerm,current_term = EvTerm,
 									schemavers = SchemaVers},true)}
 			end;
-		[] -> %when (P#dp.flags band ?FLAG_CREATE) > 0 ->
+		[] -> 
 			?ADBG("Opening NO schema create ~p",[{P#dp.actorname,P#dp.actortype}]),
 			{ok,actordb_sqlprocutil:start_verify(NP,true)}
-		% [] ->
-		% 	actordb_sqlite:stop(NP#dp.db),
-		% 	?ADBG("Opening NO schema nocreate ~p",[{P#dp.actorname,P#dp.actortype}]),
-		% 	explain(nocreate,Opts),
-		% 	{stop,normal}
 	end.
 
 init_copy(P) ->
@@ -1747,73 +1738,6 @@ check_timer(P) ->
 
 
 
-% % Once wlog started continue untill we know all nodes are in sync.
-% add_wlog(P,DoWlog,Sql,Evnum,Crc) when P#dp.wlog_status == ?WLOG_ACTIVE; 
-% 									  DoWlog, P#dp.wlog_status /= ?WLOG_ABANDONDED ->
-% 	[<<"$INSERT INTO __wlog VALUES (">>,butil:tobin(Evnum),$,,butil:tobin(Crc),$,,butil:tobin(P#dp.evnum),$,,butil:tobin(P#dp.evcrc),$,,
-% 			$',base64:encode(iolist_to_binary(Sql)),$',");"];
-% % If status ?WLOG_NONE, ?WLOG_ABANDONED or dowlog == false do not do it.
-% add_wlog(_P,_DoWlog,_Sql,_Evnum,_Crc) ->
-% 	[].
-
-% wlog_after_write(DoWlog,P) ->
-% 	case ok of
-% 		_ when P#dp.wlog_status == ?WLOG_ACTIVE, P#dp.wlog_len >= 10000 ->
-% 			wlog_stillneed(true,?WLOG_ABANDONDED,P);
-% 		_ when DoWlog, P#dp.wlog_status == ?WLOG_NONE ->
-% 			P#dp{wlog_status = ?WLOG_ACTIVE, wlog_len = P#dp.wlog_len + 1};
-% 		_ when P#dp.wlog_status == ?WLOG_ACTIVE ->
-% 			P#dp{wlog_len = P#dp.wlog_len + 1};
-% 		_ ->
-% 			P
-% 	end.
-
-% can_stop_wlog(P) ->
-% 	Home = self(),
-% 	spawn(fun() -> can_stop_wlog(Home,P) end).
-% can_stop_wlog(Home,P) ->
-% 	ClusterNodes = bkdcore:cluster_nodes(),
-% 	ConnectedNodes = bkdcore:cluster_nodes_connected(),
-% 	LenConnected = length(ConnectedNodes),
-% 	case LenConnected  == length(ClusterNodes) of
-% 		true ->
-% 			{Results,GetFailed} = rpc:multicall(ConnectedNodes,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-% 															{getinfo,verifyinfo},[{flags,P#dp.flags}]]),
-% 			case GetFailed of
-% 				[] ->
-% 					MatchingResults = [ok || {ok,_,Crc,Evnum,_} <- Results, Crc == P#dp.evcrc, Evnum == P#dp.evnum],
-% 					case length(MatchingResults) == LenConnected of
-% 						true ->
-% 							% If all nodes match, there is no need to still be doing wlog
-% 							[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-% 															{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE}])
-% 								|| Nd <- ConnectedNodes],
-% 							gen_server:call(Home,{dbcopy_op,undefined,wlog_unneeded,?WLOG_NONE});
-% 						false ->
-% 							ok
-% 					end;
-% 				_ ->
-% 					ok
-% 			end;
-% 		false ->
-% 			ok
-% 	end.
-
-% Either log has been abandonded for being too large or all nodes are in sync. Thus there are
-%  two reasons for abandoning, ?WLOG_NONE or ?WLOG_ABANDONED.
-% wlog_stillneed(AllSynced,How,P) ->
-% 	case ok of
-% 		_ when AllSynced andalso (P#dp.wlog_status == ?WLOG_ACTIVE orelse P#dp.wlog_status == ?WLOG_ABANDONDED) ->
-% 			[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-% 															{dbcopy_op,undefined,wlog_unneeded,How}])
-% 							|| Nd <- bkdcore:cluster_nodes_connected()],
-% 			actordb_sqlite:exec(P#dp.db,[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,
-% 									?WLOG_STATUS,$,,butil:tobin(How),<<");">>,
-% 									<<"$DELETE * FROM __wlog;">>]),
-% 			P#dp{wlog_status = How, wlog_len = 0};
-% 		_ ->
-% 			P
-% 	end.
 
 
 % verified_response(MeMors,MasterNode,AllSynced) ->

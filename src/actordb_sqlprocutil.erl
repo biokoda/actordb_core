@@ -17,7 +17,7 @@ ae_respond(P,LeaderNode,Success,PrevEvnum) ->
 
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	P;
-reply_maybe(#dp{callfrom = undefined} = P) ->
+reply_maybe(#dp{callfrom = undefined, transactioninfo = undefined} = P) ->
 	P#dp{callres = undefined};
 reply_maybe(P) ->
 	reply_maybe(P,1,P#dp.follower_indexes).
@@ -30,6 +30,40 @@ reply_maybe(P,N,[H|T]) ->
 	end;
 reply_maybe(P,N,[]) ->
 	case N*2 > (length(P#dp.follower_indexes)+1) of
+		true when P#dp.transactioninfo /= undefined, P#dp.callres /= undefined ->
+			% Now it's time to execute second stage of transaction.
+			% This means actually executing the transaction sql, without releasing savepoint.
+			{Sql,EvNumNew,NewVers} = P#dp.transactioninfo,
+			{Tid,Updaterid,_} = P#dp.transactionid,
+			case Sql of
+				<<"delete">> ->
+					reply(P#dp.callfrom,ok);
+				_ ->
+					NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+										<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
+					% Execute transaction sql and at the same time delete transaction sql from table.
+					% No release savepoint yet. That comes in transaction confirm.
+					ComplSql = 
+							[<<"$SAVEPOINT 'adb';">>,
+							 NewSql,
+							 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
+							 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
+							 ],
+					VarHeader = term_to_binary({P#dp.evterm,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
+					Res = actordb_sqlite:exec(P#dp.db,ComplSql,EvNumNew,P#dp.evterm,VarHeader),
+					% We can safely reply result of actual transaction sql. Even though it is not replicated completely yet.
+					% Because write to __transactions is safely replicated, transaction is guaranteed to be executed
+					%  before next write or read.
+					reply(P#dp.callfrom,Res),
+					case actordb_sqlite:okornot(Res) of
+						ok ->
+							ok;
+						_ ->
+							Me = self(),
+							spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end)
+					end
+			end,
+			P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()};
 		true ->
 			reply(P#dp.callfrom,P#dp.callres),
 			P#dp{callfrom = undefined, callres = undefined};

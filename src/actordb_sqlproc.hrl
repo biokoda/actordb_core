@@ -56,8 +56,8 @@
 	wal_from = {0,0},
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
 	locked = [],
-	% Multiupdate id, set to {Multiupdateid,TransactionNum} if in the middle of a distributed transaction
-	transactionid, transactioncheckref,
+	% Multiupdate id, set to {Multiupdateid,TransactionNum,OriginNode} if in the middle of a distributed transaction
+	transactioninfo,transactionid, transactioncheckref,
   % actordb_sqlproc is not used directly, it always has a callback module that sits in front of it,
   %  providing an external interface
   %  to a sqlite backed process.
@@ -73,8 +73,6 @@
   % mors = master, verified == false -> candidate
   % mors == master, verified == true -> leader
   mors, 
-  % Sql statement received from master in first step of 2 phase commit. Only kept in memory.
-  replicate_sql = <<>>,
   % Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
   % If local db is being restored, verified will be on false.
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
