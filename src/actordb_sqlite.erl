@@ -84,9 +84,11 @@ close(Db) ->
 	stop(Db).
 stop(undefined) ->
 	ok;
-stop(Db) ->
+stop(Db) when element(1,Db) == connection ->
 	exec(Db,<<"PRAGMA wal_checkpoint;">>),
-	esqlite3:close(Db).
+	esqlite3:close(Db);
+stop(Db) when element(1,Db) == file_descriptor ->
+	file:close(Db).
 
 wal_pages(Db) ->
 	esqlite3:wal_pages(Db).
