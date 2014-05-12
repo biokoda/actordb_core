@@ -1254,7 +1254,6 @@ init([_|_] = Opts) ->
 	case actordb_sqlprocutil:parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), 
 									schemanum = actordb_schema:num()}),Opts) of
 		{registered,Pid} ->
-			?ADBG("die already registered"),
 			explain({registered,Pid},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_ACTORNUM) > 0 ->
