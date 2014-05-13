@@ -702,8 +702,8 @@ write_call(Sql,undefined,From,NewVers,P) ->
 					 ],
 			% We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only 
 			%  when election is won and this is first write after it.
-			VarHeader = term_to_binary({P#dp.evterm,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
-			Res = actordb_sqlite:exec(P#dp.db,ComplSql,EvNum,P#dp.evterm,VarHeader),
+			VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
+			Res = actordb_sqlite:exec(P#dp.db,ComplSql,EvNum,P#dp.current_term,VarHeader),
 			?DBG("Replicating write ~p",[Sql]),
 			case actordb_sqlite:okornot(Res) of
 				ok ->
@@ -755,7 +755,7 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?ADBG("Transaction ok"),
-					{reply, Res, P#dp{transactionid = TransactionId, schemavers = NewVers,
+					{reply, Res, P#dp{transactionid = TransactionId, schemavers = NewVers,evterm = P#dp.current_term,
 								transactioncheckref = CheckRef,transactioninfo = {ComplSql,EvNum,NewVers}}};
 				_Err ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
@@ -796,8 +796,8 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
 					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
-			VarHeader = term_to_binary({P#dp.evterm,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
-			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,EvNum,P#dp.evterm,VarHeader)),
+			VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
+			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,EvNum,P#dp.current_term,VarHeader)),
 			Ref = make_ref(),
 			{noreply,P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
 						  transactioninfo = {Sql,EvNum+1,NewVers},
@@ -1132,8 +1132,6 @@ check_inactivity(NTimer,P) ->
 
 
 down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
-	% TODO: - unfinished transaction
-	% 		- copy/move from another node
 	case Reason of
 		% We are leader, evnum == 0, which means no other node has any data.
 		% If create flag not set stop.
@@ -1142,17 +1140,22 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 		leader ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			FollowerIndexes = [#flw{node = Nd,match_index = 0,next_index = P1#dp.evnum+1} || Nd <- bkdcore:cluster_nodes()],
-			P = P1#dp{mors = master, electionpid = undefined, evterm = P1#dp.current_term,
-					  follower_indexes = FollowerIndexes},
+			P = P1#dp{mors = master, electionpid = undefined, follower_indexes = FollowerIndexes, verified = true},
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
+
+			{ok,[[{columns,_},{rows,Transaction}],
+				[{columns,_},{rows,Rows}]]} = actordb_sqlite:exec(P#dp.db,
+					<<"SELECT * FROM __adb;",
+					  "SELECT * FROM __transactions;">>,read),
 			
+			CopyFrom = butil:ds_val(?COPYFROMI,Rows),
 			% After election is won a write needs to be executed. What we will write depends on the situation:
 			%  - If this actor has been moving, do a write to clean up after it (or restart it)
 			%  - If transaction active continue with write.
 			%  - If empty db or schema not up to date create/update it.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
-			case P#dp.transactionid of
-				_ when P#dp.copyfrom /= undefined ->
+			case Transaction of
+			 	[] when CopyFrom /= undefined ->
 					CleanupSql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],
 					case P#dp.copyfrom of
 						{move,NewShard,MoveTo} ->
@@ -1201,7 +1204,7 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 									Sql1 = CleanupSql,
 									Callfrom = undefined,
 									ResetSql = actordb_sqlprocutil:do_copy_reset(P#dp.copyreset,P#dp.cbstate);
-								% It was not completed
+								% It was not completed. Do it again.
 								_ ->
 									Sql1 = [],
 									ResetSql = [],
@@ -1215,12 +1218,21 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 							Sql = [Sql1,ResetSql]
 					end,
 					NP = P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode};
-				{_Tid,_Updid,_Node} ->
-					Callfrom = undefined,
-					{Sql,Evnum,NewVers} = P#dp.transactioninfo,
+				[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
+					case base64:decode(MSql1) of
+						<<"delete">> ->
+							Sql = delete;
+						Sql ->
+							ok
+					end,
 					% Put empty sql in transactioninfo. Since sqls get appended for existing transactions in write_call.
 					% This way sql does not get written twice to it.
-					NP = P#dp{transactioninfo = {<<>>,Evnum,NewVers}};
+					ReplSql = {<<>>,P#dp.evnum+1,SchemaVers},
+					Transid = {Tid,Updid,Node},
+					Callfrom = undefined,
+					NP = P#dp{transactioninfo = ReplSql, 
+								transactionid = Transid, 
+								schemavers = SchemaVers};
 				_ ->
 					Callfrom = undefined,
 					case P#dp.evnum of
@@ -1242,7 +1254,7 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 							end
 					end
 			end,
-			case write_call({undefined,Sql,P#dp.transactionid},Callfrom,
+			case write_call({undefined,Sql,NP#dp.transactionid},Callfrom,
 								actordb_sqlprocutil:do_cb_init(actordb_sqlprocutil:reopen_db(NP))) of
 				{noreply,NP} ->
 					{noreply,NP};
@@ -1416,53 +1428,17 @@ init_opendb(P) ->
 	case SchemaTables of
 		[_|_] ->
 			?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
-			{ok,[[{columns,_},{rows,Transaction}],
-				[{columns,_},{rows,Rows}]]} = actordb_sqlite:exec(Db,
-					<<"SELECT * FROM __adb;",
-					  "SELECT * FROM __transactions;">>,read),
+			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db,
+					<<"SELECT * FROM __adb;">>,read),
 			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
-			CopyFrom = butil:ds_val(?COPYFROMI,Rows),
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
 
-			case Transaction of
-				[] when CopyFrom /= undefined ->
-					CPFrom1 = binary_to_term(base64:decode(CopyFrom)),
-					case CPFrom1 of
-						{{move,_NewShard,_Node} = CPFrom,CopyReset,CopyState} ->
-							ok;
-						{{split,_Mfa,_Node,_FromActor} = CPFrom,CopyReset,CopyState} ->
-							ok
-						% {CPFrom,CopyReset,CopyState} ->
-						% 	TypeOfMove = false
-					end,
-					% self() ! {check_redirect,Db,TypeOfMove},
-					{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState,
-								evterm = EvTerm,current_term = EvTerm,
-								schemavers = Vers
-							 }};
-				[] ->
-					{ok,actordb_sqlprocutil:start_verify(
-								NP#dp{evnum = Evnum, schemavers = Vers,
-											evterm = EvTerm,current_term = EvTerm,
-											movedtonode = MovedToNode1},true)};
-				[{1,Tid,Updid,Node,SchemaVers,MSql1}] ->
-					case base64:decode(MSql1) of
-						<<"delete">> ->
-							MSql = delete;
-						MSql ->
-							ok
-					end,
-					ReplSql = {MSql,Evnum+1,SchemaVers},
-					Transid = {Tid,Updid,Node},
-					{ok,actordb_sqlprocutil:start_verify(
-								NP#dp{evnum = Evnum, transactioninfo = ReplSql, 
-									transactionid = Transid, 
-									movedtonode = MovedToNode1,
+			{ok,actordb_sqlprocutil:start_verify(
+						NP#dp{evnum = Evnum, schemavers = Vers,
 									evterm = EvTerm,current_term = EvTerm,
-									schemavers = SchemaVers},true)}
-			end;
+									movedtonode = MovedToNode1},true)};
 		[] -> 
 			?ADBG("Opening NO schema create ~p",[{P#dp.actorname,P#dp.actortype}]),
 			{ok,actordb_sqlprocutil:start_verify(NP,true)}

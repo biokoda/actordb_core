@@ -463,10 +463,9 @@ actor_start(P) ->
 	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,?PAGESIZE*?DEF_CACHE_PAGES).
 
 start_verify(P,JustStarted) ->
-	ClusterNodes = bkdcore:cluster_nodes(),
 	case ok of
-		_ when P#dp.movedtonode /= undefined; ClusterNodes == [] ->
-			P#dp{verified = true,cbstate = do_cb_init(P), activity_now = actor_start(P)};
+		_ when P#dp.movedtonode /= undefined ->
+			P#dp{verified = true};
 		% Actor was started with mode slave. It will remain in slave(follower) mode and
 		%  not attempt to become candidate for now.
 		_ when P#dp.mors == slave, JustStarted ->
