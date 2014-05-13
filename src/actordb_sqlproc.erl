@@ -6,11 +6,19 @@
 -define(LAGERDBG,true).
 -export([start/1, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/1]).
--export([read/4,write/4,call/4,call/5,diepls/2]).
+-export([read/4,write/4,call/4,call/5,diepls/2,try_actornum/3]).
 -export([call_slave/4,call_slave/5,call_master/4,start_copylock/2]).
 -export([write_call/3]).
 -include_lib("actordb_sqlproc.hrl").
 
+% Read actor number without creating actor.
+try_actornum(Name,Type,CbMod) ->
+	case call({Name,Type},[actornum],{state_rw,actornum},CbMod) of
+		{error,nocreate} ->
+			{"",undefined};
+		{ok,Path,NumNow} ->
+			{Path,NumNow}
+	end.
 
 read(Name,Flags,[{copy,CopyFrom}],Start) ->
 	case distreg:whereis(Name) of
@@ -250,7 +258,11 @@ handle_call(Msg,From,P) ->
 			% When write done, reply to caller and start with move process (in ..util:reply_maybe.
 			Sql = <<"$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
 						(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,P#dp.cbstate})))/binary,"');">>,
-			write_call({undefined,Sql,undefined},{exec,From,move,Node},P);
+			write_call({undefined,Sql,undefined},{exec,From,{move,Node}},P);
+		{split,MFA,Node,NewActor,CopyReset} ->
+			Sql = <<"$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
+						(base64:encode(term_to_binary({{split,MFA,Node,NewActor},CopyReset,P#dp.cbstate})))/binary,"');">>,
+			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,NewActor}},P);
 		stop ->
 			actordb_sqlite:stop(P#dp.db),
 			distreg:unreg(self()),
@@ -548,10 +560,10 @@ state_rw_call(What,From,P) ->
 				false ->
 					{noreply,P}
 			end;
-		delete ->
+		{delete,MovedToNode} ->
 			reply(From,ok),
 			actordb_sqlite:stop(P#dp.db),
-			actordb_sqlprocutil:delactorfile(P),
+			actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
 			{stop,normal,P};
 		checkpoint ->
 			actordb_sqlprocutil:do_checkpoint(P),
@@ -1134,34 +1146,83 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 					  follower_indexes = FollowerIndexes},
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
 			
-			% After election is won a write needs to be executed.
-			% If transaction active, empty db or schema not up to date use that.
-			% If this actor has been moving, do a write to clean up after it.
-			% Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
+			% After election is won a write needs to be executed. What we will write depends on the situation:
+			%  - If this actor has been moving, do a write to clean up after it (or restart it)
+			%  - If transaction active continue with write.
+			%  - If empty db or schema not up to date create/update it.
+			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
 			case P#dp.transactionid of
-				{_Tid,_Updid,_Node} ->
-					{Sql,Evnum,NewVers} = P#dp.transactioninfo,
-					% Put empty sql in transactioninfo. Since sqls get appended for existing transactions in write_call.
-					% This way sql does not get written twice to it.
-					NP = P#dp{transactioninfo = {<<>>,Evnum,NewVers}};
 				_ when P#dp.copyfrom /= undefined ->
+					CleanupSql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],
 					case P#dp.copyfrom of
 						{move,NewShard,MoveTo} ->
 							case lists:member(MoveTo,bkdcore:all_cluster_nodes()) of
 								% This is node where actor moved to.
 								true ->
+									Sql1 = CleanupSql,
+									Callfrom = undefined,
+									MovedToNode = P#dp.movedtonode,
 									ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
 								% This is node where actor moved from. Check if data is on the other node. If not start copy again.
 								false ->
-									ok
+									Num = actordb_sqlprocutil:read_num(P),
+									true = Num /= <<>>,
+									case actordb:rpc(MoveTo,P#dp.actorname,
+											{actordb_sqlproc,try_actornum,[P#dp.actorname,P#dp.actortype,P#dp.cbmod]}) of
+										% Num matches with local num. Actor moved successfully. 
+										{_,Num} ->
+											MovedToNode = MoveTo,
+											Sql1 = delete,
+											Callfrom = undefined;
+										{error,_} ->
+											MovedToNode = P#dp.movedtonode,
+											Sql1 = CleanupSql,
+											Callfrom = undefined,
+											exit(unable_to_verify_actormove);
+										% No number - there is nothing on other node. Restart move (continued in reply_maybe).
+										{APath,ANum} when APath == ""; ANum == <<>> ->
+											Sql1 = "",
+											MovedToNode = P#dp.movedtonode,
+											Callfrom =  {exec,undefined,{move,MoveTo}};
+										% Different num. Do not do anything. 
+										{_,_} ->
+											MovedToNode = P#dp.movedtonode,
+											Sql1 = CleanupSql,
+											Callfrom = undefined
+									end
 							end,
 							ResetSql = [];
-						{split,_Mfa,_Node,_FromActor} ->
-							ResetSql = actordb_sqlprocutil:do_copy_reset(P#dp.copyreset,P#dp.cbstate)
+						{split,Mfa,Node,NewActor} ->
+							{M,F,A} = Mfa,
+							MovedToNode = P#dp.movedtonode,
+							case apply(M,F,[P#dp.cbstate,check|A]) of
+								% Is split done?
+								ok ->
+									Sql1 = CleanupSql,
+									Callfrom = undefined,
+									ResetSql = actordb_sqlprocutil:do_copy_reset(P#dp.copyreset,P#dp.cbstate);
+								% It was not completed
+								_ ->
+									Sql1 = [],
+									ResetSql = [],
+									Callfrom = {exec,undefined,{split,Mfa,Node,NewActor}}
+							end
 					end,
-					Sql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";", ResetSql],
-					NP = P#dp{copyfrom = undefined, copyreset = undefined};
+					case Sql1 of
+						delete ->
+							Sql = delete;
+						_ ->
+							Sql = [Sql1,ResetSql]
+					end,
+					NP = P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode};
+				{_Tid,_Updid,_Node} ->
+					Callfrom = undefined,
+					{Sql,Evnum,NewVers} = P#dp.transactioninfo,
+					% Put empty sql in transactioninfo. Since sqls get appended for existing transactions in write_call.
+					% This way sql does not get written twice to it.
+					NP = P#dp{transactioninfo = {<<>>,Evnum,NewVers}};
 				_ ->
+					Callfrom = undefined,
 					case P#dp.evnum of
 						0 ->
 							{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
@@ -1181,7 +1242,7 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 							end
 					end
 			end,
-			case write_call({undefined,Sql,P#dp.transactionid},undefined,
+			case write_call({undefined,Sql,P#dp.transactionid},Callfrom,
 								actordb_sqlprocutil:do_cb_init(actordb_sqlprocutil:reopen_db(NP))) of
 				{noreply,NP} ->
 					{noreply,NP};

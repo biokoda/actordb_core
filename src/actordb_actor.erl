@@ -57,9 +57,6 @@ write(Actor,Flags,Sql) ->
 
 
 
-
-
-
 % 
 % Callbacks from actordb_sqlproc
 % 

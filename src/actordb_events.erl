@@ -136,26 +136,9 @@ process_ev(Evnum,[{Id,Data}|T]) when Id > Evnum ->
 			case butil:ds_val(what,Info) of
 				delete ->
 					{Name,Type,NumDeleted} = butil:ds_val(actor,Info),
-					case actordb_actor:start(Name,Type,[actornum]) of
-						{ok,Path,NumNow} when is_binary(NumNow) ->
-							Pid = undefined;
-						{ok,Pid} when is_pid(Pid) ->
-							case actordb_sqlproc:call({Name,Type},[],{state_rw,actornum},actordb_actor) of
-								{error,nocreate} ->
-									Path = "",
-									NumNow = undefined;
-								{ok,Path,NumNow} ->
-									ok
-							end
-					end,
+					{Path,NumNow} = actordb_events:try_actornum(Name,Type,actordb_actor),
 					case NumNow == NumDeleted of
 						true ->
-							case Pid of
-								undefined ->
-									ok;
-								_ ->
-									actordb_sqlproc:stop(Pid)
-							end,
 							case Path of
 								[_|_] ->
 									file:delete(Path),

@@ -65,18 +65,30 @@ reply_maybe(P,N,[]) ->
 					spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end)
 			end,
 			P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()};
-		true when element(1,P#dp.callfrom) == exec ->
+		true when element(1,P#dp.callfrom) == exec ->			
 			% Reply to caller and execute something once write complete.
-			{exec,From,move,Node} = P#dp.callfrom,
+			case P#dp.callfrom of
+				{exec,From,{move,Node}} ->
+					NewActor = P#dp.actorname,
+					IsMove = true,
+					Msg = {move,actordb_conf:node_name()};
+				{exec,From,{split,MFA,Node,NewActor}} ->
+					IsMove = {split,MFA},
+					Msg = {split,MFA,Node,NewActor}
+			end,
 			reply(From,P#dp.callres),
+
+			% {split,MFA,Node,ActorFrom} ->
+			% RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,ActorFrom,Type,
+			% 								{dbcopy,{send_db,{actordb_conf:node_name(),Ref,{split,MFA},Actor}}}]});
 
 			NP = P#dp{callfrom = undefined, callres = undefined},
 			Ref = make_ref(),
 			
-			case bkdcore:rpc(Node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-								{dbcopy,{start_receive,{move,actordb_conf:node_name()},Ref}}]}) of
+			case bkdcore:rpc(Node,{?MODULE,call_slave,[P#dp.cbmod,NewActor,P#dp.actortype,
+								{dbcopy,{start_receive,Msg,Ref}}]}) of
 				ok ->
-					dbcopy_call({send_db,{Node,Ref,true,P#dp.actorname}},From,NP);
+					dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP);
 				_ ->
 					{reply,false,NP}
 			end;
@@ -547,6 +559,7 @@ delactorfile(P) ->
 			% Rename into the actual dbfile (should be atomic op)
 			ok = file:rename(P#dp.dbpath++"1",P#dp.dbpath),
 			file:delete(P#dp.dbpath++"-wal"),
+			file:delete(P#dp.dbpath++"-term"),
 			file:delete(P#dp.dbpath++"-shm")
 	end.
 
@@ -565,7 +578,7 @@ do_checkpoint(P) ->
 
 delete_actor(P) ->
 	?AINF("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
-	case (P#dp.flags band ?FLAG_TEST == 0) of
+	case (P#dp.flags band ?FLAG_TEST == 0) andalso P#dp.movedtonode == undefined of
 		true ->
 			case actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype) of
 				{redirect,Shard,Node} ->
@@ -585,7 +598,7 @@ delete_actor(P) ->
 			ok;
 		_ ->
 			{_,_} = rpc:multicall(nodes(),?MODULE,call_slave,
-							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,delete},[]])
+							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}},[]])
 	end,
 	empty_queue(P#dp.callqueue,{error,deleted}),
 	actordb_sqlite:stop(P#dp.db),
@@ -733,6 +746,7 @@ parse_opts(P,[]) ->
 % 
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+% Initialize call on node that is source of copy
 dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 	% Send database to another node.
 	% This gets called from that node.
@@ -781,6 +795,17 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 		false ->
 			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}}
 	end;
+% Initial call on node that is destination of copy
+dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
+	?ADBG("start receive entire db ~p",[{P#dp.actorname,P#dp.actortype}]),
+	% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
+	actordb_sqlite:stop(P#dp.db),
+
+	{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
+	erlang:monitor(process,RecvPid),
+
+	{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}};
+% Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 	{FromPid,Ref} = From1,
 	Size = filelib:file_size([P#dp.dbpath,"-wal"]),
@@ -793,18 +818,10 @@ dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 			?DBG("wal_size ~p",[{From1,Data}]), 
 			{reply,{[P#dp.dbpath,"-wal"],Size},P}
 	end;
-dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
-	?ADBG("start receive entire db ~p",[{P#dp.actorname,P#dp.actortype}]),
-	% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
-	actordb_sqlite:stop(P#dp.db),
-
-	{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
-	erlang:monitor(process,RecvPid),
-
-	{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}};
 dbcopy_call({checksplit,Data},_,P) ->
 	{M,F,A} = Data,
 	{reply,apply(M,F,[P#dp.cbstate,check|A]),P};
+% Final call when copy done
 dbcopy_call({unlock,Data},CallFrom,P) ->
 	% For unlock data = copyref
 	case lists:keyfind(Data,2,P#dp.locked) of
