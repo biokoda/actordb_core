@@ -65,6 +65,21 @@ reply_maybe(P,N,[]) ->
 					spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end)
 			end,
 			P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()};
+		true when element(1,P#dp.callfrom) == exec ->
+			% Reply to caller and execute something once write complete.
+			{exec,From,move,Node} = P#dp.callfrom,
+			reply(From,P#dp.callres),
+
+			NP = P#dp{callfrom = undefined, callres = undefined},
+			Ref = make_ref(),
+			
+			case bkdcore:rpc(Node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+								{dbcopy,{start_receive,{move,actordb_conf:node_name()},Ref}}]}) of
+				ok ->
+					dbcopy_call({send_db,{Node,Ref,true,P#dp.actorname}},From,NP);
+				_ ->
+					{reply,false,NP}
+			end;
 		true ->
 			reply(P#dp.callfrom,P#dp.callres),
 			P#dp{callfrom = undefined, callres = undefined};
@@ -376,27 +391,21 @@ check_redirect(P,Copyfrom) ->
 	end.
 
 
-do_copy_reset(MoveType,Copyreset,State) ->
+do_copy_reset(Copyreset,State) ->
 	case Copyreset of
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[State|Args]) of
 				ok ->
-					ResetSql = <<>>;
+					<<>>;
 				ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
-					ok
+					ResetSql
 			end;
 		ok ->
-			ResetSql = <<>>;
-		ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
-			ok;
-		_ ->
-			ResetSql = <<>>
-	end,
-	case MoveType of
-		move ->
 			<<>>;
+		ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
+			ResetSql;
 		_ ->
-			ResetSql
+			<<>>
 	end.
 
 base_schema(SchemaVers,Type) ->
@@ -525,6 +534,7 @@ delactorfile(P) ->
 	case P#dp.movedtonode of
 		undefined ->
 			file:delete(P#dp.dbpath),
+			file:delete(P#dp.dbpath++"-term"),
 			file:delete(P#dp.dbpath++"-wal"),
 			file:delete(P#dp.dbpath++"-shm");
 		_ ->
@@ -783,16 +793,11 @@ dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 			?DBG("wal_size ~p",[{From1,Data}]), 
 			{reply,{[P#dp.dbpath,"-wal"],Size},P}
 	end;
-dbcopy_call({start_receive,Node,Ref},_,P) ->
+dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 	?ADBG("start receive entire db ~p",[{P#dp.actorname,P#dp.actortype}]),
 	% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
-	case P#dp.copyfrom of
-		undefined ->
-			Copyfrom = Node;
-		Copyfrom ->
-			ok
-	end,
 	actordb_sqlite:stop(P#dp.db),
+
 	{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
 	erlang:monitor(process,RecvPid),
 
@@ -941,13 +946,12 @@ start_copyrec(P) ->
 					% if copyfrom tuple, it's moving/copying from one cluster to another 
 					%  or one actor to another.
 					_ when P#dp.mors == master, is_tuple(P#dp.copyfrom) ->
-						{ConnectedNodes1,LenCluster,LenConnected} = nodes_for_replication(P),
-						ConnectedNodes = [bkdcore:name_from_dist_name(Nd) || Nd <- ConnectedNodes1],
-						case LenCluster == 0 of
-							true ->
+						ConnectedNodes = [bkdcore:name_from_dist_name(Nd) || Nd <- bkdcore:cluster_nodes_connected()],
+						case ConnectedNodes of
+							[] ->
 								ok;
 							_ ->
-								true = LenConnected*2 > LenCluster
+								true = length(ConnectedNodes)*2 > length(bkdcore:cluster_nodes())
 						end,
 						StartOpt = [{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},lock,nohibernate,
 													{lockinfo,dbcopy,{P#dp.dbcopyref,P#dp.cbstate,
@@ -1009,10 +1013,6 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 						_ ->
 							?ADBG("Copyreceive done ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},
 								 {Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELECT * FROM __adb;")]),
-							ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,
-											<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",
-											'",(base64:encode(term_to_binary({P#dp.copyfrom,P#dp.copyreset,
-																				P#dp.cbstate})))/binary,"');">>,write)),
 							actordb_sqlite:stop(Db),
 							Source ! {Ref,self(),ok},
 							case Origin of
@@ -1033,6 +1033,8 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 
 callback_unlock(P) ->
 	case P#dp.copyfrom of
+		{move,Node} ->
+			ActorName = P#dp.actorname;
 		{move,_NewShard,Node} ->
 			ActorName = P#dp.actorname;
 		{split,_MFA,Node,ActorName} ->
@@ -1043,7 +1045,7 @@ callback_unlock(P) ->
 			true = Node /= actordb_conf:node_name(),
 			ActorName = P#dp.actorname
 	end,
-	% Unlock database on source side
+	% Unlock database on source side. Once unlocked move/copy is complete.
 	case rpc(Node,{?MODULE,call_master,[P#dp.cbmod,ActorName,
 								P#dp.actortype,{dbcopy,{unlock,P#dp.dbcopyref}}]}) of
 		ok ->

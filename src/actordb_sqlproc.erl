@@ -224,7 +224,7 @@ handle_call({delete,Moved},From,P) ->
 	distreg:unreg(self()),
 	reply(From,ok),
 	{stop,normal,P};
-handle_call(Msg,From,P) when element(1,Msg) == read; element(1,Msg) == write ->
+handle_call(Msg,From,P) ->
 	case Msg of
 		_ when P#dp.mors == slave ->
 			case P#dp.masternode of
@@ -235,15 +235,36 @@ handle_call(Msg,From,P) when element(1,Msg) == read; element(1,Msg) == write ->
 			end;
 		_ when P#dp.verified == false ->
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
-		{write,{_,_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
+		{write,{_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
-		_ when P#dp.callres /= undefined; P#dp.locked /= [] ->
+		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 		{write,Msg1} ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
 		{read,Msg1} ->
-			read_call(Msg1,From,check_timer(P#dp{activity = make_ref()}))
-	end;
+			read_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
+		{move,NewShard,Node,CopyReset} ->
+			% Call to move this actor to another cluster. 
+			% First store the intent to move with all needed data. This way even if a node chrashes, the actor will attempt to move
+			%  on next startup.
+			% When write done, reply to caller and start with move process (in ..util:reply_maybe.
+			Sql = <<"$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
+						(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,P#dp.cbstate})))/binary,"');">>,
+			write_call({undefined,Sql,undefined},{exec,From,move,Node},P);
+		stop ->
+			actordb_sqlite:stop(P#dp.db),
+			distreg:unreg(self()),
+			{stop, shutdown, stopped, P};
+		Msg ->
+			?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
+			case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
+				{reply,Resp,S} ->
+					{reply,Resp,P#dp{cbstate = S}};
+				{reply,Resp} ->
+					{reply,Resp,P}
+			end
+	end.
+
 % If we are not ready to process calls atm (in the middle of a write or db not verified yet). Queue requests.
 % handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; 
 % 								P#dp.transactionid /= undefined; P#dp.locked /= [] ->
@@ -267,27 +288,6 @@ handle_call(Msg,From,P) when element(1,Msg) == read; element(1,Msg) == write ->
 % handle_call({write,_},_,#dp{mors = slave} = P) ->
 % 	?DBG("Redirect not master ~p",[P#dp.masternode]),
 % 	actordb_sqlprocutil:redirect_master(P);
-handle_call(stop, _, P) ->
-	actordb_sqlite:stop(P#dp.db),
-	distreg:unreg(self()),
-	{stop, shutdown, stopped, P};
-handle_call(Msg,From,#dp{mors = master, verified = true} = P) ->
-	?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
-	case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
-		{reply,Resp,S} ->
-			{reply,Resp,P#dp{cbstate = S}};
-		{reply,Resp} ->
-			{reply,Resp,P}
-	end;
-handle_call(_Msg,_From,#dp{mors = slave, verified = true} = P) ->
-	?DBG("Redirect not master ~p ~p",[P#dp.masternode,_Msg]),
-	% {reply,{redirect,P#dp.masternodedist},P};
-	actordb_sqlprocutil:redirect_master(P);
-handle_call(_Msg,_,P) ->
-	?AINF("sqlproc ~p unhandled call ~p mors ~p verified ~p",[P#dp.cbmod,_Msg,P#dp.mors,P#dp.verified]),
-	{reply,{error,unhandled_call},P}.
-
-
 
 
 commit_call(Doit,Id,From,P) ->
@@ -372,7 +372,14 @@ state_rw_call(What,From,P) ->
 		% verifyinfo ->
 		% 	{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,{P#dp.mors,P#dp.verified}},P};
 		actornum ->
-			{reply,{ok,P#dp.dbpath,actordb_sqlprocutil:read_num(P)},P};
+			case P#dp.mors of
+				master ->
+					{reply,{ok,P#dp.dbpath,actordb_sqlprocutil:read_num(P)},P};
+				slave when P#dp.masternode /= undefined ->
+					actordb_sqlprocutil:redirect_master(P);
+				slave ->
+					{noreply, P#dp{callqueue = queue:in_r({From,{state_rw,What}},P#dp.callqueue)}}
+			end;
 		donothing ->
 			{reply,ok,P};
 		% Executed on follower.
@@ -474,6 +481,7 @@ state_rw_call(What,From,P) ->
 								false ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
 										{false,NP,NF} ->
+											% We can not recover from wal. Send entire db.
 											Ref = make_ref(),
 											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 																{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
@@ -853,33 +861,33 @@ handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 		noreply ->
 			{noreply,P}
 	end;
-handle_info({check_redirect,Db,IsMove},P) ->
-	case actordb_sqlprocutil:check_redirect(P,P#dp.copyfrom) of
-		false ->
-			file:delete(P#dp.dbpath),
-			file:delete(P#dp.dbpath++"-wal"),
-			file:delete(P#dp.dbpath++"-shm"),
-			{stop,{error,failed}};
-		Red  ->
-			?ADBG("Returned redirect ~p ~p ~p",[P#dp.actorname,Red,P#dp.copyreset]),
-			case Red of
-				{true,NewShard} when NewShard /= undefined ->
-					ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
-				_ ->
-					ok
-			end,
-			ResetSql = actordb_sqlprocutil:do_copy_reset(IsMove,P#dp.copyreset,P#dp.cbstate),
-			case actordb_sqlite:exec(Db,[<<"BEGIN;DELETE FROM __adb WHERE id=">>,(?COPYFROM),";",
-												  ResetSql,"COMMIT;"],write) of
-				{ok,_} ->
-					ok;
-				ok ->
-					ok
-			end,
-			actordb_sqlite:stop(Db),
-			{ok,NP} = init(P#dp{db = undefined,copyfrom = undefined, copyreset = false, mors = master},cleanup_copymove),
-			{noreply,NP}
-	end;
+% handle_info({check_redirect,Db,IsMove},P) ->
+% 	case actordb_sqlprocutil:check_redirect(P,P#dp.copyfrom) of
+% 		false ->
+% 			file:delete(P#dp.dbpath),
+% 			file:delete(P#dp.dbpath++"-wal"),
+% 			file:delete(P#dp.dbpath++"-shm"),
+% 			{stop,{error,failed}};
+% 		Red  ->
+% 			?ADBG("Returned redirect ~p ~p ~p",[P#dp.actorname,Red,P#dp.copyreset]),
+% 			case Red of
+% 				{true,NewShard} when NewShard /= undefined ->
+% 					ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
+% 				_ ->
+% 					ok
+% 			end,
+% 			ResetSql = actordb_sqlprocutil:do_copy_reset(IsMove,P#dp.copyreset,P#dp.cbstate),
+% 			case actordb_sqlite:exec(Db,[<<"BEGIN;DELETE FROM __adb WHERE id=">>,(?COPYFROM),";",
+% 												  ResetSql,"COMMIT;"],write) of
+% 				{ok,_} ->
+% 					ok;
+% 				ok ->
+% 					ok
+% 			end,
+% 			actordb_sqlite:stop(Db),
+% 			{ok,NP} = init(P#dp{db = undefined,copyfrom = undefined, copyreset = false, mors = master},cleanup_copymove),
+% 			{noreply,NP}
+% 	end;
 handle_info(_Msg,P) ->
 	?DBG("sqlproc ~p unhandled info ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
@@ -1128,27 +1136,45 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 			
 			% After election is won a write needs to be executed.
 			% If transaction active, empty db or schema not up to date use that.
+			% If this actor has been moving, do a write to clean up after it.
 			% Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
 			case P#dp.transactionid of
 				{_Tid,_Updid,_Node} ->
 					{Sql,Evnum,NewVers} = P#dp.transactioninfo,
-					SchemaVers = P#dp.schemavers,
 					% Put empty sql in transactioninfo. Since sqls get appended for existing transactions in write_call.
 					% This way sql does not get written twice to it.
-					NewInfo = {<<>>,Evnum,NewVers};
+					NP = P#dp{transactioninfo = {<<>>,Evnum,NewVers}};
+				_ when P#dp.copyfrom /= undefined ->
+					case P#dp.copyfrom of
+						{move,NewShard,MoveTo} ->
+							case lists:member(MoveTo,bkdcore:all_cluster_nodes()) of
+								% This is node where actor moved to.
+								true ->
+									ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
+								% This is node where actor moved from. Check if data is on the other node. If not start copy again.
+								false ->
+									ok
+							end,
+							ResetSql = [];
+						{split,_Mfa,_Node,_FromActor} ->
+							ResetSql = actordb_sqlprocutil:do_copy_reset(P#dp.copyreset,P#dp.cbstate)
+					end,
+					Sql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";", ResetSql],
+					NP = P#dp{copyfrom = undefined, copyreset = undefined};
 				_ ->
-					NewInfo = undefined,
 					case P#dp.evnum of
 						0 ->
 							{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
+							NP = P#dp{schemavers = SchemaVers},
 							Sql = [actordb_sqlprocutil:base_schema(SchemaVers,P#dp.actortype),
 										 Schema];
 						_ ->
 							case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
 								{_,[]} ->
-									SchemaVers = P#dp.schemavers,
+									NP = P,
 									Sql = <<>>;
 								{SchemaVers,Schema} ->
+									NP = P#dp{schemavers = SchemaVers},
 									Sql = [Schema,
 											<<"UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
 												<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
@@ -1156,7 +1182,7 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 					end
 			end,
 			case write_call({undefined,Sql,P#dp.transactionid},undefined,
-								actordb_sqlprocutil:do_cb_init(actordb_sqlprocutil:reopen_db(P#dp{schemavers = SchemaVers, transactioninfo = NewInfo}))) of
+								actordb_sqlprocutil:do_cb_init(actordb_sqlprocutil:reopen_db(NP))) of
 				{noreply,NP} ->
 					{noreply,NP};
 				{reply,_,NP} ->
@@ -1199,6 +1225,12 @@ down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 			{noreply,NP};
 		ok when P#dp.mors == slave ->
 			{stop,normal,P};
+		% Error copying. 
+		%  - There is a chance copy succeeded. If this node was able to send unlock msg
+		%    but connection was interrupted before replying. If this is the case next read/write call will start
+		%    actor on this node again and everything will be fine.
+		%  - If copy failed before unlock, then it actually did fail. In that case move will restart 
+		%    eventually.
 		_ ->
 			?AINF("Coproc died ~p~n",[?R2P(P)]),
 			{stop,Reason,P}
@@ -1279,45 +1311,38 @@ init([_|_] = Opts) ->
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
 					actordb_conf:node_name(),butil:ds_val(startreason,Opts)]),
 			
-			case P#dp.copyfrom of
-				% Normal start (not start and copy/move actor from another node)
-				undefined ->
-					% Could be normal start after moving to another node though.
-					MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
-					RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
-					case butil:readtermfile([P#dp.dbpath,"-term"]) of
-						{VotedFor,VotedForTerm} ->
-							ok;
-						_ ->
-							VotedFor = undefined,
-							VotedForTerm = 0
-					end,
-					case ok of
-						_ when P#dp.mors == slave ->
-							% Read evnum and evterm from wal file if it exists
-							{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
-							case file:position(F,eof) of
-								{ok,WalSize} when WalSize > 32+40+?PAGESIZE ->
-									{ok,_} = file:position(F,{cur,-(?PAGESIZE+40)}),
-									{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
-										file:read(F,24),
-									{ok,_} = file:position(F,eof),
-									{ok,P#dp{db = F, current_term = VotedForTerm, voted_for = VotedFor, 
-												evnum = Evnum, evterm = Evterm}};
-								{ok,_} ->
-									file:close(F),
-									init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor})
-							end;
-						_ when MovedToNode == undefined; RightCluster ->
-							init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor});
-						_ ->
-							?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
-							{ok, P#dp{verified = true, movedtonode = MovedToNode,
-										activity_now = actordb_sqlprocutil:actor_start(P)}}
-					end;
-				% Either create a copy of an actor or move an actor from one cluster to another.
+			% Could be normal start after moving to another node though.
+			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
+			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
+			case butil:readtermfile([P#dp.dbpath,"-term"]) of
+				{VotedFor,VotedForTerm} ->
+					ok;
 				_ ->
-					init_copy(P)
+					VotedFor = undefined,
+					VotedForTerm = 0
+			end,
+			case ok of
+				_ when P#dp.mors == slave ->
+					% Read evnum and evterm from wal file if it exists
+					{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
+					case file:position(F,eof) of
+						{ok,WalSize} when WalSize > 32+40+?PAGESIZE ->
+							{ok,_} = file:position(F,{cur,-(?PAGESIZE+40)}),
+							{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
+								file:read(F,24),
+							{ok,_} = file:position(F,eof),
+							{ok,P#dp{db = F, current_term = VotedForTerm, voted_for = VotedFor, 
+										evnum = Evnum, evterm = Evterm}};
+						{ok,_} ->
+							file:close(F),
+							init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor})
+					end;
+				_ when MovedToNode == undefined; RightCluster ->
+					init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor});
+				_ ->
+					?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
+					{ok, P#dp{verified = true, movedtonode = MovedToNode,
+								activity_now = actordb_sqlprocutil:actor_start(P)}}
 			end
 	end;
 init(#dp{} = P) ->
@@ -1342,16 +1367,16 @@ init_opendb(P) ->
 
 			case Transaction of
 				[] when CopyFrom /= undefined ->
-					CPFrom = binary_to_term(base64:decode(CopyFrom)),
-					case CPFrom of
-						{{move,_NewShard,_Node},CopyReset,CopyState} ->
-							TypeOfMove = move;
-						{{split,_Mfa,_Node,_FromActor},CopyReset,CopyState} ->
-							TypeOfMove = split;
-						{_,CopyReset,CopyState} ->
-							TypeOfMove = false
+					CPFrom1 = binary_to_term(base64:decode(CopyFrom)),
+					case CPFrom1 of
+						{{move,_NewShard,_Node} = CPFrom,CopyReset,CopyState} ->
+							ok;
+						{{split,_Mfa,_Node,_FromActor} = CPFrom,CopyReset,CopyState} ->
+							ok
+						% {CPFrom,CopyReset,CopyState} ->
+						% 	TypeOfMove = false
 					end,
-					self() ! {check_redirect,Db,TypeOfMove},
+					% self() ! {check_redirect,Db,TypeOfMove},
 					{ok,P#dp{copyreset = CopyReset,copyfrom = CPFrom,cbstate = CopyState,
 								evterm = EvTerm,current_term = EvTerm,
 								schemavers = Vers
@@ -1382,51 +1407,51 @@ init_opendb(P) ->
 			{ok,actordb_sqlprocutil:start_verify(NP,true)}
 	end.
 
-init_copy(P) ->
-	?AINF("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
-	case element(1,P#dp.copyfrom) of
-		move ->
-			TypeOfMove = move;
-		split ->
-			TypeOfMove = split;
-		_ ->
-			TypeOfMove = false
-	end,
-	% First check if movement is already done.
-	case actordb_sqlite:init(P#dp.dbpath,wal) of
-		{ok,Db,[_|_],_PageSize} ->
-			case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"]) of
-				{ok,[{columns,_},{rows,[]}]} ->
-					case TypeOfMove of
-						false ->
-							Doit = true;
-						_ ->
-							Doit = check
-					end;
-				{ok,[{columns,_},{rows,[{_,_Copyf}]}]} ->
-					Doit = false
-			end;
-		{ok,Db,[],_PageSize} ->
-			actordb_sqlite:stop(Db),
-			Doit = true;
-		_ ->
-			Db = undefined,
-			Doit = true
-	end,
-	case Doit of
-		true  ->
-			{EPid,_} = spawn_monitor(fun() -> 
-						actordb_sqlprocutil:verify_getdb(P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
-							undefined,master,P#dp.cbmod,P#dp.evnum) 
-			end),
-			{ok,P#dp{verified = false, electionpid = EPid, mors = master,
-				activity_now = actordb_sqlprocutil:actor_start(P)}};
-		_ ->
-			?AINF("Started for copy but copy already done or need check (~p) ~p ~p",
-						[Doit,P#dp.actorname,P#dp.actortype]),
-			self() ! {check_redirect,Db,TypeOfMove},
-			{ok,P}
-	end.
+% init_copy(P) ->
+% 	?AINF("start copyfrom ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom]),
+% 	case element(1,P#dp.copyfrom) of
+% 		move ->
+% 			TypeOfMove = move;
+% 		split ->
+% 			TypeOfMove = split;
+% 		_ ->
+% 			TypeOfMove = false
+% 	end,
+% 	% First check if movement is already done.
+% 	case actordb_sqlite:init(P#dp.dbpath,wal) of
+% 		{ok,Db,[_|_],_PageSize} ->
+% 			case actordb_sqlite:exec(Db,[<<"select * from __adb where id=">>,?COPYFROM,";"]) of
+% 				{ok,[{columns,_},{rows,[]}]} ->
+% 					case TypeOfMove of
+% 						false ->
+% 							Doit = true;
+% 						_ ->
+% 							Doit = check
+% 					end;
+% 				{ok,[{columns,_},{rows,[{_,_Copyf}]}]} ->
+% 					Doit = false
+% 			end;
+% 		{ok,Db,[],_PageSize} ->
+% 			actordb_sqlite:stop(Db),
+% 			Doit = true;
+% 		_ ->
+% 			Db = undefined,
+% 			Doit = true
+% 	end,
+% 	case Doit of
+% 		true  ->
+% 			{EPid,_} = spawn_monitor(fun() -> 
+% 						actordb_sqlprocutil:verify_getdb(P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
+% 							undefined,master,P#dp.cbmod,P#dp.evnum) 
+% 			end),
+% 			{ok,P#dp{verified = false, electionpid = EPid, mors = master,
+% 				activity_now = actordb_sqlprocutil:actor_start(P)}};
+% 		_ ->
+% 			?AINF("Started for copy but copy already done or need check (~p) ~p ~p",
+% 						[Doit,P#dp.actorname,P#dp.actortype]),
+% 			self() ! {check_redirect,Db,TypeOfMove},
+% 			{ok,P}
+% 	end.
 
 
 explain(What,Opts) ->
