@@ -30,67 +30,73 @@ reply_maybe(P,N,[H|T]) ->
 	end;
 reply_maybe(P,N,[]) ->
 	case N*2 > (length(P#dp.follower_indexes)+1) of
-		true when P#dp.transactioninfo /= undefined, P#dp.callres /= undefined ->
+		% If transaction active or copy/move actor, we can continue operation now because it has been safely replicated.
+		true when P#dp.transactioninfo /= undefined, P#dp.callres /= undefined; element(1,P#dp.callfrom) == exec ->
 			% Now it's time to execute second stage of transaction.
 			% This means actually executing the transaction sql, without releasing savepoint.
 			{Sql,EvNumNew,NewVers} = P#dp.transactioninfo,
 			{Tid,Updaterid,_} = P#dp.transactionid,
 			case Sql of
 				<<"delete">> ->
-					Res = ok,
-					reply(P#dp.callfrom,ok);
+					reply(P#dp.callfrom,ok),
+					P#dp{callfrom = undefined, callres = undefined, activity = make_ref()};
 				_ ->
-					NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
-										<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
-					% Execute transaction sql and at the same time delete transaction sql from table.
-					% No release savepoint yet. That comes in transaction confirm.
-					ComplSql = 
-							[<<"$SAVEPOINT 'adb';">>,
-							 NewSql,
-							 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
-							 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
-							 ],
-					VarHeader = term_to_binary({P#dp.evterm,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
-					Res = actordb_sqlite:exec(P#dp.db,ComplSql,EvNumNew,P#dp.evterm,VarHeader),
+					case P#dp.transactioninfo /= undefined of
+						true ->
+							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
+							% Execute transaction sql and at the same time delete transaction sql from table.
+							% No release savepoint yet. That comes in transaction confirm.
+							ComplSql = 
+									[<<"$SAVEPOINT 'adb';">>,
+									 NewSql,
+									 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
+									 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
+									 ],
+							VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
+							Res = actordb_sqlite:exec(P#dp.db,ComplSql,EvNumNew,P#dp.evterm,VarHeader);
+						false ->
+							Res = P#dp.callres
+					end,
 					% We can safely reply result of actual transaction sql. Even though it is not replicated completely yet.
 					% Because write to __transactions is safely replicated, transaction is guaranteed to be executed
 					%  before next write or read.
-					reply(P#dp.callfrom,Res)
-			end,
-			case actordb_sqlite:okornot(Res) of
-				ok ->
-					ok;
-				_ ->
-					Me = self(),
-					spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end)
-			end,
-			P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()};
-		true when element(1,P#dp.callfrom) == exec ->			
-			% Reply to caller and execute something once write complete.
-			case P#dp.callfrom of
-				{exec,From,{move,Node}} ->
-					NewActor = P#dp.actorname,
-					IsMove = true,
-					Msg = {move,actordb_conf:node_name()};
-				{exec,From,{split,MFA,Node,NewActor}} ->
-					IsMove = {split,MFA},
-					Msg = {split,MFA,Node,NewActor}
-			end,
-			reply(From,P#dp.callres),
-
-			% {split,MFA,Node,ActorFrom} ->
-			% RpcRes = bkdcore:rpc(Node,{?MODULE,CallFunc,[Cb,ActorFrom,Type,
-			% 								{dbcopy,{send_db,{actordb_conf:node_name(),Ref,{split,MFA},Actor}}}]});
-
-			NP = P#dp{callfrom = undefined, callres = undefined},
-			Ref = make_ref(),
-			
-			case bkdcore:rpc(Node,{?MODULE,call_slave,[P#dp.cbmod,NewActor,P#dp.actortype,
-								{dbcopy,{start_receive,Msg,Ref}}]}) of
-				ok ->
-					dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP);
-				_ ->
-					{reply,false,NP}
+					case P#dp.callfrom of
+						{exec,From,{move,Node}} ->
+							NewActor = P#dp.actorname,
+							IsMove = true,
+							Msg = {move,actordb_conf:node_name()};
+						{exec,From,{split,MFA,Node,OldActor,NewActor}} ->
+							IsMove = {split,MFA},
+							Msg = {split,MFA,Node,OldActor,NewActor};
+						_ ->
+							IsMove = Msg = Node = NewActor = undefined,
+							From = P#dp.callfrom
+					end,
+					reply(From,Res),
+					% If write not ok it should never reach this point anyway.
+					case actordb_sqlite:okornot(Res) of
+						ok when P#dp.transactionid /= undefined ->
+							Me = self(),
+							spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
+						ok ->
+							ok
+					end,
+					NP = P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()},
+					case Msg of
+						undefined ->
+							NP;
+						_ ->
+							Ref = make_ref(),
+							case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
+												{dbcopy,{start_receive,Msg,Ref}},[{lockinfo,wait}]]}) of
+								ok ->
+									{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
+									NP1;
+								_ ->
+									NP
+							end
+					end
 			end;
 		true ->
 			reply(P#dp.callfrom,P#dp.callres),
@@ -98,6 +104,7 @@ reply_maybe(P,N,[]) ->
 		false ->
 			P
 	end.
+
 
 
 reopen_db(#dp{mors = master} = P) ->
@@ -386,7 +393,7 @@ check_redirect(P,Copyfrom) ->
 				ok ->
 					false
 			end;
-		{split,{M,F,A},Node,ShardFrom} ->
+		{split,{M,F,A},Node,ShardFrom,_ShardNew} ->
 			case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,ShardFrom,P#dp.actortype,
 										{dbcopy,{checksplit,{M,F,A}}}]}) of
 				ok ->
@@ -515,6 +522,128 @@ count_votes([{What,Node,HisLatestTerm}|T],N) ->
 	end;
 count_votes([],N) ->
 	N.
+
+post_election_sql(P,undefined,undefined,SqlIn,Callfrom) ->
+	case iolist_size(SqlIn) of
+		0 ->
+			case P#dp.evnum of
+				0 ->
+					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
+					NP = P#dp{schemavers = SchemaVers},
+					Sql = [actordb_sqlprocutil:base_schema(SchemaVers,P#dp.actortype),
+								 Schema];
+				_ ->
+					case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
+						{_,[]} ->
+							NP = P,
+							Sql = <<>>;
+						{SchemaVers,Schema} ->
+							NP = P#dp{schemavers = SchemaVers},
+							Sql = [Schema,
+									<<"UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
+										<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
+					end
+			end,
+			{NP,Sql,Callfrom};
+		_ ->
+			{P,SqlIn,Callfrom}
+	end;
+post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,Sql,Callfrom) ->
+	case base64:decode(MSql1) of
+		<<"delete">> ->
+			Sql = delete;
+		Sql1 ->
+			Sql = [Sql,Sql1]
+	end,
+	% Put empty sql in transactioninfo. Since sqls get appended for existing transactions in write_call.
+	% This way sql does not get written twice to it.
+	ReplSql = {<<>>,P#dp.evnum+1,SchemaVers},
+	Transid = {Tid,Updid,Node},
+	NP = P#dp{transactioninfo = ReplSql, 
+				transactionid = Transid, 
+				schemavers = SchemaVers},
+	{NP,Sql,Callfrom};
+post_election_sql(P,undefined,Copyfrom,SqlIn,_) ->
+	CleanupSql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],
+	case Copyfrom of
+		{move,NewShard,MoveTo} ->
+			case lists:member(MoveTo,bkdcore:all_cluster_nodes()) of
+				% This is node where actor moved to.
+				true ->
+					Sql1 = CleanupSql,
+					Callfrom = undefined,
+					MovedToNode = P#dp.movedtonode,
+					ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
+				% This is node where actor moved from. Check if data is on the other node. If not start copy again.
+				false ->
+					Num = actordb_sqlprocutil:read_num(P),
+					true = Num /= <<>>,
+					case actordb:rpc(MoveTo,P#dp.actorname,
+							{actordb_sqlproc,try_actornum,[P#dp.actorname,P#dp.actortype,P#dp.cbmod]}) of
+						% Num matches with local num. Actor moved successfully. 
+						{_,Num} ->
+							MovedToNode = MoveTo,
+							Sql1 = delete,
+							Callfrom = undefined;
+						{error,_} ->
+							MovedToNode = P#dp.movedtonode,
+							Sql1 = CleanupSql,
+							Callfrom = undefined,
+							exit(unable_to_verify_actormove);
+						% No number - there is nothing on other node. Restart move (continued in reply_maybe).
+						{APath,ANum} when APath == ""; ANum == <<>> ->
+							Sql1 = "",
+							MovedToNode = P#dp.movedtonode,
+							Callfrom =  {exec,undefined,{move,MoveTo}};
+						% Different num. Do not do anything. 
+						{_,_} ->
+							MovedToNode = P#dp.movedtonode,
+							Sql1 = CleanupSql,
+							Callfrom = undefined
+					end
+			end,
+			ResetSql = [];
+		{split,Mfa,Node,ActorFrom,ActorTo} ->
+			{M,F,A} = Mfa,
+			MovedToNode = P#dp.movedtonode,
+			case apply(M,F,[P#dp.cbstate,check|A]) of
+				% Split returned ok on old actor (unlock call was executed successfully).
+				ok when P#dp.actorname == ActorFrom ->
+					Sql1 = CleanupSql,
+					ResetSql = [],
+					Callfrom = undefined;
+				% If split done and we are on new actor.
+				_ when ActorFrom /= P#dp.actorname ->
+					Sql1 = CleanupSql,
+					Callfrom = undefined,
+					ResetSql = actordb_sqlprocutil:do_copy_reset(P#dp.copyreset,P#dp.cbstate);
+				% It was not completed. Do it again.
+				_ when P#dp.actorname == ActorFrom ->
+					Sql1 = [],
+					ResetSql = [],
+					Callfrom = {exec,undefined,{split,Mfa,Node,ActorFrom,ActorTo}};
+				_ ->
+					Sql1 = ResetSql = [],
+					Callfrom = undefined,
+					exit(wait_for_split)
+			end
+	end,
+	case Sql1 of
+		delete ->
+			Sql = delete;
+		_ ->
+			Sql = [SqlIn,Sql1,ResetSql]
+	end,
+	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode},Sql,Callfrom};
+post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= undefined, Copyfrom /= undefined ->
+	% Combine sqls for transaction and copy.
+	case post_election_sql(P,Transaction,undefined,Sql,Callfrom) of
+		{NP1,delete,_} ->
+			{NP1,delete,Callfrom};
+		{NP1,Sql1,_} ->
+			post_election_sql(NP1,undefined,Copyfrom,Sql1,Callfrom)
+	end.
+
 
 read_num(P) ->
 	case P#dp.db of
@@ -797,6 +926,13 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 % Initial call on node that is destination of copy
 dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 	?ADBG("start receive entire db ~p",[{P#dp.actorname,P#dp.actortype}]),
+	% If move, split or copy actor to a new actor this must be called on master.
+	case is_tuple(Copyfrom) of
+		true ->
+			master = P#dp.mors;
+		_ ->
+			ok
+	end,
 	% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
 	actordb_sqlite:stop(P#dp.db),
 
@@ -846,7 +982,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 								{ok,Sql,NS} ->
 									ok
 							end,
-							WriteMsg = {undefined,Sql,undefined},
+							WriteMsg = {undefined,[Sql,<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],undefined},
 							case ok of
 								_ when WithoutLock == [], DbCopyTo == [] ->
 									actordb_sqlproc:write_call(WriteMsg,CallFrom,P#dp{locked = WithoutLock, 
@@ -969,7 +1105,7 @@ start_copyrec(P) ->
 							_ ->
 								true = length(ConnectedNodes)*2 > length(bkdcore:cluster_nodes())
 						end,
-						StartOpt = [{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},lock,nohibernate,
+						StartOpt = [{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},lock,nohibernate,{slave,true},
 													{lockinfo,dbcopy,{P#dp.dbcopyref,P#dp.cbstate,
 																	  P#dp.copyfrom,P#dp.copyreset}}],
 						[{ok,_} = rpc(Nd,{actordb_sqlproc,start_copylock,
@@ -1053,7 +1189,7 @@ callback_unlock(P) ->
 			ActorName = P#dp.actorname;
 		{move,_NewShard,Node} ->
 			ActorName = P#dp.actorname;
-		{split,_MFA,Node,ActorName} ->
+		{split,_MFA,Node,ActorName,_Myname} ->
 			ok;
 		{Node,ActorName} ->
 			ok;

@@ -84,7 +84,7 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 			case actordb_schema:iskv(Type) of
 				true ->
 				{ok,_Pid} = start(NewName,Type,false,[nohibernate,
-								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName}},
+								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
 								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}]);
 				false ->
 					{ok,Pid} = actordb_sqlproc:start([{actor,NewName},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
@@ -97,7 +97,7 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 		% Master might be this new node or if shard already running on another node, it will remain master untill restart.
 		true ->
 			{ok,_Pid} = start(NewName,Type,false,[nohibernate,
-								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName}},
+								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
 								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}])
 	end.
 
