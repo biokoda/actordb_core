@@ -88,13 +88,14 @@ reply_maybe(P,N,[]) ->
 							NP;
 						_ ->
 							Ref = make_ref(),
-							case bkdcore:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
+							case actordb:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
 												{dbcopy,{start_receive,Msg,Ref}},[{lockinfo,wait}]]}) of
 								ok ->
 									{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
 									NP1;
 								_ ->
-									NP
+									% Unable to start copy/move operation. Store it for later.
+									NP#dp{copylater = {os:timestamp(),Msg}}
 							end
 					end
 			end;
@@ -928,18 +929,15 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 	?ADBG("start receive entire db ~p",[{P#dp.actorname,P#dp.actortype}]),
 	% If move, split or copy actor to a new actor this must be called on master.
 	case is_tuple(Copyfrom) of
-		true ->
-			master = P#dp.mors;
+		true when P#dp.mors /= master ->
+			redirect_master(P);
 		_ ->
-			ok
-	end,
-	% handle_info(doqueue,P#dp{verified = false, verifypid = undefined, mors = Mors});
-	actordb_sqlite:stop(P#dp.db),
+			actordb_sqlite:stop(P#dp.db),
+			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
+			erlang:monitor(process,RecvPid),
 
-	{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
-	erlang:monitor(process,RecvPid),
-
-	{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}};
+			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}}
+	end;
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 	{FromPid,Ref} = From1,
@@ -1022,11 +1020,9 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 	case gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}) of
 		{_Walname,Offset} ->
 			?ADBG("dbsend done ",[]),
-			% case rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,<<>>,done}]}) of
 			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}));
 		{_Walname,Walsize} when Offset > Walsize ->
 			?AERR("Offset larger than walsize ~p ~p",[{ActorTo,P#dp.actortype},Offset,Walsize]),
-			% case rpc(P#dp.dbcopy_to,{?MODULE,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,{db_chunk,P#dp.dbcopyref,<<>>,done}]}) of
 			exit(copyfail);
 		{Walname,Walsize} ->
 			Readnum = min(1024*1024,Walsize-Offset),

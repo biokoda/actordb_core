@@ -268,6 +268,15 @@ handle_call(Msg,From,P) ->
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
 						(base64:encode(term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,P#dp.cbstate})))/binary,"');">>,
 			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},P);
+		{copy,{Node,OldActor,NewActor}} ->
+			Ref = make_ref(),
+			case actordb:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
+							{dbcopy,{start_receive,{Node,OldActor},Ref}},[{lockinfo,wait}]]}) of
+				ok ->
+					actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P);
+				Err ->
+					{reply, Err,P}
+			end;
 		stop ->
 			actordb_sqlite:stop(P#dp.db),
 			distreg:unreg(self()),
@@ -409,14 +418,27 @@ state_rw_call(What,From,P) ->
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum),
 					{noreply,P};
 				_ when P#dp.mors == slave, P#dp.masternode == undefined ->
+					case P#dp.callres /= undefined of
+						true ->
+							reply(P#dp.callfrom,{redirect,LeaderNode});
+						false ->
+							ok
+					end,
 					actordb_local:actor_mors(slave,LeaderNode),
-					state_rw_call(What,From,doqueue(P#dp{masternode = LeaderNode, masternodedist = bkdcore:dist_name(LeaderNode), verified = true}));
+					state_rw_call(What,From,doqueue(P#dp{masternode = LeaderNode, masternodedist = bkdcore:dist_name(LeaderNode), 
+															callfrom = undefined, callres = undefined, verified = true}));
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
+					case P#dp.callres /= undefined of
+						true ->
+							reply(P#dp.callfrom,{redirect,LeaderNode});
+						false ->
+							ok
+					end,
 					state_rw_call(What,From,
 									doqueue(actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(
 												P#dp{mors = slave, verified = true, 
-													voted_for = undefined,
+													voted_for = undefined,callfrom = undefined, callres = undefined,
 													masternode = LeaderNode,
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term}))));
@@ -877,6 +899,27 @@ handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 		noreply ->
 			{noreply,P}
 	end;
+handle_info(start_copy,P) ->
+	case P#dp.copyfrom of
+		{move,NewShard,Node} ->
+			OldActor = P#dp.actorname,
+			Msg = {move,NewShard,Node,P#dp.copyreset};
+		{split,MFA,Node,OldActor,NewActor} ->
+			Msg = {split,MFA,Node,OldActor,NewActor,P#dp.copyreset};
+		{Node,OldActor} ->
+			Msg = {copy,{Node,OldActor,P#dp.actorname}}
+	end,
+	Home = self(),
+	spawn(fun() ->
+		case actordb:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,OldActor,P#dp.actortype,Msg]}) of
+			ok ->
+				ok;
+			Err ->
+				?AERR("Unable to start copy for ~p from ~p, ~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom,Err]),
+				Home ! {stop,Err}
+		end
+	end),
+	{noreply,P};
 % handle_info({check_redirect,Db,IsMove},P) ->
 % 	case actordb_sqlprocutil:check_redirect(P,P#dp.copyfrom) of
 % 		false ->
@@ -922,24 +965,23 @@ doqueue(P) when P#dp.callfrom == undefined, P#dp.verified /= false, P#dp.transac
 					doqueue(NP);
 				% If call returns noreply, it will continue processing later.
 				{noreply,NP} ->
-					NP
+					% We may have just inserted the same call back in the queue. If we did, it
+					%  is placed in the wrong position. It should be in rear not front. So that
+					%  we continue with this call next time we try to execute queue.
+					% If we were to leave it as is, process might execute calls in a different order
+					%  than it received them.
+					{{value,Call1},CQ1} = queue:out_r(P#dp.callqueue),
+					case Call1 == Call of
+						true ->
+							NP#dp{callqueue = queue:in(Call,CQ1)};
+						false ->
+							NP
+					end
 			end
 	end;
 doqueue(P) ->
 	P.
 
-abandon_locks(P,[{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
-	case timer:now_diff(os:timestamp(),TimeOfLock) > 3000000 of
-		true ->
-			?AERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,_Node,_CpRef]),
-			abandon_locks(P,T,L);
-		false ->
-			abandon_locks(P,T,[H|L])
-	end;
-abandon_locks(P,[H|T],L) ->
-	abandon_locks(P,T,[H|L]);
-abandon_locks(_,[],L) ->
-	L.
 
 check_inactivity(NTimer,P) ->
 	Empty = queue:is_empty(P#dp.callqueue),
@@ -979,7 +1021,7 @@ check_inactivity(NTimer,P) ->
 	end,
 	case P of
 		#dp{callfrom = undefined, verified = true, transactionid = undefined,dbcopyref = undefined,
-			 dbcopy_to = [], locked = [], copyproc = undefined} when Empty, Age >= 1000, NResponsesWaiting == 0 ->
+			 dbcopy_to = [], locked = [], copyproc = undefined, copylater = undefined} when Empty, Age >= 1000, NResponsesWaiting == 0 ->
 		
 			case P#dp.movedtonode of
 				undefined ->
@@ -1037,7 +1079,48 @@ check_inactivity(NTimer,P) ->
 				slave ->
 					ok
 			end,
-			check_timer(P#dp{activity_now = Now, locked = abandon_locks(P,P#dp.locked,[])})
+			check_timer(retry_copy(P#dp{activity_now = Now, locked = abandon_locks(P,P#dp.locked,[])}))
+	end.
+
+abandon_locks(P,[{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
+	case timer:now_diff(os:timestamp(),TimeOfLock) > 3000000 of
+		true ->
+			?AERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,_Node,_CpRef]),
+			abandon_locks(P,T,L);
+		false ->
+			abandon_locks(P,T,[H|L])
+	end;
+abandon_locks(P,[H|T],L) ->
+	abandon_locks(P,T,[H|L]);
+abandon_locks(_,[],L) ->
+	L.
+
+retry_copy(#dp{copylater = undefined} = P) ->
+	P;
+retry_copy(P) ->
+	{LastTry,Copy} = P#dp.copylater,
+	case timer:node_diff(os:timestamp(),LastTry) > 1000000*3 of
+		true ->
+			case Copy of
+				{move,Node} ->
+					NewActor = P#dp.actorname,
+					IsMove = true,
+					Msg = {move,actordb_conf:node_name()};
+				{split,MFA,Node,OldActor,NewActor} ->
+					IsMove = {split,MFA},
+					Msg = {split,MFA,Node,OldActor,NewActor}
+			end,
+			Ref = make_ref(),
+			case actordb:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
+														{dbcopy,{start_receive,Msg,Ref}},[{lockinfo,wait}]]}) of
+				ok ->
+					{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},undefined,P),
+					NP1#dp{copylater = undefined};
+				_ ->
+					P#dp{copylater = {os:timestamp(),Msg}}
+			end;
+		false ->
+			P
 	end.
 
 % timer_info(PrevActivity,P) ->
@@ -1286,7 +1369,7 @@ init([_|_] = Opts) ->
 				{lockinfo,wait} ->
 					{ok,P}
 			end;
-		P ->
+		P when P#dp.copyfrom == undefined ->
 			ClusterNodes = bkdcore:cluster_nodes(),
 			?ADBG("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
 													queue:is_empty(P#dp.callqueue),ClusterNodes,
@@ -1324,7 +1407,10 @@ init([_|_] = Opts) ->
 					?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode,
 								activity_now = actordb_sqlprocutil:actor_start(P)}}
-			end
+			end;
+		P ->
+			self() ! start_copy,
+			{ok,P#dp{mors = master}}
 	end;
 init(#dp{} = P) ->
 	init(P,noreason).

@@ -62,7 +62,8 @@
   %  providing an external interface
   %  to a sqlite backed process.
   cbmod, cbstate,
-  % callfrom is who is calling, callres result of sqlite call (need to replicate before replying)
+  % callfrom is who is calling, 
+  % callres result of sqlite call (need to replicate before replying)
   callfrom,callres,
   % queue which holds gen_server:calls that can not be processed immediately because db has not 
   %  been verified, is in the middle of a 2phase commit
@@ -84,6 +85,9 @@
   % Which nodes current process is sending dbfile to.
   % [{Node,Pid,Ref,IsMove},..]
   dbcopy_to = [],
+  % If copy/move is unable to execute. Place data here and try later
+  % {TimeOfLastTry,Copy/Move data}
+  copylater,
   % If node is sending us a complete copy of db, this identifies the operation
   dbcopyref,
   % Where is master sqlproc.
@@ -91,7 +95,7 @@
   % If db has been moved completely over to a new node. All calls will be redirected to that node.
   % Once this has been set, db files will be deleted on process timeout.
   movedtonode,
-  % Will cause actor not to do any DB initialization, but will take the db from another node
+  % Used when receiving complete actor state from another node.
   copyfrom,copyreset = false,copyproc}). 
 % -define(R2P(Record), butil:rec2prop(Record#dp{writelog = byte_size(P#dp.writelog)}, record_info(fields, dp))).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
