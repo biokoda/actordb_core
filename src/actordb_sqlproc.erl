@@ -500,11 +500,13 @@ state_rw_call(What,From,P) ->
 			end;
 		% Executed on leader.
 		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum} ->
+			[_|_] = P#dp.follower_indexes,
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
 			case Follower of
-				undefined ->
+				false ->
+					?AINF("Follower not found ~p ~p ~p",[P#dp.mors,Node,P#dp.follower_indexes]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
-				_ ->			
+				_ ->
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
 											wait_for_response_since = undefined},
 					case Success of
@@ -989,9 +991,9 @@ check_inactivity(NTimer,P) ->
 								case lists:member(DN,nodes()) of
 									true ->
 										rpc:cast(DN,
-											{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+											?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 											{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-											F#flw.match_index,F#flw.match_term,true}}]}),
+											F#flw.match_index,F#flw.match_term,true}}]),
 										Count+1;
 									% Do not count nodes that are gone. If those would be counted then actors
 									%  would never go to sleep.
@@ -1236,6 +1238,7 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
 			{NP,Sql,Callfrom} = actordb_sqlprocutil:post_election_sql(P,Transaction,CopyFrom,[],undefined),
+			?AINF("Started follower indexes ~p",[P#dp.follower_indexes]),
 			case P#dp.callres of
 				undefined ->
 					case write_call({undefined,Sql,NP#dp.transactionid},Callfrom, actordb_sqlprocutil:reopen_db(NP)) of
@@ -1385,18 +1388,23 @@ init([_|_] = Opts) ->
 			case ok of
 				_ when P#dp.mors == slave ->
 					% Read evnum and evterm from wal file if it exists
-					{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
-					case file:position(F,eof) of
-						{ok,WalSize} when WalSize > 32+40+?PAGESIZE ->
-							{ok,_} = file:position(F,{cur,-(?PAGESIZE+40)}),
-							{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
-								file:read(F,24),
-							{ok,_} = file:position(F,eof),
-							{ok,P#dp{db = F, current_term = VotedForTerm, voted_for = VotedFor, 
-										evnum = Evnum, evterm = Evterm}};
-						{ok,_} ->
-							file:close(F),
-							init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor})
+					case file:open([P#dp.dbpath,"-wal"],[read,binary,raw]) of
+						{ok,F} ->
+							case file:position(F,eof) of
+								{ok,WalSize} when WalSize > 32+40+?PAGESIZE ->
+									{ok,_} = file:position(F,{cur,-(?PAGESIZE+40)}),
+									{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
+										file:read(F,24),
+									{ok,_} = file:position(F,eof),
+									file:close(F),
+									{ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, 
+												evnum = Evnum, evterm = Evterm}};
+								{ok,_} ->
+									file:close(F),
+									init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor})
+							end;
+						{error,enoent} ->
+							{ok,actordb_sqlprocutil:reopen_db(P#dp{voted_for = VotedFor,current_term = VotedForTerm})}
 					end;
 				_ when MovedToNode == undefined; RightCluster ->
 					init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor});
