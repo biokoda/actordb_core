@@ -61,7 +61,7 @@
   % actordb_sqlproc is not used directly, it always has a callback module that sits in front of it,
   %  providing an external interface
   %  to a sqlite backed process.
-  cbmod, cbstate,
+  cbmod, cbstate,cbinit = false,
   % callfrom is who is calling, 
   % callres result of sqlite call (need to replicate before replying)
   callfrom,callres,

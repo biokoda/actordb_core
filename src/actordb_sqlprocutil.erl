@@ -82,7 +82,7 @@ reply_maybe(P,N,[]) ->
 						ok ->
 							ok
 					end,
-					NP = P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()},
+					NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()}),
 					case Msg of
 						undefined ->
 							NP;
@@ -101,7 +101,7 @@ reply_maybe(P,N,[]) ->
 			end;
 		true ->
 			reply(P#dp.callfrom,P#dp.callres),
-			P#dp{callfrom = undefined, callres = undefined};
+			do_cb_init(P#dp{callfrom = undefined, callres = undefined});
 		false ->
 			P
 	end.
@@ -141,9 +141,13 @@ reopen_db(P) ->
 
 % Find first valid evnum,evterm in wal (from beginning)
 wal_from([_|_] = Path) ->
-	{ok,F} = file:open(Path,[read,binary,raw]),
-	{ok,_} = file:position(F,32),
-	wal_from(F);
+	case file:open(Path,[read,binary,raw]) of
+		{ok,F} ->
+			{ok,_} = file:position(F,32),
+			wal_from(F);
+		_ ->
+			{0,0}
+	end;
 wal_from(F) ->
 	case file:read(F,40) of
 		eof ->
@@ -452,20 +456,24 @@ do_cb_init(#dp{cbstate = undefined} = P) ->
 		_ ->
 			P#dp.cbstate
 	end;
-do_cb_init(P) ->
-	case apply(P#dp.cbmod,cb_init,[P#dp.cbstate,P#dp.evnum]) of
+do_cb_init(#dp{cbinit = false} = P) ->
+	S = P#dp.cbstate,
+	case apply(P#dp.cbmod,cb_init,[S,P#dp.evnum]) of
 		{ok,NS} ->
-			NS;
+			P#dp{cbstate = NS, cbinit = true};
 		{doread,Sql} ->
-			case apply(P#dp.cbmod,cb_init,[P#dp.cbstate,P#dp.evnum,actordb_sqlite:exec(P#dp.db,Sql,read)]) of
+			case apply(P#dp.cbmod,cb_init,[S,P#dp.evnum,actordb_sqlite:exec(P#dp.db,Sql,read)]) of
 				{ok,NS} ->
-					NS;
+					P#dp{cbstate = NS,cbinit = true};
 				ok ->
-					P#dp.cbstate
+					P#dp{cbinit = true}
 			end;
 		ok ->
-			P#dp.cbstate
-	end.
+			P#dp{cbinit = true}
+	end;
+do_cb_init(P) ->
+	P.
+
 
 actor_start(P) ->
 	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,?PAGESIZE*?DEF_CACHE_PAGES).
@@ -524,7 +532,7 @@ count_votes([{What,Node,HisLatestTerm}|T],N) ->
 count_votes([],N) ->
 	N.
 
-post_election_sql(P,undefined,undefined,SqlIn,Callfrom) ->
+post_election_sql(P,[],undefined,SqlIn,Callfrom) ->
 	case iolist_size(SqlIn) of
 		0 ->
 			case P#dp.evnum of
@@ -564,7 +572,7 @@ post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,Sql,Callfrom
 				transactionid = Transid, 
 				schemavers = SchemaVers},
 	{NP,Sql,Callfrom};
-post_election_sql(P,undefined,Copyfrom,SqlIn,_) ->
+post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 	CleanupSql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],
 	case Copyfrom of
 		{move,NewShard,MoveTo} ->
@@ -636,13 +644,13 @@ post_election_sql(P,undefined,Copyfrom,SqlIn,_) ->
 			Sql = [SqlIn,Sql1,ResetSql]
 	end,
 	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode},Sql,Callfrom};
-post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= undefined, Copyfrom /= undefined ->
+post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], Copyfrom /= undefined ->
 	% Combine sqls for transaction and copy.
 	case post_election_sql(P,Transaction,undefined,Sql,Callfrom) of
 		{NP1,delete,_} ->
 			{NP1,delete,Callfrom};
 		{NP1,Sql1,_} ->
-			post_election_sql(NP1,undefined,Copyfrom,Sql1,Callfrom)
+			post_election_sql(NP1,[],Copyfrom,Sql1,Callfrom)
 	end.
 
 

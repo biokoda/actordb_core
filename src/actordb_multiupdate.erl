@@ -103,7 +103,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% If any node goes down, actors will check back to this updater process
 				%  if transaction is set to commited or not. If commited is set and they have not commited, they will execute their sql
 				%  which they have saved locally.
-				ok = actordb_sqlproc:okornot(
+				ok = actordb_sqlite:okornot(
 						actordb_actor:write(sqlname(P),[create],<<"UPDATE transactions SET commited=1 WHERE id=",(butil:tobin(Num))/binary,
 														" AND (commited=0 OR commited=1);">>)),
 				% Inform all actors that they should commit.
@@ -127,7 +127,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.
 				% Once commited is set to 1 or -1 it is final.
-				ok = actordb_sqlproc:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(Num))),
+				ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(Num))),
 				exit(abandoned)
 		end
 	end),
@@ -160,7 +160,7 @@ handle_info({'DOWN',_Monitor,_Ref,PID,Result}, #dp{execproc = PID} = P) ->
 		abandoned ->
 			ok;
 		_ ->
-			ok = actordb_sqlproc:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(P#dp.curnum)))
+			ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(P#dp.curnum)))
 	end,
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
@@ -204,7 +204,7 @@ init(Name1) ->
 			erlang:send_after(1000,self(),timeout),
 			case actordb_actor:read(sqlname(P),[create],<<"SELECT max(id),commited FROM transactions;">>) of
 				{ok,[{columns,_},{rows,[{Id,0}]}]} ->
-					ok = actordb_sqlproc:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(Id)));
+					ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(Id)));
 				{ok,_} ->
 					ok
 			end,

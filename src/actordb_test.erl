@@ -111,7 +111,7 @@ single_stop(_) ->
 test_single(_) ->
 	[fun basic_write/0,
 		fun basic_read/0,
-		% {timeout,10,fun() -> timer:sleep(8000) end},
+		% % {timeout,10,fun() -> timer:sleep(8000) end},
 	  fun basic_read/0,
 	  fun basic_write/0,
 	  fun multiupdate_write/0,

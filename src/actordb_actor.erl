@@ -122,7 +122,7 @@ cb_init(S,EvNum) ->
 			ok;
 		_ when S#st.doreg /= undefined ->
 			ok = actordb_shard:reg_actor(S#st.doreg,S#st.name,S#st.type);
-		_ when EvNum == 0 ->
+		_ when EvNum == 1 ->
 			LocalShardForReg = actordb_shardmngr:find_local_shard(S#st.name,S#st.type),
 			?ADBG("shard for reg ~p",[LocalShardForReg]),
 			case LocalShardForReg of
