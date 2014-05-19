@@ -10,8 +10,8 @@ reply(undefined,_Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
-ae_respond(P,LeaderNode,Success,PrevEvnum) ->
-	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum},
+ae_respond(P,LeaderNode,Success,PrevEvnum,AEType) ->
+	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType},
 	bkdcore:rpc(LeaderNode,{actordb_sqlproc,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 									{state_rw,Resp}]}).
 
@@ -29,7 +29,7 @@ reply_maybe(P,N,[H|T]) ->
 reply_maybe(P,N,[]) ->
 	case N*2 > (length(P#dp.follower_indexes)+1) of
 		% If transaction active or copy/move actor, we can continue operation now because it has been safely replicated.
-		true when P#dp.transactioninfo /= undefined, P#dp.callres /= undefined; element(1,P#dp.callfrom) == exec ->
+		true when P#dp.transactioninfo /= undefined; element(1,P#dp.callfrom) == exec ->
 			% Now it's time to execute second stage of transaction.
 			% This means actually executing the transaction sql, without releasing savepoint.
 			{Sql,EvNumNew,NewVers} = P#dp.transactioninfo,
@@ -52,8 +52,9 @@ reply_maybe(P,N,[]) ->
 									 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
 									 ],
 							VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql,EvNumNew,P#dp.evterm,VarHeader);
+							Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.evterm,EvNumNew,VarHeader);
 						false ->
+							EvNumNew = P#dp.evnum,
 							Res = P#dp.callres
 					end,
 					% We can safely reply result of actual transaction sql. Even though it is not replicated completely yet.
@@ -71,16 +72,17 @@ reply_maybe(P,N,[]) ->
 							IsMove = Msg = Node = NewActor = undefined,
 							From = P#dp.callfrom
 					end,
+					?ADBG("Reply transaction=~p res=~p",[P#dp.transactioninfo,Res]),
 					reply(From,Res),
 					% If write not ok it should never reach this point anyway.
 					case actordb_sqlite:okornot(Res) of
-						ok when P#dp.transactionid /= undefined ->
+						Something when Something /= ok, P#dp.transactionid /= undefined ->
 							Me = self(),
 							spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
 						ok ->
 							ok
 					end,
-					NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()}),
+					NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, evnum = EvNumNew, schemavers = NewVers,activity = make_ref()}),
 					case Msg of
 						undefined ->
 							NP;
@@ -98,17 +100,11 @@ reply_maybe(P,N,[]) ->
 					end
 			end;
 		true ->
-			% case P#dp.callfrom of
-			% 	undefined ->
-			% 		?AINF("NO ONE TO RESPOND TO ~p ~p",[{P#dp.actorname,P#dp.actortype},queue:is_empty(P#dp.callqueue)]),
-			% 		ok;
-			% 	_ ->
-			% 		?AINF("RESPONDING ~p",[P#dp.callres])
-			% end,
+			?ADBG("Reply ok ~p ~p",[{P#dp.actorname,P#dp.actortype},{P#dp.callfrom,P#dp.callres}]),
 			reply(P#dp.callfrom,P#dp.callres),
 			do_cb_init(P#dp{callfrom = undefined, callres = undefined});
 		false ->
-			% ?AINF("NOT FINAL ~p",[{P#dp.actorname,P#dp.actortype}]),
+			% ?ADBG("Reply NOT FINAL ~p evnum ~p followers ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
 			P
 	end.
 
@@ -206,22 +202,30 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 			{ok,_} = file:position(F,{cur,-40}),
 			{F,PrevNum,PrevTerm};
 		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
-			{ok,_} = file:position(F,?PAGESIZE),
+			{ok,_NPos} = file:position(F,{cur,?PAGESIZE}),
+			?ADBG("open wal at ~p ~p",[{P#dp.actorname,P#dp.actortype}, _NPos]),
 			open_wal_at(P,Index,F,Evnum,Evterm)
 	end.
 
 
-continue_maybe(P,F) ->
+continue_maybe(P,F,AEType) ->
 	% Check if follower behind
+	?ADBG("Continue maybe ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},F#flw.node,{P#dp.evnum,F#flw.next_index}]),
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
-			{true,NP,NF} = try_wal_recover(P,F),
-			continue_maybe(NP,NF);
+			case AEType of
+				% If head, then this was successful write from log head. But follower seems to be behind, this is because
+				%  there was a new write before this response reached leader.
+				head ->
+					store_follower(P,F);
+				_ ->
+					{true,NP,NF} = try_wal_recover(P,F),
+					continue_maybe(NP,NF,AEType)
+			end;
 		true ->
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 						{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-									F#flw.match_index,F#flw.match_term,false}}]}),
-			?AINF("ae start response ~p",[StartRes]),
+									F#flw.match_index,F#flw.match_term,recover}}]}),
 			case StartRes of
 				false ->
 					% to be continued in appendentries_response
@@ -250,7 +254,7 @@ send_wal(P,#flw{file = File} = F) ->
 	case Header of
 		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,_/binary>> when Evnum == F#flw.next_index ->
 			WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-						{state_rw,{appendentries_wal,P#dp.current_term,Header,Page}}]}),
+						{state_rw,{appendentries_wal,P#dp.current_term,Header,Page,recover}}]}),
 			case WalRes of
 				ok when Commit == 0 ->
 					send_wal(P,F);

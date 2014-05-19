@@ -244,7 +244,7 @@ kv_readwrite() ->
 	?debugFmt("Increment first 5",[]),
 	?assertMatch(ok,exec(["actor counters(id1,id2,id3,id4,id5);",
 					"UPDATE actors SET val = val+1 WHERE id='{{curactor}}';"])),
-	?debugFmt("Select first 5 again",[]),
+	?debugFmt("Select first 5 again ~p",[exec(ReadSome)]),
 	?assertMatch({ok,[{columns,_},
 						{rows,[{<<"id5">>,_,6,<<"id5">>},
 						  {<<"id4">>,_,5,<<"id4">>},
@@ -324,9 +324,9 @@ cluster_stop(_) ->
 	stop_slaves([1,2,3]),
 	ok.
 test_cluster(_) ->
-	[{timeout,15,fun basic_write/0},
-	  % fun basic_read/0,
-	  % fun kv_readwrite/0,
+	[fun basic_write/0,
+	  fun basic_read/0,
+	  fun kv_readwrite/0,
 	  % fun basic_write/0,
 	  % fun multiupdate_write/0,
 	  % fun multiupdate_read/0,

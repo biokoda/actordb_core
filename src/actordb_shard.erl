@@ -294,7 +294,7 @@ whereis(ShardName,Type1) ->
 % custom write callbacks
 % 
 cb_reg_actor(P,ActorName) ->
-	?AINF("cb_reg_actor ~p ~p ~p ~p ~p",[P#state.name,P#state.type,ActorName,P#state.stealingnow,P#state.stealingfrom]),
+	?ADBG("cb_reg_actor ~p ~p ~p ~p ~p",[P#state.name,P#state.type,ActorName,P#state.stealingnow,P#state.stealingfrom]),
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
 	NM = at(P#state.idtype,ActorName),
 	Sql = [<<"INSERT OR REPLACE INTO actors VALUES (">>,NM,$,,(butil:tobin(Hash)), <<");">>],

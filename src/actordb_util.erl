@@ -41,14 +41,14 @@ tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 		_ ->
 			{Term,Leader,PrevEvnum,PrevTerm} = binary_to_term(VarPrefix),
 			Res = actordb_sqlproc:call_slave(Cb,Actor,Type,
-					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,false}}),
+					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head}}),
 			put(proceed,Res)
 	end,
 	% When header arrives, we check parameters if all ok.
 	% If not, ignore wal pages untill next header.
 	case get(proceed) of
 		ok ->
-			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page}});
+			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head}});
 		_ ->
 			ok
 	end,
