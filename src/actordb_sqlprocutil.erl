@@ -41,6 +41,7 @@ reply_maybe(P,N,[]) ->
 				_ ->
 					case P#dp.transactioninfo /= undefined of
 						true ->
+							?AINF("finishing transaction ~p evnum ~p followers ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
 							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
 												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
@@ -78,12 +79,11 @@ reply_maybe(P,N,[]) ->
 					case actordb_sqlite:okornot(Res) of
 						Something when Something /= ok, P#dp.transactionid /= undefined ->
 							Me = self(),
-							EvNumNew2 = P#dp.evnum,
 							spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
 						_ ->
-							EvNumNew2 = EvNumNew
+							ok
 					end,
-					NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, evnum = EvNumNew2, schemavers = NewVers,activity = make_ref()}),
+					NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()}),
 					case Msg of
 						undefined ->
 							NP;
