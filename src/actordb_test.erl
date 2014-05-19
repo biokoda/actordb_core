@@ -33,8 +33,8 @@ all_test_() ->
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
 		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
-		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
-		{setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
+		{setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
+		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
@@ -295,10 +295,10 @@ test_onetwo(_) ->
 	[fun basic_write/0,
 	  fun basic_read/0,
 	  {timeout,60,fun test_add_second/0},
-	  {timeout,30,fun basic_write/0},
-	  fun kv_readwrite/0,
-	  fun multiupdate_write/0,
-	  fun multiupdate_read/0
+	  {timeout,30,fun basic_write/0}
+	  % fun kv_readwrite/0,
+	  % fun multiupdate_write/0,
+	  % fun multiupdate_read/0
 	  	].
 test_add_second() ->
 	create_allgroups([[1,2]]),
@@ -325,12 +325,12 @@ cluster_stop(_) ->
 	ok.
 test_cluster(_) ->
 	[
-	  % fun basic_write/0,
-	  % fun basic_read/0,
-	  % fun kv_readwrite/0,
-	  % fun basic_write/0,
+	  fun basic_write/0,
+	  fun basic_read/0,
+	  fun kv_readwrite/0,
+	  fun basic_write/0,
 	  fun multiupdate_write/0,
-	  % fun multiupdate_read/0,
+	  fun multiupdate_read/0,
 	  fun() -> test_print_end([1,2,3]) end].
 
 
@@ -634,7 +634,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->

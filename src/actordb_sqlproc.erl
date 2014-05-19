@@ -270,7 +270,7 @@ handle_call(Msg,From,P) ->
 			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},P);
 		{copy,{Node,OldActor,NewActor}} ->
 			Ref = make_ref(),
-			case actordb:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
+			case actordb:rpc(Node,NewActor,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
 							{dbcopy,{start_receive,{Node,OldActor},Ref}},[{lockinfo,wait}]]}) of
 				ok ->
 					actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P);
@@ -511,13 +511,12 @@ state_rw_call(What,From,P) ->
 		% Executed on leader.
 		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum,AEType} ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
-			?ADBG("AE response ~p, success=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",[{P#dp.actorname,P#dp.actortype},Success,
-					{Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
-			false = is_atom(Follower),
 			case Follower of
 				false ->
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
+					?ADBG("AE response ~p, success=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",[{P#dp.actorname,P#dp.actortype},Success,
+						{Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
 											wait_for_response_since = undefined}, 
 					case Success of
@@ -737,15 +736,9 @@ write_call(Sql,undefined,From,NewVers,P) ->
 			reply(From,ok),
 			{stop,normal,P};
 		_ ->
-			case actordb_sqlprocutil:actornum(P) of
-				<<>> ->
-					ReplSql = actordb_sqlprocutil:semicolon(Sql);
-				NumSql ->
-					ReplSql = [actordb_sqlprocutil:semicolon(Sql),NumSql]
-			end,
 			ComplSql = 
 					[<<"$SAVEPOINT 'adb';">>,
-					 ReplSql,
+					 actordb_sqlprocutil:semicolon(Sql),
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
 					 <<"$RELEASE SAVEPOINT 'adb';">>
@@ -794,7 +787,7 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 						_ ->
 							ComplSql = 
 								[<<"$SAVEPOINT 'adb';">>,
-								 actordb_sqlprocutil:semicolon(Sql1),actordb_sqlprocutil:actornum(P),
+								 actordb_sqlprocutil:semicolon(Sql1),
 								 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
 								 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
 								 ],
@@ -943,7 +936,7 @@ handle_info(start_copy,P) ->
 	end,
 	Home = self(),
 	spawn(fun() ->
-		case actordb:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,OldActor,P#dp.actortype,Msg]}) of
+		case actordb:rpc(Node,OldActor,{?MODULE,call_master,[P#dp.cbmod,OldActor,P#dp.actortype,Msg]}) of
 			ok ->
 				ok;
 			Err ->
@@ -1121,7 +1114,7 @@ retry_copy(P) ->
 					Msg = {split,MFA,Node,OldActor,NewActor}
 			end,
 			Ref = make_ref(),
-			case actordb:rpc(Node,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
+			case actordb:rpc(Node,NewActor,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
 														{dbcopy,{start_receive,Msg,Ref}},[{lockinfo,wait}]]}) of
 				ok ->
 					{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},undefined,P),

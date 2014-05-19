@@ -32,16 +32,14 @@ reply_maybe(P,N,[]) ->
 		true when P#dp.transactioninfo /= undefined; element(1,P#dp.callfrom) == exec ->
 			% Now it's time to execute second stage of transaction.
 			% This means actually executing the transaction sql, without releasing savepoint.
-			{Sql,EvNumNew,NewVers} = P#dp.transactioninfo,
-			{Tid,Updaterid,_} = P#dp.transactionid,
-			case Sql of
-				<<"delete">> ->
-					reply(P#dp.callfrom,ok),
-					P#dp{callfrom = undefined, callres = undefined, activity = make_ref()};
-				_ ->
-					case P#dp.transactioninfo /= undefined of
-						true ->
-							?AINF("finishing transaction ~p evnum ~p followers ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
+			case P#dp.transactioninfo /= undefined of
+				true ->
+					{Sql,EvNumNew,NewVers} = P#dp.transactioninfo,
+					{Tid,Updaterid,_} = P#dp.transactionid,
+					case Sql of
+						<<"delete">> ->
+							Res = ok;
+						_ ->
 							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
 												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
@@ -53,51 +51,51 @@ reply_maybe(P,N,[]) ->
 									 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
 									 ],
 							VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.evterm,EvNumNew,VarHeader);
-						false ->
-							EvNumNew = P#dp.evnum,
-							Res = P#dp.callres
-					end,
-					% We can safely reply result of actual transaction sql. Even though it is not replicated completely yet.
-					% Because write to __transactions is safely replicated, transaction is guaranteed to be executed
-					%  before next write or read.
-					case P#dp.callfrom of
-						{exec,From,{move,Node}} ->
-							NewActor = P#dp.actorname,
-							IsMove = true,
-							Msg = {move,actordb_conf:node_name()};
-						{exec,From,{split,MFA,Node,OldActor,NewActor}} ->
-							IsMove = {split,MFA},
-							Msg = {split,MFA,Node,OldActor,NewActor};
+							Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.evterm,EvNumNew,VarHeader)
+					end;
+				false ->
+					NewVers = P#dp.schemavers,
+					Res = P#dp.callres
+			end,
+			% We can safely reply result of actual transaction sql. Even though it is not replicated completely yet.
+			% Because write to __transactions is safely replicated, transaction is guaranteed to be executed
+			%  before next write or read.
+			case P#dp.callfrom of
+				{exec,From,{move,Node}} ->
+					NewActor = P#dp.actorname,
+					IsMove = true,
+					Msg = {move,actordb_conf:node_name()};
+				{exec,From,{split,MFA,Node,OldActor,NewActor}} ->
+					IsMove = {split,MFA},
+					Msg = {split,MFA,Node,OldActor,NewActor};
+				_ ->
+					IsMove = Msg = Node = NewActor = undefined,
+					From = P#dp.callfrom
+			end,
+			?ADBG("Reply transaction=~p res=~p",[P#dp.transactioninfo,Res]),
+			reply(From,Res),
+			% If write not ok it should never reach this point anyway.
+			case actordb_sqlite:okornot(Res) of
+				Something when Something /= ok, P#dp.transactionid /= undefined ->
+					Me = self(),
+					spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
+				_ ->
+					ok
+			end,
+			NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()}),
+			case Msg of
+				undefined ->
+					NP;
+				_ ->
+					Ref = make_ref(),
+					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
+										{dbcopy,{start_receive,Msg,Ref}},[{lockinfo,wait}]]}) of
+						ok ->
+							{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
+							NP1;
 						_ ->
-							IsMove = Msg = Node = NewActor = undefined,
-							From = P#dp.callfrom
-					end,
-					?ADBG("Reply transaction=~p res=~p",[P#dp.transactioninfo,Res]),
-					reply(From,Res),
-					% If write not ok it should never reach this point anyway.
-					case actordb_sqlite:okornot(Res) of
-						Something when Something /= ok, P#dp.transactionid /= undefined ->
-							Me = self(),
-							spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
-						_ ->
-							ok
-					end,
-					NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()}),
-					case Msg of
-						undefined ->
-							NP;
-						_ ->
-							Ref = make_ref(),
-							case actordb:rpc(Node,{actordb_sqlproc,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
-												{dbcopy,{start_receive,Msg,Ref}},[{lockinfo,wait}]]}) of
-								ok ->
-									{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
-									NP1;
-								_ ->
-									% Unable to start copy/move operation. Store it for later.
-									NP#dp{copylater = {os:timestamp(),Msg}}
-							end
+							% Unable to start copy/move operation. Store it for later.
+							NP#dp{copylater = {os:timestamp(),Msg}}
 					end
 			end;
 		true ->
@@ -105,7 +103,8 @@ reply_maybe(P,N,[]) ->
 			reply(P#dp.callfrom,P#dp.callres),
 			do_cb_init(P#dp{callfrom = undefined, callres = undefined});
 		false ->
-			% ?ADBG("Reply NOT FINAL ~p evnum ~p followers ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
+			% ?ADBG("Reply NOT FINAL ~p evnum ~p followers ~p",
+				% [{P#dp.actorname,P#dp.actortype},P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
 			P
 	end.
 
@@ -503,6 +502,7 @@ count_votes([{What,Node,HisLatestTerm}|T],N) ->
 count_votes([],N) ->
 	N.
 
+
 post_election_sql(P,[],undefined,SqlIn,Callfrom) ->
 	case iolist_size(SqlIn) of
 		0 ->
@@ -510,8 +510,13 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom) ->
 				0 ->
 					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
 					NP = P#dp{schemavers = SchemaVers},
+					% Set on firt write and not changed after. This is used to prevent a case of an actor
+					% getting deleted, but later created new. A server that was offline during delete missed
+					% the delete call and relies on actordb_events.
+					ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
 					Sql = [actordb_sqlprocutil:base_schema(SchemaVers,P#dp.actortype),
-								 Schema];
+								 Schema,
+							<<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>];
 				_ ->
 					case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
 						{_,[]} ->
@@ -733,14 +738,6 @@ semicolon(<<_/binary>> = Sql) ->
 	end;
 semicolon(S) ->
 	S.
-% Set on firt write and not changed after. This is used to prevent a case of an actor
-% getting deleted, but later created new. A server that was offline during delete missed
-% the delete call and relies on actordb_events.
-actornum(#dp{evnum = 0} = P) ->
-	ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
-	[<<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>];
-actornum(_) ->
-	<<>>.
 
 has_schema_updated(P,Sql) ->
 	Schema = actordb_schema:num(),
@@ -877,7 +874,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 									dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
 							{reply,{ok,Ref},P#dp{db = Db,
 												dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
-												activity = P#dp.activity + 1}};
+												activity = make_ref()}};
 						{_,_Pid,Ref,_} ->
 							?DBG("senddb already exists with same ref!"),
 							{reply,{ok,Ref},P}
