@@ -324,7 +324,7 @@ cluster_stop(_) ->
 	stop_slaves([1,2,3]),
 	ok.
 test_cluster(_) ->
-	[fun basic_write/0,
+	[{timeout,15,fun basic_write/0},
 	  % fun basic_read/0,
 	  % fun kv_readwrite/0,
 	  % fun basic_write/0,

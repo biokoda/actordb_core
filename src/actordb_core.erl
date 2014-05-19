@@ -52,7 +52,8 @@ wait_distreg_procs() ->
 start_ready() ->
 	% Process any events this server might have missed if it was down.
 	% Once processed successfully initializiation is done.
-	case actordb_events:start_ready() of
+	% case actordb_events:start_ready() of
+	case ok of
 		ok ->
 			application:set_env(actordb_core,isready,true),
 			case application:get_env(actordb_core,mysql_protocol) of

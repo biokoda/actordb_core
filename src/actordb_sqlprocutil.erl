@@ -17,8 +17,6 @@ ae_respond(P,LeaderNode,Success,PrevEvnum) ->
 
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	P;
-reply_maybe(#dp{callfrom = undefined, transactioninfo = undefined} = P) ->
-	P#dp{callres = undefined};
 reply_maybe(P) ->
 	reply_maybe(P,1,P#dp.follower_indexes).
 reply_maybe(P,N,[H|T]) ->
@@ -100,9 +98,17 @@ reply_maybe(P,N,[]) ->
 					end
 			end;
 		true ->
+			% case P#dp.callfrom of
+			% 	undefined ->
+			% 		?AINF("NO ONE TO RESPOND TO ~p ~p",[{P#dp.actorname,P#dp.actortype},queue:is_empty(P#dp.callqueue)]),
+			% 		ok;
+			% 	_ ->
+			% 		?AINF("RESPONDING ~p",[P#dp.callres])
+			% end,
 			reply(P#dp.callfrom,P#dp.callres),
 			do_cb_init(P#dp{callfrom = undefined, callres = undefined});
 		false ->
+			% ?AINF("NOT FINAL ~p",[{P#dp.actorname,P#dp.actortype}]),
 			P
 	end.
 
@@ -191,7 +197,7 @@ try_wal_recover(P,F) ->
 	{Res,store_follower(P,NF),NF}.
 
 open_wal_at(P,Index) ->
-	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,write,binary,raw]),
+	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
 	{ok,_} = file:position(F,32),
 	open_wal_at(P,Index,F,undefined,undefined).
 open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
@@ -215,6 +221,7 @@ continue_maybe(P,F) ->
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 						{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 									F#flw.match_index,F#flw.match_term,false}}]}),
+			?AINF("ae start response ~p",[StartRes]),
 			case StartRes of
 				false ->
 					% to be continued in appendentries_response
@@ -227,7 +234,7 @@ continue_maybe(P,F) ->
 			end;
 		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
-			P;
+			store_follower(P,F);
 		false ->
 			file:close(F#flw.file),
 			store_follower(P,F#flw{file = undefined})

@@ -412,8 +412,10 @@ state_rw_call(What,From,P) ->
 		% AE is split into multiple calls (because wal is sent page by page as it is written)
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,IsEmpty} ->
+			?AINF("AE start ~p ~p",[{P#dp.actorname,P#dp.actortype},{PrevEvnum,PrevTerm}]),
 			case ok of
 				_ when Term < P#dp.current_term ->
+					?AERR("AE start, input term too old ~p ~p",[{P#dp.actorname,P#dp.actortype,IsEmpty},{Term,P#dp.current_term}]),
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum),
 					% Some node thinks its master and sent us appendentries start.
@@ -426,6 +428,7 @@ state_rw_call(What,From,P) ->
 							{noreply,P}
 					end;
 				_ when P#dp.mors == slave, P#dp.masternode == undefined ->
+					?ADBG("AE start, slave now knows leader ~p ~p",[{P#dp.actorname,P#dp.actortype,IsEmpty},LeaderNode]),
 					case P#dp.callres /= undefined of
 						true ->
 							reply(P#dp.callfrom,{redirect,LeaderNode});
@@ -437,6 +440,7 @@ state_rw_call(What,From,P) ->
 															callfrom = undefined, callres = undefined, verified = true}));
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
+					?AERR("AE start, stepping down as leader ~p ~p",[{P#dp.actorname,P#dp.actortype,IsEmpty},{Term,P#dp.current_term}]),
 					case P#dp.callres /= undefined of
 						true ->
 							reply(P#dp.callfrom,{redirect,LeaderNode});
@@ -451,6 +455,8 @@ state_rw_call(What,From,P) ->
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term}))));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
+					?AERR("AE start, evnum evterm do not match ~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
+								[{P#dp.actorname,P#dp.actortype,IsEmpty},{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
 					case P#dp.evnum > PrevEvnum andalso PrevEvnum > 0 of
 						% Node is conflicted, delete last entry
 						true when IsEmpty == false ->
@@ -464,16 +470,25 @@ state_rw_call(What,From,P) ->
 					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum),
 					{noreply,NP};
 				_ when Term > P#dp.current_term ->
+					?AERR("AE start, out of date term ~p ~p",[{P#dp.actorname,P#dp.actortype,IsEmpty},{Term,P#dp.current_term}]),
 					state_rw_call(What,From,actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
 												 masternode = LeaderNode,verified = true,
 												 masternodedist = bkdcore:dist_name(LeaderNode)}));
 				_ when IsEmpty ->
+					?ADBG("AE start, ok for empty ~p",[{P#dp.actorname,P#dp.actortype,IsEmpty}]),
 					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum),
 					{noreply,P#dp{verified = true}};
 				% Ok, now it will start receiving wal pages
 				_ ->
+					case PrevEvnum > 0 of
+						true ->
+							?AINF("AE start, ok ~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
+								[{P#dp.actorname,P#dp.actortype,IsEmpty},{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]);
+						_ ->
+							ok
+					end,
 					{reply,ok,P#dp{verified = true}}
 			end;
 		% Executed on follower.
@@ -484,27 +499,40 @@ state_rw_call(What,From,P) ->
 					actordb_sqlprocutil:append_wal(P,Header,Body),
 					case Header of
 						% dbsize == 0, not last page
-						<<_:32,0:32,_/binary>> ->
+						<<_:32,0:32,Evnum:64/unsigned-big,_/binary>> ->
+							case Evnum > 1 of
+								true ->
+									?AINF("AE WAL received not final ~p ~p",[{P#dp.actorname,P#dp.actortype},Evnum]);
+								_ ->
+									ok
+							end,
 							{reply,ok,P};
 						% last page
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
+							case Evnum > 1 of
+								true ->
+									?AINF("AE WAL received FINAL ~p ~p",[{P#dp.actorname,P#dp.actortype},Evnum]);
+								_ ->
+									ok
+							end,
 							NP = P#dp{evnum = Evnum, evterm = Evterm},
 							reply(From,ok),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum),
 							{noreply,NP}
 					end;
 				_ ->
+					?AERR("AE WAL received wrong term ~p ~p",[{P#dp.actorname,P#dp.actortype},{Term,P#dp.current_term}]),
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false),
 					{noreply,P}
 			end;
 		% Executed on leader.
 		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum} ->
-			[_|_] = P#dp.follower_indexes,
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
+			?AINF("AE response ~p, success=~p, {PrevEvnum,EvNum,Match}=~p",[{P#dp.actorname,P#dp.actortype},Success,
+					{Follower#flw.match_index,EvNum,MatchEvnum}]),
 			case Follower of
 				false ->
-					?AINF("Follower not found ~p ~p ~p",[P#dp.mors,Node,P#dp.follower_indexes]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
@@ -514,7 +542,9 @@ state_rw_call(What,From,P) ->
 						_ when P#dp.mors == slave ->
 							{reply,ok,P};
 						true ->
-							{reply,ok,doqueue(actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw)))};
+							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw)),
+							?AINF("Continue... ~p ~p",[{P#dp.actorname,P#dp.actortype},queue:is_empty(P#dp.callqueue)]),
+							{reply,ok,doqueue(NP)};
 						% What we thought was follower is ahead of us and we need to step down
 						false when P#dp.current_term < CurrentTerm ->
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
@@ -675,7 +705,7 @@ read_call(Msg,From,P) ->
 
 
 write_call({MFA,Sql,Transaction},From,P) ->
-	?ADBG("writecall ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},MFA,Sql,Transaction]),	
+	?ADBG("writecall ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},MFA,Sql,Transaction]),
 	case MFA of
 		undefined ->
 			case actordb_sqlprocutil:has_schema_updated(P,Sql) of
@@ -739,8 +769,7 @@ write_call(Sql,undefined,From,NewVers,P) ->
 			% We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only 
 			%  when election is won and this is first write after it.
 			VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
-			Res = actordb_sqlite:exec(P#dp.db,ComplSql,EvNum,P#dp.current_term,VarHeader),
-			?DBG("Replicating write ~p",[Sql]),
+			Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader),
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?DBG("Write result ~p",[Res]),
@@ -834,7 +863,7 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
 			VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
-			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,EvNum,P#dp.current_term,VarHeader)),
+			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader)),
 			Ref = make_ref(),
 			{noreply,P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
 						  transactioninfo = {Sql,EvNum+1,NewVers},
@@ -947,7 +976,7 @@ doqueue(P) when P#dp.callfrom == undefined, P#dp.verified /= false, P#dp.transac
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
 			{From,Msg} = Call,
-			?DBG("doqueue ~p",[Call]),
+			?DBG("doqueue ~p ~p",[{P#dp.actorname,P#dp.actortype},Call]),
 			case handle_call(Msg,From,P#dp{callqueue = CQ}) of
 				{reply,Res,NP} ->
 					reply(From,Res),
@@ -1238,7 +1267,6 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
 			{NP,Sql,Callfrom} = actordb_sqlprocutil:post_election_sql(P,Transaction,CopyFrom,[],undefined),
-			?AINF("Started follower indexes ~p",[P#dp.follower_indexes]),
 			case P#dp.callres of
 				undefined ->
 					case write_call({undefined,Sql,NP#dp.transactionid},Callfrom, actordb_sqlprocutil:reopen_db(NP)) of
