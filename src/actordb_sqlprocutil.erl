@@ -78,11 +78,12 @@ reply_maybe(P,N,[]) ->
 					case actordb_sqlite:okornot(Res) of
 						Something when Something /= ok, P#dp.transactionid /= undefined ->
 							Me = self(),
+							EvNumNew2 = P#dp.evnum,
 							spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
-						ok ->
-							ok
+						_ ->
+							EvNumNew2 = EvNumNew
 					end,
-					NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, evnum = EvNumNew, schemavers = NewVers,activity = make_ref()}),
+					NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, evnum = EvNumNew2, schemavers = NewVers,activity = make_ref()}),
 					case Msg of
 						undefined ->
 							NP;
