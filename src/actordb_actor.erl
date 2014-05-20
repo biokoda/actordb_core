@@ -132,7 +132,10 @@ cb_init(S,EvNum) ->
 					{Shard,_,Node} = actordb_shardmngr:find_global_shard(S#st.name),
 					actordb:rpc(Node,Shard,{actordb_shard,reg_actor,[Shard,S#st.name,S#st.type]});
 				Shard ->
-					ok = actordb_shard:reg_actor(Shard,S#st.name,S#st.type)
+					Before = os:timestamp(),
+					ok = actordb_shard:reg_actor(Shard,S#st.name,S#st.type),
+					After = os:timestamp(),
+					?AINF("Time to reg ~p",[timer:now_diff(After,Before)])
 			end;
 		_ ->
 			ok

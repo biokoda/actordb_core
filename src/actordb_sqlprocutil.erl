@@ -67,7 +67,8 @@ reply_maybe(P,N,[]) ->
 					Msg = {move,actordb_conf:node_name()};
 				{exec,From,{split,MFA,Node,OldActor,NewActor}} ->
 					IsMove = {split,MFA},
-					Msg = {split,MFA,Node,OldActor,NewActor};
+					% Change node name back to this node, so that copy knows where split is from.
+					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor};
 				_ ->
 					IsMove = Msg = Node = NewActor = undefined,
 					From = P#dp.callfrom
@@ -169,6 +170,7 @@ try_wal_recover(P,F) when F#flw.file /= undefined ->
 	file:close(F#flw.file),
 	try_wal_recover(P,F#flw{file = undefined});
 try_wal_recover(P,F) ->
+	?AINF("Try_wal_recover ~p for=~p",[{P#dp.actorname,P#dp.actortype},F#flw.node]),
 	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
 	% Compare match_index not next_index because we need to send prev term as well
 	case F#flw.match_index >= WalEvfrom of
@@ -198,9 +200,14 @@ open_wal_at(P,Index) ->
 	open_wal_at(P,Index,F,undefined,undefined).
 open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 	case file:read(F,40) of
-		{ok,<<_:32,_:32,Evnum:64/big-unsigned,_Evterm:64/big-unsigned,_/binary>>} when Index == Evnum ->
+		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} when Index == Evnum ->
 			{ok,_} = file:position(F,{cur,-40}),
-			{F,PrevNum,PrevTerm};
+			case PrevNum == undefined of
+				true ->
+					{F,Evnum,Evterm};
+				false ->
+					{F,PrevNum,PrevTerm}
+			end;
 		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
 			{ok,_NPos} = file:position(F,{cur,?PAGESIZE}),
 			?ADBG("open wal at ~p ~p",[{P#dp.actorname,P#dp.actortype}, _NPos]),
@@ -210,7 +217,7 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 
 continue_maybe(P,F,AEType) ->
 	% Check if follower behind
-	?ADBG("Continue maybe ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},F#flw.node,{P#dp.evnum,F#flw.next_index}]),
+	?AINF("Continue maybe ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},F#flw.node,{P#dp.evnum,F#flw.next_index}]),
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
 			case AEType of
@@ -475,6 +482,7 @@ start_election(P) ->
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,actordb_sqlproc,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]),
+	?AINF("Election for ~p, results ~p",[{P#dp.actorname,P#dp.actortype},Results]),
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of
 		{outofdate,Node,_NewerTerm} ->
@@ -860,34 +868,21 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 	%  Which means the sqlite file can be read from safely.
 	case P#dp.verified of
 		true ->
-			case file:read_file_info(P#dp.dbpath) of
-				{ok,I} when I#file_info.size > 1024*1024 orelse P#dp.dbcopy_to /= [] orelse 
-								IsMove /= false  ->
-					?ADBG("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
-							[{P#dp.actorname,P#dp.actortype},ActornameToCopyto,
-													{Node,Ref,IsMove,I#file_info.size},P#dp.dbcopy_to]),
-					Me = self(),
-					case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
-						false ->
-							Db = P#dp.db,
-							{Pid,_} = spawn_monitor(fun() -> 
-									dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
-							{reply,{ok,Ref},P#dp{db = Db,
-												dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
-												activity = make_ref()}};
-						{_,_Pid,Ref,_} ->
-							?DBG("senddb already exists with same ref!"),
-							{reply,{ok,Ref},P}
-					end;
-				{ok,_I} ->
-					{ok,Bin} = file:read_file(P#dp.dbpath),
-					{reply,{ok,Bin},P};
-				{error,enoent} ->
-					?AINF("enoent during senddb to ~p ~p",[Node,?R2P(P)]),
-					reply(CallFrom,{error,enoent}),
-					{stop,normal,P};
-				Err ->
-					{reply,Err,P}
+			?ADBG("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
+					[{P#dp.actorname,P#dp.actortype},ActornameToCopyto,
+											{Node,Ref,IsMove},P#dp.dbcopy_to]),
+			Me = self(),
+			case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
+				false ->
+					Db = P#dp.db,
+					{Pid,_} = spawn_monitor(fun() -> 
+							dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
+					{reply,{ok,Ref},P#dp{db = Db,
+										dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
+										activity = make_ref()}};
+				{_,_Pid,Ref,_} ->
+					?DBG("senddb already exists with same ref!"),
+					{reply,{ok,Ref},P}
 			end;
 		_ when P#dp.masternode /= undefined ->
 			case P#dp.masternode == actordb_conf:node_name() of

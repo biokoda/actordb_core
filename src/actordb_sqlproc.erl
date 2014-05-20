@@ -210,8 +210,15 @@ start(Opts) ->
 			Err
 	end.
 
-stop(Pid) ->
-	gen_server:call(Pid, stop).
+stop(Pid) when is_pid(Pid) ->
+	gen_server:call(Pid, stop);
+stop(Name) ->
+	case distreg:whereis(Name) of
+		undefined ->
+			ok;
+		Pid ->
+			stop(Pid)
+	end.
 
 print_info(Pid) ->
 	gen_server:cast(Pid,print_info).
@@ -412,7 +419,7 @@ state_rw_call(What,From,P) ->
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType} ->
-			?ADBG("AE start ~p ~p",[{P#dp.actorname,P#dp.actortype},{PrevEvnum,PrevTerm}]),
+			?AINF("AE start ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{PrevEvnum,PrevTerm}]),
 			case ok of
 				_ when Term < P#dp.current_term ->
 					?AERR("AE start, input term too old ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
@@ -436,8 +443,8 @@ state_rw_call(What,From,P) ->
 							ok
 					end,
 					actordb_local:actor_mors(slave,LeaderNode),
-					state_rw_call(What,From,doqueue(P#dp{masternode = LeaderNode, masternodedist = bkdcore:dist_name(LeaderNode), 
-															callfrom = undefined, callres = undefined, verified = true}));
+					state_rw_call(What,From,doqueue(actordb_sqlprocutil:reopen_db(P#dp{masternode = LeaderNode, masternodedist = bkdcore:dist_name(LeaderNode), 
+															callfrom = undefined, callres = undefined, verified = true})));
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
 					?AERR("AE start, stepping down as leader ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
@@ -515,7 +522,7 @@ state_rw_call(What,From,P) ->
 				false ->
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
-					?ADBG("AE response ~p, success=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",[{P#dp.actorname,P#dp.actortype},Success,
+					?AINF("AE response ~p, success=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",[{P#dp.actorname,P#dp.actortype},Success,
 						{Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
 											wait_for_response_since = undefined}, 
@@ -543,6 +550,7 @@ state_rw_call(What,From,P) ->
 								false ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
 										{false,NP,NF} ->
+											?AINF("Can not recover, sending entire db ~p",[{P#dp.actorname,P#dp.actortype}]),
 											% We can not recover from wal. Send entire db.
 											Ref = make_ref(),
 											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
@@ -553,13 +561,16 @@ state_rw_call(What,From,P) ->
 													{reply,false,P}
 											end;
 										{true,NP,NF} ->
+											?AINF("Recovering from wal ~p",[{P#dp.actorname,P#dp.actortype}]),
+											reply(From,ok),
 											% we can recover from wal
-											{reply,ok,actordb_sqlprocutil:continue_maybe(NP,NF,recover)}
+											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,recover)}
 									end
 							end
 					end
 			end;
 		{request_vote,Candidate,NewTerm,LastTerm,LastEvnum} ->
+			?AINF("Request vote on=~p for=~p",[{P#dp.actorname,P#dp.actortype},Candidate]),
 			TrueResp = fun() -> {reply, {true,actordb_conf:node_name(),NewTerm}, 
 							actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm})} end,
 			Uptodate = 
@@ -603,6 +614,7 @@ state_rw_call(What,From,P) ->
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
 		doelection ->
+			?AINF("Doelection ~p ~p",[{P#dp.actorname,P#dp.actortype},{P#dp.verified,P#dp.electionpid}]),
 			reply(From,ok),
 			case P#dp.verified == false andalso P#dp.electionpid == undefined of
 				true ->
@@ -925,12 +937,14 @@ handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 			{noreply,P}
 	end;
 handle_info(start_copy,P) ->
+	?AINF("Start copy ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom]),
 	case P#dp.copyfrom of
 		{move,NewShard,Node} ->
 			OldActor = P#dp.actorname,
-			Msg = {move,NewShard,Node,P#dp.copyreset};
+			Msg = {move,NewShard,actordb_conf:node_name(),P#dp.copyreset};
 		{split,MFA,Node,OldActor,NewActor} ->
-			Msg = {split,MFA,Node,OldActor,NewActor,P#dp.copyreset};
+			% Change node to this node, so that other actor knows where to send db.
+			Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor,P#dp.copyreset};
 		{Node,OldActor} ->
 			Msg = {copy,{Node,OldActor,P#dp.actorname}}
 	end,
@@ -938,6 +952,8 @@ handle_info(start_copy,P) ->
 	spawn(fun() ->
 		case actordb:rpc(Node,OldActor,{?MODULE,call_master,[P#dp.cbmod,OldActor,P#dp.actortype,Msg]}) of
 			ok ->
+				ok;
+			{ok,_} ->
 				ok;
 			Err ->
 				?AERR("Unable to start copy for ~p from ~p, ~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom,Err]),
@@ -1050,11 +1066,11 @@ check_inactivity(NTimer,P) ->
 					{noreply,check_timer(P#dp{activity_now = Now})}
 			end;
 		_ when Empty == false, P#dp.verified == false, NTimer > 1, P#dp.electionpid == undefined ->
-			{noreply, check_timer(actordb_sqlprocutil:start_election(P))};
+			{noreply, check_timer(actordb_sqlprocutil:start_verify(P,false))};
 		_ ->
 			Now = actordb_local:actor_activity(P#dp.activity_now),
 			case P#dp.mors of
-				master ->
+				master when P#dp.db /= undefined ->
 					{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
 					DbSize = NPages*(?PAGESIZE+24),
 					case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
@@ -1079,7 +1095,7 @@ check_inactivity(NTimer,P) ->
 						false ->
 							P
 					end;
-				slave ->
+				_ ->
 					ok
 			end,
 			{noreply,check_timer(retry_copy(P#dp{activity_now = Now, locked = abandon_locks(P,P#dp.locked,[])}))}
@@ -1111,7 +1127,7 @@ retry_copy(P) ->
 					Msg = {move,actordb_conf:node_name()};
 				{split,MFA,Node,OldActor,NewActor} ->
 					IsMove = {split,MFA},
-					Msg = {split,MFA,Node,OldActor,NewActor}
+					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor}
 			end,
 			Ref = make_ref(),
 			case actordb:rpc(Node,NewActor,{?MODULE,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
@@ -1126,99 +1142,7 @@ retry_copy(P) ->
 			P
 	end.
 
-% timer_info(PrevActivity,P) ->
-% 		% ?AINF("check_inactivity ~p ~p ~p~n",[{N,P#dp.activity},{P#dp.actorname,P#dp.callfrom},
-% 	% 				{P#dp.dbcopyref,P#dp.dbcopy_to,P#dp.locked,P#dp.copyproc,P#dp.verified,P#dp.transactionid}]),
-% 	Empty = queue:is_empty(P#dp.callqueue),
-% 	Now = os:timestamp(),
-% 	case P of
-% 		% If true, process is inactive and can die (or go to sleep)
-% 		#dp{activity = PrevActivity, callfrom = undefined, verified = true, transactionid = undefined,
-% 			dbcopyref = undefined, dbcopy_to = [], locked = [], copyproc = undefined} when Empty ->
-% 			case P#dp.movedtonode of
-% 				undefined ->
-% 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
-% 						true ->
-% 							?ADBG("Die because temporary ~p ~p master ~p",[P#dp.actorname,P#dp.actortype,P#dp.masternode]),
-% 							distreg:unreg(self()),
-% 							{stop,normal,P};
-% 						_ when P#dp.activity == 0 ->
-% 							case timer:now_diff(Now,P#dp.start_time) > 10*1000000 of
-% 								true ->
-% 									?ADBG("die after 10sec inactive"),
-% 									actordb_sqlite:stop(P#dp.db),
-% 									distreg:unreg(self()),
-% 									{stop,normal,P};
-% 								false ->
-% 									Now = actordb_local:actor_activity(P#dp.activity_now),
-% 									{noreply,check_timer(P#dp{activity_now = Now})}
-% 							end;
-% 						_ when (P#dp.flags band ?FLAG_NOHIBERNATE) > 0 ->
-% 							actordb_sqlite:stop(P#dp.db),
-% 							distreg:unreg(self()),
-% 							{stop,normal,P};
-% 						_ ->
-% 							?DBG("Process hibernate ~p",[P#dp.actorname]),
-% 							case P#dp.timerref /= undefined of
-% 								true ->
-% 									erlang:cancel_timer(P#dp.timerref),
-% 									Timer = undefined;
-% 								false ->
-% 									Timer = P#dp.timerref
-% 							end,
-% 							{noreply,P#dp{timerref = Timer},hibernate}
-% 					end;
-% 				_ ->
-% 					case P#dp.db of
-% 						undefined ->
-% 							ok;
-% 						_ ->
-% 							actordb_sqlite:stop(P#dp.db),
-% 							actordb_sqlprocutil:delactorfile(P),
-% 							[rpc:async_call(Nd,?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-% 																	{delete,P#dp.movedtonode},[{flags,P#dp.flags}]]) 
-% 									|| Nd <- bkdcore:cluster_nodes_connected()]
-% 					end,
-% 					case timer:now_diff(Now,P#dp.start_time) > 10*1000000 of
-% 						true ->
-% 							?ADBG("Die because moved"),
-% 							distreg:unreg(self()),
-% 							{stop,normal,P};
-% 						false ->
-% 							Now = actordb_local:actor_activity(P#dp.activity_now),
-% 							{noreply,check_timer(P#dp{activity_now = Now, db = undefined})}
-% 					end
-% 			end;
-% 		_ when P#dp.electionpid == undefined, P#dp.verified /= true ->
-% 			case P#dp.verified of
-% 				failed ->
-% 					?AERR("verify fail ~p",[?R2P(P)]);
-% 				_ ->
-% 					ok
-% 			end,
-% 			case timer:now_diff(Now,P#dp.start_time) > 20*1000000 of
-% 				true ->
-% 					{stop,verifyfail,P};
-% 				false ->
-% 					{noreply,P}
-% 			end;
-% 		_ ->
-% 			Now = actordb_local:actor_activity(P#dp.activity_now),
 
-% 			case ok of
-% 				_ when P#dp.dbcopyref == undefined, P#dp.dbcopy_to == [], P#dp.db /= undefined ->
-% 					{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
-% 					case NPages*(?PAGESIZE+24) > 1024*1024 of
-% 						true ->
-% 							actordb_sqlite:checkpoint(P#dp.db);
-% 						_ ->
-% 							ok
-% 					end;
-% 				_ ->
-% 					ok
-% 			end,
-% 			{noreply,check_timer(P#dp{activity_now = Now, locked = abandon_locks(P,P#dp.locked,[])})}
-% 	end.
 
 
 down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
@@ -1228,6 +1152,7 @@ down_info(PID,_Ref,Reason,#dp{electionpid = PID} = P1) ->
 		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.evnum == 0 ->
 			{stop,nocreate,P1};
 		leader ->
+			?AINF("Elected leader ~p",[{P1#dp.actorname,P1#dp.actortype}]),
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			FollowerIndexes = [#flw{node = Nd,match_index = 0,next_index = P1#dp.evnum+1} || Nd <- bkdcore:cluster_nodes()],
 			P = P1#dp{mors = master, electionpid = undefined, follower_indexes = FollowerIndexes, verified = true},
@@ -1383,11 +1308,8 @@ init([_|_] = Opts) ->
 					{ok,P}
 			end;
 		P when P#dp.copyfrom == undefined ->
-			ClusterNodes = bkdcore:cluster_nodes(),
-			?ADBG("Actor start ~p ~p ~p ~p ~p ~p, startreason ~p",[P#dp.actorname,P#dp.actortype,P#dp.copyfrom,
-													queue:is_empty(P#dp.callqueue),ClusterNodes,
-					actordb_conf:node_name(),butil:ds_val(startreason,Opts)]),
-			
+			?AINF("Actor start ~p, copy=~p, queue=~p, mors=~p startreason=~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom,
+							queue:is_empty(P#dp.callqueue),P#dp.mors,butil:ds_val(startreason,Opts)]),
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
@@ -1408,7 +1330,6 @@ init([_|_] = Opts) ->
 									{ok,_} = file:position(F,{cur,-(?PAGESIZE+40)}),
 									{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
 										file:read(F,24),
-									{ok,_} = file:position(F,eof),
 									file:close(F),
 									{ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, 
 												evnum = Evnum, evterm = Evterm}};
@@ -1417,7 +1338,7 @@ init([_|_] = Opts) ->
 									init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor})
 							end;
 						{error,enoent} ->
-							{ok,actordb_sqlprocutil:reopen_db(P#dp{voted_for = VotedFor,current_term = VotedForTerm})}
+							{ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor}}
 					end;
 				_ when MovedToNode == undefined; RightCluster ->
 					init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor});

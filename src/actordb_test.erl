@@ -33,8 +33,8 @@ all_test_() ->
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
 		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
-		{setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
-		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
+		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
+		{setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
@@ -111,14 +111,15 @@ single_stop(_) ->
 test_single(_) ->
 	[fun basic_write/0,
 		fun basic_read/0,
-		% % {timeout,10,fun() -> timer:sleep(8000) end},
+		% {timeout,10,fun() -> timer:sleep(8000) end},
 	  fun basic_read/0,
 	  fun basic_write/0,
 	  fun multiupdate_write/0,
 	  fun multiupdate_read/0,
 	  fun kv_readwrite/0,
 	  fun basic_write/0,
-	  	fun basic_read/0
+	  fun basic_read/0,
+	  fun copyactor/0
 	  	].
 
 
@@ -139,6 +140,35 @@ basic_read() ->
 	[?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
 			exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; select * from tab;">>))
 	 || N <- lists:seq(1,numactors())].
+
+copyactor() ->
+	?debugFmt("Copy actor",[]),
+	?assertMatch({ok,_},exec(["actor type1(newcopy);",
+				  "PRAGMA copy=ac1;"])),
+	Res = exec(<<"actor type1(newcopy) create; select * from tab;">>),
+	% ?debugFmt("Copy from ac1 has data ~p",[Res]),
+	?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
+			Res).
+
+recoveractor() ->
+	?debugFmt("recoveractor",[]),
+	% S = ['slave1@127.0.0.1','slave2@127.0.0.1','slave3@127.0.0.1'],
+	% rpc:call(findnd(S),actordb,exec,[butil:tobin(Bin)]);
+	rpc:call('slave1@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
+	rpc:call('slave2@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
+	rpc:call('slave3@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
+	file:delete([?TESTPTH,"/slave1/actors/ac1.type1"]),
+	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-wal"]),
+	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-shm"]),
+	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-term"]),
+	file:delete([?TESTPTH,"/slave2/actors/ac1.type1"]),
+	file:delete([?TESTPTH,"/slave2/actors/ac1.type1-wal"]),
+	file:delete([?TESTPTH,"/slave2/actors/ac1.type1-shm"]),
+	file:delete([?TESTPTH,"/slave2/actors/ac1.type1-term"]),
+	Res = exec(<<"actor type1(ac1) create; select * from tab;">>),
+	?debugFmt("After deleting data from 2 nodes ~p",[Res]),
+	?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
+			Res).
 
 multiupdate_write() ->
 	?debugFmt("multiupdates",[]),
@@ -295,10 +325,10 @@ test_onetwo(_) ->
 	[fun basic_write/0,
 	  fun basic_read/0,
 	  {timeout,60,fun test_add_second/0},
-	  {timeout,30,fun basic_write/0}
-	  % fun kv_readwrite/0,
-	  % fun multiupdate_write/0,
-	  % fun multiupdate_read/0
+	  {timeout,30,fun basic_write/0},
+	  fun kv_readwrite/0,
+	  fun multiupdate_write/0,
+	  fun multiupdate_read/0
 	  	].
 test_add_second() ->
 	create_allgroups([[1,2]]),
@@ -326,11 +356,13 @@ cluster_stop(_) ->
 test_cluster(_) ->
 	[
 	  fun basic_write/0,
-	  fun basic_read/0,
-	  fun kv_readwrite/0,
-	  fun basic_write/0,
-	  fun multiupdate_write/0,
-	  fun multiupdate_read/0,
+	  fun recoveractor/0,
+	  % fun basic_read/0,
+	  % fun kv_readwrite/0,
+	  % fun basic_write/0,
+	  % fun multiupdate_write/0,
+	  % fun multiupdate_read/0,
+	  % fun copyactor/0,
 	  fun() -> test_print_end([1,2,3]) end].
 
 
@@ -634,7 +666,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->

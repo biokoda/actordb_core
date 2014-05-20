@@ -146,7 +146,7 @@ actor_started(Name,Type,Size) ->
 			gen_server:cast(?MODULE,{actor_started,self()}),
 			Now;
 		_ ->
-			case butil:ds_val(actorsalive,self()) of
+			case butil:ds_val(self(),actorsalive) of
 				undefined ->
 					erase(localstarted),
 					actor_started(Name,Type,Size);
