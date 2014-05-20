@@ -32,9 +32,9 @@ all_test_() ->
 	[
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
-		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
+		{setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
 		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
-		{setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
+		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
@@ -128,6 +128,7 @@ basic_write() ->
 basic_write(Txt) ->
 	?debugFmt("Basic write",[]),
 	[begin
+		?debugFmt("~p Write ac~p",[lager_util:localtime_ms(),N]),
 		R = exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; insert into tab values (",
 									(butil:tobin(butil:flatnow()))/binary,",'",Txt/binary,"',1);">>),
 		% ?debugFmt("~p",[R]),
@@ -895,7 +896,7 @@ tsingle(Db,N) ->
 	io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
 	tsingle(Db,N-1).
 
-wal_test() ->
+test_wal() ->
 	{PID,_} = spawn_monitor(fun() -> wal_test1() end),
 	receive
 		{'DOWN',_Monitor,_,PID,normal} ->
