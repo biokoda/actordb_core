@@ -612,6 +612,9 @@ state_rw_call(What,From,P) ->
 					{reply, {outofdate,actordb_conf:node_name(),NewTerm},
 								actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,election = Now})}
 			end;
+		{set_dbfile,Bin} ->
+			ok = file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
+			{reply,ok,P};
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
 		doelection ->
@@ -758,7 +761,15 @@ write_call(Sql,undefined,From,NewVers,P) ->
 					 ],
 			% We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only 
 			%  when election is won and this is first write after it.
-			VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
+			case EvNum of
+				1 ->
+					{ok,Dbfile} = file:read_file(P#dp.dbpath),
+					{Compressed,CompressedSize} = esqlite3:lz4_compress(Dbfile),
+					<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
+					VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,DbCompressed});
+				_ ->
+					VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm})
+			end,
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader),
 			case actordb_sqlite:okornot(Res) of
 				ok ->

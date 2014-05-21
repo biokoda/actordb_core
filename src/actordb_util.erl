@@ -39,7 +39,13 @@ tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 		<<>> ->
 			ok;
 		_ ->
-			{Term,Leader,PrevEvnum,PrevTerm} = binary_to_term(VarPrefix),
+			case binary_to_term(VarPrefix) of
+				{Term,Leader,PrevEvnum,PrevTerm} ->
+					ok;
+				{Term,Leader,PrevEvnum,PrevTerm,DbFile} ->
+					ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
+								{state_rw,{set_dbfile,DbFile}})
+			end,
 			Res = actordb_sqlproc:call_slave(Cb,Actor,Type,
 					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head}}),
 			put(proceed,Res)
