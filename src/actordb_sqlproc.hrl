@@ -78,8 +78,8 @@
   % If local db is being restored, verified will be on false.
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
   verified = false,
-  % Verification of db is done asynchronously in a monitored process. This holds pid.
-  electionpid,
+  % PID of election process if in progress, time of last seen election otherwise.
+  election = {0,0,0},
   % Path to sqlite file.
   dbpath,
   % Which nodes current process is sending dbfile to.

@@ -22,24 +22,25 @@ init(Path,JournalMode,Thread) ->
 			"$PRAGMA journal_mode=",(butil:tobin(JournalMode))/binary,";",
 			"$PRAGMA journal_size_limit=0;">>,
 	case esqlite3:open(Path,Thread,Sql) of
-		{ok,Db,Res} ->
-			case Res of
+		{ok,Db,[_,[{columns,_},{rows,Tables}]]} ->
+			{ok,Db,Tables,4096};
+			% case Res of
 				% [_,{rows,[{Size}]}]
-				[_,[{columns,_},{rows,Tables}]] ->
-					{ok,Db,Tables,4096};
+				% [_,[{columns,_},{rows,Tables}]] ->
+				% 	{ok,Db,Tables,4096}
 				% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
 				% 	{ok,Db,true,Size};
-				{ok,[]} ->
-					% Not sure yet why this happens, but opening again seems to work
-					stop(Db),
-					{ok,Db1,Res1} = esqlite3:open(Path,Thread,Sql),
-					case Res1 of
-						[_,[{rows,[{_Size}]}],[{columns,_},{rows,Tables}]] ->
-							{ok,Db1,Tables,4096}
-						% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
-						% 	{ok,Db1,true,Size}
-					end
-			end;
+				% {ok,[]} ->
+				% 	% Not sure yet why this happens, but opening again seems to work
+				% 	stop(Db),
+				% 	{ok,Db1,Res1} = esqlite3:open(Path,Thread,Sql),
+				% 	case Res1 of
+				% 		[_,[{rows,[{_Size}]}],[{columns,_},{rows,Tables}]] ->
+				% 			{ok,Db1,Tables,4096}
+				% 		% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
+				% 		% 	{ok,Db1,true,Size}
+				% 	end
+			% end;
 		% Unable to open sqlite file.
 		% Crash if file permission problem.
 		% If file corrupted, move to trash folder (one or two levels above current folder) and open again.

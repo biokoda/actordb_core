@@ -117,6 +117,7 @@ reopen_db(#dp{mors = master} = P) ->
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
 			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+			?AINF("Open sqlite db tables ~p",[_SchemaTables]),
 			P#dp{db = Db, wal_from = wal_from([P#dp.dbpath,"-wal"])};
 		_ ->
 			case P#dp.wal_from == {0,0} of
@@ -470,7 +471,7 @@ start_verify(P,JustStarted) ->
 			{Verifypid,_} = spawn_monitor(fun() -> 
 							start_election(NP)
 								end),
-			NP#dp{electionpid = Verifypid, verified = false, activity_now = actor_start(P)}
+			NP#dp{election = Verifypid, verified = false, activity_now = actor_start(P)}
 	end.
 % Call RequestVote RPC on cluster nodes. 
 % This should be called in an async process and current_term and voted_for should have
