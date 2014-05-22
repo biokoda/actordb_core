@@ -606,21 +606,25 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 			end,
 			ResetSql = [];
 		{split,Mfa,Node,ActorFrom,ActorTo} ->
+			?AINF("Split done we are on ~p, moved out of ~p",[P#dp.actorname,ActorFrom]),
 			{M,F,A} = Mfa,
 			MovedToNode = P#dp.movedtonode,
 			case apply(M,F,[P#dp.cbstate,check|A]) of
 				% Split returned ok on old actor (unlock call was executed successfully).
 				ok when P#dp.actorname == ActorFrom ->
+					?AINF("Split done on new node ~p",[{P#dp.actorname,P#dp.actortype}]),
 					Sql1 = CleanupSql,
 					ResetSql = [],
 					Callfrom = undefined;
 				% If split done and we are on new actor.
 				_ when ActorFrom /= P#dp.actorname ->
+					?AINF("executing reset on new node after copy ~p",[{P#dp.actorname,P#dp.actortype}]),
 					Sql1 = CleanupSql,
 					Callfrom = undefined,
-					ResetSql = actordb_sqlprocutil:do_copy_reset(P#dp.copyreset,P#dp.cbstate);
+					ResetSql = do_copy_reset(P#dp.copyreset,P#dp.cbstate);
 				% It was not completed. Do it again.
 				_ when P#dp.actorname == ActorFrom ->
+					?AERR("Check split failed on original actor ~p, retry.",[{P#dp.actorname,P#dp.actortype}]),
 					Sql1 = [],
 					ResetSql = [],
 					Callfrom = {exec,undefined,{split,Mfa,Node,ActorFrom,ActorTo}};

@@ -84,6 +84,7 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 			case actordb_schema:iskv(Type) of
 				true ->
 					{ok,_Pid} = start(NewName,Type,false,[nohibernate,
+								{state,#state{idtype = Idtype, name = NewName,type = Type}},
 								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
 								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}]);
 				false ->
@@ -96,7 +97,7 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 		% If member of same cluster, we just need to run the shard normally. This will copy over the database.
 		% Master might be this new node or if shard already running on another node, it will remain master untill restart.
 		true ->
-			{ok,_Pid} = start(NewName,Type,false,[nohibernate,
+			{ok,_Pid} = start(NewName,Type,false,[nohibernate,{state,#state{idtype = Idtype, name = NewName,type = Type}},
 								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
 								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}])
 	end.
@@ -115,7 +116,6 @@ origin_steal_done(P,check,NewShardNode,NewShard) ->
 		true ->
 			ok;
 		_ ->
-			?AERR("steal done does not match ~p ~p",[{P#state.nextshard,NewShard},{P#state.nextshardnode,NewShardNode}]),
 			false
 	end.
 

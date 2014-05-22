@@ -263,20 +263,20 @@ handle_call(Msg,From,P) ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
 		{read,Msg1} ->
 			read_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
-		{move,NewShard,Node,CopyReset} ->
+		{move,NewShard,Node,CopyReset,CbState} ->
 			% Call to move this actor to another cluster. 
 			% First store the intent to move with all needed data. This way even if a node chrashes, the actor will attempt to move
 			%  on next startup.
 			% When write done, reply to caller and start with move process (in ..util:reply_maybe.
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
-						(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,P#dp.cbstate})))/binary,"');">>,
+						(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,CbState})))/binary,"');">>,
 			write_call({undefined,Sql,undefined},{exec,From,{move,Node}},P);
-		{split,MFA,Node,OldActor,NewActor,CopyReset} ->
+		{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
 			% Similar to above. Both have just insert and not insert and replace because
 			%  we can only do one move/split at a time. It makes no sense to do both at the same time.
 			% So rely on DB to return error for these conflicting calls.
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
-						(base64:encode(term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,P#dp.cbstate})))/binary,"');">>,
+						(base64:encode(term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,CbState})))/binary,"');">>,
 			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},P);
 		{copy,{Node,OldActor,NewActor}} ->
 			Ref = make_ref(),
@@ -962,10 +962,10 @@ handle_info(start_copy,P) ->
 	case P#dp.copyfrom of
 		{move,NewShard,Node} ->
 			OldActor = P#dp.actorname,
-			Msg = {move,NewShard,actordb_conf:node_name(),P#dp.copyreset};
+			Msg = {move,NewShard,actordb_conf:node_name(),P#dp.copyreset,P#dp.cbstate};
 		{split,MFA,Node,OldActor,NewActor} ->
 			% Change node to this node, so that other actor knows where to send db.
-			Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor,P#dp.copyreset};
+			Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor,P#dp.copyreset,P#dp.cbstate};
 		{Node,OldActor} ->
 			Msg = {copy,{actordb_conf:node_name(),OldActor,P#dp.actorname}}
 	end,
@@ -1198,18 +1198,24 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 							  "SELECT * FROM __transactions;">>,read)
 			end,
 			
-			CopyFrom = butil:ds_val(?COPYFROMI,Rows),
+			case butil:ds_val(?COPYFROMI,Rows) of
+				CopyFrom1 when byte_size(CopyFrom1) > 0 ->
+					{CopyFrom,CopyReset,CbState} = binary_to_term(base64:decode(CopyFrom1));
+				_ ->
+					CopyFrom = CopyReset = undefined,
+					CbState = P#dp.cbstate
+			end,
 			% After election is won a write needs to be executed. What we will write depends on the situation:
 			%  - If this actor has been moving, do a write to clean up after it (or restart it)
 			%  - If transaction active continue with write.
 			%  - If empty db or schema not up to date create/update it.
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
-			{NP,Sql,Callfrom} = actordb_sqlprocutil:post_election_sql(P,Transaction,CopyFrom,[],undefined),
+			{NP,Sql,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{copyreset = CopyReset, cbstate = CbState},Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
 				undefined ->
 					% it must always return noreply
-					write_call({undefined,Sql,NP#dp.transactionid},Callfrom, actordb_sqlprocutil:reopen_db(NP));
+					write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP);
 				_ ->
 					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,{write,{undefined,Sql,NP#dp.transactionid}}},P#dp.callqueue)}}
 			end;
