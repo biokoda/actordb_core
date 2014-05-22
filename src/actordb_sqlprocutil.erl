@@ -172,6 +172,13 @@ wal_from(F) ->
 try_wal_recover(P,F) when F#flw.file /= undefined ->
 	file:close(F#flw.file),
 	try_wal_recover(P,F#flw{file = undefined});
+try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
+	case wal_from([P#dp.dbpath,"-wal"]) of
+		{0,0} ->
+			{false,store_follower(P,F),F};
+		WF ->
+			try_wal_recover(P#dp{wal_from = WF},F)
+	end;
 try_wal_recover(P,F) ->
 	?ADBG("Try_wal_recover ~p for=~p, {MatchIndex,MyEvFrom}=~p",
 		[{P#dp.actorname,P#dp.actortype},F#flw.node,{F#flw.match_index,element(1,P#dp.wal_from)}]),

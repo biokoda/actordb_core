@@ -1101,7 +1101,7 @@ check_inactivity(NTimer,P) ->
 			case P#dp.mors of
 				master when P#dp.db /= undefined ->
 					{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
-					DbSize = NPages*(?PAGESIZE+24),
+					DbSize = NPages*(?PAGESIZE+40),
 					case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
 						true ->
 							NotSynced = lists:foldl(fun(F,Count) ->
@@ -1114,20 +1114,23 @@ check_inactivity(NTimer,P) ->
 							end,0,P#dp.follower_indexes),
 							case NotSynced of
 								0 ->
+									WalFrom = {0,0},
 									actordb_sqlprocutil:do_checkpoint(P);
 								% If nodes arent synced, tolerate 30MB of wal size.
 								_ when DbSize >= 1024*1024*30 ->
+									WalFrom = {0,0},
 									actordb_sqlprocutil:do_checkpoint(P);
 								_ ->
-									ok
+									WalFrom = P#dp.wal_from
 							end;
 						false ->
-							P
+							WalFrom = P#dp.wal_from
 					end;
 				_ ->
-					ok
+					WalFrom = P#dp.wal_from
 			end,
-			{noreply,check_timer(retry_copy(P#dp{activity_now = Now, locked = abandon_locks(P,P#dp.locked,[])}))}
+			{noreply,check_timer(retry_copy(P#dp{activity_now = Now, wal_from = WalFrom,
+												locked = abandon_locks(P,P#dp.locked,[])}))}
 	end.
 
 abandon_locks(P,[{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
