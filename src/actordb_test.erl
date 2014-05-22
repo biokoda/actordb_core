@@ -128,7 +128,7 @@ basic_write() ->
 basic_write(Txt) ->
 	?debugFmt("Basic write",[]),
 	[begin
-		?debugFmt("~p Write ac~p",[lager_util:localtime_ms(),N]),
+		% ?debugFmt("~p Write ac~p",[lager_util:localtime_ms(),N]),
 		R = exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; insert into tab values (",
 									(butil:tobin(butil:flatnow()))/binary,",'",Txt/binary,"',1);">>),
 		% ?debugFmt("~p",[R]),
@@ -359,12 +359,12 @@ test_cluster(_) ->
 	[
 	  {timeout,20,fun basic_write/0},
 	  fun recoveractor/0,
-	  % fun basic_read/0,
-	  % fun kv_readwrite/0,
-	  % fun basic_write/0,
-	  % fun multiupdate_write/0,
-	  % fun multiupdate_read/0,
-	  % fun copyactor/0,
+	  fun basic_read/0,
+	  fun kv_readwrite/0,
+	  fun basic_write/0,
+	  fun multiupdate_write/0,
+	  fun multiupdate_read/0,
+	  fun copyactor/0,
 	  fun() -> test_print_end([1,2,3]) end].
 
 
@@ -772,7 +772,7 @@ schema() ->
 
 l(N) ->
 	spawn(fun() ->
-		D = <<"actor type1(ac",(butil:tobin(1))/binary,");",
+		_D = <<"actor type1(ac",(butil:tobin(1))/binary,");",
 				"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",
 				(binary:copy(<<"a">>,1024*1))/binary,"');",
 				"insert into tab2 values (1,2,3,4,5);",

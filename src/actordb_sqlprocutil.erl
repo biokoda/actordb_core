@@ -12,8 +12,11 @@ reply(From,Msg) ->
 
 ae_respond(P,LeaderNode,Success,PrevEvnum,AEType) ->
 	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType},
-	bkdcore:rpc(LeaderNode,{actordb_sqlproc,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-									{state_rw,Resp}]}).
+	bkdcore:rpc(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[],
+									{state_rw,Resp},P#dp.cbmod]}).
+
+append_wal(P,Header,Bin) ->
+	ok = file:write(P#dp.db,[Header,esqlite3:lz4_decompress(Bin,?PAGESIZE)]).
 
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	P;
@@ -89,8 +92,8 @@ reply_maybe(P,N,[]) ->
 					NP;
 				_ ->
 					Ref = make_ref(),
-					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call_master,[P#dp.cbmod,NewActor,P#dp.actortype,
-										{dbcopy,{start_receive,Msg,Ref}},[{lockinfo,wait}]]}) of
+					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait}],
+										{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
 						ok ->
 							{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
 							NP1;
@@ -117,7 +120,6 @@ reopen_db(#dp{mors = master} = P) ->
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
 			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-			?AINF("Open sqlite db tables ~p",[_SchemaTables]),
 			P#dp{db = Db, wal_from = wal_from([P#dp.dbpath,"-wal"])};
 		_ ->
 			case P#dp.wal_from == {0,0} of
@@ -171,22 +173,29 @@ try_wal_recover(P,F) when F#flw.file /= undefined ->
 	file:close(F#flw.file),
 	try_wal_recover(P,F#flw{file = undefined});
 try_wal_recover(P,F) ->
-	?AINF("Try_wal_recover ~p for=~p",[{P#dp.actorname,P#dp.actortype},F#flw.node]),
+	?ADBG("Try_wal_recover ~p for=~p, {MatchIndex,MyEvFrom}=~p",
+		[{P#dp.actorname,P#dp.actortype},F#flw.node,{F#flw.match_index,element(1,P#dp.wal_from)}]),
 	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
 	% Compare match_index not next_index because we need to send prev term as well
-	case F#flw.match_index >= WalEvfrom of
+	case F#flw.match_index >= WalEvfrom orelse F#flw.match_index == 0 andalso WalEvfrom == 1 of
 		% We can recover from wal if terms match
 		true ->
 			{File,PrevNum,PrevTerm} = open_wal_at(P,F#flw.next_index),
-			case PrevNum == F#flw.match_index andalso PrevTerm == F#flw.match_term of
+			case PrevNum == 1 andalso F#flw.match_index == 0 of
 				true ->
 					Res = true,
 					NF = F#flw{file = File};
-				false ->
-					% follower in conflict
-					% this will cause a failed appendentries_start and a rewind on follower
-					Res = true,
-					NF = F#flw{file = File, match_term = PrevTerm, match_index = PrevNum}
+				_ ->
+					case PrevNum == F#flw.match_index andalso PrevTerm == F#flw.match_term of
+						true ->
+							Res = true,
+							NF = F#flw{file = File};
+						false ->
+							% follower in conflict
+							% this will cause a failed appendentries_start and a rewind on follower
+							Res = true,
+							NF = F#flw{file = File, match_term = PrevTerm, match_index = PrevNum}
+					end
 			end;
 		% Too far behind. Send entire db.
 		false ->
@@ -218,7 +227,7 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 
 continue_maybe(P,F,AEType) ->
 	% Check if follower behind
-	?AINF("Continue maybe ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},F#flw.node,{P#dp.evnum,F#flw.next_index}]),
+	?ADBG("Continue maybe ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},F#flw.node,{P#dp.evnum,F#flw.next_index}]),
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
 			case AEType of
@@ -261,8 +270,10 @@ send_wal(P,#flw{file = File} = F) ->
 	{ok,<<Header:40/binary,Page/binary>>} = file:read(File,40+?PAGESIZE),
 	case Header of
 		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,_/binary>> when Evnum == F#flw.next_index ->
+			{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
+			<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
 			WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-						{state_rw,{appendentries_wal,P#dp.current_term,Header,Page,recover}}]}),
+						{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover}}]}),
 			case WalRes of
 				ok when Commit == 0 ->
 					send_wal(P,F);
@@ -273,9 +284,6 @@ send_wal(P,#flw{file = File} = F) ->
 			end
 	end.
 
-
-append_wal(P,Header,Bin) ->
-	ok = file:write(P#dp.db,[Header,esqlite3:lz4_decompress(Bin,?PAGESIZE)]).
 
 % Go back one entry
 rewind_wal(P) ->
@@ -356,8 +364,8 @@ transaction_checker1(Id,Uid,Node) ->
 check_redirect(P,Copyfrom) ->
 	case Copyfrom of
 		{move,NewShard,Node} ->
-			case bkdcore:rpc(Node,{actordb_sqlproc,call_master,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-											{state_rw,donothing,[]}]}) of
+			case bkdcore:rpc(Node,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[],
+											{state_rw,donothing,[]},P#dp.cbmod]}) of
 				{redirect,SomeNode} ->
 					case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
 						true ->
@@ -377,8 +385,8 @@ check_redirect(P,Copyfrom) ->
 					false
 			end;
 		{split,{M,F,A},Node,ShardFrom,_ShardNew} ->
-			case bkdcore:rpc(Node,{actordb_sqlproc,call_master,[P#dp.cbmod,ShardFrom,P#dp.actortype,
-										{dbcopy,{checksplit,{M,F,A}}}]}) of
+			case bkdcore:rpc(Node,{actordb_sqlproc,call,[{ShardFrom,P#dp.actortype},[],
+										{dbcopy,{checksplit,{M,F,A}}},P#dp.cbmod]}) of
 				ok ->
 					ok;
 				{error,econnrefused} ->
@@ -483,7 +491,7 @@ start_election(P) ->
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,actordb_sqlproc,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]),
-	?AINF("Election for ~p, results ~p",[{P#dp.actorname,P#dp.actortype},Results]),
+	?ADBG("Election for ~p, results ~p",[{P#dp.actorname,P#dp.actortype},Results]),
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of
 		{outofdate,Node,_NewerTerm} ->
@@ -1164,8 +1172,7 @@ callback_unlock(P) ->
 			ActorName = P#dp.actorname
 	end,
 	% Unlock database on source side. Once unlocked move/copy is complete.
-	case rpc(Node,{actordb_sqlproc,call_master,[P#dp.cbmod,ActorName,
-								P#dp.actortype,{dbcopy,{unlock,P#dp.dbcopyref}}]}) of
+	case rpc(Node,{actordb_sqlproc,call,[{ActorName,P#dp.actortype},[],{dbcopy,{unlock,P#dp.dbcopyref}},P#dp.cbmod]}) of
 		ok ->
 			exit(ok);
 		{ok,_} ->
