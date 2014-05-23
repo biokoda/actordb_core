@@ -33,11 +33,11 @@ all_test_() ->
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
 		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
-		{setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
+		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
 		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
-		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
+		{setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
 		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
 		% {setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
 	].
@@ -149,7 +149,15 @@ copyactor() ->
 	Res = exec(<<"actor type1(newcopy) create; select * from tab;">>),
 	% ?debugFmt("Copy from ac1 has data ~p",[Res]),
 	?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
-			Res).
+			Res),
+	[begin
+		?assertMatch({ok,_},exec(["actor type1(newcopy",butil:tolist(N),");",
+				  "PRAGMA copy=ac",butil:tolist(N),";"])),
+		Res1 = exec(<<"actor type1(newcopy) create; select * from tab;">>),
+		?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
+			Res1)
+	 end
+	 || N <- lists:seq(1,10)].
 
 recoveractor() ->
 	?debugFmt("recoveractor",[]),
@@ -323,13 +331,13 @@ onetwo_stop(_) ->
 	stop_slaves([1,2]),
 	ok.
 test_onetwo(_) ->
-	[fun basic_write/0,
+	[{timeout,20,fun basic_write/0},
 	  fun basic_read/0,
 	  {timeout,60,fun test_add_second/0},
-	  {timeout,30,fun basic_write/0}
-	  % fun kv_readwrite/0,
-	  % fun multiupdate_write/0,
-	  % fun multiupdate_read/0
+	  {timeout,30,fun basic_write/0},
+	  fun kv_readwrite/0,
+	  fun multiupdate_write/0,
+	  fun multiupdate_read/0
 	  	].
 test_add_second() ->
 	create_allgroups([[1,2]]),
@@ -381,6 +389,7 @@ test_missingn(_) ->
 	 fun kv_readwrite/0,
 	 fun multiupdate_write/0,
 	 fun multiupdate_read/0,
+	 fun copyactor/0,
 	 fun() -> stop_slaves([3]) end,
 	 fun basic_write/0
 	 ].
@@ -411,7 +420,8 @@ test_mcluster(_) ->
 	 fun basic_read/0,
 	 fun kv_readwrite/0,
 	 fun multiupdate_write/0,
-	  fun multiupdate_read/0
+	 fun multiupdate_read/0,
+	 fun copyactor/0
 	 ].
 
 
@@ -441,7 +451,8 @@ test_clusteraddnode(_) ->
 	  fun() -> test_print_end([1,2,3]) end,
 	  fun() -> ?debugFmt("STOPPING SLAVE2",[]), stop_slaves([2]) end,
 	  fun basic_write/0,
-	  fun basic_read/0
+	  fun basic_read/0,
+	  fun copyactor/0
 	  	].
 test_add_third() ->
 	create_allgroups([[1,2,3]]),

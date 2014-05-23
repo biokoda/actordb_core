@@ -12,7 +12,7 @@ reply(From,Msg) ->
 
 ae_respond(P,LeaderNode,Success,PrevEvnum,AEType) ->
 	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType},
-	bkdcore:rpc(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[],
+	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[],
 									{state_rw,Resp},P#dp.cbmod]}).
 
 append_wal(P,Header,Bin) ->
@@ -35,7 +35,7 @@ reply_maybe(P,N,[]) ->
 		true when P#dp.transactioninfo /= undefined; element(1,P#dp.callfrom) == exec ->
 			% Now it's time to execute second stage of transaction.
 			% This means actually executing the transaction sql, without releasing savepoint.
-			case P#dp.transactioninfo /= undefined of
+			case P#dp.transactioninfo /= undefined andalso P#dp.follower_indexes /= [] of
 				true ->
 					{Sql,EvNumNew,NewVers} = P#dp.transactioninfo,
 					{Tid,Updaterid,_} = P#dp.transactionid,
@@ -76,7 +76,7 @@ reply_maybe(P,N,[]) ->
 					IsMove = Msg = Node = NewActor = undefined,
 					From = P#dp.callfrom
 			end,
-			?ADBG("Reply transaction=~p res=~p",[P#dp.transactioninfo,Res]),
+			?ADBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
 			reply(From,Res),
 			% If write not ok it should never reach this point anyway.
 			case actordb_sqlite:okornot(Res) of
@@ -269,7 +269,7 @@ continue_maybe(P,F,AEType) ->
 	end.
 
 store_follower(P,NF) ->
-	P#dp{follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
+	P#dp{activity = make_ref(),follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
 
 
 % Read until commit set in header.
@@ -479,6 +479,8 @@ start_verify(P,JustStarted) ->
 		%  not attempt to become candidate for now.
 		_ when P#dp.mors == slave, JustStarted ->
 			P;
+		_ when is_pid(P#dp.election) ->
+			P;
 		_ ->
 			CurrentTerm = P#dp.current_term+1,
 			ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm}),
@@ -486,7 +488,7 @@ start_verify(P,JustStarted) ->
 			{Verifypid,_} = spawn_monitor(fun() -> 
 							start_election(NP)
 								end),
-			NP#dp{election = Verifypid, verified = false, activity_now = actor_start(P)}
+			NP#dp{election = Verifypid, verified = false, activity_now = actor_start(P), activity = make_ref()}
 	end.
 % Call RequestVote RPC on cluster nodes. 
 % This should be called in an async process and current_term and voted_for should have

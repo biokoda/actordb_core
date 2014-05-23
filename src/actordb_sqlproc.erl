@@ -270,20 +270,20 @@ handle_call(Msg,From,P) ->
 			% When write done, reply to caller and start with move process (in ..util:reply_maybe.
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
 						(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,CbState})))/binary,"');">>,
-			write_call({undefined,Sql,undefined},{exec,From,{move,Node}},P);
+			write_call({undefined,Sql,undefined},{exec,From,{move,Node}},check_timer(P));
 		{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
 			% Similar to above. Both have just insert and not insert and replace because
 			%  we can only do one move/split at a time. It makes no sense to do both at the same time.
 			% So rely on DB to return error for these conflicting calls.
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
 						(base64:encode(term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,CbState})))/binary,"');">>,
-			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},P);
+			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},check_timer(P));
 		{copy,{Node,OldActor,NewActor}} ->
 			Ref = make_ref(),
 			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait}],
 							{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
 				ok ->
-					actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P);
+					actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,check_timer(P));
 				Err ->
 					{reply, Err,P}
 			end;
@@ -376,7 +376,7 @@ commit_call(Doit,Id,From,P) ->
 				false when P#dp.follower_indexes == [] ->
 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					{reply,ok,doqueue(P#dp{transactionid = undefined, transactioninfo = undefined,
-									transactioncheckref = undefined})};
+									transactioncheckref = undefined,activity = make_ref()})};
 				false ->
 					% Transaction failed.
 					% Delete it from __transactions.
@@ -447,7 +447,7 @@ state_rw_call(What,From,P) ->
 					end,
 					actordb_local:actor_mors(slave,LeaderNode),
 					state_rw_call(What,From,doqueue(actordb_sqlprocutil:reopen_db(P#dp{masternode = LeaderNode, masternodedist = bkdcore:dist_name(LeaderNode), 
-															callfrom = undefined, callres = undefined, verified = true})));
+															callfrom = undefined, callres = undefined, verified = true, activity = make_ref()})));
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
 					?AERR("AE start, stepping down as leader ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
@@ -461,7 +461,7 @@ state_rw_call(What,From,P) ->
 									doqueue(actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(
 												P#dp{mors = slave, verified = true, 
 													voted_for = undefined,callfrom = undefined, callres = undefined,
-													masternode = LeaderNode,
+													masternode = LeaderNode,activity = make_ref(),
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term}))));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
@@ -478,21 +478,21 @@ state_rw_call(What,From,P) ->
 					end,
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType),
-					{noreply,NP};
+					{noreply,NP#dp{activity = make_ref()}};
 				_ when Term > P#dp.current_term ->
-					?AERR("AE start, out of date term ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
+					?AERR("AE start, my term out of date ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
 					state_rw_call(What,From,actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
-												 masternode = LeaderNode,verified = true,
+												 masternode = LeaderNode,verified = true,activity = make_ref(),
 												 masternodedist = bkdcore:dist_name(LeaderNode)}));
 				_ when AEType == empty ->
 					?ADBG("AE start, ok for empty ~p",[{P#dp.actorname,P#dp.actortype,AEType}]),
 					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType),
-					{noreply,P#dp{verified = true}};
+					{noreply,P#dp{verified = true,activity = make_ref()}};
 				% Ok, now it will start receiving wal pages
 				_ ->
-					{reply,ok,P#dp{verified = true}}
+					{reply,ok,P#dp{verified = true,activity = make_ref()}}
 			end;
 		% Executed on follower.
 		% sqlite wal, header tells you if done (it has db size in header)
@@ -503,11 +503,11 @@ state_rw_call(What,From,P) ->
 					case Header of
 						% dbsize == 0, not last page
 						<<_:32,0:32,_/binary>> ->
-							{reply,ok,P};
+							{reply,ok,P#dp{activity = make_ref()}};
 						% last page
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
 							?ADBG("AE WAL done ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
-							NP = P#dp{evnum = Evnum, evterm = Evterm},
+							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref()},
 							reply(From,ok),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType),
 							{noreply,NP}
@@ -577,9 +577,6 @@ state_rw_call(What,From,P) ->
 		{request_vote,Candidate,NewTerm,LastTerm,LastEvnum} ->
 			?ADBG("Request vote on=~p for=~p, {histerm,myterm}=~p",[{P#dp.actorname,P#dp.actortype},Candidate,{NewTerm,P#dp.current_term}]),
 			Now = os:timestamp(),
-			TrueResp = fun() -> {reply, {true,actordb_conf:node_name(),NewTerm}, 
-							actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm, election = Now,
-																masternode = undefined, masternodedist = undefined})} end,
 			Uptodate = 
 				case ok of
 					_ when P#dp.evterm < LastTerm ->
@@ -596,31 +593,52 @@ state_rw_call(What,From,P) ->
 			case ok of
 				% Candidates term is lower than current_term, ignore.
 				_ when NewTerm < P#dp.current_term ->
-					{reply, {outofdate,actordb_conf:node_name(),P#dp.current_term},P#dp{election = Now}};
+					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term}),
+					DoElection = P#dp.mors == master,
+					NP = P#dp{election = Now};
 				% We've already seen this term, only vote yes if we have not voted
 				%  or have voted for this candidate already.
 				_ when NewTerm == P#dp.current_term ->
 					case (P#dp.voted_for == undefined orelse P#dp.voted_for == Candidate) of
 						true when Uptodate ->
-							TrueResp();
+							reply(From,{true,actordb_conf:node_name(),NewTerm}),
+							DoElection = false,
+							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm, election = Now,
+																masternode = undefined, masternodedist = undefined});
 						true ->
-							{reply, {outofdate,actordb_conf:node_name(),NewTerm},
-									 actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm, election = Now})};
+							reply(From,{outofdate,actordb_conf:node_name(),NewTerm}),
+							DoElection = P#dp.mors == master,
+							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm, election = Now});
 						false ->
-							{reply, {alreadyvoted,actordb_conf:node_name(),P#dp.current_term},P}
+							reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term}),
+							NP = P,
+							DoElection = P#dp.mors == master
 					end;
 				% New candidates term is higher than ours, is he as up to date?
 				_ when Uptodate ->
-					TrueResp();
+					reply(From,{true,actordb_conf:node_name(),NewTerm}),
+					DoElection = false,
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm, election = Now,
+																masternode = undefined, masternodedist = undefined});
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
 				_ ->
-					{reply, {outofdate,actordb_conf:node_name(),NewTerm},
-								actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,election = Now})}
+					reply(From,{outofdate,actordb_conf:node_name(),NewTerm}),
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,election = Now}),
+					DoElection = P#dp.mors == master
+			end,
+			% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
+			% If the other node is actually more up to date, vote was yes and we do not do election.
+			case DoElection of
+				true ->
+					?ADBG("Do election to sync nodes ~p",[{P#dp.actorname,P#dp.actortype}]),
+					{noreply,actordb_sqlprocutil:start_verify(NP,false)};
+				false ->
+					{noreply,NP#dp{activity = make_ref()}}
 			end;
 		{set_dbfile,Bin} ->
 			ok = file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
-			{reply,ok,P};
+			{reply,ok,P#dp{activity = make_ref()}};
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
 		doelection ->
@@ -782,8 +800,8 @@ write_call(Sql,undefined,From,NewVers,P) ->
 					?DBG("Write result ~p",[Res]),
 					case ok of
 						_ when P#dp.follower_indexes == [] ->
-							{noreply,actordb_sqlprocutil:reply_maybe(P#dp{callfrom = From, callres = Res,evnum = EvNum, 
-																			schemavers = NewVers,evterm = P#dp.current_term},1,[])};
+							{noreply,doqueue(actordb_sqlprocutil:reply_maybe(P#dp{callfrom = From, callres = Res,evnum = EvNum, 
+																			schemavers = NewVers,evterm = P#dp.current_term},1,[]))};
 						_ ->
 							% reply on appendentries response or later if nodes are behind.
 							{noreply, P#dp{callfrom = From, callres = Res, 
@@ -828,7 +846,7 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 				ok ->
 					?ADBG("Transaction ok"),
 					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId, schemavers = NewVers,evterm = P#dp.current_term,
-								transactioncheckref = CheckRef,transactioninfo = {ComplSql,EvNum,NewVers}})};
+								transactioncheckref = CheckRef,transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[])};
 				_Err ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					erlang:demonitor(CheckRef),
