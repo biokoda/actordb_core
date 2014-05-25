@@ -593,39 +593,39 @@ state_rw_call(What,From,P) ->
 			case ok of
 				% Candidates term is lower than current_term, ignore.
 				_ when NewTerm < P#dp.current_term ->
-					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term}),
 					DoElection = P#dp.mors == master,
+					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term,DoElection}),
 					NP = P#dp{election = Now};
 				% We've already seen this term, only vote yes if we have not voted
 				%  or have voted for this candidate already.
 				_ when NewTerm == P#dp.current_term ->
 					case (P#dp.voted_for == undefined orelse P#dp.voted_for == Candidate) of
 						true when Uptodate ->
-							reply(From,{true,actordb_conf:node_name(),NewTerm}),
 							DoElection = false,
+							reply(From,{true,actordb_conf:node_name(),NewTerm,DoElection}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm, election = Now,
 																masternode = undefined, masternodedist = undefined});
 						true ->
-							reply(From,{outofdate,actordb_conf:node_name(),NewTerm}),
 							DoElection = P#dp.mors == master,
+							reply(From,{outofdate,actordb_conf:node_name(),NewTerm,DoElection}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm, election = Now});
 						false ->
-							reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term}),
-							NP = P,
-							DoElection = P#dp.mors == master
+							DoElection = P#dp.mors == master,
+							reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term,DoElection}),
+							NP = P
 					end;
 				% New candidates term is higher than ours, is he as up to date?
 				_ when Uptodate ->
-					reply(From,{true,actordb_conf:node_name(),NewTerm}),
 					DoElection = false,
+					reply(From,{true,actordb_conf:node_name(),NewTerm,DoElection}),
 					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm, election = Now,
 																masternode = undefined, masternodedist = undefined});
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
 				_ ->
-					reply(From,{outofdate,actordb_conf:node_name(),NewTerm}),
-					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,election = Now}),
-					DoElection = P#dp.mors == master
+					DoElection = P#dp.mors == master,
+					reply(From,{outofdate,actordb_conf:node_name(),NewTerm,DoElection}),
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,election = Now})
 			end,
 			% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
 			% If the other node is actually more up to date, vote was yes and we do not do election.
@@ -1270,7 +1270,7 @@ down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 			{noreply,P#dp{transactioncheckref = undefined}}
 	end;
 down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
-	?ADBG("copyproc died ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Reason,P#dp.mors,P#dp.copyfrom]),
+	?AINF("copyproc died ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Reason,P#dp.mors,P#dp.copyfrom]),
 	case Reason of
 		ok when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
 			{ok,NP} = init(P,copyproc_done),
@@ -1425,7 +1425,7 @@ init_opendb(P) ->
 									evterm = EvTerm,current_term = EvTerm,
 									movedtonode = MovedToNode1},true)};
 		[] -> 
-			?ADBG("Opening NO schema create ~p",[{P#dp.actorname,P#dp.actortype}]),
+			?ADBG("Opening NO schema ~p",[{P#dp.actorname,P#dp.actortype}]),
 			{ok,actordb_sqlprocutil:start_verify(NP,true)}
 	end.
 

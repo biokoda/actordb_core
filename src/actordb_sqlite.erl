@@ -150,6 +150,7 @@ okornot(Res) ->
 		{ok,_} ->
 			ok;
 		{sql_error,Err,_Sql} ->
+			?ADBG("Sql failed ~p",[_Sql]),
 			{sql_error,Err};
 		{sql_error,Err} ->
 			{sql_error,Err}

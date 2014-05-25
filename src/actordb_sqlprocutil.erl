@@ -501,21 +501,43 @@ start_election(P) ->
 	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,actordb_sqlproc,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]),
 	?ADBG("Election for ~p, results ~p",[{P#dp.actorname,P#dp.actortype},Results]),
+
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of
 		{outofdate,Node,_NewerTerm} ->
-			rpc:call(bkdcore:dist_name(Node),actordb_sqlproc,call_slave,
-						[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}]),
+			send_doelection(Node,P),
 			exit(follower);
 		NumVotes when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
 				true ->
 					exit(leader);
+				false when (length(Results)+1)*2 =< ClusterSize ->
+					% Majority isn't possible anyway.
+					exit(follower);
 				false ->
+					% Majority is possible.
+					% This election failed. Check if any of the nodes said they will try to get elected.
+					case [true || {_What,_Node,_HisLatestTerm,true} <- Results] of
+						% If none, sort nodes by name. Pick the one after me and tell him to try to get elected.
+						% If he fails, he will pick the node after him. One must succeed because majority is online.
+						[] ->
+							Nodes = lists:sort([actordb_conf:node_name()|[Nd || {_What,Nd,_HisLatestTerm,_} <- Results]]),
+							case butil:lists_split_at(actordb_conf:node_name(),Nodes) of
+								{_,[Next|_]} ->
+									send_doelection(Next,P);
+								{[Next|_],_} ->
+									send_doelection(Next,P)
+							end;
+						_ ->
+							ok
+					end,
 					exit(follower)
 			end
 	end.
-count_votes([{What,Node,HisLatestTerm}|T],N) ->
+send_doelection(Node,P) ->
+	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
+	rpc:call(bkdcore:dist_name(Node),actordb_sqlproc,call_slave,DoElectionMsg).
+count_votes([{What,Node,HisLatestTerm,_WillHeDoElection}|T],N) ->
 	case What of
 		true ->
 			count_votes(T,N+1);
