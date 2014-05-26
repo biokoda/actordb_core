@@ -950,7 +950,6 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 		_ ->
 			actordb_sqlite:stop(P#dp.db),
 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
-			erlang:monitor(process,RecvPid),
 
 			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}}
 	end;
@@ -1098,7 +1097,7 @@ start_copyrec(P) ->
 	StartRef = make_ref(),
 	Home = self(),
 	true = is_reference(P#dp.dbcopyref),
-	spawn(fun() ->
+	spawn_monitor(fun() ->
 		case distreg:reg(self(),{copyproc,P#dp.dbcopyref}) of
 			ok ->
 				?ADBG("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
@@ -1113,7 +1112,12 @@ start_copyrec(P) ->
 							[] ->
 								ok;
 							_ ->
-								true = length(ConnectedNodes)*2 > length(bkdcore:cluster_nodes())
+								case (length(ConnectedNodes)+1)*2 > (length(bkdcore:cluster_nodes())+1) of
+									true ->
+										true;
+									false ->
+										exit(nomajority)
+								end
 						end,
 						StartOpt = [{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},lock,nohibernate,{slave,true},
 													{lockinfo,dbcopy,{P#dp.dbcopyref,P#dp.cbstate,

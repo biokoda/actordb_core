@@ -11,7 +11,7 @@
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 actor_deleted(Name,Type,Num) ->
-	gen_server:call(?MODULE,{newevent,[{what,delete},{actor,{Name,Type,Num}}]}).
+	gen_server:call(?MODULE,{newevent,[{what,delete},{actor,{Name,Type,Num}}]},infinity).
 
 
 
