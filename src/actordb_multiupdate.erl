@@ -107,11 +107,16 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 						actordb_actor:write(sqlname(P),[create],<<"UPDATE transactions SET commited=1 WHERE id=",(butil:tobin(Num))/binary,
 														" AND (commited=0 OR commited=1);">>)),
 				% Inform all actors that they should commit.
-				case catch do_multiupdate(P#dp{currow = Num, confirming = true},S) of
-					ok ->
+				case S of
+					[{_,_,[delete]}|_] ->
 						ok;
-					Err ->
-						?AERR("Multiupdate confirm error ~p",[Err])
+					_ ->
+						case catch do_multiupdate(P#dp{currow = Num, confirming = true},S) of
+							ok ->
+								ok;
+							Err ->
+								?AERR("Multiupdate confirm error ~p",[Err])
+						end
 				end,
 				% exit({ok,{changes,0,NChanges}});
 				exit(ok);

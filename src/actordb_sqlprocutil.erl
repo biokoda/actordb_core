@@ -685,6 +685,7 @@ post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], C
 read_num(P) ->
 	case P#dp.db of
 		undefined ->
+			?AINF("read num opening dp ~p",[{P#dp.actorname,P#dp.actortype}]),
 			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal);
 		Db ->
 			SchemaTables = true
@@ -700,7 +701,7 @@ read_num(P) ->
 					<<>>;
 				{ok,[{columns,_},{rows,[{_,Num}]}]} ->
 					Num;
-				{sql_error,{"exec_script",sqlite_error,"no such table: __adb"}} ->
+				{sql_error,{"exec_script",sqlite_error,"no such table: __adb"},_} ->
 					<<>>
 			end
 	end.

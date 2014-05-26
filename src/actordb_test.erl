@@ -446,14 +446,14 @@ test_clusteraddnode(_) ->
 	[fun basic_write/0,
 	  fun basic_read/0,
 	  {timeout,60,fun test_add_third/0},
-	  fun basic_read/0,
-	  fun basic_write/0,
+	  {timeout,20,fun basic_read/0},
+	  {timeout,20,fun basic_write/0},
 	  fun kv_readwrite/0,
 	  fun multiupdate_write/0,
 	  fun multiupdate_read/0,
 	  fun() -> test_print_end([1,2,3]) end,
 	  fun() -> ?debugFmt("STOPPING SLAVE2",[]), stop_slaves([2]) end,
-	  fun basic_write/0,
+	  {timeout,20,fun basic_write/0},
 	  fun basic_read/0,
 	  fun copyactor/0
 	  	].

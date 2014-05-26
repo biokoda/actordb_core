@@ -136,7 +136,7 @@ process_ev(Evnum,[{Id,Data}|T]) when Id > Evnum ->
 			case butil:ds_val(what,Info) of
 				delete ->
 					{Name,Type,NumDeleted} = butil:ds_val(actor,Info),
-					{Path,NumNow} = actordb_events:try_actornum(Name,Type,actordb_actor),
+					{Path,NumNow} = actordb_sqlproc:try_actornum(Name,Type,actordb_actor),
 					case NumNow == NumDeleted of
 						true ->
 							case Path of
