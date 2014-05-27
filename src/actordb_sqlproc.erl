@@ -276,30 +276,6 @@ handle_call(Msg,From,P) ->
 			end
 	end.
 
-% If we are not ready to process calls atm (in the middle of a write or db not verified yet). Queue requests.
-% handle_call(Msg,From,P) when P#dp.callfrom /= undefined; P#dp.verified /= true; 
-% 								P#dp.transactionid /= undefined; P#dp.locked /= [] ->
-% 	case Msg of
-% 		{write,{_,_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
-% 			write_call(Msg1,From,P);
-% 		% _ when element(1,Msg) == replicate_start, P#dp.mors == master, P#dp.verified ->
-% 		% 	reply(From,reinit),
-% 		% 	{ok,NP} = init(P,replicate_conflict),
-% 		% 	{noreply,NP};
-% 		% _ when element(1,Msg) == replicate_start, P#dp.copyproc /= undefined ->
-% 		% 	{reply,notready,P};
-% 		_ ->
-% 			?DBG("Queueing msg ~p ~p, because ~p",[Msg,P#dp.mors,{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
-% 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = P#dp.activity+1}}
-% 	end;
-% handle_call({read,Msg},From,P) ->
-% 	read_call(Msg,From,P#dp{activity = P#dp.activity + 1});
-% handle_call({write,Msg},From, #dp{mors = master} = P) ->
-% 	write_call(Msg,From,P#dp{activity = P#dp.activity + 1});
-% handle_call({write,_},_,#dp{mors = slave} = P) ->
-% 	?DBG("Redirect not master ~p",[P#dp.masternode]),
-% 	actordb_sqlprocutil:redirect_master(P);
-
 
 commit_call(Doit,Id,From,P) ->
 	?ADBG("Commit ~p doit=~p, id=~p, from=~p, trans=~p",[{P#dp.actorname,P#dp.actortype},Doit,Id,From,P#dp.transactionid]),
@@ -512,7 +488,8 @@ state_rw_call(What,From,P) ->
 							reply(From,ok),
 							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw,AEType)),
 							?ADBG("AE response for node ~p, processed=~p followers=~p",
-									[{P#dp.actorname,P#dp.actortype},Node,[{F#flw.node,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
+									[{P#dp.actorname,P#dp.actortype},Node,
+										[{F#flw.node,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
 							{noreply,doqueue(NP)};
 						% What we thought was follower is ahead of us and we need to step down
 						false when P#dp.current_term < CurrentTerm ->
@@ -529,10 +506,12 @@ state_rw_call(What,From,P) ->
 								false ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
 										{false,NP,NF} ->
-											?ADBG("Can not recover from log, sending entire db ~p",[{P#dp.actorname,P#dp.actortype}]),
+											?ADBG("Can not recover from log, sending entire db ~p",
+													[{P#dp.actorname,P#dp.actortype}]),
 											% We can not recover from wal. Send entire db.
 											Ref = make_ref(),
-											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,
+																[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 																{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
 												ok ->
 													actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,P#dp.actorname}},
@@ -767,7 +746,8 @@ write_call(Sql,undefined,From,NewVers,P) ->
 					{ok,Dbfile} = file:read_file(P#dp.dbpath),
 					{Compressed,CompressedSize} = esqlite3:lz4_compress(Dbfile),
 					<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
-					VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,DbCompressed});
+					VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),
+												P#dp.evnum,P#dp.evterm,DbCompressed});
 				_ ->
 					VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm})
 			end,
@@ -777,8 +757,9 @@ write_call(Sql,undefined,From,NewVers,P) ->
 					?DBG("Write result ~p",[Res]),
 					case ok of
 						_ when P#dp.follower_indexes == [] ->
-							{noreply,doqueue(actordb_sqlprocutil:reply_maybe(P#dp{callfrom = From, callres = Res,evnum = EvNum, 
-																			schemavers = NewVers,evterm = P#dp.current_term},1,[]))};
+							{noreply,doqueue(actordb_sqlprocutil:reply_maybe(
+										P#dp{callfrom = From, callres = Res,evnum = EvNum, 
+												schemavers = NewVers,evterm = P#dp.current_term},1,[]))};
 						_ ->
 							% reply on appendentries response or later if nodes are behind.
 							{noreply, P#dp{callfrom = From, callres = Res, 
@@ -842,7 +823,8 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 					{OldSql,_EvNum,NewVers} = P#dp.transactioninfo,
 					% Combine prev sql with new one.
 					Sql = iolist_to_binary([OldSql,Sql1]),
-					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
+					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions ",
+										 "(id,tid,updater,node,schemavers,sql) VALUES (1,">>,
 											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
 								 				(butil:tobin(NewVers)),",",
 								 				"'",(base64:encode(Sql)),"');"];
@@ -1038,6 +1020,7 @@ check_inactivity(NTimer,P) ->
 								DN = bkdcore:dist_name(F#flw.node),
 								case lists:member(DN,nodes()) of
 									true ->
+										?AINF("Resending appendentries ~p",[{P#dp.actorname,P#dp.actortype}]),
 										rpc:cast(DN,
 											?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 											{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),

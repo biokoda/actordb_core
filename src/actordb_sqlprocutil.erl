@@ -282,7 +282,8 @@ send_wal(P,#flw{file = File} = F) ->
      {HC1,HC2} = esqlite3:wal_checksum(Header,0,0,32),
      {C1,C2} = esqlite3:wal_checksum(Page,HC1,HC2,byte_size(Page)),
 	case Header of
-		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,_:32,_:32,Chk1:32/unsigned-big,Chk2:32/unsigned-big,_/binary>> when Evnum == F#flw.next_index ->
+		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,
+		  _:32,_:32,Chk1:32/unsigned-big,Chk2:32/unsigned-big,_/binary>> when Evnum == F#flw.next_index ->
 			case ok of
 				_ when C1 == Chk1, C2 == Chk2 ->
 					{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
@@ -298,7 +299,8 @@ send_wal(P,#flw{file = File} = F) ->
 							error
 					end;
 				_ ->
-					?AERR("DETECTED DISK CORRUPTION ON WAL LOG! Stepping down as leader for ~p and truncating log",[{P#dp.actorname,P#dp.actortype}]),
+					?AERR("DETECTED DISK CORRUPTION ON WAL LOG! Stepping down as leader for ~p and truncating log",
+								[{P#dp.actorname,P#dp.actortype}]),
 					file:position(File,{cur,-?PAGESIZE-40}),
 					file:truncate(File),
 					exit(wal_corruption)
@@ -394,7 +396,8 @@ check_redirect(P,Copyfrom) ->
 						false ->
 							case bkdcore:cluster_group(Node) == bkdcore:cluster_group(SomeNode) of
 								true ->
-									?AERR("Still redirects to local, will retry move. ~p",[{P#dp.actorname,P#dp.actortype}]),
+									?AERR("Still redirects to local, will retry move. ~p",
+											[{P#dp.actorname,P#dp.actortype}]),
 									check_redirect(P,{move,NewShard,SomeNode});
 								false ->
 									check_redirect(P,{move,NewShard,SomeNode})
