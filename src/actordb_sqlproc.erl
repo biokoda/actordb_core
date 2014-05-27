@@ -131,28 +131,11 @@ startactor(Name,Start,Flags) ->
 			apply(Start,start,[Name,Flags])
 	end.
 
-% call_master(Cb,Actor,Type,Msg) ->
-% 	call_master(Cb,Actor,Type,Msg,[]).
-% call_master(Cb,Actor,Type,Msg,Flags) ->
-% 	case apply(Cb,start,[Actor,Type,[{startreason,Msg}|Flags]]) of %
-% 		{ok,Pid} ->
-% 			ok;
-% 		Pid when is_pid(Pid) ->
-% 			ok
-% 	end,
-% 	% ?AINF("Callmaster ~p ~p",[Actor,Msg]),
-% 	case catch gen_server:call(Pid,Msg,infinity) of
-% 		{'EXIT',{noproc,_}} ->
-% 			call_master(Cb,Actor,Type,Msg);
-% 		{redirect,Nd} ->
-
-% 		Res ->
-% 			Res
-% 	end.
 
 call_slave(Cb,Actor,Type,Msg) ->
 	call_slave(Cb,Actor,Type,Msg,[]).
 call_slave(Cb,Actor,Type,Msg,Flags) ->
+	actordb_util:wait_for_startup(Actor,0),
 	case apply(Cb,cb_slave_pid,[Actor,Type,[{startreason,Msg}|Flags]]) of %
 		{ok,Pid} ->
 			ok;
@@ -506,7 +489,7 @@ state_rw_call(What,From,P) ->
 				_ ->
 					?AERR("AE WAL received wrong term ~p ~p",[{P#dp.actorname,P#dp.actortype},{Term,P#dp.current_term}]),
 					reply(From,false),
-					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,AEType),
+					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType),
 					{noreply,P}
 			end;
 		% Executed on leader.
@@ -1344,7 +1327,6 @@ init([_|_] = Opts) ->
 	case actordb_sqlprocutil:parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), 
 									schemanum = actordb_schema:num()}),Opts) of
 		{registered,Pid} ->
-			?AINF("registered"),
 			explain({registered,Pid},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_ACTORNUM) > 0 ->
@@ -1402,8 +1384,7 @@ init([_|_] = Opts) ->
 					init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor});
 				_ ->
 					?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
-					{ok, P#dp{verified = true, movedtonode = MovedToNode,
-								activity_now = actordb_sqlprocutil:actor_start(P)}}
+					{ok, P#dp{verified = true, movedtonode = MovedToNode}}
 			end;
 		P ->
 			self() ! start_copy,

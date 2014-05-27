@@ -29,6 +29,20 @@ typeatom(<<_/binary>> = Type) ->
 typeatom(T) when is_atom(T) ->
 	T.
 
+wait_for_startup(Who,N) ->
+	case catch actordb_schema:num() of
+		X when is_integer(X) ->
+			ok;
+		{'EXIT',_} ->
+			?ADBG("WAIT FOR STARTUP ~p",[Who]),
+			case N > 100 of
+				true ->
+					throw(timeout);
+				_ ->
+					timer:sleep(50),
+					wait_for_startup(Who,N+1)
+			end
+	end.
 
 tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
              LenVarPrefix:16/unsigned,VarPrefix:LenVarPrefix/binary,

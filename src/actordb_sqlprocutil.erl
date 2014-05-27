@@ -257,8 +257,12 @@ continue_maybe(P,F,AEType) ->
 					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref()});
 				ok ->
 					% Send wal
-					send_wal(P,F),
-					store_follower(P,F#flw{wait_for_response_since = make_ref()})
+					case send_wal(P,F) of
+						wal_corruption ->
+							store_follower(P,F#flw{wait_for_response_since = make_ref()});
+						_ ->
+							store_follower(P,F#flw{wait_for_response_since = make_ref()})
+					end
 			end;
 		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
@@ -275,19 +279,29 @@ store_follower(P,NF) ->
 % Read until commit set in header.
 send_wal(P,#flw{file = File} = F) ->
 	{ok,<<Header:40/binary,Page/binary>>} = file:read(File,40+?PAGESIZE),
+     {HC1,HC2} = esqlite3:wal_checksum(Header,0,0,32),
+     {C1,C2} = esqlite3:wal_checksum(Page,HC1,HC2,byte_size(Page)),
 	case Header of
-		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,_/binary>> when Evnum == F#flw.next_index ->
-			{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
-			<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
-			WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-						{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover}}]}),
-			case WalRes of
-				ok when Commit == 0 ->
-					send_wal(P,F);
-				ok ->
-					ok;
+		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,_:32,_:32,Chk1:32/unsigned-big,Chk2:32/unsigned-big,_/binary>> when Evnum == F#flw.next_index ->
+			case ok of
+				_ when C1 == Chk1, C2 == Chk2 ->
+					{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
+					<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
+					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover}}]}),
+					case WalRes of
+						ok when Commit == 0 ->
+							send_wal(P,F);
+						ok ->
+							ok;
+						_ ->
+							error
+					end;
 				_ ->
-					error
+					?AERR("DETECTED DISK CORRUPTION ON WAL LOG! Stepping down as leader for ~p and truncating log",[{P#dp.actorname,P#dp.actortype}]),
+					file:position(File,{cur,-?PAGESIZE-40}),
+					file:truncate(File),
+					exit(wal_corruption)
 			end
 	end.
 
@@ -488,7 +502,7 @@ start_verify(P,JustStarted) ->
 			{Verifypid,_} = spawn_monitor(fun() -> 
 							start_election(NP)
 								end),
-			NP#dp{election = Verifypid, verified = false, activity_now = actor_start(P), activity = make_ref()}
+			NP#dp{election = Verifypid, verified = false, activity = make_ref()}
 	end.
 % Call RequestVote RPC on cluster nodes. 
 % This should be called in an async process and current_term and voted_for should have
@@ -685,7 +699,6 @@ post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], C
 read_num(P) ->
 	case P#dp.db of
 		undefined ->
-			?AINF("read num opening dp ~p",[{P#dp.actorname,P#dp.actortype}]),
 			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal);
 		Db ->
 			SchemaTables = true
@@ -709,10 +722,13 @@ read_num(P) ->
 delactorfile(P) ->
 	[Pid ! delete || {_,Pid,_,_} <- P#dp.dbcopy_to],
 	?ADBG("delfile ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.mors]),
+	% Term files are not deleted. This is because of deleted actors. If a node was offline
+	%  when an actor was deleted, then the actor was created anew still while offline, 
+	%  this will keep the term number higher than that old file and raft logic will overwrite that data.
 	case P#dp.movedtonode of
 		undefined ->
 			file:delete(P#dp.dbpath),
-			file:delete(P#dp.dbpath++"-term"),
+			% file:delete(P#dp.dbpath++"-term"),
 			file:delete(P#dp.dbpath++"-wal"),
 			file:delete(P#dp.dbpath++"-shm");
 		_ ->
@@ -725,7 +741,7 @@ delactorfile(P) ->
 			% Rename into the actual dbfile (should be atomic op)
 			ok = file:rename(P#dp.dbpath++"1",P#dp.dbpath),
 			file:delete(P#dp.dbpath++"-wal"),
-			file:delete(P#dp.dbpath++"-term"),
+			% file:delete(P#dp.dbpath++"-term"),
 			file:delete(P#dp.dbpath++"-shm")
 	end.
 
@@ -754,8 +770,8 @@ delete_actor(P) ->
 					actordb:rpc(Node,P#dp.actorname,{actordb_shard,del_actor,[Shard,P#dp.actorname,P#dp.actortype]});
 				Shard ->
 					ok = actordb_shard:del_actor(Shard,P#dp.actorname,P#dp.actortype)
-			end,
-			actordb_events:actor_deleted(P#dp.actorname,P#dp.actortype,read_num(P));
+			end;
+			% actordb_events:actor_deleted(P#dp.actorname,P#dp.actortype,read_num(P));
 		_ ->
 			ok
 	end,
@@ -766,7 +782,6 @@ delete_actor(P) ->
 			{_,_} = rpc:multicall(nodes(),actordb_sqlproc,call_slave,
 							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}},[]])
 	end,
-	empty_queue(P#dp.callqueue,{error,deleted}),
 	actordb_sqlite:stop(P#dp.db),
 	delactorfile(P).
 empty_queue(Q,ReplyMsg) ->
@@ -886,7 +901,7 @@ parse_opts(P,[]) ->
 			DbPath = lists:flatten(apply(P#dp.cbmod,cb_path,
 									[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
 									butil:tolist(P#dp.actorname)++"."++butil:tolist(P#dp.actortype),
-			P#dp{dbpath = DbPath};
+			P#dp{dbpath = DbPath,activity_now = actordb_sqlprocutil:actor_start(P)};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.

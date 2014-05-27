@@ -62,6 +62,7 @@ start(Name,Type1,Slave) when is_atom(Slave) ->
 	start(Name,Type1,Slave,[]).
 start(Name,Type1,Slave,Opt) ->
 	?ADBG("shard start ~p ~p ~p",[Name,Type1,Opt]),
+	actordb_util:wait_for_startup(Name,0),
 	% #state will be provided with every callback from sqlproc.
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
@@ -344,7 +345,7 @@ cb_list_actors(P,From,Limit) ->
 
 cb_del_actor(P,ActorName) ->
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
-	?ADBG("Del actor ~p ~p",[ActorName,{P#state.nextshard,P#state.nextshardnode,Hash}]),
+	?AINF("Del actor ~p ~p",[ActorName,{P#state.nextshard,P#state.nextshardnode,Hash}]),
 	Sql = ["DELETE FROM actors WHERE id=",at(P#state.idtype,ActorName),";"],
 	case is_integer(P#state.nextshard) of
 		true when P#state.nextshard =< Hash, is_binary(P#state.nextshardnode) ->

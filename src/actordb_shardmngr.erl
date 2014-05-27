@@ -41,7 +41,17 @@ find_local_shard({Shard,_Actor},_Type) ->
 find_local_shard(Actor,Type) ->
 	find_local_shard(Actor,Type,actordb_util:hash(butil:tobin(Actor))).
 find_local_shard(Actor,Type,Hash) ->
-	case find_shard(actordb_shardtree:local(),Hash) of
+	find_local_shard(Actor,Type,Hash,0).
+find_local_shard(Actor,Type,Hash,Retry) ->
+	case catch find_shard(actordb_shardtree:local(),Hash) of
+		{'EXIT',_} ->
+			case Retry > 50 of
+				true ->
+					exit(initialize_timeout);
+				_ ->
+					timer:sleep(100),
+					find_local_shard(Actor,Type,Hash,Retry+1)
+			end;
 		false ->
 			% If shard is in the process of moving, shardtree will be set to current global shard 
 			% (the node where shard is moving from).

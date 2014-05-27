@@ -23,6 +23,7 @@ start({Name,Type},Flags) ->
 start(Name,Type) ->
 	start(Name,Type,[{slave,false}]).
 start(Name,Type1,Opt) ->
+	actordb_util:wait_for_startup(Name,0),
 	Type = actordb_util:typeatom(Type1),
 	case distreg:whereis({Name,Type}) of
 		undefined ->
@@ -101,8 +102,7 @@ cb_candie(Mors,Name,_Type,_S) ->
 			actordb_shardmngr:is_local_shard(Name)
 	end.
 cb_checkmoved(Name,Type) ->
-	Shard = actordb_shardmngr:find_local_shard(Name,Type),
-	case Shard of
+	case catch actordb_shardmngr:find_local_shard(Name,Type) of
 		{redirect,_,MovedToNode} ->
 			MovedToNode;
 		_ ->
