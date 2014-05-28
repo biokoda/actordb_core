@@ -41,7 +41,7 @@ read(Name,Flags,[{copy,CopyFrom}],Start) ->
 			end
 	end;
 read(Name,Flags,[delete],Start) ->
-	call(Name,Flags,{write,{undefined,0,delete,undefined}},Start);
+	call(Name,Flags,{write,{undefined,delete,{0,0,<<>>}}},Start);
 read(Name,Flags,Sql,Start) ->
 	call(Name,Flags,{read,Sql},Start).
 
@@ -66,7 +66,9 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 			call(Name,Flags,{write,{MFA,iolist_to_binary(Sql),undefined}},Start)
 	end;
 write(Name,Flags,[delete],Start) ->
-	call(Name,Flags,{write,{undefined,delete,undefined}},Start);
+	% Delete actor calls are placed in a fake multi-actor transaction. 
+	% This way if the intent to delete is written, then actor will actually delete itself.
+	call(Name,Flags,{write,{undefined,delete,{0,0,<<>>}}},Start);
 write(Name,Flags,Sql,Start) ->
 	call(Name,Flags,{write,{undefined,iolist_to_binary(Sql),undefined}},Start).
 
@@ -278,7 +280,7 @@ handle_call(Msg,From,P) ->
 
 
 commit_call(Doit,Id,From,P) ->
-	?ADBG("Commit ~p doit=~p, id=~p, from=~p, trans=~p",[{P#dp.actorname,P#dp.actortype},Doit,Id,From,P#dp.transactionid]),
+	?AINF("Commit ~p doit=~p, id=~p, from=~p, trans=~p",[{P#dp.actorname,P#dp.actortype},Doit,Id,From,P#dp.transactionid]),
 	case P#dp.transactionid == Id of
 		true ->
 			case P#dp.transactioncheckref of
@@ -290,39 +292,33 @@ commit_call(Doit,Id,From,P) ->
 			?ADBG("Commit write ~p",[P#dp.transactioninfo]),
 			{Sql,EvNum,_NewVers} = P#dp.transactioninfo,
 			case Doit of
+				true when Sql == <<"delete">> ->
+					actordb_sqlprocutil:delete_actor(P),
+					reply(From,ok),
+					{stop,normal,P};
 				true when P#dp.follower_indexes == [] ->
-					case Sql of
-						delete ->
-							actordb_sqlprocutil:delete_actor(P),
-							reply(From,ok),
-							{stop,normal,P};
-						_ ->
-							ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
-							{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
-									 transactioninfo = undefined, activity = make_ref(),
-									 evnum = EvNum, evterm = P#dp.current_term}}
-					end;
+					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
+					{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
+							 transactioninfo = undefined, activity = make_ref(),
+							 evnum = EvNum, evterm = P#dp.current_term}};
 				true ->
+					% We can safely release savepoint.
+					% This will send the remaining WAL pages to followers that have commit flag set.
+					% Followers will then rpc back appendentries_response.
+					% We can also set #dp.evnum now.
+					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>,
+												P#dp.evterm,EvNum,<<>>)),
+					{noreply,P#dp{callfrom = From, activity = make_ref(),
+								  callres = ok,evnum = EvNum,
+								  follower_indexes = update_followers(P#dp.follower_indexes),
+								 transactionid = undefined, transactioninfo = undefined,transactioncheckref = undefined}};
+				false when P#dp.follower_indexes == [] ->
 					case Sql of
 						<<"delete">> ->
-							actordb_sqlprocutil:delete_actor(P),
-							reply(From,ok),
-							?ADBG("Stopping ~p",[{P#dp.actorname,P#dp.actortype}]),
-							{stop,normal,P};
+							ok;
 						_ ->
-							% We can safely release savepoint.
-							% This will send the remaining WAL pages to followers that have commit flag set.
-							% Followers will then rpc back appendentries_response.
-							% We can also set #dp.evnum now.
-							ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>,
-														P#dp.evterm,EvNum,<<>>)),
-							{noreply,P#dp{callfrom = From, activity = make_ref(),
-										  callres = ok,evnum = EvNum,
-										  follower_indexes = update_followers(P#dp.follower_indexes),
-										 transactionid = undefined, transactioninfo = undefined,transactioncheckref = undefined}}
-					end;
-				false when P#dp.follower_indexes == [] ->
-					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+							actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
+					end,
 					{reply,ok,doqueue(P#dp{transactionid = undefined, transactioninfo = undefined,
 									transactioncheckref = undefined,activity = make_ref()})};
 				false ->
@@ -350,8 +346,6 @@ commit_call(Doit,Id,From,P) ->
 
 state_rw_call(What,From,P) ->
 	case What of
-		% verifyinfo ->
-		% 	{reply,{ok,bkdcore:node_name(),P#dp.evcrc,P#dp.evnum,{P#dp.mors,P#dp.verified}},P};
 		actornum ->
 			case P#dp.mors of
 				master ->
@@ -773,7 +767,7 @@ write_call(Sql,undefined,From,NewVers,P) ->
 	end;
 write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
-	?ADBG("Starting transaction ~p write id ~p, curtr ~p, sql ~p",
+	?AINF("Starting transaction ~p write id ~p, curtr ~p, sql ~p",
 				[{P#dp.actorname,P#dp.actortype},TransactionId,P#dp.transactionid,Sql1]),
 	case P#dp.follower_indexes of
 		[] ->
@@ -783,14 +777,20 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 					% Transaction can write to single actor more than once (especially for KV stores)
 					% if we are already in this transaction, just update sql.
 					{_OldSql,EvNum,_} = P#dp.transactioninfo,
-					ComplSql = Sql1,
-					Res = actordb_sqlite:exec(P#dp.db,ComplSql,write);
+					case Sql1 of
+						delete ->
+							ComplSql = <<"delete">>,
+							Res = ok;
+						_ ->
+							ComplSql = Sql1,
+							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
+					end;
 				undefined ->
 					EvNum = P#dp.evnum+1,
 					case Sql1 of
 						delete ->
 							Res = ok,
-							ComplSql = delete;
+							ComplSql = <<"delete">>;
 						_ ->
 							ComplSql = 
 								[<<"$SAVEPOINT 'adb';">>,
@@ -817,7 +817,7 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 		_ ->
 			EvNum = P#dp.evnum+1,
 			case P#dp.transactionid of
-				TransactionId ->
+				TransactionId when Sql1 /= delete ->
 					% Rollback prev version of sql.
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					{OldSql,_EvNum,NewVers} = P#dp.transactioninfo,
@@ -827,6 +827,13 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 										 "(id,tid,updater,node,schemavers,sql) VALUES (1,">>,
 											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
 								 				(butil:tobin(NewVers)),",",
+								 				"'",(base64:encode(Sql)),"');"];
+				TransactionId ->
+					Sql = <<"delete">>,
+					% First store transaction info. Then run actual sql of transaction.
+					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
+											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
+											(butil:tobin(NewVers)),",",
 								 				"'",(base64:encode(Sql)),"');"];
 				_ ->
 					case Sql1 of
@@ -924,6 +931,8 @@ handle_info({stop,Reason},P) ->
 	{stop, normal, P};
 handle_info(print_info,P) ->
 	handle_cast(print_info,P);
+handle_info(commit_transaction,P) ->
+	down_info(0,12345,done,P#dp{transactioncheckref = 12345});
 handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 	case apply(P#dp.cbmod,cb_info,[Msg,P#dp.cbstate]) of
 		{noreply,S} ->
@@ -1206,14 +1215,14 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = os:timestamp(), mors = slave})}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
-	?ADBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
+	?AINF("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
 	case P#dp.transactionid of
 		{Tid,Updaterid,Node} ->
 			case Reason of
 				noproc ->
 					{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 					{noreply,P#dp{transactioncheckref = CheckRef}};
-				abandonded ->
+				abandoned ->
 					case handle_call({commit,false,P#dp.transactionid},undefined,P#dp{transactioncheckref = undefined}) of
 						{stop,normal,NP} ->
 							{stop,normal,NP};
@@ -1337,11 +1346,11 @@ init([_|_] = Opts) ->
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
 			case butil:readtermfile([P#dp.dbpath,"-term"]) of
-				{VotedFor,VotedForTerm} ->
+				{VotedFor,VotedForTerm,VoteEvnum} ->
 					ok;
 				_ ->
 					VotedFor = undefined,
-					VotedForTerm = 0
+					VoteEvnum = VotedForTerm = 0
 			end,
 			case ok of
 				_ when P#dp.mors == slave ->
@@ -1358,10 +1367,11 @@ init([_|_] = Opts) ->
 												evnum = Evnum, evterm = Evterm}};
 								{ok,_} ->
 									file:close(F),
-									init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor})
+									init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum})
 							end;
 						{error,enoent} ->
-							{ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor}}
+							% {ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, evnum = VoteEvum}}
+							init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum})
 					end;
 				_ when MovedToNode == undefined; RightCluster ->
 					init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor});

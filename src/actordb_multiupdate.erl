@@ -97,7 +97,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 		case catch do_multiupdate(P#dp{currow = Num},S) of
 			ok ->
 				% NChanges = get(nchanges),
-				erase(),
+				% erase(),
 				?ADBG("multiupdate commiting"),
 				% With this write transaction is commited. 
 				% If any node goes down, actors will check back to this updater process
@@ -107,27 +107,28 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 						actordb_actor:write(sqlname(P),[create],<<"UPDATE transactions SET commited=1 WHERE id=",(butil:tobin(Num))/binary,
 														" AND (commited=0 OR commited=1);">>)),
 				% Inform all actors that they should commit.
-				case S of
-					[{_,_,[delete]}|_] ->
-						ok;
-					_ ->
-						case catch do_multiupdate(P#dp{currow = Num, confirming = true},S) of
-							ok ->
-								ok;
-							Err ->
-								?AERR("Multiupdate confirm error ~p",[Err])
-						end
-				end,
-				% exit({ok,{changes,0,NChanges}});
+				% case S of
+				% 	[{_,_,[delete]}|_] ->
+				% 		ok;
+				% 	_ ->
+				% 		case catch do_multiupdate(P#dp{currow = Num, confirming = true},S) of
+				% 			ok ->
+				% 				ok;
+				% 			Err ->
+				% 				?AERR("Multiupdate confirm error ~p",[Err])
+				% 		end
+				% end,
+				[bkdcore_rpc:cast(NodeName,{actordb_sqlprocutil,transaction_done,[Num,P#dp.name,done]}) || {{node,NodeName},_} <- get()],
 				exit(ok);
 			Err ->
 				?AERR("Multiupdate failed ~p",[Err]),
-				case catch do_multiupdate(P#dp{currow = Num, confirming = false},S) of
-					ok ->
-						ok;
-					Err ->
-						?AERR("Multiupdate confirm error ~p",[Err])
-				end,
+				% case catch do_multiupdate(P#dp{currow = Num, confirming = false},S) of
+				% 	ok ->
+				% 		ok;
+				% 	Err ->
+				% 		?AERR("Multiupdate confirm error ~p",[Err])
+				% end,
+				[bkdcore_rpc:cast(NodeName,{actordb_sqlprocutil,transaction_done,[Num,P#dp.name,abandoned]}) || {{node,NodeName},_} <- get()],
 				% commited = -1 means transaction has been abandoned.
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.
@@ -246,7 +247,7 @@ schema(1) ->
 % [{VariableName,Index},{rowval1,rowval2,rowval3,...}]
 % If a variable has local scope (it's from a for statement), it has a different {VariableName,cols}
 % [{VariableName,cols},{gvar,GlobalVarName,GlobalVarIndex}]
-
+% It also stores every node where an actor lives: [{{node,Nodename},true},...]
 
 multiread(L) ->
 	erase(),
@@ -508,6 +509,12 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 	end,
 	?ADBG("do_actor varlist ~p",[Varlist]),
 	case Res of
+		{<<_/binary>> = FinalNode,Res1} ->
+			put({node,FinalNode},true);
+		Res1 ->
+			ok
+	end,
+	case Res1 of
 		{sql_error,Str} ->
 			exit({sql_error,Str});
 		{ok,[{columns,_},{rows,_}] = L} ->

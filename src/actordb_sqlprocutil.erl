@@ -35,14 +35,20 @@ reply_maybe(P,N,[]) ->
 		true when P#dp.transactioninfo /= undefined; element(1,P#dp.callfrom) == exec ->
 			% Now it's time to execute second stage of transaction.
 			% This means actually executing the transaction sql, without releasing savepoint.
-			case P#dp.transactioninfo /= undefined andalso P#dp.follower_indexes /= [] of
+			case P#dp.transactioninfo /= undefined of
 				true ->
 					{Sql,EvNumNew,NewVers} = P#dp.transactioninfo,
 					{Tid,Updaterid,_} = P#dp.transactionid,
 					case Sql of
 						<<"delete">> ->
-							Res = ok;
-						_ ->
+							case ok of
+								_ when Tid == 0, Updaterid == 0 ->
+									self() ! commit_transaction,
+									Res = ok;
+								_ ->
+									Res = {actordb_conf:node_name(),ok}
+							end;
+						_ when P#dp.follower_indexes /= [] ->
 							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
 												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
@@ -54,7 +60,17 @@ reply_maybe(P,N,[]) ->
 									 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
 									 ],
 							VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.evterm,EvNumNew,VarHeader)
+							Res1 = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.evterm,EvNumNew,VarHeader),
+							Res = {actordb_conf:node_name(),Res1},
+							case actordb_sqlite:okornot(Res1) of
+								Something when Something /= ok, P#dp.transactionid /= undefined ->
+									Me = self(),
+									spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
+								_ ->
+									ok
+							end;
+						_ ->
+							Res = {actordb_conf:node_name(),ok}
 					end;
 				false ->
 					NewVers = P#dp.schemavers,
@@ -78,14 +94,6 @@ reply_maybe(P,N,[]) ->
 			end,
 			?ADBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
 			reply(From,Res),
-			% If write not ok it should never reach this point anyway.
-			case actordb_sqlite:okornot(Res) of
-				Something when Something /= ok, P#dp.transactionid /= undefined ->
-					Me = self(),
-					spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
-				_ ->
-					ok
-			end,
 			NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()}),
 			case Msg of
 				undefined ->
@@ -330,12 +338,23 @@ rewind_wal(P) ->
 	end.
 
 save_term(P) ->
-	ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term}),
+	ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum}),
 	P.
 
 
+% Result: done | abandoned
+transaction_done(Id,Uid,Result) ->
+	case distreg:whereis({Id,Uid}) of
+		undefined ->
+			ok;
+		Pid ->
+			exit(Pid,Result)
+	end.
+
 % Check back with multiupdate actor if transaction has been completed, failed or still running.
 % Every 100ms.
+start_transaction_checker(0,0,<<>>) ->
+	{undefined,undefined};
 start_transaction_checker(Id,Uid,Node) ->
 	case distreg:whereis({Id,Uid}) of
 		undefined ->
@@ -366,19 +385,19 @@ transaction_checker(Id,Uid,Node) ->
 			end
 	end.
 transaction_checker1(Id,Uid,Node) ->
-	timer:sleep(100),
 	Res = actordb:rpc(Node,Uid,{actordb_multiupdate,transaction_state,[Uid,Id]}),
 	?ADBG("transaction_check ~p ~p",[{Id,Uid,Node},Res]),
 	case Res of
 		% Running
 		{ok,0} ->
+			timer:sleep(100),
 			transaction_checker1(Id,Uid,Node);
 		% Done
 		{ok,1} ->
 			exit(done);
 		% Failed
 		{ok,-1} ->
-			exit(abandonded);
+			exit(abandoned);
 		_ ->
 			transaction_checker1(Id,Uid,Node)
 	end.
@@ -727,7 +746,8 @@ delactorfile(P) ->
 	?ADBG("delfile ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.mors]),
 	% Term files are not deleted. This is because of deleted actors. If a node was offline
 	%  when an actor was deleted, then the actor was created anew still while offline, 
-	%  this will keep the term number higher than that old file and raft logic will overwrite that data.
+	%  this will keep the term and evnum number higher than that old file and raft logic will overwrite that data.
+	save_term(P),
 	case P#dp.movedtonode of
 		undefined ->
 			file:delete(P#dp.dbpath),
