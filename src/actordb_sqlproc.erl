@@ -408,7 +408,7 @@ state_rw_call(What,From,P) ->
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term}))));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
-					?AERR("AE start, evnum evterm do not match ~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
+					?AERR("AE start attempt failed, evnum evterm do not match ~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 								[{P#dp.actorname,P#dp.actortype,AEType},{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
 					case P#dp.evnum > PrevEvnum andalso PrevEvnum > 0 of
 						% Node is conflicted, delete last entry
@@ -610,110 +610,86 @@ state_rw_call(What,From,P) ->
 			{reply,ok,P}
 	end.
 
-read_call(Msg,From,P) ->
-	case P#dp.mors of
-		master when Msg == [exists] ->
-			{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
-		master ->
-			case actordb_sqlprocutil:has_schema_updated(P,[]) of
-				ok ->
-					case Msg of	
-						{Mod,Func,Args} ->
-							case apply(Mod,Func,[P#dp.cbstate|Args]) of
-								{reply,What,Sql,NS} ->
-									{reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
-								{reply,What,NS} ->
-									{reply,What,P#dp{cbstate = NS}};
-								{reply,What} ->
-									{reply,What,P};
-								{Sql,State} ->
-									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P#dp{cbstate = State}};
-								Sql ->
-									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
-							end;
-						{Sql,{Mod,Func,Args}} ->
-							case apply(Mod,Func,[actordb_sqlite:exec(P#dp.db,Sql,read)|Args]) of
-								{write,Write} ->
-									case Write of
-										_ when is_binary(Write); is_list(Write) ->
-											write_call({undefined,iolist_to_binary(Sql),undefined},From,P);
-										{_,_,_} ->
-											write_call({Write,undefined,undefined},From,P)
-									end;
-								{write,Write,NS} ->
-									case Write of
-										_ when is_binary(Write); is_list(Write) ->
-											write_call({undefined,iolist_to_binary(Sql),undefined},
-													   From,P#dp{cbstate = NS});
-										{_,_,_} ->
-											write_call({Write,undefined,undefined,undefined},From,P#dp{cbstate = NS})
-									end;
-								{reply,What,NS} ->
-									{reply,What,P#dp{cbstate = NS}};
-								{reply,What} ->
-									{reply,What,P}
-							end;
+read_call([exists],_From,#dp{mors = master} = P) ->
+	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
+read_call(Msg,From,#dp{mors = master} = P) ->	
+	case actordb_sqlprocutil:has_schema_updated(P,[]) of
+		ok ->
+			case Msg of	
+				{Mod,Func,Args} ->
+					case apply(Mod,Func,[P#dp.cbstate|Args]) of
+						{reply,What,Sql,NS} ->
+							{reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
+						{reply,What,NS} ->
+							{reply,What,P#dp{cbstate = NS}};
+						{reply,What} ->
+							{reply,What,P};
+						{Sql,State} ->
+							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P#dp{cbstate = State}};
 						Sql ->
 							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
 					end;
-				% Schema has changed. Execute write on schema update.
-				% Place this read in callqueue for later execution.
-				{NewVers,Sql1} ->
-					case write_call(Sql1,undefined,undefined,NewVers,P) of
-						{reply,Reply,NP} ->
-							case actordb_sqlite:okornot(Reply) of
-								ok ->
-									read_call(Msg,From,NP);
-								Err ->
-									{reply,Err,NP}
+				{Sql,{Mod,Func,Args}} ->
+					case apply(Mod,Func,[actordb_sqlite:exec(P#dp.db,Sql,read)|Args]) of
+						{write,Write} ->
+							case Write of
+								_ when is_binary(Write); is_list(Write) ->
+									write_call({undefined,iolist_to_binary(Sql),undefined},From,P);
+								{_,_,_} ->
+									write_call({Write,undefined,undefined},From,P)
 							end;
-						{noreply,NP} ->
-							{noreply,NP#dp{callqueue = queue:in_r({From,Msg},NP#dp.callqueue)}}
-					end
+						{write,Write,NS} ->
+							case Write of
+								_ when is_binary(Write); is_list(Write) ->
+									write_call({undefined,iolist_to_binary(Sql),undefined},
+											   From,P#dp{cbstate = NS});
+								{_,_,_} ->
+									write_call({Write,undefined,undefined,undefined},From,P#dp{cbstate = NS})
+							end;
+						{reply,What,NS} ->
+							{reply,What,P#dp{cbstate = NS}};
+						{reply,What} ->
+							{reply,What,P}
+					end;
+				Sql ->
+					{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
 			end;
-		_ ->
-			?DBG("redirect read ~p",[P#dp.masternode]),
-			actordb_sqlprocutil:redirect_master(P)
-	end.
+		% Schema has changed. Execute write on schema update.
+		% Place this read in callqueue for later execution.
+		{NewVers,Sql1} ->
+			write_call1(Sql1,undefined,undefined,NewVers, P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)})
+	end;
+read_call(_Msg,_From,P) ->
+	?DBG("redirect read ~p",[P#dp.masternode]),
+	actordb_sqlprocutil:redirect_master(P).
 
 
 write_call({MFA,Sql,Transaction},From,P) ->
 	?ADBG("writecall ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum]),
-	case MFA of
-		undefined ->
-			case actordb_sqlprocutil:has_schema_updated(P,Sql) of
-				ok ->
-					write_call(Sql,Transaction,From,P#dp.schemavers,P);
-				{NewVers,Sql1} ->
-					write_call(Sql1,Transaction,From,NewVers,P)
-			end;
-		{Mod,Func,Args} ->
-			case actordb_sqlprocutil:has_schema_updated(P,[]) of
-				ok ->
-					NewVers = P#dp.schemavers,
-					SqlUpdate = [];
-				{NewVers,SqlUpdate} ->
-					ok
-			end,
+	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
+		{NewVers,Sql1} ->
+			% First update schema, then do the transaction.
+			write_call1(Sql1,undefined,undefined,NewVers, P#dp{callqueue = queue:in({From,{write,{MFA,Sql,Transaction}}},P#dp.callqueue)});
+		ok when MFA == undefined ->
+			write_call1(Sql,Transaction,From,P#dp.schemavers,P);
+		_ ->
+			{Mod,Func,Args} = MFA,
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
-				{reply,What,OutSql1,NS} ->
+				{reply,What,OutSql,NS} ->
 					reply(From,What),
-					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(OutSql,Transaction,undefined,NewVers,P#dp{cbstate = NS});
+					write_call1(OutSql,Transaction,undefined,P#dp.schemavers,P#dp{cbstate = NS});
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
 					{reply,What,P};
-				{OutSql1,State} ->
-					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(OutSql,Transaction,From,NewVers,P#dp{cbstate = State});
-				OutSql1 ->
-					OutSql = iolist_to_binary([SqlUpdate,OutSql1]),
-					write_call(OutSql,Transaction,From,NewVers,P)
+				{OutSql,State} ->
+					write_call1(OutSql,Transaction,From,P#dp.schemavers,P#dp{cbstate = State});
+				OutSql ->
+					write_call1(OutSql,Transaction,From,P#dp.schemavers,P)
 			end
 	end.
 % Not a multiactor transaction write
-write_call(Sql,undefined,From,NewVers,P) ->
+write_call1(Sql,undefined,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	% {ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
 	case Sql of
@@ -758,16 +734,16 @@ write_call(Sql,undefined,From,NewVers,P) ->
 							% reply on appendentries response or later if nodes are behind.
 							{noreply, P#dp{callfrom = From, callres = Res, 
 											follower_indexes = update_followers(P#dp.follower_indexes),
-										evterm = P#dp.current_term, evnum = EvNum}}
+										evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers}}
 					end;
 				Resp ->
 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					{reply,Resp,P}
 			end
 	end;
-write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
+write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
-	?AINF("Starting transaction ~p write id ~p, curtr ~p, sql ~p",
+	?ADBG("Starting transaction ~p write id ~p, curtr ~p, sql ~p",
 				[{P#dp.actorname,P#dp.actortype},TransactionId,P#dp.transactionid,Sql1]),
 	case P#dp.follower_indexes of
 		[] ->
@@ -805,7 +781,7 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 				ok ->
 					?ADBG("Transaction ok"),
 					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId, 
-								schemavers = NewVers,evterm = P#dp.current_term,
+								evterm = P#dp.current_term,
 								transactioncheckref = CheckRef,
 								transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[])};
 				_Err ->
@@ -820,7 +796,7 @@ write_call(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 				TransactionId when Sql1 /= delete ->
 					% Rollback prev version of sql.
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
-					{OldSql,_EvNum,NewVers} = P#dp.transactioninfo,
+					{OldSql,_EvNum,_} = P#dp.transactioninfo,
 					% Combine prev sql with new one.
 					Sql = iolist_to_binary([OldSql,Sql1]),
 					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions ",
@@ -933,13 +909,6 @@ handle_info(print_info,P) ->
 	handle_cast(print_info,P);
 handle_info(commit_transaction,P) ->
 	down_info(0,12345,done,P#dp{transactioncheckref = 12345});
-handle_info(Msg,#dp{mors = master, verified = true} = P) ->
-	case apply(P#dp.cbmod,cb_info,[Msg,P#dp.cbstate]) of
-		{noreply,S} ->
-			{noreply,P#dp{cbstate = S}};
-		noreply ->
-			{noreply,P}
-	end;
 handle_info(start_copy,P) ->
 	?ADBG("Start copy ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom]),
 	case P#dp.copyfrom of
@@ -965,11 +934,18 @@ handle_info(start_copy,P) ->
 		end
 	end),
 	{noreply,P};
+handle_info(Msg,#dp{mors = master, verified = true} = P) ->
+	case apply(P#dp.cbmod,cb_info,[Msg,P#dp.cbstate]) of
+		{noreply,S} ->
+			{noreply,P#dp{cbstate = S}};
+		noreply ->
+			{noreply,P}
+	end;
 handle_info(_Msg,P) ->
 	?DBG("sqlproc ~p unhandled info ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
 
-doqueue(P) when P#dp.callfrom == undefined, P#dp.verified /= false, P#dp.transactionid == undefined ->
+doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transactionid == undefined ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
 			% ?AINF("Queue empty ~p",[{P#dp.actorname,P#dp.actortype}]),
@@ -1367,14 +1343,15 @@ init([_|_] = Opts) ->
 												evnum = Evnum, evterm = Evterm}};
 								{ok,_} ->
 									file:close(F),
-									init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum})
+									{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum})}
 							end;
 						{error,enoent} ->
 							% {ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, evnum = VoteEvum}}
-							init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum})
+							{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum})}
 					end;
 				_ when MovedToNode == undefined; RightCluster ->
-					init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor});
+					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(
+								P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum}),true)};
 				_ ->
 					?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode}}
@@ -1386,28 +1363,6 @@ init([_|_] = Opts) ->
 init(#dp{} = P) ->
 	init(P,noreason).
 
-
-init_opendb(P) ->
-	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-	NP = P#dp{db = Db},
-	case SchemaTables of
-		[_|_] ->
-			?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
-			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db,
-					<<"SELECT * FROM __adb;">>,read),
-			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
-			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
-			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
-			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-
-			{ok,actordb_sqlprocutil:start_verify(
-						NP#dp{evnum = Evnum, schemavers = Vers,
-									evterm = EvTerm,current_term = EvTerm,
-									movedtonode = MovedToNode1},true)};
-		[] -> 
-			?ADBG("Opening NO schema ~p",[{P#dp.actorname,P#dp.actortype}]),
-			{ok,actordb_sqlprocutil:start_verify(NP,true)}
-	end.
 
 
 explain(What,Opts) ->

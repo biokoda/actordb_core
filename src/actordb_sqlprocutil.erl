@@ -127,8 +127,7 @@ reopen_db(#dp{mors = master} = P) ->
 		% we are master but db not open or open as file descriptor to -wal file
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
-			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-			P#dp{db = Db, wal_from = wal_from([P#dp.dbpath,"-wal"])};
+			init_opendb(P);
 		_ ->
 			case P#dp.wal_from == {0,0} of
 				true ->
@@ -151,6 +150,28 @@ reopen_db(P) ->
 			P#dp{db = F};
 		_ ->
 			P
+	end.
+
+init_opendb(P) ->
+	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+	NP = P#dp{db = Db},
+	case SchemaTables of
+		[_|_] ->
+			?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
+			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db,
+					<<"SELECT * FROM __adb;">>,read),
+			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
+			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
+			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
+			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
+
+			NP#dp{evnum = Evnum, schemavers = Vers,
+						wal_from = actordb_sqlprocutil:wal_from([P#dp.dbpath,"-wal"]),
+						evterm = EvTerm,current_term = EvTerm,
+						movedtonode = MovedToNode1};
+		[] -> 
+			?ADBG("Opening NO schema ~p",[{P#dp.actorname,P#dp.actortype}]),
+			NP
 	end.
 
 % Find first valid evnum,evterm in wal (from beginning)
@@ -590,15 +611,15 @@ count_votes([],N) ->
 post_election_sql(P,[],undefined,SqlIn,Callfrom) ->
 	case iolist_size(SqlIn) of
 		0 ->
-			case P#dp.evnum of
-				0 ->
+			case P#dp.schemavers of
+				undefined ->
 					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
 					NP = P#dp{schemavers = SchemaVers},
 					% Set on firt write and not changed after. This is used to prevent a case of an actor
 					% getting deleted, but later created new. A server that was offline during delete missed
 					% the delete call and relies on actordb_events.
 					ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
-					Sql = [actordb_sqlprocutil:base_schema(SchemaVers,P#dp.actortype),
+					Sql = [base_schema(SchemaVers,P#dp.actortype),
 								 Schema,
 							<<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>];
 				_ ->
