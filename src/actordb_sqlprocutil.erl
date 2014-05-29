@@ -167,7 +167,7 @@ init_opendb(P) ->
 
 			NP#dp{evnum = Evnum, schemavers = Vers,
 						wal_from = actordb_sqlprocutil:wal_from([P#dp.dbpath,"-wal"]),
-						evterm = EvTerm,current_term = EvTerm,
+						evterm = EvTerm,
 						movedtonode = MovedToNode1};
 		[] -> 
 			?ADBG("Opening NO schema ~p",[{P#dp.actorname,P#dp.actortype}]),
@@ -539,13 +539,18 @@ start_verify(P,JustStarted) ->
 		_ when is_pid(P#dp.election) ->
 			P;
 		_ ->
-			CurrentTerm = P#dp.current_term+1,
-			ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm}),
-			NP = P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name()},
-			{Verifypid,_} = spawn_monitor(fun() -> 
-							start_election(NP)
-								end),
-			NP#dp{election = Verifypid, verified = false, activity = make_ref()}
+			case timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
+				true ->
+					CurrentTerm = P#dp.current_term+1,
+					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm}),
+					NP = P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name()},
+					{Verifypid,_} = spawn_monitor(fun() -> 
+									start_election(NP)
+										end),
+					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
+				false ->
+					P
+			end
 	end.
 % Call RequestVote RPC on cluster nodes. 
 % This should be called in an async process and current_term and voted_for should have
@@ -557,7 +562,7 @@ start_election(P) ->
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,actordb_sqlproc,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]),
-	?ADBG("Election for ~p, results ~p",[{P#dp.actorname,P#dp.actortype},Results]),
+	?ADBG("Election for ~p, results ~p failed ~p, contacted ~p",[{P#dp.actorname,P#dp.actortype},Results,_GetFailed,ConnectedNodes]),
 
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of

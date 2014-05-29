@@ -362,10 +362,10 @@ state_rw_call(What,From,P) ->
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType} ->
-			?ADBG("AE start ~p ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{PrevEvnum,PrevTerm},LeaderNode]),
+			?ADBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[{P#dp.actorname,P#dp.actortype,AEType},{PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
 				_ when Term < P#dp.current_term ->
-					?AERR("AE start, input term too old ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
+					?AERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType),
 					% Some node thinks its master and sent us appendentries start.
@@ -481,21 +481,24 @@ state_rw_call(What,From,P) ->
 						true ->
 							reply(From,ok),
 							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw,AEType)),
-							?ADBG("AE response for node ~p, processed=~p followers=~p",
+							?ADBG("AE response ~p for node ~p, followers=~p",
 									[{P#dp.actorname,P#dp.actortype},Node,
 										[{F#flw.node,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
 							{noreply,doqueue(NP)};
 						% What we thought was follower is ahead of us and we need to step down
 						false when P#dp.current_term < CurrentTerm ->
+							?AINF("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
 								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
 						% In case of overlapping responses for appendentries rpc. We do not care about responses
 						%  for appendentries with a match index different than current match index.
 						false when Follower#flw.match_index /= MatchEvnum, Follower#flw.match_index > 0 ->
+							?ADBG("Ignoring false response to appendentries"),
 							{reply,ok,P};
 						false ->
 							case lists:keymember(Follower#flw.node,1,P#dp.dbcopy_to) of
 								true ->
+									?ADBG("Ignoring appendendentries false response because copying to"),
 									{reply,ok,P};
 								false ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
@@ -515,7 +518,7 @@ state_rw_call(What,From,P) ->
 											end;
 										{true,NP,NF} ->
 											% we can recover from wal
-											?ADBG("Recovering from wal ~p, node=~p, {HisIndex,MyMaxIndex}=~p",
+											?ADBG("Recovering from wal ~p, for node=~p, {HisIndex,MyMaxIndex}=~p",
 													[{P#dp.actorname,P#dp.actortype},NF#flw.node,{NF#flw.match_index,P#dp.evnum}]),
 											reply(From,ok),
 											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,recover)}
@@ -523,9 +526,9 @@ state_rw_call(What,From,P) ->
 							end
 					end
 			end;
-		{request_vote,Candidate,NewTerm,LastTerm,LastEvnum} ->
-			?ADBG("Request vote on=~p for=~p, {histerm,myterm}=~p",
-					[{P#dp.actorname,P#dp.actortype},Candidate,{NewTerm,P#dp.current_term}]),
+		{request_vote,Candidate,NewTerm,LastEvnum,LastTerm} ->
+			?ADBG("Request vote on=~p for=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
+					[{P#dp.actorname,P#dp.actortype},Candidate,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
 			Now = os:timestamp(),
 			Uptodate = 
 				case ok of
@@ -545,7 +548,7 @@ state_rw_call(What,From,P) ->
 				_ when NewTerm < P#dp.current_term ->
 					DoElection = P#dp.mors == master,
 					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term,DoElection}),
-					NP = P#dp{election = Now};
+					NP = P;
 				% We've already seen this term, only vote yes if we have not voted
 				%  or have voted for this candidate already.
 				_ when NewTerm == P#dp.current_term ->
@@ -553,12 +556,12 @@ state_rw_call(What,From,P) ->
 						true when Uptodate ->
 							DoElection = false,
 							reply(From,{true,actordb_conf:node_name(),NewTerm,DoElection}),
-							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm, election = Now,
+							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,election = Now,
 																masternode = undefined, masternodedist = undefined});
 						true ->
 							DoElection = P#dp.mors == master,
 							reply(From,{outofdate,actordb_conf:node_name(),NewTerm,DoElection}),
-							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm, election = Now});
+							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm});
 						false ->
 							DoElection = P#dp.mors == master,
 							reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term,DoElection}),
@@ -568,20 +571,20 @@ state_rw_call(What,From,P) ->
 				_ when Uptodate ->
 					DoElection = false,
 					reply(From,{true,actordb_conf:node_name(),NewTerm,DoElection}),
-					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm, election = Now,
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,election = Now,
 																masternode = undefined, masternodedist = undefined});
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
 				_ ->
 					DoElection = P#dp.mors == master,
 					reply(From,{outofdate,actordb_conf:node_name(),NewTerm,DoElection}),
-					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,election = Now})
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm})
 			end,
 			% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
 			% If the other node is actually more up to date, vote was yes and we do not do election.
 			case DoElection of
 				true ->
-					?ADBG("Do election to sync nodes ~p",[{P#dp.actorname,P#dp.actortype}]),
+					?ADBG("Start new election to sync nodes ~p",[{P#dp.actorname,P#dp.actortype}]),
 					{noreply,actordb_sqlprocutil:start_verify(NP,false)};
 				false ->
 					{noreply,NP#dp{activity = make_ref()}}
@@ -592,7 +595,7 @@ state_rw_call(What,From,P) ->
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
 		doelection ->
-			?ADBG("Doelection ~p ~p",[{P#dp.actorname,P#dp.actortype},{P#dp.verified,P#dp.election}]),
+			?ADBG("Doelection hint ~p ~p",[{P#dp.actorname,P#dp.actortype},{P#dp.verified,P#dp.election}]),
 			reply(From,ok),
 			case is_pid(P#dp.election) of
 				false ->
@@ -665,7 +668,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call({MFA,Sql,Transaction},From,P) ->
-	?ADBG("writecall ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum]),
+	?ADBG("writecall ~p evnum_prewrite=~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -1052,7 +1055,7 @@ check_inactivity(NTimer,P) ->
 					{noreply,check_timer(P#dp{activity_now = Now})}
 			end;
 		_ when Empty == false, P#dp.verified == false, NTimer > 1, is_tuple(P#dp.election) ->
-			case timer:now_diff(os:timestamp(),P#dp.election) > 1000000 of
+			case timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
 				true ->
 					{noreply, check_timer(actordb_sqlprocutil:start_verify(P,false))};
 				false ->
@@ -1146,9 +1149,14 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.evnum == 0 ->
 			{stop,nocreate,P1};
 		leader ->
-			?ADBG("Elected leader ~p ~p",[{P1#dp.actorname,P1#dp.actortype},P1#dp.current_term]),
+			?ADBG("Elected leader ~p term=~p",[{P1#dp.actorname,P1#dp.actortype},P1#dp.current_term]),
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
-			FollowerIndexes = [#flw{node = Nd,match_index = 0,next_index = P1#dp.evnum+1} || Nd <- bkdcore:cluster_nodes()],
+			case P1#dp.follower_indexes == [] of
+				true ->
+					FollowerIndexes = [#flw{node = Nd,match_index = 0,next_index = P1#dp.evnum+1} || Nd <- bkdcore:cluster_nodes()];
+				false ->
+					FollowerIndexes = P1#dp.follower_indexes
+			end,
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
 													follower_indexes = FollowerIndexes, verified = true}),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
@@ -1181,9 +1189,11 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 																		Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
 				undefined ->
+					?ADBG("Running post election write",[{P#dp.actorname,P#dp.actortype}]),
 					% it must always return noreply
 					write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP);
 				_ ->
+					?ADBG("Delaying election write callres=~p, followers=~p",[P#dp.callres,P#dp.follower_indexes]),
 					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,{write,{undefined,Sql,NP#dp.transactionid}}},
 															P#dp.callqueue)}}
 			end;
@@ -1339,19 +1349,22 @@ init([_|_] = Opts) ->
 									{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
 										file:read(F,24),
 									file:close(F),
+									?ADBG("Actor start slave ~p, with {Evnum,Evterm}=~p",[{P#dp.actorname,P#dp.actortype},{Evnum,Evterm}]),
 									{ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, 
 												evnum = Evnum, evterm = Evterm}};
 								{ok,_} ->
 									file:close(F),
-									{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum})}
+									{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedForTerm,
+													voted_for = VotedFor, evnum = VoteEvnum, evterm = VotedForTerm})}
 							end;
 						{error,enoent} ->
 							% {ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, evnum = VoteEvum}}
-							{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum})}
+							{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedForTerm,
+										voted_for = VotedFor, evnum = VoteEvnum,evterm = VotedForTerm})}
 					end;
 				_ when MovedToNode == undefined; RightCluster ->
 					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(
-								P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum}),true)};
+								P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum,evterm = VotedForTerm}),true)};
 				_ ->
 					?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode}}
