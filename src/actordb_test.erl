@@ -122,13 +122,15 @@ test_single(_) ->
 	  fun copyactor/0
 	  	].
 
+ltime() ->
+	element(2,lager_util:localtime_ms()).
 
 basic_write() ->
 	basic_write(<<"SOME TEXT">>).
 basic_write(Txt) ->
 	?debugFmt("Basic write",[]),
 	[begin
-		?debugFmt("~p Write ac~p",[lager_util:localtime_ms(),N]),
+		?debugFmt("~p Write ac~p",[ltime(),N]),
 		R = exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; insert into tab values (",
 									(butil:tobin(butil:flatnow()))/binary,",'",Txt/binary,"',1);">>),
 		% ?debugFmt("~p",[R]),
@@ -139,7 +141,7 @@ basic_read() ->
 	?debugFmt("Basic read",[]),
 	% ?debugFmt("~p",[exec(<<"actor type1(ac",(butil:tobin(1))/binary,"); select * from tab1;">>)]),
 	[begin
-		?debugFmt("~p Read ac~p",[lager_util:localtime_ms(),N]),
+		?debugFmt("~p Read ac~p",[ltime(),N]),
 	?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
 			exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; select * from tab;">>))
 	 end

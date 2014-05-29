@@ -175,7 +175,7 @@ start_copylock(Fullname,_,_) ->
 % [{actor,Name},{type,Type},{mod,CallbackModule},{state,CallbackState},
 %  {inactivity_timeout,SecondsOrInfinity},{slave,true/false},{copyfrom,NodeName},{copyreset,{Mod,Func,Args}}]
 start(Opts) ->
-	?ADBG("Starting ~p ~p",[butil:ds_vals([actor,type],Opts),butil:ds_val(slave,Opts)]),
+	?ADBG("Starting ~p slave=~p",[butil:ds_vals([actor,type],Opts),butil:ds_val(slave,Opts)]),
 	Ref = make_ref(),
 	case gen_server:start(?MODULE, [{start_from,{self(),Ref}}|Opts], []) of
 		{ok,Pid} ->
@@ -855,7 +855,7 @@ update_followers(L) ->
 handle_cast({diepls,Reason},P) ->
 	?ADBG("diepls ~p",[{P#dp.actorname,P#dp.actortype}]),
 	case Reason of
-		nomaster ->
+		nomaster when P#dp.mors == slave ->
 			?AERR("Die because nomaster"),
 			{stop,normal,P};
 		_ ->
@@ -1189,7 +1189,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 																		Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
 				undefined ->
-					?ADBG("Running post election write",[{P#dp.actorname,P#dp.actortype}]),
+					?ADBG("Running post election write ~p",[{P#dp.actorname,P#dp.actortype}]),
 					% it must always return noreply
 					write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP);
 				_ ->

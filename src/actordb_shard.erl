@@ -272,7 +272,7 @@ delete_actor_steal(ShardName,NewShard,Type1,Actor,ThiefNode,Limit) ->
 delete_next(Name,Type1) ->
 	Type = butil:toatom(Type1),
 	actordb_sqlproc:write({Name,Type},[create],
-							<<"DELETE FROM meta WHERE id in(",?META_NEXT_SHARD,$,,?META_NEXT_SHARD_NODE,");">>,?MODULE).
+							<<"DELETE FROM __meta WHERE id in(",?META_NEXT_SHARD,$,,?META_NEXT_SHARD_NODE,");">>,?MODULE).
 
 try_whereis(N,Type1) ->
 	Type = butil:toatom(Type1),
