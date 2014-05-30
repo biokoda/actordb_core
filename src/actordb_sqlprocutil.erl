@@ -166,7 +166,7 @@ init_opendb(P) ->
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
 
 			NP#dp{evnum = Evnum, schemavers = Vers,
-						wal_from = actordb_sqlprocutil:wal_from([P#dp.dbpath,"-wal"]),
+						wal_from = wal_from([P#dp.dbpath,"-wal"]),
 						evterm = EvTerm,
 						movedtonode = MovedToNode1};
 		[] -> 
@@ -493,10 +493,10 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	end,
 	DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
 		[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
-	[<<"CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
+	[<<"$CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
-	 "CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
-	 <<"INSERT INTO __adb (id,val) VALUES ">>,
+	 "$CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
+	 <<"$INSERT INTO __adb (id,val) VALUES ">>,
 	 	butil:iolist_join(DefVals,$,),$;].
 
 do_cb_init(#dp{cbstate = undefined} = P) ->
@@ -665,12 +665,14 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 			case lists:member(MoveTo,bkdcore:all_cluster_nodes()) of
 				% This is node where actor moved to.
 				true ->
+					?ADBG("Calling shard to signal move done ~p",[{P#dp.actorname,P#dp.actortype}]),
 					Sql1 = CleanupSql,
 					Callfrom = undefined,
 					MovedToNode = P#dp.movedtonode,
 					ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
 				% This is node where actor moved from. Check if data is on the other node. If not start copy again.
 				false ->
+					?ADBG("Have move data on init ~p, check if moved over to ~p",[{P#dp.actorname,P#dp.actortype},MoveTo]),
 					Num = actordb_sqlprocutil:read_num(P),
 					true = Num /= <<>>,
 					case actordb:rpc(MoveTo,P#dp.actorname,
@@ -769,7 +771,7 @@ read_num(P) ->
 
 delactorfile(P) ->
 	[Pid ! delete || {_,Pid,_,_} <- P#dp.dbcopy_to],
-	?ADBG("delfile ~p ~p ~p",[P#dp.actorname,P#dp.actortype,P#dp.mors]),
+	?ADBG("delfile ~p master=~p, ismoved=~p",[{P#dp.actorname,P#dp.actortype},P#dp.mors,P#dp.movedtonode]),
 	% Term files are not deleted. This is because of deleted actors. If a node was offline
 	%  when an actor was deleted, then the actor was created anew still while offline, 
 	%  this will keep the term and evnum number higher than that old file and raft logic will overwrite that data.
@@ -828,7 +830,7 @@ delete_actor(P) ->
 		[] ->
 			ok;
 		_ ->
-			{_,_} = rpc:multicall(nodes(),actordb_sqlproc,call_slave,
+			{_,_} = rpc:multicall([bkdcore:dist_name(Nd) || Nd <- bkdcore:cluster_nodes()],actordb_sqlproc,call_slave,
 							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}},[]])
 	end,
 	actordb_sqlite:stop(P#dp.db),
@@ -1276,7 +1278,7 @@ callback_unlock(P) ->
 			ActorName = P#dp.actorname
 	end,
 	% Unlock database on source side. Once unlocked move/copy is complete.
-	case rpc(Node,{actordb_sqlproc,call,[{ActorName,P#dp.actortype},[],{dbcopy,{unlock,P#dp.dbcopyref}},P#dp.cbmod]}) of
+	case rpc(Node,{actordb_sqlproc,call,[{ActorName,P#dp.actortype},[],{dbcopy,{unlock,P#dp.dbcopyref}},P#dp.cbmod,onlylocal]}) of
 		ok ->
 			exit(ok);
 		{ok,_} ->

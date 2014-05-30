@@ -190,11 +190,14 @@ check_str(S) ->
 		[X|_] when is_integer(X) ->
 			[S]
 	end.
-check_for_end(L) ->
+check_for_end([$\s|L]) ->
+	check_for_end(L);
+check_for_end([$\$|L]) ->
 	case lists:reverse(butil:tolist(L)) of
 		";" ++ _ ->
-			L;
+			[$\$|L];
 		_ ->
-			[L,$;]
-	end.
-			
+			[[$\$|L],$;]
+	end;
+check_for_end(L) ->
+	check_for_end([$\$|L]).

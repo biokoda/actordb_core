@@ -334,13 +334,14 @@ cb_kvexec(P,Actor,Sql) ->
 
 cb_list_actors(P,From,Limit) ->
 	?ADBG("cb_list_actors ~p",[P]),
-	Sql = [<<"SELECT id FROM actors LIMIT ">>, (butil:tobin(Limit)),
-				<<" OFFSET ">>,(butil:tobin(From)), ";"],
 	case is_integer(P#state.nextshard) of
 		true ->
+			Sql = [<<"SELECT id FROM actors WHERE hash<">>,butil:tobin(P#state.nextshard),<<" LIMIT ">>, (butil:tobin(Limit)),
+				<<" OFFSET ">>,(butil:tobin(From)), ";"]
 			{reply,{P#state.nextshard,P#state.nextshardnode},Sql,P};
 		false ->
-			Sql
+			[<<"SELECT id FROM actors LIMIT ">>, (butil:tobin(Limit)),
+				<<" OFFSET ">>,(butil:tobin(From)), ";"]
 	end.
 
 cb_del_actor(P,ActorName) ->
@@ -553,10 +554,10 @@ schema(1,Idtype1) ->
 		integer ->
 			Idtype = <<"INTEGER">>
 	end,
-	<<"CREATE TABLE actors (id ",Idtype/binary," PRIMARY KEY, hash INTEGER) WITHOUT ROWID;",
-	  "CREATE INDEX __hind ON actors (hash);">>;
+	<<"$CREATE TABLE actors (id ",Idtype/binary," PRIMARY KEY, hash INTEGER) WITHOUT ROWID;",
+	  "$CREATE INDEX __hind ON actors (hash);">>;
 schema(2,_Idtype1) ->
-	<<"CREATE TABLE __meta (id INTEGER PRIMARY KEY, val TEXT);">>.
+	<<"$CREATE TABLE __meta (id INTEGER PRIMARY KEY, val TEXT);">>.
 
 at(IdType,ActorName) ->
 	case IdType of

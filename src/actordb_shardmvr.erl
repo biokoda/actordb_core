@@ -241,19 +241,14 @@ pick_shards(P,All,Local) ->
 		_ when P#dp.shardstoget == [], P#dp.movingdone == [], length(Local) < ?NUM_SHARDS ->
 			?ADBG("Started move shards ~p",[bkdcore:node_name()]),
 			case get_toget() of
-				[_|_] = TG ->
+				[_|_] = TGFinal ->
 					ok;
 				_ ->
-					TG = split_shards(All)
+					TG = split_shards(All),
+					?AINF("shardstoget candidates ~p",[TG]),
+					TGFinal = try_start_steal(TG)
 			end,
-			?AINF("shardstoget candidates ~p",[TG]),
-			case TG of
-				[] ->
-					P;
-				_ ->
-					TGFinal = try_start_steal(TG),
-					start_shards(P#dp{shardstoget = TGFinal})
-			end;
+			start_shards(P#dp{shardstoget = TGFinal});
 		_ ->
 			P
 	end.

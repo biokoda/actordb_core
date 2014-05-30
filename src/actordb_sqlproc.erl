@@ -100,7 +100,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 					case IsRedirect of
 						true ->
 							double_redirect;
-						false ->
+						_ ->
 							case actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,true]}) of
 								double_redirect ->
 									diepls(Pid,nomaster),
@@ -110,7 +110,12 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 							end
 					end;
 				false ->
-					actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,false]})
+					case IsRedirect of
+						onlylocal ->
+							{redirect,Node};
+						_ ->
+							actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,false]})
+					end
 			end;
 		{'EXIT',{noproc,_}} = _X  ->
 			?ADBG("noproc call again ~p",[_X]),
@@ -280,7 +285,7 @@ handle_call(Msg,From,P) ->
 
 
 commit_call(Doit,Id,From,P) ->
-	?AINF("Commit ~p doit=~p, id=~p, from=~p, trans=~p",[{P#dp.actorname,P#dp.actortype},Doit,Id,From,P#dp.transactionid]),
+	?ADBG("Commit ~p doit=~p, id=~p, from=~p, trans=~p",[{P#dp.actorname,P#dp.actortype},Doit,Id,From,P#dp.transactionid]),
 	case P#dp.transactionid == Id of
 		true ->
 			case P#dp.transactioncheckref of
@@ -606,6 +611,7 @@ state_rw_call(What,From,P) ->
 		{delete,MovedToNode} ->
 			reply(From,ok),
 			actordb_sqlite:stop(P#dp.db),
+			?ADBG("Received delete call"),
 			actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
 			{stop,normal,P#dp{db = undefined}};
 		checkpoint ->
@@ -926,17 +932,22 @@ handle_info(start_copy,P) ->
 	end,
 	Home = self(),
 	spawn(fun() ->
-		case actordb:rpc(Node,OldActor,{?MODULE,call,[{OldActor,P#dp.actortype},[],Msg,P#dp.cbmod]}) of
+		case actordb:rpc(Node,OldActor,{?MODULE,call,[{OldActor,P#dp.actortype},[],Msg,P#dp.cbmod,onlylocal]}) of
 			ok ->
 				ok;
 			{ok,_} ->
 				ok;
+			{redirect,_} ->
+				Home ! start_copy_done;
 			Err ->
 				?AERR("Unable to start copy for ~p from ~p, ~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom,Err]),
 				Home ! {stop,Err}
 		end
 	end),
 	{noreply,P};
+handle_info(start_copy_done,P) ->
+	{ok,NP} = init(P,copy_done),
+	{noreply,NP};
 handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 	case apply(P#dp.cbmod,cb_info,[Msg,P#dp.cbstate]) of
 		{noreply,S} ->
@@ -1166,10 +1177,17 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 					Transaction = [],
 					Rows = [];
 				_ ->
-					{ok,[[{columns,_},{rows,Transaction}],
-						[{columns,_},{rows,Rows}]]} = actordb_sqlite:exec(P#dp.db,
+					case actordb_sqlite:exec(P#dp.db,
 							<<"SELECT * FROM __adb;",
-							  "SELECT * FROM __transactions;">>,read)
+							  "SELECT * FROM __transactions;">>,read) of
+						{ok,[[{columns,_},{rows,Transaction}],
+						     [{columns,_},{rows,Rows}]]} ->
+						     	ok;
+						Err ->
+							?AERR("Unable read from db for ~p, error=~p after election.",[{P#dp.actorname,P#dp.actortype},Err]),
+							Transaction = Rows = [],
+							exit(error)
+					end
 			end,
 			
 			case butil:ds_val(?COPYFROMI,Rows) of
@@ -1201,7 +1219,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = os:timestamp(), mors = slave})}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
-	?AINF("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
+	?ADBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
 	case P#dp.transactionid of
 		{Tid,Updaterid,Node} ->
 			case Reason of

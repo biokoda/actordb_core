@@ -236,7 +236,7 @@ schema_version() ->
 	1.
 
 schema(1) ->
-	<<"CREATE TABLE transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, commited INTEGER DEFAULT 0);">>.
+	<<"$CREATE TABLE transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, commited INTEGER DEFAULT 0);">>.
 
 
  
@@ -517,6 +517,8 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 	case Res1 of
 		{sql_error,Str} ->
 			exit({sql_error,Str});
+		{sql_error,Str,SqlRes} ->
+			exit({sql_error,Str,SqlRes});
 		{ok,[{columns,_},{rows,_}] = L} ->
 			store_vars(IsMulti,Actor,Varlist,[L]);
 		{ok,[_|_] = L} ->
