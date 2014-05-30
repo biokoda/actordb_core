@@ -1314,6 +1314,7 @@ code_change(_, P, _) ->
 init(#dp{} = P,_Why) ->
 	% ?ADBG("Reinit because ~p, ~p, ~p",[_Why,?R2P(P),get()]),
 	?ADBG("Reinit because ~p ~p",[_Why,{P#dp.actorname,P#dp.actortype}]),
+	actordb_sqlite:stop(P#dp.db),
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,P#dp.flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 % Never call other processes from init. It may cause deadlocks. Whoever
