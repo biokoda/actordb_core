@@ -102,12 +102,18 @@
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
 -ifndef(NOLOG).
--define(DBG(F),lager:debug([$~,$p,$\s|F],[P#dp.actorname])).
--define(DBG(F,A),lager:debug([$~,$p,$\s|F],[P#dp.actorname|A])).
--define(INF(F),lager:info([$~,$p,$\s|F],[P#dp.actorname])).
--define(INF(F,A),lager:info([$~,$p,$\s|F],[P#dp.actorname|A])).
--define(ERR(F),lager:error([$~,$p,$\s|F],[P#dp.actorname])).
--define(ERR(F,A),lager:error([$~,$p,$\s|F],[P#dp.actorname|A])).
+-define(DBG(F),lager:debug([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype])).
+-define(DBG(F,A),lager:debug([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A])).
+-define(INF(F),lager:info([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype])).
+-define(INF(F,A),lager:info([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A])).
+-define(ERR(F),lager:error([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype])).
+-define(ERR(F,A),lager:error([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A])).
+% -define(DBG(F),lager:debug([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype]),put(lines,[{?MODULE,?LINE}|get(lines)])).
+% -define(DBG(F,A),lager:debug([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A]),put(lines,[{?MODULE,?LINE}|get(lines)])).
+% -define(INF(F),lager:info([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype]),put(lines,[{?MODULE,?LINE}|get(lines)])).
+% -define(INF(F,A),lager:info([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A]),put(lines,[{?MODULE,?LINE}|get(lines)])).
+% -define(ERR(F),lager:error([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype]),put(lines,[{?MODULE,?LINE}|get(lines)])).
+% -define(ERR(F,A),lager:error([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A]),put(lines,[{?MODULE,?LINE}|get(lines)])).
 -else.
 -define(DBG(F),ok).
 -define(DBG(F,A),ok).

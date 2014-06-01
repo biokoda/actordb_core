@@ -337,7 +337,7 @@ cb_list_actors(P,From,Limit) ->
 	case is_integer(P#state.nextshard) of
 		true ->
 			Sql = [<<"SELECT id FROM actors WHERE hash<">>,butil:tobin(P#state.nextshard),<<" LIMIT ">>, (butil:tobin(Limit)),
-				<<" OFFSET ">>,(butil:tobin(From)), ";"]
+				<<" OFFSET ">>,(butil:tobin(From)), ";"],
 			{reply,{P#state.nextshard,P#state.nextshardnode},Sql,P};
 		false ->
 			[<<"SELECT id FROM actors LIMIT ">>, (butil:tobin(Limit)),

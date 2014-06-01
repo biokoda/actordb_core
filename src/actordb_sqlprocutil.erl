@@ -92,7 +92,7 @@ reply_maybe(P,N,[]) ->
 					IsMove = Msg = Node = NewActor = undefined,
 					From = P#dp.callfrom
 			end,
-			?ADBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
+			?DBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
 			reply(From,Res),
 			NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()}),
 			case Msg of
@@ -111,12 +111,12 @@ reply_maybe(P,N,[]) ->
 					end
 			end;
 		true ->
-			?ADBG("Reply ok ~p ~p",[{P#dp.actorname,P#dp.actortype},{P#dp.callfrom,P#dp.callres}]),
+			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
 			reply(P#dp.callfrom,P#dp.callres),
 			do_cb_init(P#dp{callfrom = undefined, callres = undefined});
 		false ->
-			% ?ADBG("Reply NOT FINAL ~p evnum ~p followers ~p",
-				% [{P#dp.actorname,P#dp.actortype},P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
+			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
+				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
 			P
 	end.
 
@@ -157,7 +157,7 @@ init_opendb(P) ->
 	NP = P#dp{db = Db},
 	case SchemaTables of
 		[_|_] ->
-			?ADBG("Opening HAVE schema ~p",[{P#dp.actorname,P#dp.actortype}]),
+			?DBG("Opening HAVE schema",[]),
 			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db,
 					<<"SELECT * FROM __adb;">>,read),
 			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
@@ -170,7 +170,7 @@ init_opendb(P) ->
 						evterm = EvTerm,
 						movedtonode = MovedToNode1};
 		[] -> 
-			?ADBG("Opening NO schema ~p",[{P#dp.actorname,P#dp.actortype}]),
+			?DBG("Opening NO schema",[]),
 			NP
 	end.
 
@@ -209,8 +209,8 @@ try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
 			try_wal_recover(P#dp{wal_from = WF},F)
 	end;
 try_wal_recover(P,F) ->
-	?ADBG("Try_wal_recover ~p for=~p, {MatchIndex,MyEvFrom}=~p",
-		[{P#dp.actorname,P#dp.actortype},F#flw.node,{F#flw.match_index,element(1,P#dp.wal_from)}]),
+	?DBG("Try_wal_recover for=~p, {MatchIndex,MyEvFrom}=~p",
+		[F#flw.node,{F#flw.match_index,element(1,P#dp.wal_from)}]),
 	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
 	% Compare match_index not next_index because we need to send prev term as well
 	case F#flw.match_index >= WalEvfrom orelse F#flw.match_index == 0 andalso WalEvfrom == 1 of
@@ -256,14 +256,14 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 			end;
 		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
 			{ok,_NPos} = file:position(F,{cur,?PAGESIZE}),
-			?ADBG("open wal at ~p ~p",[{P#dp.actorname,P#dp.actortype}, _NPos]),
+			?DBG("open wal at ~p",[_NPos]),
 			open_wal_at(P,Index,F,Evnum,Evterm)
 	end.
 
 
 continue_maybe(P,F,AEType) ->
 	% Check if follower behind
-	?ADBG("Continue maybe ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},F#flw.node,{P#dp.evnum,F#flw.next_index}]),
+	?DBG("Continue maybe ~p ~p",[F#flw.node,{P#dp.evnum,F#flw.next_index}]),
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
 			case AEType of
@@ -328,8 +328,7 @@ send_wal(P,#flw{file = File} = F) ->
 							error
 					end;
 				_ ->
-					?AERR("DETECTED DISK CORRUPTION ON WAL LOG! Stepping down as leader for ~p and truncating log",
-								[{P#dp.actorname,P#dp.actortype}]),
+					?ERR("DETECTED DISK CORRUPTION ON WAL LOG! Stepping down as leader for and truncating log"),
 					file:position(File,{cur,-?PAGESIZE-40}),
 					file:truncate(File),
 					exit(wal_corruption)
@@ -436,8 +435,7 @@ check_redirect(P,Copyfrom) ->
 						false ->
 							case bkdcore:cluster_group(Node) == bkdcore:cluster_group(SomeNode) of
 								true ->
-									?AERR("Still redirects to local, will retry move. ~p",
-											[{P#dp.actorname,P#dp.actortype}]),
+									?ERR("Still redirects to local, will retry move."),
 									check_redirect(P,{move,NewShard,SomeNode});
 								false ->
 									check_redirect(P,{move,NewShard,SomeNode})
@@ -562,7 +560,7 @@ start_election(P) ->
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,actordb_sqlproc,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]),
-	?ADBG("Election for ~p, results ~p failed ~p, contacted ~p",[{P#dp.actorname,P#dp.actortype},Results,_GetFailed,ConnectedNodes]),
+	?DBG("Election, results ~p failed ~p, contacted ~p",[Results,_GetFailed,ConnectedNodes]),
 
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of
@@ -665,14 +663,14 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 			case lists:member(MoveTo,bkdcore:all_cluster_nodes()) of
 				% This is node where actor moved to.
 				true ->
-					?ADBG("Calling shard to signal move done ~p",[{P#dp.actorname,P#dp.actortype}]),
+					?DBG("Calling shard to signal move done"),
 					Sql1 = CleanupSql,
 					Callfrom = undefined,
 					MovedToNode = P#dp.movedtonode,
 					ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
 				% This is node where actor moved from. Check if data is on the other node. If not start copy again.
 				false ->
-					?ADBG("Have move data on init ~p, check if moved over to ~p",[{P#dp.actorname,P#dp.actortype},MoveTo]),
+					?DBG("Have move data on init, check if moved over to ~p",[MoveTo]),
 					Num = actordb_sqlprocutil:read_num(P),
 					true = Num /= <<>>,
 					case actordb:rpc(MoveTo,P#dp.actorname,
@@ -701,25 +699,25 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 			end,
 			ResetSql = [];
 		{split,Mfa,Node,ActorFrom,ActorTo} ->
-			?AINF("Split done we are on ~p, moved out of ~p",[P#dp.actorname,ActorFrom]),
+			?INF("Split done we are on, moved out of ~p",[ActorFrom]),
 			{M,F,A} = Mfa,
 			MovedToNode = P#dp.movedtonode,
 			case apply(M,F,[P#dp.cbstate,check|A]) of
 				% Split returned ok on old actor (unlock call was executed successfully).
 				ok when P#dp.actorname == ActorFrom ->
-					?AINF("Split done on new node ~p",[{P#dp.actorname,P#dp.actortype}]),
+					?INF("Split done on new node"),
 					Sql1 = CleanupSql,
 					ResetSql = [],
 					Callfrom = undefined;
 				% If split done and we are on new actor.
 				_ when ActorFrom /= P#dp.actorname ->
-					?AINF("executing reset on new node after copy ~p",[{P#dp.actorname,P#dp.actortype}]),
+					?INF("executing reset on new node after copy"),
 					Sql1 = CleanupSql,
 					Callfrom = undefined,
 					ResetSql = do_copy_reset(P#dp.copyreset,P#dp.cbstate);
 				% It was not completed. Do it again.
 				_ when P#dp.actorname == ActorFrom ->
-					?AERR("Check split failed on original actor ~p, retry.",[{P#dp.actorname,P#dp.actortype}]),
+					?ERR("Check split failed on original actor retry."),
 					Sql1 = [],
 					ResetSql = [],
 					Callfrom = {exec,undefined,{split,Mfa,Node,ActorFrom,ActorTo}};
@@ -771,7 +769,7 @@ read_num(P) ->
 
 delactorfile(P) ->
 	[Pid ! delete || {_,Pid,_,_} <- P#dp.dbcopy_to],
-	?ADBG("delfile ~p master=~p, ismoved=~p",[{P#dp.actorname,P#dp.actortype},P#dp.mors,P#dp.movedtonode]),
+	?DBG("delfile master=~p, ismoved=~p",[P#dp.mors,P#dp.movedtonode]),
 	% Term files are not deleted. This is because of deleted actors. If a node was offline
 	%  when an actor was deleted, then the actor was created anew still while offline, 
 	%  this will keep the term and evnum number higher than that old file and raft logic will overwrite that data.
@@ -810,7 +808,7 @@ do_checkpoint(P) ->
 	end.
 
 delete_actor(P) ->
-	?AINF("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
+	?INF("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
 	case (P#dp.flags band ?FLAG_TEST == 0) andalso P#dp.movedtonode == undefined of
 		true ->
 			case actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype) of
@@ -868,7 +866,7 @@ has_schema_updated(P,Sql) ->
 				{_,[]} ->
 					ok;
 				{NewVers,SchemaUpdate} ->
-					?ADBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
+					?DBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
 					{NewVers,iolist_to_binary([SchemaUpdate,
 						<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,"' WHERE id=",?SCHEMA_VERS/binary,";">>,Sql])}
 			end
@@ -979,9 +977,8 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 	%  Which means the sqlite file can be read from safely.
 	case P#dp.verified of
 		true ->
-			?ADBG("senddb myname ~p, remotename ~p info ~p, copyto already ~p",
-					[{P#dp.actorname,P#dp.actortype},ActornameToCopyto,
-											{Node,Ref,IsMove},P#dp.dbcopy_to]),
+			?DBG("senddb myname, remotename ~p info ~p, copyto already ~p",
+					[ActornameToCopyto,{Node,Ref,IsMove},P#dp.dbcopy_to]),
 			Me = self(),
 			case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
 				false ->
@@ -1000,7 +997,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 				true ->
 					{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
 				_ ->
-					?ADBG("redirect not master node"),
+					?DBG("redirect not master node"),
 					redirect_master(P)
 			end;
 		false ->
@@ -1008,7 +1005,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 	end;
 % Initial call on node that is destination of copy
 dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
-	?ADBG("start receive entire db ~p",[{P#dp.actorname,P#dp.actortype}]),
+	?DBG("start receive entire db",[]),
 	% If move, split or copy actor to a new actor this must be called on master.
 	case is_tuple(Copyfrom) of
 		true when P#dp.mors /= master ->
@@ -1040,10 +1037,10 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 	% For unlock data = copyref
 	case lists:keyfind(Data,2,P#dp.locked) of
 		false ->
-			?AERR("Unlock attempt on non existing lock ~p ~p, locks ~p",[{P#dp.actorname,P#dp.actortype},Data,P#dp.locked]),
+			?ERR("Unlock attempt on non existing lock ~p, locks ~p",[Data,P#dp.locked]),
 			{reply,false,P};
 		{wait_copy,Data,IsMove,Node,_TimeOfLock} ->
-			?DBG("Actor unlocked ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum,Data,P#dp.dbcopy_to]),
+			?DBG("Actor unlocked ~p ~p ~p",[P#dp.evnum,Data,P#dp.dbcopy_to]),
 			DbCopyTo = lists:keydelete(Data,3,P#dp.dbcopy_to),
 			case IsMove of
 				true ->
@@ -1088,7 +1085,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 					dbcopy_call({unlock,Data},CallFrom,
 							P#dp{locked = [{wait_copy,Data,IsMove,Node,os:timestamp()}|P#dp.locked]});
 				false ->
-					?AERR("dbcopy_to does not contain ref ~p, ~p",[Data,P#dp.dbcopy_to]),
+					?ERR("dbcopy_to does not contain ref ~p, ~p",[Data,P#dp.dbcopy_to]),
 					{reply,false,P}
 			end
 	end.
@@ -1100,10 +1097,10 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 	still_alive(P,Home,ActorTo),
 	case gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}) of
 		{_Walname,Offset} ->
-			?ADBG("dbsend done ",[]),
+			?DBG("dbsend done ",[]),
 			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}));
 		{_Walname,Walsize} when Offset > Walsize ->
-			?AERR("Offset larger than walsize ~p ~p",[{ActorTo,P#dp.actortype},Offset,Walsize]),
+			?ERR("Offset larger than walsize ~p ~p",[{ActorTo,P#dp.actortype},Offset,Walsize]),
 			exit(copyfail);
 		{Walname,Walsize} ->
 			Readnum = min(1024*1024,Walsize-Offset),
@@ -1114,14 +1111,14 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 					F1 = F
 			end,
 			{ok,Bin} = file:read(F1,Readnum),
-			?ADBG("dbsend wal ~p",[{Walname,Walsize}]),
+			?DBG("dbsend wal ~p",[{Walname,Walsize}]),
 			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,Bin,wal,original]}),
 			dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
 	end;
 dbcopy(P,Home,ActorTo,F,0,db) ->
 	still_alive(P,Home,ActorTo),
 	{ok,Bin} = file:read(F,1024*1024),
-	?ADBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
+	?DBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,Bin,db,original]}),
 	case byte_size(Bin) == 1024*1024 of
 		true ->
@@ -1166,7 +1163,7 @@ start_copyrec(P) ->
 	spawn_monitor(fun() ->
 		case distreg:reg(self(),{copyproc,P#dp.dbcopyref}) of
 			ok ->
-				?ADBG("Started copyrec ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.dbcopyref,P#dp.copyfrom]),
+				?DBG("Started copyrec copyref=~p copyfrom=~p",[P#dp.dbcopyref,P#dp.copyfrom]),
 				Home ! {StartRef,self()},
 				case ok of
 					% if copyfrom binary, it's a restore within a cluster.
@@ -1238,12 +1235,12 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 					{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 					case SchemaTables of
 						[] ->
-							?AERR("DB open after move without schema? ~p ~p",[P#dp.actorname,P#dp.actortype]),
+							?ERR("DB open after move without schema?",[]),
 							actordb_sqlite:stop(Db),
 							actordb_sqlite:move_to_trash(P#dp.dbpath),
 							exit(copynoschema);
 						_ ->
-							?ADBG("Copyreceive done ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},
+							?DBG("Copyreceive done ~p ~p",[
 								 {Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELECT * FROM __adb;")]),
 							actordb_sqlite:stop(Db),
 							Source ! {Ref,self(),ok},
@@ -1258,7 +1255,7 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 			Source ! {Ref,self(),ok},
 			dbcopy_receive(P,F1,Status,ChildNodes);
 		X ->
-			?AERR("dpcopy_receive ~p received invalid msg ~p",[P#dp.dbcopyref,X])
+			?ERR("dpcopy_receive ~p received invalid msg ~p",[P#dp.dbcopyref,X])
 	after 30000 ->
 		exit(timeout_db_receive)
 	end.
@@ -1291,7 +1288,7 @@ callback_unlock(P) ->
 					exit({unlock_invalid_redirect,Somenode})
 			end;
 		{error,Err} ->
-			?AERR("Failed to execute dbunlock ~p",[Err]),
+			?ERR("Failed to execute dbunlock ~p",[Err]),
 			exit(failed_unlock)
 	end.
 
@@ -1302,11 +1299,11 @@ still_alive(P,Home,ActorTo) ->
 		false ->
 			receive
 				delete ->
-					?ADBG("Actor deleted during copy ~p",[Home]),
+					?DBG("Actor deleted during copy ~p",[Home]),
 					ok = rpc(P#dp.dbcopy_to,{actordb_sqlproc,call_slave,[P#dp.cbmod,ActorTo,P#dp.actortype,
 																	{db_chunk,P#dp.dbcopyref,<<>>,delete}]})
 			after 0 ->
-				?AERR("dbcopy home proc is dead ~p",[Home]),
+				?ERR("dbcopy home proc is dead ~p",[Home]),
 				exit(actorprocdead)
 			end
 	end.
@@ -1322,7 +1319,7 @@ rpc(Nd,MFA) ->
 	% 			{'DOWN',_MonRef,_,Me,_Reason} ->
 	% 				ok
 	% 			after 1000 ->
-	% 				?AINF("Rpc waiting on ~p ~p",[Nd,MFA]),
+	% 				?INF("Rpc waiting on ~p ~p",[Nd,MFA]),
 	% 				F(F)
 	% 		end
 	% 	end,

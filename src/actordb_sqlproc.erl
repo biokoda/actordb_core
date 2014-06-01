@@ -220,7 +220,7 @@ print_info(Pid) ->
 
 
 handle_call(_Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
-	?ADBG("REDIRECT BECAUSE MOVED TO NODE ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.movedtonode,_Msg]),
+	?DBG("REDIRECT BECAUSE MOVED TO NODE ~p ~p",[P#dp.movedtonode,_Msg]),
 	{reply,{redirect,P#dp.movedtonode},P#dp{activity = make_ref()}};
 handle_call({dbcopy,Msg},CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,P);
@@ -285,7 +285,7 @@ handle_call(Msg,From,P) ->
 
 
 commit_call(Doit,Id,From,P) ->
-	?ADBG("Commit ~p doit=~p, id=~p, from=~p, trans=~p",[{P#dp.actorname,P#dp.actortype},Doit,Id,From,P#dp.transactionid]),
+	?DBG("Commit doit=~p, id=~p, from=~p, trans=~p",[Doit,Id,From,P#dp.transactionid]),
 	case P#dp.transactionid == Id of
 		true ->
 			case P#dp.transactioncheckref of
@@ -294,7 +294,7 @@ commit_call(Doit,Id,From,P) ->
 				_ ->
 					erlang:demonitor(P#dp.transactioncheckref)
 			end,
-			?ADBG("Commit write ~p",[P#dp.transactioninfo]),
+			?DBG("Commit write ~p",[P#dp.transactioninfo]),
 			{Sql,EvNum,_NewVers} = P#dp.transactioninfo,
 			case Doit of
 				true when Sql == <<"delete">> ->
@@ -367,10 +367,10 @@ state_rw_call(What,From,P) ->
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType} ->
-			?ADBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[{P#dp.actorname,P#dp.actortype,AEType},{PrevEvnum,PrevTerm},LeaderNode]),
+			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[{P#dp.actorname,P#dp.actortype,AEType},{PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
 				_ when Term < P#dp.current_term ->
-					?AERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
+					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType),
 					% Some node thinks its master and sent us appendentries start.
@@ -383,7 +383,7 @@ state_rw_call(What,From,P) ->
 							{noreply,P}
 					end;
 				_ when P#dp.mors == slave, P#dp.masternode == undefined ->
-					?ADBG("AE start, slave now knows leader ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},LeaderNode]),
+					?DBG("AE start, slave now knows leader ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},LeaderNode]),
 					case P#dp.callres /= undefined of
 						true ->
 							reply(P#dp.callfrom,{redirect,LeaderNode});
@@ -397,7 +397,7 @@ state_rw_call(What,From,P) ->
 															verified = true, activity = make_ref()})));
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
-					?AERR("AE start, stepping down as leader ~p ~p",
+					?ERR("AE start, stepping down as leader ~p ~p",
 							[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
 					case P#dp.callres /= undefined of
 						true ->
@@ -413,7 +413,7 @@ state_rw_call(What,From,P) ->
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term}))));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
-					?AERR("AE start attempt failed, evnum evterm do not match ~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
+					?ERR("AE start attempt failed, evnum evterm do not match ~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 								[{P#dp.actorname,P#dp.actortype,AEType},{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
 					case P#dp.evnum > PrevEvnum andalso PrevEvnum > 0 of
 						% Node is conflicted, delete last entry
@@ -428,13 +428,13 @@ state_rw_call(What,From,P) ->
 					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType),
 					{noreply,NP#dp{activity = make_ref()}};
 				_ when Term > P#dp.current_term ->
-					?AERR("AE start, my term out of date ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
+					?ERR("AE start, my term out of date ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
 					state_rw_call(What,From,actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
 												 masternode = LeaderNode,verified = true,activity = make_ref(),
 												 masternodedist = bkdcore:dist_name(LeaderNode)}));
 				_ when AEType == empty ->
-					?ADBG("AE start, ok for empty ~p",[{P#dp.actorname,P#dp.actortype,AEType}]),
+					?DBG("AE start, ok for empty ~p",[{P#dp.actorname,P#dp.actortype,AEType}]),
 					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType),
 					{noreply,P#dp{verified = true,activity = make_ref()}};
@@ -454,15 +454,15 @@ state_rw_call(What,From,P) ->
 							{reply,ok,P#dp{activity = make_ref()}};
 						% last page
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
-							?ADBG("AE WAL done ~p ~p ~p ~p",
-									[{P#dp.actorname,P#dp.actortype},Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
+							?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p",
+									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
 							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref()},
 							reply(From,ok),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType),
 							{noreply,NP}
 					end;
 				_ ->
-					?AERR("AE WAL received wrong term ~p ~p",[{P#dp.actorname,P#dp.actortype},{Term,P#dp.current_term}]),
+					?ERR("AE WAL received wrong term ~p",[{Term,P#dp.current_term}]),
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType),
 					{noreply,P}
@@ -474,8 +474,8 @@ state_rw_call(What,From,P) ->
 				false ->
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
-					?ADBG("AE response ~p, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
-							[{P#dp.actorname,P#dp.actortype},Node,Success,AEType,
+					?DBG("AE response, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
+							[Node,Success,AEType,
 							 {Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
 											wait_for_response_since = undefined}, 
@@ -486,9 +486,8 @@ state_rw_call(What,From,P) ->
 						true ->
 							reply(From,ok),
 							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw,AEType)),
-							?ADBG("AE response ~p for node ~p, followers=~p",
-									[{P#dp.actorname,P#dp.actortype},Node,
-										[{F#flw.node,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
+							?DBG("AE response for node ~p, followers=~p",
+									[Node,[{F#flw.node,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
 							{noreply,doqueue(NP)};
 						% What we thought was follower is ahead of us and we need to step down
 						false when P#dp.current_term < CurrentTerm ->
@@ -498,18 +497,17 @@ state_rw_call(What,From,P) ->
 						% In case of overlapping responses for appendentries rpc. We do not care about responses
 						%  for appendentries with a match index different than current match index.
 						false when Follower#flw.match_index /= MatchEvnum, Follower#flw.match_index > 0 ->
-							?ADBG("Ignoring false response to appendentries"),
+							?DBG("Ignoring false response to appendentries"),
 							{reply,ok,P};
 						false ->
 							case lists:keymember(Follower#flw.node,1,P#dp.dbcopy_to) of
 								true ->
-									?ADBG("Ignoring appendendentries false response because copying to"),
+									?DBG("Ignoring appendendentries false response because copying to"),
 									{reply,ok,P};
 								false ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
 										{false,NP,NF} ->
-											?ADBG("Can not recover from log, sending entire db ~p",
-													[{P#dp.actorname,P#dp.actortype}]),
+											?DBG("Can not recover from log, sending entire db"),
 											% We can not recover from wal. Send entire db.
 											Ref = make_ref(),
 											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,
@@ -523,8 +521,8 @@ state_rw_call(What,From,P) ->
 											end;
 										{true,NP,NF} ->
 											% we can recover from wal
-											?ADBG("Recovering from wal ~p, for node=~p, {HisIndex,MyMaxIndex}=~p",
-													[{P#dp.actorname,P#dp.actortype},NF#flw.node,{NF#flw.match_index,P#dp.evnum}]),
+											?DBG("Recovering from wal, for node=~p, {HisIndex,MyMaxIndex}=~p",
+													[NF#flw.node,{NF#flw.match_index,P#dp.evnum}]),
 											reply(From,ok),
 											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,recover)}
 									end
@@ -532,8 +530,8 @@ state_rw_call(What,From,P) ->
 					end
 			end;
 		{request_vote,Candidate,NewTerm,LastEvnum,LastTerm} ->
-			?ADBG("Request vote on=~p for=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
-					[{P#dp.actorname,P#dp.actortype},Candidate,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
+			?DBG("Request vote for=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
+					[Candidate,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
 			Now = os:timestamp(),
 			Uptodate = 
 				case ok of
@@ -589,7 +587,7 @@ state_rw_call(What,From,P) ->
 			% If the other node is actually more up to date, vote was yes and we do not do election.
 			case DoElection of
 				true ->
-					?ADBG("Start new election to sync nodes ~p",[{P#dp.actorname,P#dp.actortype}]),
+					?DBG("Start new election to sync nodes"),
 					{noreply,actordb_sqlprocutil:start_verify(NP,false)};
 				false ->
 					{noreply,NP#dp{activity = make_ref()}}
@@ -600,7 +598,7 @@ state_rw_call(What,From,P) ->
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
 		doelection ->
-			?ADBG("Doelection hint ~p ~p",[{P#dp.actorname,P#dp.actortype},{P#dp.verified,P#dp.election}]),
+			?DBG("Doelection hint ~p",[{P#dp.verified,P#dp.election}]),
 			reply(From,ok),
 			case is_pid(P#dp.election) of
 				false ->
@@ -611,7 +609,7 @@ state_rw_call(What,From,P) ->
 		{delete,MovedToNode} ->
 			reply(From,ok),
 			actordb_sqlite:stop(P#dp.db),
-			?ADBG("Received delete call"),
+			?DBG("Received delete call"),
 			actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
 			{stop,normal,P#dp{db = undefined}};
 		checkpoint ->
@@ -674,7 +672,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call({MFA,Sql,Transaction},From,P) ->
-	?ADBG("writecall ~p evnum_prewrite=~p",[{P#dp.actorname,P#dp.actortype},P#dp.evnum]),
+	?DBG("writecall evnum_prewrite=~p",[P#dp.evnum]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -752,8 +750,8 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 	end;
 write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
-	?ADBG("Starting transaction ~p write id ~p, curtr ~p, sql ~p",
-				[{P#dp.actorname,P#dp.actortype},TransactionId,P#dp.transactionid,Sql1]),
+	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",
+				[TransactionId,P#dp.transactionid,Sql1]),
 	case P#dp.follower_indexes of
 		[] ->
 			% If single node cluster, no need to store sql first.
@@ -788,7 +786,7 @@ write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			end,
 			case actordb_sqlite:okornot(Res) of
 				ok ->
-					?ADBG("Transaction ok"),
+					?DBG("Transaction ok"),
 					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId, 
 								evterm = P#dp.current_term,
 								transactioncheckref = CheckRef,
@@ -796,7 +794,7 @@ write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 				_Err ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					erlang:demonitor(CheckRef),
-					?ADBG("Transaction not ok ~p",[_Err]),
+					?DBG("Transaction not ok ~p",[_Err]),
 					{reply,Res,P#dp{activity = make_ref(), transactionid = undefined, evterm = P#dp.current_term}}
 			end;
 		_ ->
@@ -859,17 +857,17 @@ update_followers(L) ->
 
 
 handle_cast({diepls,Reason},P) ->
-	?ADBG("diepls ~p",[{P#dp.actorname,P#dp.actortype}]),
+	?DBG("diepls"),
 	case Reason of
 		nomaster when P#dp.mors == slave ->
-			?AERR("Die because nomaster"),
+			?ERR("Die because nomaster"),
 			{stop,normal,P};
 		_ ->
 			case handle_info(check_inactivity,P) of
 				{noreply,_,hibernate} ->
 					% case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
 					% 	true ->
-							?ADBG("req die ~p ~p ~p",[P#dp.actorname,P#dp.actortype,Reason]),
+							?DBG("req die ~p ~p ~p",[P#dp.actorname,P#dp.actortype,Reason]),
 							{stop,normal,P};
 					% 	false ->
 					% 		?AINF("NOPE ~p",[P#dp.actorname]),
@@ -912,14 +910,14 @@ handle_info(check_inactivity, P) ->
 handle_info(stop,P) ->
 	handle_info({stop,normal},P);
 handle_info({stop,Reason},P) ->
-	?ADBG("Actor stop with reason ~p",[Reason]),
+	?DBG("Actor stop with reason ~p",[Reason]),
 	{stop, normal, P};
 handle_info(print_info,P) ->
 	handle_cast(print_info,P);
 handle_info(commit_transaction,P) ->
 	down_info(0,12345,done,P#dp{transactioncheckref = 12345});
 handle_info(start_copy,P) ->
-	?ADBG("Start copy ~p ~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom]),
+	?DBG("Start copy ~p",[P#dp.copyfrom]),
 	case P#dp.copyfrom of
 		{move,NewShard,Node} ->
 			OldActor = P#dp.actorname,
@@ -940,7 +938,7 @@ handle_info(start_copy,P) ->
 			{redirect,_} ->
 				Home ! start_copy_done;
 			Err ->
-				?AERR("Unable to start copy for ~p from ~p, ~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom,Err]),
+				?ERR("Unable to start copy from ~p, ~p",[P#dp.copyfrom,Err]),
 				Home ! {stop,Err}
 		end
 	end),
@@ -962,7 +960,7 @@ handle_info(_Msg,P) ->
 doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transactionid == undefined ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
-			% ?AINF("Queue empty ~p",[{P#dp.actorname,P#dp.actortype}]),
+			% ?AINF("Queue empty"),
 			P;
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
@@ -996,12 +994,12 @@ doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transact
 			end
 	end;
 doqueue(P) ->
-	% ?AINF("Queue notyet ~p ~p",[{P#dp.actorname,P#dp.actortype},{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
+	% ?AINF("Queue notyet ~p",[{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
 	P.
 
 
 check_inactivity(NTimer,P) ->
-	% ?AINF("check inactivity ~p",[{P#dp.actorname,P#dp.actortype}]),
+	% ?AINF("check inactivity"),
 	Empty = queue:is_empty(P#dp.callqueue),
 	Age = actordb_local:min_ref_age(P#dp.activity),
 	case P#dp.mors of
@@ -1019,7 +1017,7 @@ check_inactivity(NTimer,P) ->
 								DN = bkdcore:dist_name(F#flw.node),
 								case lists:member(DN,nodes()) of
 									true ->
-										?AINF("Resending appendentries ~p",[{P#dp.actorname,P#dp.actortype}]),
+										?AINF("Resending appendentries"),
 										rpc:cast(DN,
 											?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 											{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
@@ -1047,7 +1045,7 @@ check_inactivity(NTimer,P) ->
 				undefined ->
 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
 						true ->
-							?ADBG("Die because temporary ~p ~p master ~p",[P#dp.actorname,P#dp.actortype,P#dp.masternode]),
+							?DBG("Die because temporary ~p ~p master ~p",[P#dp.actorname,P#dp.actortype,P#dp.masternode]),
 							{stop,normal,P};
 						false ->
 							case P#dp.timerref of
@@ -1112,7 +1110,7 @@ check_inactivity(NTimer,P) ->
 abandon_locks(P,[{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
 	case timer:now_diff(os:timestamp(),TimeOfLock) > 3000000 of
 		true ->
-			?AERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,_Node,_CpRef]),
+			?ERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,_Node,_CpRef]),
 			abandon_locks(P,T,L);
 		false ->
 			abandon_locks(P,T,[H|L])
@@ -1160,7 +1158,6 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.evnum == 0 ->
 			{stop,nocreate,P1};
 		leader ->
-			?ADBG("Elected leader ~p term=~p",[{P1#dp.actorname,P1#dp.actortype},P1#dp.current_term]),
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			case P1#dp.follower_indexes == [] of
 				true ->
@@ -1170,6 +1167,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			end,
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
 													follower_indexes = FollowerIndexes, verified = true}),
+			?DBG("Elected leader term=~p",[P1#dp.current_term]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
 
 			case P#dp.schemavers of
@@ -1184,7 +1182,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 						     [{columns,_},{rows,Rows}]]} ->
 						     	ok;
 						Err ->
-							?AERR("Unable read from db for ~p, error=~p after election.",[{P#dp.actorname,P#dp.actortype},Err]),
+							?ERR("Unable read from db for, error=~p after election.",[Err]),
 							Transaction = Rows = [],
 							exit(error)
 					end
@@ -1207,11 +1205,11 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 																		Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
 				undefined ->
-					?ADBG("Running post election write ~p",[{P#dp.actorname,P#dp.actortype}]),
+					?DBG("Running post election write"),
 					% it must always return noreply
 					write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP);
 				_ ->
-					?ADBG("Delaying election write callres=~p, followers=~p",[P#dp.callres,P#dp.follower_indexes]),
+					?DBG("Delaying election write callres=~p, followers=~p",[P#dp.callres,P#dp.follower_indexes]),
 					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,{write,{undefined,Sql,NP#dp.transactionid}}},
 															P#dp.callqueue)}}
 			end;
@@ -1219,7 +1217,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = os:timestamp(), mors = slave})}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
-	?ADBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
+	?DBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
 	case P#dp.transactionid of
 		{Tid,Updaterid,Node} ->
 			case Reason of
@@ -1249,7 +1247,7 @@ down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 			{noreply,P#dp{transactioncheckref = undefined}}
 	end;
 down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
-	?ADBG("copyproc died ~p ~p ~p ~p",[{P#dp.actorname,P#dp.actortype},Reason,P#dp.mors,P#dp.copyfrom]),
+	?DBG("copyproc died ~p ~p ~p",[Reason,P#dp.mors,P#dp.copyfrom]),
 	case Reason of
 		ok when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
 			{ok,NP} = init(P,copyproc_done),
@@ -1265,19 +1263,19 @@ down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 		%  - If copy failed before unlock, then it actually did fail. In that case move will restart 
 		%    eventually.
 		_ ->
-			?AERR("Coproc died with error ~p ~p~n",[{P#dp.actorname,P#dp.actortype},Reason]),
+			?ERR("Coproc died with error ~p~n",[Reason]),
 			actordb_sqlprocutil:empty_queue(P#dp.callqueue,{error,copyfailed}),
 			{stop,Reason,P}
 	end;
 down_info(PID,_Ref,Reason,P) ->
 	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
 		{Node,PID,Ref,IsMove} ->
-			?ADBG("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,Ref,P#dp.locked,P#dp.dbcopy_to]),
+			?DBG("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,Ref,P#dp.locked,P#dp.dbcopy_to]),
 			case Reason of
 				ok ->
 					ok;
 				_ ->
-					?AERR("Copyto process invalid exit ~p",[Reason])
+					?ERR("Copyto process invalid exit ~p",[Reason])
 			end,
 			WithoutCopy = lists:keydelete(PID,1,P#dp.locked),
 			NewCopyto = lists:keydelete(PID,2,P#dp.dbcopy_to),
@@ -1294,7 +1292,7 @@ down_info(PID,_Ref,Reason,P) ->
 					handle_info(doqueue,NP)
 			end;
 		false ->
-			?ADBG("downmsg, verify maybe? ~p",[P#dp.election]),
+			?DBG("downmsg, verify maybe? ~p",[P#dp.election]),
 			case apply(P#dp.cbmod,cb_info,[{'DOWN',_Ref,process,PID,Reason},P#dp.cbstate]) of
 				{noreply,S} ->
 					{noreply,P#dp{cbstate = S}};
@@ -1305,15 +1303,15 @@ down_info(PID,_Ref,Reason,P) ->
 
 
 terminate(_, P) ->
-	?ADBG("Terminating ~p",[{P#dp.actorname,P#dp.actortype}]),
+	?DBG("Terminating"),
 	actordb_sqlite:stop(P#dp.db),
 	distreg:unreg(self()),
 	ok.
 code_change(_, P, _) ->
 	{ok, P}.
 init(#dp{} = P,_Why) ->
-	% ?ADBG("Reinit because ~p, ~p, ~p",[_Why,?R2P(P),get()]),
-	?ADBG("Reinit because ~p ~p",[_Why,{P#dp.actorname,P#dp.actortype}]),
+	% ?DBG("Reinit because ~p, ~p, ~p",[_Why,?R2P(P),get()]),
+	?DBG("Reinit because ~p",[_Why]),
 	actordb_sqlite:stop(P#dp.db),
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,P#dp.flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
@@ -1337,7 +1335,7 @@ init([_|_] = Opts) ->
 		P when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->
 			case lists:keyfind(lockinfo,1,Opts) of
 				{lockinfo,dbcopy,{Ref,CbState,CpFrom,CpReset}} ->
-					?ADBG("Starting actor slave lock for copy on ref ~p",[Ref]),
+					?DBG("Starting actor slave lock for copy on ref ~p",[Ref]),
 					{ok,Pid} = actordb_sqlprocutil:start_copyrec(P#dp{mors = slave, cbstate = CbState, 
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
@@ -1345,7 +1343,7 @@ init([_|_] = Opts) ->
 					{ok,P}
 			end;
 		P when P#dp.copyfrom == undefined ->
-			?ADBG("Actor start ~p, copy=~p, queue=~p, mors=~p startreason=~p",[{P#dp.actorname,P#dp.actortype},P#dp.copyfrom,
+			?DBG("Actor start, copy=~p, queue=~p, mors=~p startreason=~p",[P#dp.copyfrom,
 							queue:is_empty(P#dp.callqueue),P#dp.mors,butil:ds_val(startreason,Opts)]),
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
@@ -1368,7 +1366,7 @@ init([_|_] = Opts) ->
 									{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
 										file:read(F,24),
 									file:close(F),
-									?ADBG("Actor start slave ~p, with {Evnum,Evterm}=~p",[{P#dp.actorname,P#dp.actortype},{Evnum,Evterm}]),
+									?DBG("Actor start slave, with {Evnum,Evterm}=~p",[{Evnum,Evterm}]),
 									{ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, 
 												evnum = Evnum, evterm = Evterm}};
 								{ok,_} ->
@@ -1385,7 +1383,7 @@ init([_|_] = Opts) ->
 					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(
 								P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum,evterm = VotedForTerm}),true)};
 				_ ->
-					?ADBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
+					?DBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode}}
 			end;
 		P ->
