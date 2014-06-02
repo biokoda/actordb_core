@@ -8,7 +8,7 @@
 		 whereis/2,try_whereis/2,reg_actor/3, 
 		top_actor/2,actor_stolen/5,print_info/2,list_actors/4,count_actors/2,del_actor/3,
 		kvread/4,kvwrite/4,get_schema_vers/2]). 
--export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,
+-export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/3,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2]). %split_other_done/3,
 -include_lib("actordb.hrl").
@@ -37,7 +37,10 @@
 	% Node name from which shard is copying
 	stealingfrom,stealingfromshard,
 	% Which actor is in the process of moving atm
-	stealingnow, stealingnowpid,stealingnowmon}).
+	stealingnow, stealingnowpid,stealingnowmon,
+	% KV shards and shards that are moving within the same cluster are copied entirely then split in half.
+	% Splitting is not done in a single operation but in chunks (ATM fixed to 1000 keys).
+	doing_cleanup = false, cleanup_proc}).
 
 % Replicate half of shard by moving upper edge of shard actor-by-actor down.
 % 1. Start actor with highest hash value. Tell him to replicate to another node (same method as inter-cluster replication)
@@ -108,10 +111,11 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 % - kv shards
 % - shards that have been moved to another node in the same cluster
 origin_steal_done(P,split,NextShardNode,NextShard) ->
-	{ok,["$DELETE FROM actors WHERE hash >= ",butil:tobin(NextShard),";"
+	{ok,NP} = cb_idle(P#state{nextshard = NextShard, nextshardnode = NextShardNode, doing_cleanup = true}),
+	{ok,[%"$DELETE FROM actors WHERE hash >= ",butil:tobin(NextShard)," LIMIT 1000;"
 		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',base64:encode(term_to_binary(NextShardNode)),$', ");",
 		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");"],
-	P#state{nextshard = NextShard, nextshardnode = NextShardNode}};
+	 NP};
 origin_steal_done(P,check,NewShardNode,NewShard) ->
 	case P#state.nextshard == NewShard andalso  NewShardNode == P#state.nextshardnode of
 		true ->
@@ -125,8 +129,21 @@ origin_steal_done(P,check,NewShardNode,NewShard) ->
 newshard_steal_done(P,Nd,_ShardFrom) ->
 	?AINF("steal done ~p",[{P#state.name,P#state.type}]),
 	ok = actordb_shardmvr:shard_moved(Nd,P#state.name,P#state.type),
-	["$DELETE FROM actors WHERE hash < ",butil:tobin(P#state.name),";"].
+	cb_idle(P#state{doing_cleanup = true}).
+	% ["$DELETE FROM actors WHERE hash < ",butil:tobin(P#state.name),";"].
 
+
+% Internal function that gets called on seperate process from cb_idle. 
+% This is so that we don't execute a massive DELETE statement for large shards at the same time.
+do_cleanup(ShardName,Type,NextShard) ->
+	case NextShard of
+		undefined ->
+			ReadSql = [<<"SELECT * FROM actors WHERE hash < ">>,butil:tobin(ShardName)," LIMIT 1;"];
+		_ ->
+			ReadSql = [<<"SELECT * FROM actors WHERE hash >= ">>,butil:tobin(NextShard)," OR hash < ",butil:tobin(ShardName)," LIMIT 1;"]
+	end,
+	Res = actordb_sqlproc:read({ShardName,Type},[create],{ReadSql,{?MODULE,cb_do_cleanup,[NextShard]}},?MODULE),
+	?ADBG("Docleanup ~p.~p result=~p",[ShardName,Type,Res]).
 
 % callmvr(Shard,M,F,A) ->
 % 	Me = bkdcore:node_name(),
@@ -332,6 +349,22 @@ cb_kvexec(P,Actor,Sql) ->
 			Sql
 	end.
 
+cb_do_cleanup(P,ReadResult,NextShard) ->
+	case ReadResult of
+		{ok,[{columns,_},{rows,[]}]} ->
+			?AINF("Finished cleanup on ~p.~p",[P#state.name,P#state.type]),
+			{reply,ok,P#state{doing_cleanup = false}};
+		{ok,[{columns,_},{rows,[_|_]}]} ->
+			?AINF("Continue cleanup on ~p.~p",[P#state.name,P#state.type]),
+			case NextShard of
+				undefined ->
+					DeleteSql = [<<"DELETE FROM actors WHERE hash < ">>,butil:tobin(P#state.name)," ;"];
+				_ ->
+					DeleteSql = [<<"DELETE FROM actors WHERE hash >= ">>,butil:tobin(NextShard)," OR hash < ",butil:tobin(P#state.name)," ;"]
+			end,
+			{write,DeleteSql}
+	end.
+
 cb_list_actors(P,From,Limit) ->
 	?ADBG("cb_list_actors ~p",[P]),
 	case is_integer(P#state.nextshard) of
@@ -340,7 +373,7 @@ cb_list_actors(P,From,Limit) ->
 				<<" OFFSET ">>,(butil:tobin(From)), ";"],
 			{reply,{P#state.nextshard,P#state.nextshardnode},Sql,P};
 		false ->
-			[<<"SELECT id FROM actors LIMIT ">>, (butil:tobin(Limit)),
+			[<<"SELECT id FROM actors WHERE hash >=">>,butil:tobin(P#state.name), <<" LIMIT ">>, (butil:tobin(Limit)),
 				<<" OFFSET ">>,(butil:tobin(From)), ";"]
 	end.
 
@@ -469,6 +502,13 @@ cb_info({'DOWN',_Monitor,_,PID,Reason},P) ->
 			Me = self(),
 			spawn(fun() -> timer:sleep(5000), gen_server:call(Me,do_steal) end),
 			{noreply,P#state{stealingnow = undefined, stealingnowpid = undefined, stealingnowmon = undefined}};
+		_ when PID == P#state.cleanup_proc ->
+			case cb_idle(P#state{cleanup_proc = undefined}) of
+				{ok,NS} ->
+					{noreply,NS};
+				_ ->
+					{noreply,P#state{cleanup_proc = undefined}}
+			end;
 		_ ->
 			?ADBG("unknown pid died on shard ~p,stealing ~p ~p",[PID,P#state.stealingnow,Reason]),
 			noreply
@@ -502,6 +542,12 @@ cb_init(S,_Ev,{ok,[{columns,_},{rows,Rows}]}) ->
 		_ ->
 			{ok,S}
 	end.
+
+cb_idle(#state{doing_cleanup = true, cleanup_proc = undefined} = S) ->
+	{Pid,_} = spawn_monitor(fun() ->  do_cleanup(S#state.name,S#state.type,S#state.nextshard) end),
+	{ok,S#state{cleanup_proc = Pid}};
+cb_idle(_S) ->
+	ok.
 
 cb_slave_pid(Name,Type) ->
 	cb_slave_pid(Name,Type,[]).

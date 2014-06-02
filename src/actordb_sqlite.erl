@@ -24,23 +24,6 @@ init(Path,JournalMode,Thread) ->
 	case esqlite3:open(Path,Thread,Sql) of
 		{ok,Db,[_,[{columns,_},{rows,Tables}]]} ->
 			{ok,Db,Tables,4096};
-			% case Res of
-				% [_,{rows,[{Size}]}]
-				% [_,[{columns,_},{rows,Tables}]] ->
-				% 	{ok,Db,Tables,4096}
-				% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
-				% 	{ok,Db,true,Size};
-				% {ok,[]} ->
-				% 	% Not sure yet why this happens, but opening again seems to work
-				% 	stop(Db),
-				% 	{ok,Db1,Res1} = esqlite3:open(Path,Thread,Sql),
-				% 	case Res1 of
-				% 		[_,[{rows,[{_Size}]}],[{columns,_},{rows,Tables}]] ->
-				% 			{ok,Db1,Tables,4096}
-				% 		% [[_,{rows,[{Size}]}],[{columns,_},{rows,[_|_]}]] ->
-				% 		% 	{ok,Db1,true,Size}
-				% 	end
-			% end;
 		% Unable to open sqlite file.
 		% Crash if file permission problem.
 		% If file corrupted, move to trash folder (one or two levels above current folder) and open again.
@@ -86,8 +69,8 @@ close(Db) ->
 stop(undefined) ->
 	ok;
 stop(Db) when element(1,Db) == connection ->
-	exec(Db,<<"PRAGMA wal_checkpoint;">>),
-	esqlite3:close(Db);
+	% esqlite3:close(Db);
+	ok;
 stop(Db) when element(1,Db) == file_descriptor ->
 	file:close(Db).
 
@@ -115,7 +98,7 @@ exec(Db,Sql) ->
 	exec_res(Res,Sql).
 exec(Db,Sql,Evnum,Evterm,VarHeader) ->
 	actordb_local:report_write(),
-	Res = esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
+	Res =  esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
 	exec_res(Res,Sql).
 
 exec_res(Res,Sql) ->

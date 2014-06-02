@@ -300,7 +300,7 @@ commit_call(Doit,Id,From,P) ->
 				true when Sql == <<"delete">> ->
 					actordb_sqlprocutil:delete_actor(P),
 					reply(From,ok),
-					{stop,normal,P};
+					{stop,normal,P#dp{db = undefined}};
 				true when P#dp.follower_indexes == [] ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
 					{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
@@ -637,21 +637,21 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
 					end;
 				{Sql,{Mod,Func,Args}} ->
-					case apply(Mod,Func,[actordb_sqlite:exec(P#dp.db,Sql,read)|Args]) of
+					case apply(Mod,Func,[P#dp.cbstate,actordb_sqlite:exec(P#dp.db,Sql,read)|Args]) of
 						{write,Write} ->
 							case Write of
 								_ when is_binary(Write); is_list(Write) ->
-									write_call({undefined,iolist_to_binary(Sql),undefined},From,P);
+									write_call({undefined,iolist_to_binary(Write),undefined},From,P);
 								{_,_,_} ->
 									write_call({Write,undefined,undefined},From,P)
 							end;
 						{write,Write,NS} ->
 							case Write of
 								_ when is_binary(Write); is_list(Write) ->
-									write_call({undefined,iolist_to_binary(Sql),undefined},
+									write_call({undefined,iolist_to_binary(Write),undefined},
 											   From,P#dp{cbstate = NS});
 								{_,_,_} ->
-									write_call({Write,undefined,undefined,undefined},From,P#dp{cbstate = NS})
+									write_call({Write,undefined,undefined},From,P#dp{cbstate = NS})
 							end;
 						{reply,What,NS} ->
 							{reply,What,P#dp{cbstate = NS}};
@@ -703,11 +703,11 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 		delete ->
 			actordb_sqlprocutil:delete_actor(P),
 			reply(From,ok),
-			{stop,normal,P};
+			{stop,normal,P#dp{db = undefined}};
 		{moved,MovedTo} ->
 			actordb_sqlprocutil:delete_actor(P#dp{movedtonode = MovedTo}),
 			reply(From,ok),
-			{stop,normal,P};
+			{stop,normal,P#dp{db = undefined}};
 		_ ->
 			ComplSql = 
 					[<<"$SAVEPOINT 'adb';">>,
@@ -961,7 +961,12 @@ doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transact
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
 			% ?AINF("Queue empty"),
-			P;
+			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
+				{ok,NS} ->
+					P#dp{cbstate = NS};
+				_ ->
+					P
+			end;
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
 			{From,Msg} = Call,

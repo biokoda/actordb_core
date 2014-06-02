@@ -467,17 +467,13 @@ do_copy_reset(Copyreset,State) ->
 	case Copyreset of
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[State|Args]) of
-				ok ->
-					<<>>;
-				ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
-					ResetSql
+				{ok,NS} ->
+					{ok,NS};
+				_ ->
+					{ok,State}
 			end;
-		ok ->
-			<<>>;
-		ResetSql when is_list(ResetSql); is_binary(ResetSql) ->
-			ResetSql;
 		_ ->
-			<<>>
+			{ok,State}
 	end.
 
 base_schema(SchemaVers,Type) ->
@@ -697,7 +693,7 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 							Callfrom = undefined
 					end
 			end,
-			ResetSql = [];
+			NS = P#dp.cbstate;
 		{split,Mfa,Node,ActorFrom,ActorTo} ->
 			?INF("Split done we are on, moved out of ~p",[ActorFrom]),
 			{M,F,A} = Mfa,
@@ -707,22 +703,22 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 				ok when P#dp.actorname == ActorFrom ->
 					?INF("Split done on new node"),
 					Sql1 = CleanupSql,
-					ResetSql = [],
+					NS = P#dp.cbstate,
 					Callfrom = undefined;
 				% If split done and we are on new actor.
 				_ when ActorFrom /= P#dp.actorname ->
 					?INF("executing reset on new node after copy"),
 					Sql1 = CleanupSql,
 					Callfrom = undefined,
-					ResetSql = do_copy_reset(P#dp.copyreset,P#dp.cbstate);
+					{ok,NS} = do_copy_reset(P#dp.copyreset,P#dp.cbstate);
 				% It was not completed. Do it again.
 				_ when P#dp.actorname == ActorFrom ->
 					?ERR("Check split failed on original actor retry."),
 					Sql1 = [],
-					ResetSql = [],
+					NS = P#dp.cbstate,
 					Callfrom = {exec,undefined,{split,Mfa,Node,ActorFrom,ActorTo}};
 				_ ->
-					Sql1 = ResetSql = [],
+					Sql1 = NS = [],
 					Callfrom = undefined,
 					exit(wait_for_split)
 			end
@@ -731,9 +727,9 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 		delete ->
 			Sql = delete;
 		_ ->
-			Sql = [SqlIn,Sql1,ResetSql]
+			Sql = [SqlIn,Sql1]
 	end,
-	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode},Sql,Callfrom};
+	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode, cbstate = NS},Sql,Callfrom};
 post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], Copyfrom /= undefined ->
 	% Combine sqls for transaction and copy.
 	case post_election_sql(P,Transaction,undefined,Sql,Callfrom) of

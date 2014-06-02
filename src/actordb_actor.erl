@@ -112,6 +112,9 @@ cb_checkmoved(Name,Type) ->
 cb_startstate(Name,Type) ->
 	#st{name = Name, type = Type}.
 
+cb_idle(_S) ->
+	ok.
+
 % These only get called on master
 cb_call(_Msg,_From,_S) ->
 	{reply,{error,uncrecognized_call}}.
