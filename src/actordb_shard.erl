@@ -8,12 +8,14 @@
 		 whereis/2,try_whereis/2,reg_actor/3, 
 		top_actor/2,actor_stolen/5,print_info/2,list_actors/4,count_actors/2,del_actor/3,
 		kvread/4,kvwrite/4,get_schema_vers/2]). 
--export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/3,
+-export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2]). %split_other_done/3,
 -include_lib("actordb.hrl").
 -define(META_NEXT_SHARD,$1).
 -define(META_NEXT_SHARD_NODE,$2).
+-define(META_CLEANUP_PRE,$3).
+-define(META_CLEANUP_AFTER,$4).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
@@ -39,8 +41,8 @@
 	% Which actor is in the process of moving atm
 	stealingnow, stealingnowpid,stealingnowmon,
 	% KV shards and shards that are moving within the same cluster are copied entirely then split in half.
-	% Splitting is not done in a single operation but in chunks (ATM fixed to 1000 keys).
-	doing_cleanup = false, cleanup_proc}).
+	% Splitting is not done in a single operation but in chunks (~1000 keys at a time).
+	cleanup_proc, cleanup_pre, cleanup_after}).
 
 % Replicate half of shard by moving upper edge of shard actor-by-actor down.
 % 1. Start actor with highest hash value. Tell him to replicate to another node (same method as inter-cluster replication)
@@ -111,10 +113,13 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 % - kv shards
 % - shards that have been moved to another node in the same cluster
 origin_steal_done(P,split,NextShardNode,NextShard) ->
-	{ok,NP} = cb_idle(P#state{nextshard = NextShard, nextshardnode = NextShardNode, doing_cleanup = true}),
-	{ok,[%"$DELETE FROM actors WHERE hash >= ",butil:tobin(NextShard)," LIMIT 1000;"
+	{ok,NP} = cb_idle(P#state{nextshard = NextShard, nextshardnode = NextShardNode, 
+						cleanup_pre = P#state.name, cleanup_after = NextShard}),
+	{ok,[%"$DELETE FROM actors WHERE hash >= ",butil:tobin(NextShard),";"
 		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',base64:encode(term_to_binary(NextShardNode)),$', ");",
-		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");"],
+		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");",
+		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_CLEANUP_PRE,$,,$',butil:tolist(P#state.name),$', ");",
+		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_CLEANUP_AFTER,$,,$',butil:tolist(NextShard),$', ");"],
 	 NP};
 origin_steal_done(P,check,NewShardNode,NewShard) ->
 	case P#state.nextshard == NewShard andalso  NewShardNode == P#state.nextshardnode of
@@ -129,20 +134,20 @@ origin_steal_done(P,check,NewShardNode,NewShard) ->
 newshard_steal_done(P,Nd,_ShardFrom) ->
 	?AINF("steal done ~p",[{P#state.name,P#state.type}]),
 	ok = actordb_shardmvr:shard_moved(Nd,P#state.name,P#state.type),
-	cb_idle(P#state{doing_cleanup = true}).
+	cb_idle(P#state{cleanup_pre = P#state.name}).
 	% ["$DELETE FROM actors WHERE hash < ",butil:tobin(P#state.name),";"].
 
 
 % Internal function that gets called on seperate process from cb_idle. 
 % This is so that we don't execute a massive DELETE statement for large shards at the same time.
-do_cleanup(ShardName,Type,NextShard) ->
-	case NextShard of
+do_cleanup(ShardName,Type,Pre,After) ->
+	case After of
 		undefined ->
-			ReadSql = [<<"SELECT * FROM actors WHERE hash < ">>,butil:tobin(ShardName)," LIMIT 1;"];
+			ReadSql = [<<"SELECT count(hash) FROM actors WHERE hash < ">>,butil:tobin(Pre),";"];
 		_ ->
-			ReadSql = [<<"SELECT * FROM actors WHERE hash >= ">>,butil:tobin(NextShard)," OR hash < ",butil:tobin(ShardName)," LIMIT 1;"]
+			ReadSql = [<<"SELECT count(hash) FROM actors WHERE hash >= ">>,butil:tobin(After)," OR hash < ",butil:tobin(Pre),";"]
 	end,
-	Res = actordb_sqlproc:read({ShardName,Type},[create],{ReadSql,{?MODULE,cb_do_cleanup,[NextShard]}},?MODULE),
+	Res = actordb_sqlproc:read({ShardName,Type},[create],{ReadSql,{?MODULE,cb_do_cleanup,[]}},?MODULE),
 	?ADBG("Docleanup ~p.~p result=~p",[ShardName,Type,Res]).
 
 % callmvr(Shard,M,F,A) ->
@@ -349,21 +354,28 @@ cb_kvexec(P,Actor,Sql) ->
 			Sql
 	end.
 
-cb_do_cleanup(P,ReadResult,NextShard) ->
+cb_do_cleanup(P,ReadResult) ->
 	case ReadResult of
-		{ok,[{columns,_},{rows,[]}]} ->
+		{ok,[{columns,_},{rows,[{0}]}]} ->
 			?AINF("Finished cleanup on ~p.~p",[P#state.name,P#state.type]),
-			{reply,ok,P#state{doing_cleanup = false}};
-		{ok,[{columns,_},{rows,[_|_]}]} ->
+			NP = P#state{cleanup_pre = undefined, cleanup_after = undefined},
+			Sql = ["DELETE from __meta WHERE id=",?META_CLEANUP_PRE,";",
+					"DELETE FROM __meta WHERE id=",?META_CLEANUP_AFTER,";"];
+		% Limit delete with: 
+		%  abs(random() % NumToDelete) < 1000
+		% If it contains a lot of items, it will delete ~1000 items at a time.
+		{ok,[{columns,_},{rows,[{Count}]}]} when P#state.cleanup_after == undefined ->
 			?AINF("Continue cleanup on ~p.~p",[P#state.name,P#state.type]),
-			case NextShard of
-				undefined ->
-					DeleteSql = [<<"DELETE FROM actors WHERE hash < ">>,butil:tobin(P#state.name)," ;"];
-				_ ->
-					DeleteSql = [<<"DELETE FROM actors WHERE hash >= ">>,butil:tobin(NextShard)," OR hash < ",butil:tobin(P#state.name)," ;"]
-			end,
-			{write,DeleteSql}
-	end.
+			Sql = [<<"DELETE FROM actors WHERE hash < ">>,butil:tobin(P#state.cleanup_pre),
+								" AND abs(random() % ",butil:tobin(Count),") < 1000;"],
+			NP = P;
+		{ok,[{columns,_},{rows,[{Count}]}]} ->
+			?AINF("Continue cleanup on ~p.~p",[P#state.name,P#state.type]),
+			Sql = [<<"DELETE FROM actors WHERE (hash < ">>,butil:tobin(P#state.cleanup_after)," OR hash >= ",butil:tobin(P#state.cleanup_pre),") AND ",
+					" abs(random() % ",butil:tobin(Count),") < 1000;"],
+			NP = P
+	end,
+	{write,Sql,NP}.
 
 cb_list_actors(P,From,Limit) ->
 	?ADBG("cb_list_actors ~p",[P]),
@@ -531,20 +543,22 @@ cb_info(_,_S) ->
 	noreply.
 cb_init(S,_EvNum) ->
 	ok = actordb_shardmngr:shard_started(self(),S#state.name,S#state.type),
-	{doread,<<"SELECT * FROM __meta WHERE id in(",?META_NEXT_SHARD,$,,?META_NEXT_SHARD_NODE,");">>}.
+	{doread,<<"SELECT * FROM __meta WHERE id in(",?META_NEXT_SHARD,$,,?META_NEXT_SHARD_NODE,$,,?META_CLEANUP_PRE,$,,?META_CLEANUP_AFTER,");">>}.
 cb_init(S,_Ev,{ok,[{columns,_},{rows,Rows}]}) ->
 	case Rows of
 		[_|_] ->
+			CleanupPre = butil:ds_val(butil:toint([?META_CLEANUP_PRE]),Rows),
+			CleanupAfter = butil:ds_val(butil:toint([?META_CLEANUP_PRE]),Rows),
 			NS = butil:toint(butil:ds_val(butil:toint([?META_NEXT_SHARD]),Rows)),
 			NSN = binary_to_term(base64:decode(butil:ds_val(butil:toint([?META_NEXT_SHARD_NODE]),Rows))),
 			self() ! borders_changed,
-			{ok,S#state{nextshard = NS, nextshardnode = NSN}};
+			{ok,S#state{nextshard = NS, nextshardnode = NSN, cleanup_pre = CleanupPre, cleanup_after = CleanupAfter}};
 		_ ->
 			{ok,S}
 	end.
 
-cb_idle(#state{doing_cleanup = true, cleanup_proc = undefined} = S) ->
-	{Pid,_} = spawn_monitor(fun() ->  do_cleanup(S#state.name,S#state.type,S#state.nextshard) end),
+cb_idle(#state{cleanup_proc = undefined} = S) when S#state.cleanup_pre /= undefined; S#state.cleanup_after /= undefined ->
+	{Pid,_} = spawn_monitor(fun() ->  do_cleanup(S#state.name,S#state.type,S#state.cleanup_pre, S#state.cleanup_after) end),
 	{ok,S#state{cleanup_proc = Pid}};
 cb_idle(_S) ->
 	ok.
