@@ -63,14 +63,14 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 		_ when Sql == undefined ->
 			call(Name,Flags,{write,{MFA,undefined,undefined}},Start);
 		_ ->
-			call(Name,Flags,{write,{MFA,iolist_to_binary(Sql),undefined}},Start)
+			call(Name,[wait_election|Flags],{write,{MFA,iolist_to_binary(Sql),undefined}},Start)
 	end;
 write(Name,Flags,[delete],Start) ->
 	% Delete actor calls are placed in a fake multi-actor transaction. 
 	% This way if the intent to delete is written, then actor will actually delete itself.
 	call(Name,Flags,{write,{undefined,delete,{0,0,<<>>}}},Start);
 write(Name,Flags,Sql,Start) ->
-	call(Name,Flags,{write,{undefined,iolist_to_binary(Sql),undefined}},Start).
+	call(Name,[wait_election|Flags],{write,{undefined,iolist_to_binary(Sql),undefined}},Start).
 
 
 call(Name,Flags,Msg,Start) ->
@@ -238,6 +238,12 @@ handle_call(Msg,From,P) ->
 					actordb_sqlprocutil:redirect_master(P)
 			end;
 		_ when P#dp.verified == false ->
+			case is_pid(P#dp.election) andalso P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
+				true ->
+					P#dp.election ! exit;
+				_ ->
+					ok
+			end,
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 		{write,{_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
@@ -1170,7 +1176,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 				false ->
 					FollowerIndexes = P1#dp.follower_indexes
 			end,
-			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
+			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													follower_indexes = FollowerIndexes, verified = true}),
 			?DBG("Elected leader term=~p",[P1#dp.current_term]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
@@ -1348,8 +1354,8 @@ init([_|_] = Opts) ->
 					{ok,P}
 			end;
 		P when P#dp.copyfrom == undefined ->
-			?DBG("Actor start, copy=~p, queue=~p, mors=~p startreason=~p",[P#dp.copyfrom,
-							queue:is_empty(P#dp.callqueue),P#dp.mors,butil:ds_val(startreason,Opts)]),
+			?DBG("Actor start, copy=~p, flags=~p, mors=~p startreason=~p",[P#dp.copyfrom,
+							P#dp.flags,P#dp.mors,butil:ds_val(startreason,Opts)]),
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),

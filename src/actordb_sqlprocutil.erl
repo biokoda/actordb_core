@@ -566,7 +566,7 @@ start_election(P) ->
 		NumVotes when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
 				true ->
-					exit(leader);
+					start_election_done(leader,P#dp.flags);
 				false when (length(Results)+1)*2 =< ClusterSize ->
 					% Majority isn't possible anyway.
 					exit(follower);
@@ -590,6 +590,20 @@ start_election(P) ->
 					exit(follower)
 			end
 	end.
+start_election_done(Signal,Flags) ->
+	case Flags band ?FLAG_WAIT_ELECTION > 0 of
+		true ->
+			receive
+				exit ->
+					exit(Signal)
+				after 3000 ->
+					?AERR("Wait election write waited too long."),
+					exit(Signal)
+			end;
+		false ->
+			exit(Signal)
+	end.
+
 send_doelection(Node,P) ->
 	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
 	rpc:call(bkdcore:dist_name(Node),actordb_sqlproc,call_slave,DoElectionMsg).
@@ -607,9 +621,27 @@ count_votes([],N) ->
 	N.
 
 
-post_election_sql(P,[],undefined,SqlIn,Callfrom) ->
+post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 	case iolist_size(SqlIn) of
 		0 ->
+			% If actor is starting with a write, we can incorporate the actual write to post election sql.
+			% This is why wait_election flag is added at actordb_sqlproc:write.
+			QueueEmpty = queue:is_empty(P#dp.callqueue),
+			case Callfrom1 of
+				undefined when QueueEmpty == false ->
+					case queue:out_r(P#dp.callqueue) of
+						{{value,{Callfrom,{write,{undefined,CallWrite,undefined}}}},CQ} ->
+							ok;
+						_ ->
+							CallWrite = <<>>,
+							CQ = P#dp.callqueue,
+							Callfrom = Callfrom1
+					end;
+				Callfrom ->
+					CallWrite = <<>>,
+					CQ = P#dp.callqueue
+			end,
+			?DBG("Adding write to post election sql ~p",[CallWrite]),
 			case P#dp.schemavers of
 				undefined ->
 					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
@@ -619,23 +651,23 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom) ->
 					% the delete call and relies on actordb_events.
 					ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
 					Sql = [base_schema(SchemaVers,P#dp.actortype),
-								 Schema,
+								 Schema,CallWrite,
 							<<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>];
 				_ ->
 					case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
 						{_,[]} ->
 							NP = P,
-							Sql = <<>>;
+							Sql = CallWrite;
 						{SchemaVers,Schema} ->
 							NP = P#dp{schemavers = SchemaVers},
-							Sql = [Schema,
-									<<"UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
+							Sql = [Schema,CallWrite,
+									<<"$UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
 										<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
 					end
 			end,
-			{NP,Sql,Callfrom};
+			{NP#dp{callqueue = CQ},Sql,Callfrom};
 		_ ->
-			{P,SqlIn,Callfrom}
+			{P,SqlIn,Callfrom1}
 	end;
 post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,Sql,Callfrom) ->
 	case base64:decode(MSql1) of
@@ -936,6 +968,8 @@ parse_opts(P,[H|T]) ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_STARTLOCK},T);
 		nohibernate ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOHIBERNATE},T);
+		wait_election ->
+			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_WAIT_ELECTION},T);
 		_ ->
 			parse_opts(P,T)
 	end;

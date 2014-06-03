@@ -239,15 +239,6 @@ handle_cast(killactors,P) ->
 	NProc = ets:info(actoractivity,size),
 	killactors(NProc,ets:last(actoractivity)),
 	{noreply,P};
-% handle_cast({connection_dead,N},P) ->
-% 	case element(N,P#dp.raft_connections) of
-% 		undefined ->
-% 			{noreply,P};
-% 		{_Nd,false,_} ->
-% 			{noreply,P};
-% 		{Nd,true,_} ->
-% 			{noreply,P#dp{raft_connections = nodechange(Nd,P#dp.raft_connections,false)}}
-% 	end;
 handle_cast(_, P) ->
 	{noreply, P}.
 

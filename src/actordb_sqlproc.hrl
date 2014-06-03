@@ -36,6 +36,7 @@
 -define(FLAG_TEST,16).
 -define(FLAG_STARTLOCK,32).
 -define(FLAG_NOHIBERNATE,64).
+-define(FLAG_WAIT_ELECTION,128).
 
 
 % Log events to the actual sqlite db file. For debugging.
