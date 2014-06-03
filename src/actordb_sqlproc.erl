@@ -87,7 +87,7 @@ call(Name,Flags,Msg,Start,IsRedirect) ->
 					Res
 			end;
 		Pid ->
-			% ?AINF("Call have pid ~p for name ~p, alive ~p",[Pid,Name,erlang:is_process_alive(Pid)]),
+			% ?INF("Call have pid ~p for name ~p, alive ~p",[Pid,Name,erlang:is_process_alive(Pid)]),
 			call(Name,Flags,Msg,Start,IsRedirect,Pid)
 
 	end.
@@ -497,7 +497,7 @@ state_rw_call(What,From,P) ->
 							{noreply,doqueue(NP)};
 						% What we thought was follower is ahead of us and we need to step down
 						false when P#dp.current_term < CurrentTerm ->
-							?AINF("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
+							?INF("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
 								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
 						% In case of overlapping responses for appendentries rpc. We do not care about responses
@@ -876,7 +876,7 @@ handle_cast({diepls,Reason},P) ->
 							?DBG("req die ~p ~p ~p",[P#dp.actorname,P#dp.actortype,Reason]),
 							{stop,normal,P};
 					% 	false ->
-					% 		?AINF("NOPE ~p",[P#dp.actorname]),
+					% 		?INF("NOPE ~p",[P#dp.actorname]),
 					% 		{noreply,P}
 					% end;
 				R ->
@@ -894,7 +894,7 @@ handle_cast(Msg,#dp{mors = master, verified = true} = P) ->
 			{noreply,P}
 	end;
 handle_cast(_Msg,P) ->
-	?AINF("sqlproc ~p unhandled cast ~p~n",[P#dp.cbmod,_Msg]),
+	?INF("sqlproc ~p unhandled cast ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
 
 
@@ -966,7 +966,7 @@ handle_info(_Msg,P) ->
 doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transactionid == undefined ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
-			% ?AINF("Queue empty"),
+			% ?INF("Queue empty"),
 			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
 				{ok,NS} ->
 					P#dp{cbstate = NS};
@@ -1005,12 +1005,12 @@ doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transact
 			end
 	end;
 doqueue(P) ->
-	% ?AINF("Queue notyet ~p",[{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
+	% ?INF("Queue notyet ~p",[{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
 	P.
 
 
 check_inactivity(NTimer,P) ->
-	% ?AINF("check inactivity"),
+	% ?INF("check inactivity"),
 	Empty = queue:is_empty(P#dp.callqueue),
 	Age = actordb_local:min_ref_age(P#dp.activity),
 	case P#dp.mors of
@@ -1028,7 +1028,7 @@ check_inactivity(NTimer,P) ->
 								DN = bkdcore:dist_name(F#flw.node),
 								case lists:member(DN,nodes()) of
 									true ->
-										?AINF("Resending appendentries"),
+										?INF("Resending appendentries"),
 										rpc:cast(DN,
 											?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 											{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),

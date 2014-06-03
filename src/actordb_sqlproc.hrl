@@ -39,11 +39,6 @@
 -define(FLAG_WAIT_ELECTION,128).
 
 
-% Log events to the actual sqlite db file. For debugging.
-% When shards are being moved across nodes it often may not be clear what exactly has been happening
-% to an actor.
-% -define(DODBLOG,1).
-% -compile(export_all).
 
 -record(flw,{node, match_index = 0, match_term = 0, next_index = 0, file, wait_for_response_since}).
 

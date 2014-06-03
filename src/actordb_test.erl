@@ -38,8 +38,8 @@ all_test_() ->
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
-		{setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
-		% {setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
+		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
+		{setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
 	].
 
 test_parsing() ->
@@ -686,7 +686,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->
