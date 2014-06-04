@@ -704,7 +704,6 @@ write_call({MFA,Sql,Transaction},From,P) ->
 % Not a multiactor transaction write
 write_call1(Sql,undefined,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
-	% {ConnectedNodes,LenCluster,LenConnected} = nodes_for_replication(P),
 	case Sql of
 		delete ->
 			actordb_sqlprocutil:delete_actor(P),
@@ -1058,6 +1057,8 @@ check_inactivity(NTimer,P) ->
 						true ->
 							?DBG("Die because temporary ~p ~p master ~p",[P#dp.actorname,P#dp.actortype,P#dp.masternode]),
 							{stop,normal,P};
+						never ->
+							{noreply,check_timer(P)};
 						false ->
 							case P#dp.timerref of
 								{undefined,_} ->
@@ -1170,14 +1171,8 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{stop,nocreate,P1};
 		leader ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
-			case P1#dp.follower_indexes == [] of
-				true ->
-					FollowerIndexes = [#flw{node = Nd,match_index = 0,next_index = P1#dp.evnum+1} || Nd <- bkdcore:cluster_nodes()];
-				false ->
-					FollowerIndexes = P1#dp.follower_indexes
-			end,
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
-													follower_indexes = FollowerIndexes, verified = true}),
+													verified = true}),
 			?DBG("Elected leader term=~p",[P1#dp.current_term]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
 
@@ -1339,8 +1334,7 @@ init([_|_] = Opts) ->
 			explain({actornum,P#dp.dbpath,actordb_sqlprocutil:read_num(P)},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_EXISTS) > 0 ->
-			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-			actordb_sqlite:stop(Db),
+			{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 			explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(SchemaTables /= [])}]}]},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->

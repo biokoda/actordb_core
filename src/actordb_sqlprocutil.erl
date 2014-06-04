@@ -164,14 +164,21 @@ init_opendb(P) ->
 			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-
+			case apply(P#dp.cbmod,cb_nodelist,[P#dp.actorname,P#dp.actortype,true]) of
+				{read,Sql} ->
+					NL = apply(P#dp.cbmod,cb_nodelist,[P#dp.actorname,P#dp.actortype,true,actordb_sqlite:exec(Db,Sql,read)]);
+				NL ->
+					ok
+			end,
 			NP#dp{evnum = Evnum, schemavers = Vers,
 						wal_from = wal_from([P#dp.dbpath,"-wal"]),
 						evterm = EvTerm,
+						follower_indexes = [#flw{node = Nd,match_index = 0,next_index = Evnum+1} || Nd <- NL],
 						movedtonode = MovedToNode1};
 		[] -> 
 			?DBG("Opening NO schema",[]),
-			NP
+			NL = apply(P#dp.cbmod,cb_nodelist,[P#dp.actorname,P#dp.actortype,false]),
+			NP#dp{follower_indexes = [#flw{node = Nd,match_index = 0,next_index = 1} || Nd <- NL]}
 	end.
 
 % Find first valid evnum,evterm in wal (from beginning)
@@ -856,7 +863,7 @@ delete_actor(P) ->
 		[] ->
 			ok;
 		_ ->
-			{_,_} = rpc:multicall([bkdcore:dist_name(Nd) || Nd <- bkdcore:cluster_nodes()],actordb_sqlproc,call_slave,
+			{_,_} = rpc:multicall([bkdcore:dist_name(F#flw.node) || F <- P#dp.follower_indexes],actordb_sqlproc,call_slave,
 							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}},[]])
 	end,
 	actordb_sqlite:stop(P#dp.db),
@@ -899,18 +906,6 @@ has_schema_updated(P,Sql) ->
 						<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,"' WHERE id=",?SCHEMA_VERS/binary,";">>,Sql])}
 			end
 	end.
-
-
-
-nodes_for_replication(P) ->
-	ReplicatingTo = [Nd || {Nd,_,_,_} <- P#dp.dbcopy_to],
-	% Nodes we are replicating DB to will eventually get the data. So do not send the write now since it will be sent
-	%  over with db copy.
-	ClusterNodes = lists:subtract(bkdcore:cluster_nodes(),ReplicatingTo),
-	LenCluster = length(ClusterNodes),
-	ConnectedNodes = lists:subtract(bkdcore:cluster_nodes_connected(), ReplicatingTo),
-	LenConnected = length(ConnectedNodes),
-	{ConnectedNodes,LenCluster,LenConnected}.
 
 
 % If called on slave, first check if master nodes is even alive.

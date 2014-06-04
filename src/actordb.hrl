@@ -9,6 +9,7 @@
 -define(NAMESPACE_MAX,4294967295).
 -define(MULTIUPDATE_TYPE,'__mupdate__').
 -define(CLUSTEREVENTS_TYPE,'__clusterevents__').
+-define(STATE_TYPE,'__state__').
 -define(DEF_CACHE_PAGES,10).
 
 -define(ADBG(F),lager:debug(F)).

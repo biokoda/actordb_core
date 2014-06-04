@@ -90,7 +90,7 @@ cb_slave_pid(Name,Type,Opts) ->
 			{ok,Pid}
 	end.
 
-cb_candie(_,_,'__clusterevents__',_) ->
+cb_candie(_,_,?CLUSTEREVENTS_TYPE,_) ->
 	false;
 cb_candie(Mors,Name,_Type,_S) ->
 	case Mors of
@@ -114,6 +114,9 @@ cb_startstate(Name,Type) ->
 
 cb_idle(_S) ->
 	ok.
+
+cb_nodelist(_Name,_Type,_HasSchema) ->
+	bkdcore:cluster_nodes().
 
 % These only get called on master
 cb_call(_Msg,_From,_S) ->
