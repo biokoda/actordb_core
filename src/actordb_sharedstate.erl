@@ -16,7 +16,7 @@
 % 							API
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
--record(st,{name,type,time_since_ping = {0,0,0}}).
+-record(st,{name,type,time_since_ping = {0,0,0}, master_group = []}).
 
 start({Name,Type}) ->
 	start(Name,Type).
@@ -67,7 +67,8 @@ read(Name,App,Key) ->
 read_sql(App,Key) ->
 	[<<"SELECT * FROM state WHERE id=">>,butil:tobin(App),",",butil:tobin(Key),";"].
 write_sql(App,Key,Val) ->
-	[<<"INSERT OR REPLACE INTO state VALUES ('">>,butil:tobin(App),",",butil:tobin(Key),"','",base64:encode(term_to_binary(Val)),"');"].
+	[<<"INSERT OR REPLACE INTO state VALUES ('">>,butil:tobin(App),",",butil:tobin(Key),
+		"','",base64:encode(term_to_binary(Val)),"');"].
 
 takemax(N,L) ->
 	case length(L) >= N of
@@ -102,16 +103,22 @@ state_to_sql(Name) ->
 % Version = what is current version (0 for no version)
 % Return:
 % {LatestVersion,IolistSqlStatements}
-cb_schema(Name,_Type,Version) ->
+cb_schema(S,_Type,Version) ->
 	case schema_version() > Version of
 		true ->
-			{schema_version(),[schema(Name,N) || N <- lists:seq(Version+1,schema_version())]};
+			{schema_version(),[schema(S,N) || N <- lists:seq(Version+1,schema_version())]};
 		false ->
 			{Version,[]}
 	end.
-schema(Name,1) ->
+schema(S,1) ->
 	Table = <<"$CREATE TABLE state (id TEXT PRIMARY KEY, val TEXT) WITHOUT ROWID;">>,
-	[Table,state_to_sql(Name)].
+	case S#st.master_group of
+		[_|_] when S#st.name == ?NM_GLOBAL ->
+			MG = [$$,write_sql(bkdcore,master_group,S#st.master_group)];
+		_ ->
+			MG = []
+	end,
+	[Table,MG,state_to_sql(S#st.name)].
 schema_version() ->
 	1.
 
@@ -126,7 +133,8 @@ cb_slave_pid(Name,Type,Opts) ->
 	Actor = {Name,Type},
 	case distreg:whereis(Actor) of
 		undefined ->
-			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},create|Opts]),
+			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},
+											  {state,#st{name = Name,type = Type}},create|Opts]),
 			{ok,Pid};
 		Pid ->
 			{ok,Pid}
@@ -151,35 +159,38 @@ cb_idle(S) ->
 			ok
 	end.
 
-cb_nodelist(?NM_LOCAL,_Type,_HasSchema) ->
+cb_nodelist(#st{name = ?NM_LOCAL} = S,_HasSchema) ->
 	% HaveBkdcore = ets:info(bkdcore_nodes,size) > 0,
-	bkdcore:cluster_nodes();
-cb_nodelist(?NM_GLOBAL,_Type,HasSchema) ->
+	{ok,S,bkdcore:cluster_nodes()};
+cb_nodelist(#st{name = ?NM_GLOBAL} = S,HasSchema) ->
 	case HasSchema of
 		true ->
 			{read,read_sql(bkdcore,master_group)};
 		false ->
 			case butil:readtermfile([bkdcore:statepath(),"/stateglobal"]) of
 				{_,[_|_]} = State ->
-					butil:ds_val({bkdcore,master_group},State);
+					NL = butil:ds_val({bkdcore,master_group},State),
+					{ok,S#st{master_group = NL},NL};
 				_ ->
 					case lists:sort(bkdcore:nodelist()) of
 						[] ->
-							self() ! stop;
+							exit(normal);
 						AllNodes ->
 							AllClusterNodes = bkdcore:all_cluster_nodes(),
 							case length(AllClusterNodes) >= 7 of
 								true ->
 									{Nodes,_} = lists:split(7,AllClusterNodes),
-									Nodes;
+									{ok,S#st{master_group = Nodes},Nodes};
 								false ->
-									AllClusterNodes ++ takemax(7 - length(AllClusterNodes),AllNodes -- AllClusterNodes)
+									NL = AllClusterNodes ++ takemax(7 - length(AllClusterNodes),AllNodes -- AllClusterNodes),
+									{ok,S#st{master_group = NL},NL}
 							end
 					end
 			end
 	end.
-cb_nodelist(?NM_GLOBAL,_Type,true,{ok,[{columns,_},{rows,[{_,ValEncoded}]}]}) ->
-	binary_to_term(base64:decode(ValEncoded)).
+cb_nodelist(S,true,{ok,[{columns,_},{rows,[{_,ValEncoded}]}]}) ->
+	NL = binary_to_term(base64:decode(ValEncoded)),
+	{ok,S#st{master_group = NL},NL}.
 
 % These only get called on master
 cb_call(_Msg,_From,_S) ->

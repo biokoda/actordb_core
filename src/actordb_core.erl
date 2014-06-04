@@ -104,7 +104,6 @@ prestart() ->
 		_ ->
 			?AINF("Starting actordb"),
 			Args = init:get_arguments(),
-			% application:set_env(bkdcore,startapps,[actordb]),
 			?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
 			% Read args file manually to get paths for state.
 			case butil:ds_val(config,Args) of

@@ -164,21 +164,22 @@ init_opendb(P) ->
 			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-			case apply(P#dp.cbmod,cb_nodelist,[P#dp.actorname,P#dp.actortype,true]) of
+			case apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,true]) of
 				{read,Sql} ->
-					NL = apply(P#dp.cbmod,cb_nodelist,[P#dp.actorname,P#dp.actortype,true,actordb_sqlite:exec(Db,Sql,read)]);
-				NL ->
+					{ok,NS,NL} = apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,true,
+										actordb_sqlite:exec(Db,Sql,read)]);
+				{ok,NS,NL} ->
 					ok
 			end,
 			NP#dp{evnum = Evnum, schemavers = Vers,
 						wal_from = wal_from([P#dp.dbpath,"-wal"]),
-						evterm = EvTerm,
+						evterm = EvTerm,cbstate = NS,
 						follower_indexes = [#flw{node = Nd,match_index = 0,next_index = Evnum+1} || Nd <- NL],
 						movedtonode = MovedToNode1};
 		[] -> 
 			?DBG("Opening NO schema",[]),
-			NL = apply(P#dp.cbmod,cb_nodelist,[P#dp.actorname,P#dp.actortype,false]),
-			NP#dp{follower_indexes = [#flw{node = Nd,match_index = 0,next_index = 1} || Nd <- NL]}
+			{ok,NS,NL} = apply(P#dp.cbmod,cb_nodelist,[P#dp.actorname,P#dp.actortype,false]),
+			NP#dp{cbstate = NS, follower_indexes = [#flw{node = Nd,match_index = 0,next_index = 1} || Nd <- NL]}
 	end.
 
 % Find first valid evnum,evterm in wal (from beginning)

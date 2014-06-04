@@ -84,7 +84,8 @@ cb_slave_pid(Name,Type,Opts) ->
 	Actor = {Name,Type},
 	case distreg:whereis(Actor) of
 		undefined ->
-			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},create|Opts]),
+			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{state,#st{name = Name,type = Type}},
+												{type,Type},{mod,?MODULE},{slave,true},create|Opts]),
 			{ok,Pid};
 		Pid ->
 			{ok,Pid}
@@ -115,8 +116,8 @@ cb_startstate(Name,Type) ->
 cb_idle(_S) ->
 	ok.
 
-cb_nodelist(_Name,_Type,_HasSchema) ->
-	bkdcore:cluster_nodes().
+cb_nodelist(S,_HasSchema) ->
+	{ok,S,bkdcore:cluster_nodes()}.
 
 % These only get called on master
 cb_call(_Msg,_From,_S) ->

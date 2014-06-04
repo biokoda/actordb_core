@@ -8,7 +8,7 @@
 		 whereis/2,try_whereis/2,reg_actor/3, 
 		top_actor/2,actor_stolen/5,print_info/2,list_actors/4,count_actors/2,del_actor/3,
 		kvread/4,kvwrite/4,get_schema_vers/2]). 
--export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/2,cb_nodelist/3,
+-export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/2,cb_nodelist/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2]). %split_other_done/3,
 -include_lib("actordb.hrl").
@@ -563,8 +563,8 @@ cb_idle(#state{cleanup_proc = undefined} = S) when S#state.cleanup_pre /= undefi
 cb_idle(_S) ->
 	ok.
 
-cb_nodelist(_Nm,_Type,_HasSchema) ->
-	bkdcore:cluster_nodes().
+cb_nodelist(S,_HasSchema) ->
+	{ok,S,bkdcore:cluster_nodes()}.
 
 cb_slave_pid(Name,Type) ->
 	cb_slave_pid(Name,Type,[]).
