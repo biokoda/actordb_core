@@ -119,6 +119,9 @@ cb_idle(_S) ->
 cb_nodelist(S,_HasSchema) ->
 	{ok,S,bkdcore:cluster_nodes()}.
 
+cb_redirected_call(_S,_MovedTo,_Call,_Type) ->
+	ok.
+
 % These only get called on master
 cb_call(_Msg,_From,_S) ->
 	{reply,{error,uncrecognized_call}}.

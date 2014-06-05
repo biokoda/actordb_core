@@ -159,9 +159,21 @@ cb_idle(S) ->
 			ok
 	end.
 
+cb_redirected_call(S,MovedTo,{master_ping,MasterNode,_MasterGroup},moved) ->
+	{reply,ok,S,MasterNode};
+cb_redirected_call(S,MovedTo,{master_ping,MasterNode,MasterGroup},slave) ->
+	ok;
+cb_redirected_call(_,_,_,_) ->
+	ok.
+
 cb_nodelist(#st{name = ?NM_LOCAL} = S,_HasSchema) ->
 	% HaveBkdcore = ets:info(bkdcore_nodes,size) > 0,
-	{ok,S,bkdcore:cluster_nodes()};
+	case bkdcore:nodelist() of
+		[] ->
+			exit(normal);
+		_ ->
+			{ok,S,bkdcore:cluster_nodes()}
+	end;
 cb_nodelist(#st{name = ?NM_GLOBAL} = S,HasSchema) ->
 	case HasSchema of
 		true ->
@@ -169,28 +181,34 @@ cb_nodelist(#st{name = ?NM_GLOBAL} = S,HasSchema) ->
 		false ->
 			case butil:readtermfile([bkdcore:statepath(),"/stateglobal"]) of
 				{_,[_|_]} = State ->
-					NL = butil:ds_val({bkdcore,master_group},State),
-					{ok,S#st{master_group = NL},NL};
+					Nodes = butil:ds_val({bkdcore,master_group},State);
 				_ ->
 					case lists:sort(bkdcore:nodelist()) of
-						[] ->
+						[] = Nodes ->
 							exit(normal);
 						AllNodes ->
 							AllClusterNodes = bkdcore:all_cluster_nodes(),
 							case length(AllClusterNodes) >= 7 of
 								true ->
-									{Nodes,_} = lists:split(7,AllClusterNodes),
-									{ok,S#st{master_group = Nodes},Nodes};
+									{Nodes,_} = lists:split(7,AllClusterNodes);
 								false ->
-									NL = AllClusterNodes ++ takemax(7 - length(AllClusterNodes),AllNodes -- AllClusterNodes),
-									{ok,S#st{master_group = NL},NL}
+									Nodes = AllClusterNodes ++ takemax(7 - length(AllClusterNodes),AllNodes -- AllClusterNodes)
 							end
 					end
-			end
+			end,
+			return_mg(S,Nodes)
 	end.
 cb_nodelist(S,true,{ok,[{columns,_},{rows,[{_,ValEncoded}]}]}) ->
-	NL = binary_to_term(base64:decode(ValEncoded)),
-	{ok,S#st{master_group = NL},NL}.
+	Nodes = binary_to_term(base64:decode(ValEncoded)),
+	return_mg(S,Nodes).
+
+return_mg(S,Nodes) ->
+	case lists:member(actordb_conf:node_name(),Nodes) of
+		true ->
+			{ok,S#st{master_group = Nodes},Nodes -- [actordb_conf:node_name()]};
+		false ->
+			exit(normal)
+	end.
 
 % These only get called on master
 cb_call(_Msg,_From,_S) ->

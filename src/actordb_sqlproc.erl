@@ -219,9 +219,14 @@ print_info(Pid) ->
 
 
 
-handle_call(_Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
-	?DBG("REDIRECT BECAUSE MOVED TO NODE ~p ~p",[P#dp.movedtonode,_Msg]),
-	{reply,{redirect,P#dp.movedtonode},P#dp{activity = make_ref()}};
+handle_call(Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
+	?DBG("REDIRECT BECAUSE MOVED TO NODE ~p ~p",[P#dp.movedtonode,Msg]),
+	case apply(P#dp.cbmod,cb_redirected_call,[P#dp.cbstate,P#dp.movedtonode,Msg,moved]) of
+		{reply,What,NS,Red} ->
+			{reply,What,P#dp{cbstate = NS, movedtonode = Red}};
+		ok ->
+			{reply,{redirect,P#dp.movedtonode},P#dp{activity = make_ref()}}
+	end;
 handle_call({dbcopy,Msg},CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,P);
 handle_call({state_rw,What},From,P) ->
@@ -235,7 +240,12 @@ handle_call(Msg,From,P) ->
 				undefined ->
 					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 				_ ->
-					actordb_sqlprocutil:redirect_master(P)
+					case apply(P#dp.cbmod,cb_redirected_call,[P#dp.cbstate,P#dp.masternode,Msg,slave]) of
+						{reply,What} ->
+							{reply,What,P};
+						ok ->
+							actordb_sqlprocutil:redirect_master(P)
+					end
 			end;
 		_ when P#dp.verified == false ->
 			case is_pid(P#dp.election) andalso P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of

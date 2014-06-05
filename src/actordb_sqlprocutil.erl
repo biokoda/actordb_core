@@ -164,23 +164,24 @@ init_opendb(P) ->
 			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-			case apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,true]) of
-				{read,Sql} ->
-					{ok,NS,NL} = apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,true,
-										actordb_sqlite:exec(Db,Sql,read)]);
-				{ok,NS,NL} ->
-					ok
-			end,
-			NP#dp{evnum = Evnum, schemavers = Vers,
+			set_followers(true,NP#dp{evnum = Evnum, schemavers = Vers,
 						wal_from = wal_from([P#dp.dbpath,"-wal"]),
-						evterm = EvTerm,cbstate = NS,
-						follower_indexes = [#flw{node = Nd,match_index = 0,next_index = Evnum+1} || Nd <- NL],
-						movedtonode = MovedToNode1};
+						evterm = EvTerm,
+						movedtonode = MovedToNode1});
 		[] -> 
 			?DBG("Opening NO schema",[]),
-			{ok,NS,NL} = apply(P#dp.cbmod,cb_nodelist,[P#dp.actorname,P#dp.actortype,false]),
-			NP#dp{cbstate = NS, follower_indexes = [#flw{node = Nd,match_index = 0,next_index = 1} || Nd <- NL]}
+			set_followers(false,NP)
 	end.
+
+set_followers(HaveSchema,P) ->
+	case apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,HaveSchema]) of
+		{read,Sql} ->
+			{ok,NS,NL} = apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,HaveSchema,
+								actordb_sqlite:exec(P#dp.db,Sql,read)]);
+		{ok,NS,NL} ->
+			ok
+	end,
+	P#dp{cbstate = NS,follower_indexes = [#flw{node = Nd,match_index = 0,next_index = P#dp.evnum+1} || Nd <- NL]}.
 
 % Find first valid evnum,evterm in wal (from beginning)
 wal_from([_|_] = Path) ->
@@ -917,7 +918,12 @@ redirect_master(P) ->
 		true ->
 			{reply,{redirect,P#dp.masternode},P};
 		false ->
-			{stop,normal,P}
+			case lists:member(P#dp.masternode,bkdcore:all_cluster_nodes()) of
+				false ->
+					{reply,{redirect,P#dp.masternode},P};
+				true ->
+					{stop,normal,P}
+			end
 	end.
 
 
