@@ -555,17 +555,19 @@ start_verify(P,JustStarted) ->
 					P
 			end
 	end.
+follower_nodes(L) ->
+	[F#flw.node || F <- L].
 % Call RequestVote RPC on cluster nodes. 
 % This should be called in an async process and current_term and voted_for should have
 %  been set for this election (incremented current_term, voted_for = Me)
 start_election(P) ->
-	ConnectedNodes = bkdcore:cluster_nodes_connected(),
-	ClusterSize = length(bkdcore:cluster_nodes()) + 1,
+	ClusterSize = length(P#dp.follower_indexes) + 1,
 	Me = actordb_conf:node_name(),
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
-	{Results,_GetFailed} = rpc:multicall(ConnectedNodes,actordb_sqlproc,call_slave,
-			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]),
-	?DBG("Election, results ~p failed ~p, contacted ~p",[Results,_GetFailed,ConnectedNodes]),
+	Nodes = follower_nodes(P#dp.follower_indexes),
+	{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
+			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]}),
+	?DBG("Election, results ~p failed ~p, contacted ~p",[Results,_GetFailed,Nodes]),
 
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of
@@ -615,7 +617,7 @@ start_election_done(Signal,Flags) ->
 
 send_doelection(Node,P) ->
 	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
-	rpc:call(bkdcore:dist_name(Node),actordb_sqlproc,call_slave,DoElectionMsg).
+	bkdcore_rpc:call(Node,{actordb_sqlproc,call_slave,DoElectionMsg}).
 count_votes([{What,Node,HisLatestTerm,_WillHeDoElection}|T],N) ->
 	case What of
 		true ->
@@ -835,8 +837,8 @@ do_checkpoint(P) ->
 	case P#dp.mors of
 		master ->
 			actordb_sqlite:checkpoint(P#dp.db),
-			[rpc:cast(bkdcore:dist_name(F#flw.node),
-						actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}])
+			[bkdcore_rpc:cast(F#flw.node,
+						{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}]})
 					 || F <- P#dp.follower_indexes, F#flw.match_index == P#dp.evnum];
 		_ ->
 			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
@@ -865,7 +867,7 @@ delete_actor(P) ->
 		[] ->
 			ok;
 		_ ->
-			{_,_} = rpc:multicall([bkdcore:dist_name(F#flw.node) || F <- P#dp.follower_indexes],actordb_sqlproc,call_slave,
+			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),actordb_sqlproc,call_slave,
 							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}},[]])
 	end,
 	actordb_sqlite:stop(P#dp.db),

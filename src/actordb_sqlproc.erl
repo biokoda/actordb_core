@@ -1049,14 +1049,13 @@ check_inactivity(NTimer,P) ->
 					_ ->
 						case actordb_local:min_ref_age(F#flw.wait_for_response_since) > 600 of
 							true ->
-								DN = bkdcore:dist_name(F#flw.node),
-								case lists:member(DN,nodes()) of
+								case bkdcore_rpc:is_connected(F#flw.node) of
 									true ->
 										?INF("Resending appendentries"),
-										rpc:cast(DN,
-											?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-											{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-											F#flw.match_index,F#flw.match_term,empty}}]),
+										bkdcore_rpc:cast(F#flw.node,
+											{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+											 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
+											 F#flw.match_index,F#flw.match_term,empty}}]}),
 										Count+1;
 									% Do not count nodes that are gone. If those would be counted then actors
 									%  would never go to sleep.

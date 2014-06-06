@@ -81,7 +81,8 @@ get_state() ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 set_init_state(Nodes,Groups,Configs) ->
 	[ok = bkdcore_changecheck:setcfg(butil:tolist(Key),Val) || {Key,Val} <- Configs],
-	bkdcore_changecheck:set_nodes_groups(Nodes,Groups).
+	bkdcore_changecheck:set_nodes_groups(Nodes,Groups),
+	spawn(fun() -> start(?STATE_NM_LOCAL,?STATE_TYPE) end).
 
 write(Name,Key,Val) ->
 	actordb_sqlproc:write({Name,?STATE_TYPE},[create],write_sql(Key,Val),?MODULE).
