@@ -122,6 +122,9 @@ cb_nodelist(S,_HasSchema) ->
 cb_redirected_call(_S,_MovedTo,_Call,_Type) ->
 	ok.
 
+cb_unverified_call(_S,_Msg)  ->
+	queue.
+
 % These only get called on master
 cb_call(_Msg,_From,_S) ->
 	{reply,{error,uncrecognized_call}}.

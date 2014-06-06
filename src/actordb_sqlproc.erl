@@ -248,13 +248,26 @@ handle_call(Msg,From,P) ->
 					end
 			end;
 		_ when P#dp.verified == false ->
-			case is_pid(P#dp.election) andalso P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
-				true ->
-					P#dp.election ! exit;
-				_ ->
-					ok
-			end,
-			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
+			case apply(P#dp.cbmod,cb_unverified_call,[P#dp.cbstate,Msg]) of
+				queue ->
+					case is_pid(P#dp.election) andalso P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
+						true ->
+							P#dp.election ! exit;
+						_ ->
+							ok
+					end,
+					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
+				{moved,Moved} ->
+					{noreply,check_timer(P#dp{movedtonode = Moved})};
+				{reply,What} ->
+					{reply,What,P};
+				reinit ->
+					{ok,NP} = init(P,cb_reinit),
+					{noreply,NP};
+				{reinit,Sql} ->
+					{ok,NP} = init(P#dp{callqueue = queue:in_r({From,{write,{undefined,Sql,undefined}}},P#dp.callqueue)},cb_reinit),
+					{noreply,NP}
+			end;
 		{write,{_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
 		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
@@ -280,7 +293,7 @@ handle_call(Msg,From,P) ->
 			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},check_timer(P));
 		{copy,{Node,OldActor,NewActor}} ->
 			Ref = make_ref(),
-			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait}],
+			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
 							{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
 				ok ->
 					actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,check_timer(P));
@@ -292,6 +305,8 @@ handle_call(Msg,From,P) ->
 		Msg ->
 			?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
 			case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
+				{write,Sql,NS} ->
+					write_call({undefined,Sql,undefined},From,P#dp{cbstate = NS});
 				{reply,Resp,S} ->
 					{reply,Resp,P#dp{cbstate = S}};
 				{reply,Resp} ->
@@ -1158,7 +1173,7 @@ retry_copy(P) ->
 					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor}
 			end,
 			Ref = make_ref(),
-			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait}],
+			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
 														{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
 				ok ->
 					{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},undefined,P),
@@ -1329,7 +1344,9 @@ init(#dp{} = P,_Why) ->
 	% ?DBG("Reinit because ~p, ~p, ~p",[_Why,?R2P(P),get()]),
 	?DBG("Reinit because ~p",[_Why]),
 	actordb_sqlite:stop(P#dp.db),
-	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,P#dp.flags},
+	cancel_timer(P),
+	Flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION) band (bnot ?FLAG_STARTLOCK),
+	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,Flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 % Never call other processes from init. It may cause deadlocks. Whoever
 % started actor is blocking waiting for init to finish.
@@ -1355,7 +1372,7 @@ init([_|_] = Opts) ->
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
 				{lockinfo,wait} ->
-					{ok,P}
+					{ok,cancel_timer(P)}
 			end;
 		P when P#dp.copyfrom == undefined ->
 			?DBG("Actor start, copy=~p, flags=~p, mors=~p startreason=~p",[P#dp.copyfrom,
@@ -1423,6 +1440,15 @@ reply(undefined,_Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
+cancel_timer(P) ->
+	{Ref,_} = P#dp.timerref,
+	case Ref /= undefined of
+		true ->
+			erlang:cancel_timer(Ref),
+			P#dp{timerref = {undefined,0}};
+		false ->
+			P
+	end.
 
 check_timer(P) ->
 	case P#dp.timerref of

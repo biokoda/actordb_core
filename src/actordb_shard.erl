@@ -569,6 +569,9 @@ cb_redirected_call(_S,_MovedTo,_Call,_Type) ->
 cb_nodelist(S,_HasSchema) ->
 	{ok,S,bkdcore:cluster_nodes()}.
 
+cb_unverified_call(_S,_Msg)  ->
+	queue.
+
 cb_slave_pid(Name,Type) ->
 	cb_slave_pid(Name,Type,[]).
 cb_slave_pid(Name,Type,Opt) ->

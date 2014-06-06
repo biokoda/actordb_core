@@ -1,6 +1,7 @@
 -module(actordb_core).
 -compile(export_all).
 -include("actordb.hrl").
+-include_lib("kernel/include/file.hrl").
 
 % manually closes all open db handles
 stop() ->
@@ -50,47 +51,37 @@ wait_distreg_procs() ->
 	end.
 
 start_ready() ->
-	% Process any events this server might have missed if it was down.
-	% Once processed successfully initializiation is done.
-	?AINF("Pre-start check events"),
-	% case actordb_events:start_ready() of
-	case ok of
-		ok ->
-			?AINF("Start ready."),
-			application:set_env(actordb_core,isready,true),
-			case application:get_env(actordb_core,mysql_protocol) of
-				undefined ->
-					ok;
-				{ok, Port} ->
-					case Port > 0 of
-						true ->
-							Ulimit = actordb_local:ulimit(),
-							case ok of
-								_ when Ulimit =< 256 ->
-									MaxCon = 8;
-								_ when Ulimit =< 1024 ->
-									MaxCon = 64;
-								_  when Ulimit =< 1024*4 ->
-									MaxCon = 128;
-								_ ->
-									MaxCon = 1024
-							end,
-							case ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []) of
-								{ok, _} ->
-									ok;
-								{error,already_started} ->
-									ok;
-								Err ->
-									?AERR("Unable to start ranch ~p",[Err])
-							end,
+	?AINF("Start ready."),
+	application:set_env(actordb_core,isready,true),
+	case application:get_env(actordb_core,mysql_protocol) of
+		undefined ->
+			ok;
+		{ok, Port} ->
+			case Port > 0 of
+				true ->
+					Ulimit = actordb_local:ulimit(),
+					case ok of
+						_ when Ulimit =< 256 ->
+							MaxCon = 8;
+						_ when Ulimit =< 1024 ->
+							MaxCon = 64;
+						_  when Ulimit =< 1024*4 ->
+							MaxCon = 128;
+						_ ->
+							MaxCon = 1024
+					end,
+					case ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []) of
+						{ok, _} ->
 							ok;
-						false ->
-							ok
-					end
-			end;
-		E ->
-			?ADBG("Not ready yet ~p",[E]),
-			false
+						{error,already_started} ->
+							ok;
+						Err ->
+							?AERR("Unable to start ranch ~p",[Err])
+					end,
+					ok;
+				false ->
+					ok
+			end
 	end.
 
 prestart() ->
@@ -98,10 +89,13 @@ prestart() ->
 	application:ensure_started(sasl),
 	application:ensure_started(os_mon),
 	application:ensure_started(yamerl),
+	application:set_env(bkdcore,usesharedstate,false),
 	case catch actordb_conf:paths() of
 		[_|_] ->
 			ok;
 		_ ->
+			[Name1|_] = string:tokens(butil:tolist(node()),"@"),
+			Name = butil:tobin(Name1),
 			?AINF("Starting actordb"),
 			Args = init:get_arguments(),
 			?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
@@ -141,7 +135,7 @@ prestart() ->
 								_ ->
 									application:set_env(bkdcore,statepath,Statep)
 							end,
-							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout);
+							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Name);
 						Err ->
 							?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
 							init:stop()
@@ -184,9 +178,33 @@ start(_Type, _Args) ->
 	bkdcore:start(actordb:configfiles()),
 	butil:wait_for_app(bkdcore),
 
-	% this is actually for node_name to be set in conf.
-	% Since it gets called so much, better it is in a module than ets like bkdcore:node_name() call.
-	actordb_util:change_journal(actordb_conf:journal_mode(),actordb_conf:sync()),
+	case file:read_file_info([actordb_sharedstate:cb_path(undefined,undefined,undefined),
+								?STATE_NM_GLOBAL,".",butil:tolist(?STATE_TYPE)]) of
+		{ok,I} when I#file_info.size > 0 ->
+			StateStart = normal;
+		_ ->
+			case butil:readtermfile([bkdcore:statepath(),"/stateglobal"]) of
+				{_,[_|_]} = State ->
+					Nodes = butil:ds_val({bkdcore,master_group},State),
+					case lists:member(actordb_conf:node_name(),Nodes) of
+						true ->
+							StateStart = normal;
+						false ->
+							StateStart = wait
+					end;
+				_ ->
+					StateStart = wait
+			end
+	end,
+
+	case StateStart of
+		normal ->
+			actordb_sharedstate:start(?STATE_NM_GLOBAL,?STATE_TYPE,[{slave,false},create]),
+			{ok,{AllNodes,Groups,Cfgs}} = actordb_sharedstate:get_state(),
+			actordb_sharedstate:set_init_state(AllNodes,Groups,Cfgs);
+		wait ->
+			actordb_sharedstate:start_wait(?STATE_NM_GLOBAL,?STATE_TYPE)
+	end,
 
 	Res = actordb_sup:start_link(),
 	Res.

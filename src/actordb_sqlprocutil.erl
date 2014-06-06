@@ -100,7 +100,7 @@ reply_maybe(P,N,[]) ->
 					NP;
 				_ ->
 					Ref = make_ref(),
-					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait}],
+					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
 										{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
 						ok ->
 							{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
