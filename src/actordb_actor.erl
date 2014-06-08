@@ -125,6 +125,9 @@ cb_redirected_call(_S,_MovedTo,_Call,_Type) ->
 cb_unverified_call(_S,_Msg)  ->
 	queue.
 
+cb_write_done(_S,_Evnum) ->
+	ok.
+
 % These only get called on master
 cb_call(_Msg,_From,_S) ->
 	{reply,{error,uncrecognized_call}}.

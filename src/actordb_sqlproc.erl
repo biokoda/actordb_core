@@ -398,10 +398,12 @@ state_rw_call(What,From,P) ->
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType} ->
-			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[{P#dp.actorname,P#dp.actortype,AEType},{PrevEvnum,PrevTerm},LeaderNode]),
+			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[{P#dp.actorname,P#dp.actortype,AEType},
+												{PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
 				_ when Term < P#dp.current_term ->
-					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
+					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
+							[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType),
 					% Some node thinks its master and sent us appendentries start.
@@ -545,7 +547,8 @@ state_rw_call(What,From,P) ->
 																[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 																{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
 												ok ->
-													actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,P#dp.actorname}},
+													actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,
+																								P#dp.actorname}},
 																					From,NP);
 												_ ->
 													{reply,false,P}
@@ -707,7 +710,8 @@ write_call({MFA,Sql,Transaction},From,P) ->
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
-			write_call1(Sql1,undefined,undefined,NewVers, P#dp{callqueue = queue:in({From,{write,{MFA,Sql,Transaction}}},P#dp.callqueue)});
+			write_call1(Sql1,undefined,undefined,NewVers, P#dp{callqueue = queue:in({From,{write,{MFA,Sql,Transaction}}},
+							P#dp.callqueue)});
 		ok when MFA == undefined ->
 			write_call1(Sql,Transaction,From,P#dp.schemavers,P);
 		_ ->
@@ -976,6 +980,25 @@ handle_info(start_copy,P) ->
 handle_info(start_copy_done,P) ->
 	{ok,NP} = init(P,copy_done),
 	{noreply,NP};
+handle_info(raft_refresh,P) ->
+	FL = [begin
+		case F#flw.wait_for_response_since of
+			undefined ->
+				case bkdcore_rpc:is_connected(F#flw.node) of
+					true ->
+						bkdcore_rpc:cast(F#flw.node,
+							{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+							 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
+							 F#flw.match_index,F#flw.match_term,empty}}]}),
+						F#flw{wait_for_response_since = make_ref()};
+					false ->
+						F
+				end;
+			_ ->
+				F
+		end
+		end || F <- P#dp.follower_indexes],
+	{noreply,P#dp{follower_indexes = FL}};
 handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 	case apply(P#dp.cbmod,cb_info,[Msg,P#dp.cbstate]) of
 		{noreply,S} ->
@@ -1094,7 +1117,12 @@ check_inactivity(NTimer,P) ->
 							{noreply,P#dp{timerref = Timer},hibernate}
 					end;
 				_ when Age >= 5000 ->
-					{stop,normal,P};
+					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
+						never ->
+							{noreply,check_timer(P)};
+						_ ->
+							{stop,normal,P}
+					end;
 				_ ->
 					Now = actordb_local:actor_activity(P#dp.activity_now),
 					{noreply,check_timer(P#dp{activity_now = Now})}
@@ -1195,7 +1223,8 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{stop,nocreate,P1};
 		leader ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
-			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
+			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
+													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													verified = true}),
 			?DBG("Elected leader term=~p",[P1#dp.current_term]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
@@ -1412,7 +1441,8 @@ init([_|_] = Opts) ->
 					end;
 				_ when MovedToNode == undefined; RightCluster ->
 					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(
-								P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum,evterm = VotedForTerm}),true)};
+								P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum,
+										evterm = VotedForTerm}),true)};
 				_ ->
 					?DBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode}}

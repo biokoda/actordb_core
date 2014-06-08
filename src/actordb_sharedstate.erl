@@ -189,6 +189,9 @@ cb_idle(S) ->
 			ok
 	end.
 
+cb_write_done(_S,_Evnum) ->
+	ok.
+
 cb_redirected_call(S,_MovedTo,{master_ping,MasterNode,_MasterGroup},moved) ->
 	{reply,ok,S,MasterNode};
 cb_redirected_call(S,_MovedTo,{master_ping,MasterNode,MasterGroup},slave) ->

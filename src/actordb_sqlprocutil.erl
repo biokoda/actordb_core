@@ -94,7 +94,8 @@ reply_maybe(P,N,[]) ->
 			end,
 			?DBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
 			reply(From,Res),
-			NP = do_cb_init(P#dp{callfrom = undefined, callres = undefined, schemavers = NewVers,activity = make_ref()}),
+			NP = do_cb(P#dp{callfrom = undefined, callres = undefined, 
+									schemavers = NewVers,activity = make_ref()}),
 			case Msg of
 				undefined ->
 					NP;
@@ -113,7 +114,7 @@ reply_maybe(P,N,[]) ->
 		true ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
 			reply(P#dp.callfrom,P#dp.callres),
-			do_cb_init(P#dp{callfrom = undefined, callres = undefined});
+			do_cb(P#dp{callfrom = undefined, callres = undefined});
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
 				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
@@ -502,30 +503,35 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	 <<"$INSERT INTO __adb (id,val) VALUES ">>,
 	 	butil:iolist_join(DefVals,$,),$;].
 
-do_cb_init(#dp{cbstate = undefined} = P) ->
+do_cb(#dp{cbstate = undefined} = P) ->
 	case P#dp.movedtonode of
 		undefined ->
-			do_cb_init(P#dp{cbstate = apply(P#dp.cbmod,cb_startstate,[P#dp.actorname,P#dp.actortype])});
+			do_cb(P#dp{cbstate = apply(P#dp.cbmod,cb_startstate,[P#dp.actorname,P#dp.actortype])});
 		_ ->
 			P#dp.cbstate
 	end;
-do_cb_init(#dp{cbinit = false} = P) ->
+do_cb(#dp{cbinit = false} = P) ->
 	S = P#dp.cbstate,
 	case apply(P#dp.cbmod,cb_init,[S,P#dp.evnum]) of
 		{ok,NS} ->
-			P#dp{cbstate = NS, cbinit = true};
+			do_cb(P#dp{cbstate = NS, cbinit = true});
 		{doread,Sql} ->
 			case apply(P#dp.cbmod,cb_init,[S,P#dp.evnum,actordb_sqlite:exec(P#dp.db,Sql,read)]) of
 				{ok,NS} ->
-					P#dp{cbstate = NS,cbinit = true};
+					do_cb(P#dp{cbstate = NS,cbinit = true});
 				ok ->
-					P#dp{cbinit = true}
+					do_cb(P#dp{cbinit = true})
 			end;
 		ok ->
-			P#dp{cbinit = true}
+			do_cb(P#dp{cbinit = true})
 	end;
-do_cb_init(P) ->
-	P.
+do_cb(P) ->
+	case apply(P#dp.cbmod,cb_write_done,[P#dp.cbstate,P#dp.evnum]) of
+		{ok,NS} ->
+			P#dp{cbstate = NS};
+		ok ->
+			P
+	end.
 
 
 actor_start(P) ->
