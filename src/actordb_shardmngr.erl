@@ -425,7 +425,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},P) ->
 handle_info({bkdcore_sharedstate,_Nd,_State},P) ->
 	{noreply,P};
 handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
-	case bkdcore:nodelist() /= [] andalso bkdcore_sharedstate:is_ok() andalso P#dp.localshards == [] of
+	case bkdcore:nodelist() /= [] andalso actordb_sharedstate:is_ok() andalso P#dp.localshards == [] of
 		true ->
 			handle_info({bkdcore_sharedstate,global_state_change},P);
 		false ->
@@ -433,7 +433,7 @@ handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
 	end;
 handle_info({bkdcore_sharedstate,global_state_change},P) ->
 	?ADBG("GLobal statechange ~p",[bkdcore:node_name()]),
-	case bkdcore:nodelist() /= [] andalso bkdcore_sharedstate:is_ok() andalso P#dp.haveschema of
+	case bkdcore:nodelist() /= [] andalso actordb_sharedstate:is_ok() andalso P#dp.haveschema of
 		false ->
 			{noreply,P};
 		_ ->

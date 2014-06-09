@@ -241,8 +241,8 @@ handle_call(Msg,From,P) ->
 					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 				_ ->
 					case apply(P#dp.cbmod,cb_redirected_call,[P#dp.cbstate,P#dp.masternode,Msg,slave]) of
-						{reply,What} ->
-							{reply,What,P};
+						{reply,What,NS,_} ->
+							{reply,What,P#dp{cbstate = NS}};
 						ok ->
 							actordb_sqlprocutil:redirect_master(P)
 					end
@@ -259,6 +259,8 @@ handle_call(Msg,From,P) ->
 					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 				{moved,Moved} ->
 					{noreply,check_timer(P#dp{movedtonode = Moved})};
+				{moved,Moved,NS} ->
+					{noreply,check_timer(P#dp{movedtonode = Moved, cbstate = NS})};
 				{reply,What} ->
 					{reply,What,P};
 				reinit ->

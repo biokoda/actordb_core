@@ -53,8 +53,9 @@ cmd(init,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
 		Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
 		[Schema] = yamerl_constr:file(Etc++"/schema.yaml"),
-		ok = bkdcore_sharedstate:set_global_state([{bkdcore,nodes,Nodes},{bkdcore,groups,Groups},
-						{actordb,'schema.yaml',Schema}]) of
+		% ok = bkdcore_sharedstate:set_global_state([{bkdcore,nodes,Nodes},{bkdcore,groups,Groups},
+		% 				{actordb,'schema.yaml',Schema}]) of
+		ok = actordb_sharedstate:init_state(Nodes,Groups,[{'schema.yaml',Schema}]) of
 		ok ->
 			"ok"
 	catch
