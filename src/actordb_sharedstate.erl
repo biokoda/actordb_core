@@ -67,7 +67,7 @@ init_state(Nodes,Groups,{_,_,_} = Configs) ->
 init_state(Nodes,Groups,Configs) ->
 	case actordb_sqlproc:call({?STATE_NM_GLOBAL,?STATE_TYPE},[],{init_state,Nodes,Groups,Configs},?MODULE) of
 		ok ->
-			set_init_state(Nodes,Groups,Configs),
+			% set_init_state(Nodes,Groups,Configs),
 			ok;
 		_ ->
 			error
@@ -76,15 +76,15 @@ init_state(Nodes,Groups,Configs) ->
 is_ok() ->
 	ets:info(?GLOBALETS,size) /= undefined.
 
-get_state() ->
-	{ok,Nodes} = read_global(nodes),
-	{ok,Groups} = read_global(groups),
-	{ok,CL} = application:get_env(bkdcore,cfgfiles),
-	Cfgs = [begin 
-		{ok,CfgInfo} = read_global(CfgName),
-		 {CfgName,CfgInfo}
-	 end || {CfgName,_} <- CL],
-	 {ok,{Nodes,Groups,Cfgs}}.
+% get_state() ->
+% 	{ok,Nodes} = read_global(nodes),
+% 	{ok,Groups} = read_global(groups),
+% 	{ok,CL} = application:get_env(bkdcore,cfgfiles),
+% 	Cfgs = [begin 
+% 		{ok,CfgInfo} = read_global(CfgName),
+% 		 {CfgName,CfgInfo}
+% 	 end || {CfgName,_} <- CL],
+% 	 {ok,{Nodes,Groups,Cfgs}}.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -92,10 +92,10 @@ get_state() ->
 % 							Helpers
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-set_init_state(Nodes,Groups,Configs) ->
-	[ok = bkdcore_changecheck:setcfg(butil:tolist(Key),Val) || {Key,Val} <- Configs],
-	bkdcore_changecheck:set_nodes_groups(Nodes,Groups),
-	spawn(fun() -> start(?STATE_NM_LOCAL,?STATE_TYPE) end).
+% set_init_state(Nodes,Groups,Configs) ->
+% 	[ok = bkdcore_changecheck:setcfg(butil:tolist(Key),Val) || {Key,Val} <- Configs],
+% 	bkdcore_changecheck:set_nodes_groups(Nodes,Groups),
+	
 
 cfgnames() ->
 	{ok,CL} = application:get_env(bkdcore,cfgfiles),
@@ -146,28 +146,40 @@ set_global_state([_|_] = State) ->
 		undefined ->
 			ets:new(?GLOBALETS, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]);
 		_ ->
-			% If any cfg changed, call setcfg for it.
-			[begin
-				NewVal = butil:ds_val(Cfg,State),
-				case butil:ds_val(Cfg,?GLOBALETS) of
-					OldVal when NewVal /= undefined, OldVal /= NewVal ->
-						bkdcore_changecheck:setcfg(butil:tolist(Cfg),NewVal);
-					_ ->
-						ok
-				end
-			end || Cfg <- cfgnames()],
-			% If nodes/groups changed inform changecheck.
-			[OldNodes,OldGroups] = butil:ds_vals([nodes,groups],?GLOBALETS),
-			[NewNodes,NewGroups] = butil:ds_vals([nodes,groups],State),
-			case ok of
-				_ when NewNodes /= undefined andalso NewGroups /= undefined andalso 
-					   (NewNodes /= OldNodes orelse NewGroups /= OldGroups) ->
-					bkdcore_changecheck:set_nodes_groups(NewNodes,NewGroups);
-				_ ->
-					ok
-			end
+			ok
 	end,
-	ets:insert(?GLOBALETS,State).
+	% If any cfg changed, call setcfg for it.
+	[begin
+		NewVal = butil:ds_val(Cfg,State),
+		case butil:ds_val(Cfg,?GLOBALETS) of
+			OldVal when NewVal /= undefined, OldVal /= NewVal ->
+				bkdcore_changecheck:setcfg(butil:tolist(Cfg),NewVal);
+			_ ->
+				ok
+		end
+	end || Cfg <- cfgnames()],
+	% If nodes/groups changed inform changecheck.
+	[NewNodes,NewGroups] = butil:ds_vals([nodes,groups],State),
+	case ok of
+		_ when NewNodes /= undefined andalso NewGroups /= undefined ->
+			[OldNodes,OldGroups] = butil:ds_vals([nodes,groups],?GLOBALETS),
+			case (NewNodes /= OldNodes orelse NewGroups /= OldGroups) of
+			   	true ->
+			   		bkdcore_changecheck:set_nodes_groups(NewNodes,NewGroups),
+			   		spawn(fun() -> start(?STATE_NM_LOCAL,?STATE_TYPE) end);
+			   	false ->
+			   		ok
+			end;
+		_ ->
+			ok
+	end,
+	ets:insert(?GLOBALETS,State),
+	case application:get_env(actordb,sharedstate_notify) of
+		{ok,[_|_] = L} ->
+			[butil:safesend(Somewhere,{actordb,sharedstate_change}) || Somewhere <- L];
+		_ ->
+			ok
+	end.
 
 check_timer(S) ->
 	case S#st.timer of
@@ -252,7 +264,7 @@ cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 	set_global_state(S#st.current_write),
 	{ok,check_timer(S#st{current_write = undefined, evnum = Evnum, am_i_master = true})}.
 
-% We are redirecting calls (so we know who master is).
+% We are redirecting calls (so we know who master is and state is established).
 % But master_ping needs to be handled. It tells us if state has changed.
 cb_redirected_call(S,MovedTo,{master_ping,MasterNode,Evnum,State},_MovedOrSlave) ->
 	Now = os:timestamp(),
@@ -279,9 +291,9 @@ cb_redirected_call(_,_,_,_) ->
 
 % Initialize state on slaves (either inactive or part of master group).
 cb_unverified_call(#st{waiting = true, name = ?STATE_NM_GLOBAL} = S,{master_ping,MasterNode,Evnum,State})  ->
-	[Nodes,Groups,MasterGroup] = butil:ds_vals([nodes,groups,master_group],State),
+	[MasterGroup] = butil:ds_vals([master_group],State),
 	set_global_state(State),
-	set_init_state(Nodes,Groups,cfgnames()),
+	% set_init_state(Nodes,Groups,cfgnames()),
 	case lists:member(actordb_conf:node_name(),MasterGroup) of
 		false ->
 			{{moved,MasterNode},S#st{waiting = false, evnum = Evnum}};
