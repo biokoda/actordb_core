@@ -340,7 +340,14 @@ handle_info(check_mem,P) ->
 	 end),
 	{noreply,P};
 handle_info({actordb,sharedstate_change},P1) ->
-	P = P1#dp{raft_connections = store_raft_connection(bkdcore:cluster_nodes(),P1#dp.raft_connections)},
+	MG1 = actordb_sharedstate:read_global(master_group),
+	case lists:member(actordb_conf:node_name(),MG1) of
+		true ->
+			MG = MG1 -- [actordb_conf:node_name()];
+		false ->
+			MG = bkdcore:cluster_nodes()
+	end,
+	P = P1#dp{raft_connections = store_raft_connection(MG,P1#dp.raft_connections)},
 	case P#dp.mupdaters of
 		[] ->
 			case actordb_sharedstate:read_cluster(["mupdaters,",bkdcore:node_name()]) of

@@ -7,6 +7,7 @@
 -include("actordb.hrl").
 -define(GLOBALETS,globalets).
 
+-define(MASTER_GROUP_SIZE,7).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 
 % 							API
@@ -14,7 +15,7 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 -record(st,{name,type,time_since_ping = {0,0,0}, 
 			master_group = [], waiting = false, 
-			current_write, evnum = 0, am_i_master = false, timer}).
+			current_write = [], evnum = 0, am_i_master = false, timer}).
 
 start({Name,Type}) ->
 	start(Name,Type).
@@ -141,15 +142,6 @@ write_sql(Key,Val) ->
 	[<<"INSERT OR REPLACE INTO state VALUES ('">>,butil:tobin(Key),
 		"','",base64:encode(term_to_binary(Val,[compressed])),"');"].
 
-takemax(N,L) ->
-	case length(L) >= N of
-		true ->
-			{A,_} = lists:split(N,L),
-			A;
-		false ->
-			L
-	end.
-
 state_to_sql(Name) -> 
 	case Name of
 		?STATE_NM_GLOBAL ->
@@ -218,6 +210,28 @@ check_timer(S) ->
 			end
 	end.
 
+add_master_group(ExistingGroup) ->
+	AllNodes = bkdcore:nodelist(),
+	ClusterCandidates = bkdcore:all_cluster_nodes() -- ExistingGroup,
+	case length(ExistingGroup)+length(ClusterCandidates) >= ?MASTER_GROUP_SIZE of
+		true ->
+			{Nodes,_} = lists:split(?MASTER_GROUP_SIZE,ClusterCandidates);
+		false ->
+			Nodes = ClusterCandidates ++ takemax(?MASTER_GROUP_SIZE - length(ClusterCandidates) - length(ExistingGroup),
+												 (AllNodes -- ClusterCandidates) -- ExistingGroup)
+	end,
+	Nodes.
+
+takemax(N,L) when N > 0 ->
+	case length(L) >= N of
+		true ->
+			{A,_} = lists:split(N,L),
+			A;
+		false ->
+			L
+	end;
+takemax(_,_) ->
+	[].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 
@@ -297,7 +311,29 @@ cb_write_done(#st{name = ?STATE_NM_LOCAL} = S,Evnum) ->
 	{ok,check_timer(S#st{evnum = Evnum})};
 cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 	set_global_state(actordb_conf:node_name(), S#st.current_write),
-	{ok,check_timer(S#st{current_write = undefined, evnum = Evnum, am_i_master = true})}.
+	NS = check_timer(S#st{current_write = [], evnum = Evnum, am_i_master = true}),
+
+	Masters = butil:ds_val(master_group,?GLOBALETS),
+	case [Nd || Nd <- Masters, bkdcore:node_address(Nd) == undefined] of
+		[] when length(Masters) < ?MASTER_GROUP_SIZE ->
+			case add_master_group(Masters) of
+				[] ->
+					ok;
+				New ->
+					spawn(fun() -> write_global(master_group,New++Masters) end)
+			end;
+		[] ->
+			ok;
+		SomeRemoved ->
+			WithoutRemoved = Masters -- SomeRemoved,
+			case add_master_group(WithoutRemoved) of
+				[] ->
+					spawn(fun() -> write_global(master_group,WithoutRemoved) end);
+				New ->
+					spawn(fun() -> write_global(master_group,New++WithoutRemoved) end)
+			end
+	end,
+	{ok,NS#st{master_group = Masters}}.
 
 % We are redirecting calls (so we know who master is and state is established).
 % But master_ping needs to be handled. It tells us if state has changed.
@@ -374,14 +410,8 @@ cb_nodelist(#st{name = ?STATE_NM_GLOBAL} = S,HasSchema) ->
 						[] = Nodes ->
 							?AERR("Global state without nodelist."),
 							exit(normal);
-						AllNodes ->
-							AllClusterNodes = bkdcore:all_cluster_nodes(),
-							case length(AllClusterNodes) >= 7 of
-								true ->
-									{Nodes,_} = lists:split(7,AllClusterNodes);
-								false ->
-									Nodes = AllClusterNodes ++ takemax(7 - length(AllClusterNodes),AllNodes -- AllClusterNodes)
-							end
+						_ ->
+							Nodes = add_master_group([])
 					end
 			end,
 			return_mg(S,Nodes)
@@ -393,7 +423,9 @@ cb_nodelist(S,true,{ok,[{columns,_},{rows,[{_,ValEncoded}]}]}) ->
 return_mg(S,Nodes) ->
 	case lists:member(actordb_conf:node_name(),Nodes) of
 		true ->
-			{ok,S#st{master_group = Nodes},Nodes -- [actordb_conf:node_name()]};
+			{ok,S#st{current_write = [{master_group,Nodes}|S#st.current_write], 
+					 master_group = Nodes},
+			    Nodes -- [actordb_conf:node_name()]};
 		false ->
 			exit(normal)
 	end.
