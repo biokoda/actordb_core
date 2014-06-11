@@ -197,16 +197,16 @@ start(_Type, _Args) ->
 			end
 	end,
 
+	Res = actordb_sup:start_link(),
+
+	?AINF("Starting sharedstate type ~p",[StateStart]),
 	case StateStart of
 		normal ->
 			actordb_sharedstate:start(?STATE_NM_GLOBAL,?STATE_TYPE,[{slave,false},create]);
-			% {ok,{AllNodes,Groups,Cfgs}} = actordb_sharedstate:get_state(),
-			% actordb_sharedstate:set_init_state(AllNodes,Groups,Cfgs);
 		wait ->
 			actordb_sharedstate:start_wait(?STATE_NM_GLOBAL,?STATE_TYPE)
 	end,
 
-	Res = actordb_sup:start_link(),
 	Res.
 
 stop(_State) ->

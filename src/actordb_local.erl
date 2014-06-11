@@ -339,15 +339,11 @@ handle_info(check_mem,P) ->
 			end
 	 end),
 	{noreply,P};
-handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
-	handle_info({bkdcore_sharedstate,cluster_connected},
-		P#dp{raft_connections = store_raft_connection(bkdcore:cluster_nodes(),P#dp.raft_connections)});
-handle_info({bkdcore_sharedstate,global_state_change},P) ->
-	{noreply,P#dp{raft_connections = store_raft_connection(bkdcore:cluster_nodes(),P#dp.raft_connections)}};
-handle_info({bkdcore_sharedstate,cluster_connected},P) ->
+handle_info({actordb,sharedstate_change},P1) ->
+	P = P1#dp{raft_connections = store_raft_connection(bkdcore:cluster_nodes(),P1#dp.raft_connections)},
 	case P#dp.mupdaters of
 		[] ->
-			case bkdcore_sharedstate:get_cluster_state(mupdaters,{mupdaters,bkdcore:node_name()}) of
+			case actordb_sharedstate:read_cluster(["mupdaters,",bkdcore:node_name()]) of
 				nostate ->
 					{noreply,P};
 				[_|_] = NL ->
@@ -358,7 +354,7 @@ handle_info({bkdcore_sharedstate,cluster_connected},P) ->
 					{ok,NumMngrs} = application:get_env(actordb_core,num_transaction_managers),
 					case create_mupdaters(NumMngrs,[]) of
 						[] ->
-							erlang:send_after(1000,self(),{bkdcore_sharedstate,cluster_connected}),
+							erlang:send_after(1000,self(),{actordb,sharedstate_change}),
 							{noreply,P};
 						NL ->
 							?AINF("Created mupdaters ~p",[NL]),
@@ -371,7 +367,7 @@ handle_info({bkdcore_sharedstate,cluster_connected},P) ->
 	end;
 handle_info(save_updaters,P) ->
 	butil:ds_add(all,P#dp.mupdaters,multiupdaters),
-	case bkdcore_sharedstate:set_cluster_state(mupdaters,{mupdaters,bkdcore:node_name()},P#dp.mupdaters) of
+	case actordb_sharedstate:write_cluster(["mupdaters,",bkdcore:node_name()],P#dp.mupdaters) of
 		ok ->
 			{noreply,P#dp{updaters_saved = true}};
 		_ ->
@@ -445,7 +441,7 @@ init(_) ->
 	erlang:send_after(10000,self(),check_mem),
 	erlang:send_after(1000,self(),read_ref),
 	erlang:send_after(500,self(),reconnect_raft),
-	ok = bkdcore_sharedstate:subscribe_changes(?MODULE),
+	actordb_sharedstate:subscribe_changes(?MODULE),
 	case ets:info(multiupdaters,size) of
 		undefined ->
 			ets:new(multiupdaters, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{write_concurrency,true}]);
@@ -521,10 +517,11 @@ init(_) ->
 create_mupdaters(0,L) ->
 	L;
 create_mupdaters(N,L) ->
-	case bkdcore_idgen:getid() of
+	case actordb_idgen:getid() of
 		{ok,Id} ->
 			create_mupdaters(N-1,[Id|L]);
-		_ ->
+		_E ->
+			?AERR("Cant create multiupdater ~p",[_E]),
 			L
 	end.
 

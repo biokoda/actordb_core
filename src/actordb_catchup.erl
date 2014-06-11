@@ -81,7 +81,7 @@ handle_info(doping,P) ->
 			[rpc:async_call(Nd,?MODULE,ping,[bkdcore:node_name(),P#dp.pingnum]) || Nd <- P#dp.nodelist_ping]
 	end,
 	{noreply, P#dp{pingnum = P#dp.pingnum + 1}};
-handle_info({bkdcore_sharedstate,global_state_change},P) ->
+handle_info({actordb,sharedstate_change},P) ->
 	{noreply,P#dp{nodelist_ping = [bkdcore:dist_name(Nd) || Nd <- bkdcore:cluster_nodes()]}};
 handle_info(stop,P) ->
 	handle_info({stop,noreason},P);
@@ -96,8 +96,8 @@ code_change(_, P, _) ->
 	{ok, P}.
 init(_) ->
 	erlang:send_after(200,self(),doping),
-	ok = bkdcore_sharedstate:subscribe_changes(?MODULE),
-	self() ! {bkdcore_sharedstate,global_state_change},
+	actordb_sharedstate:subscribe_changes(?MODULE),
+	self() ! {actordb,sharedstate_change},
 	case ets:info(pingtable,size) of
 		undefined ->
 			ets:new(pingtable, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]);

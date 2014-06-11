@@ -266,8 +266,9 @@ handle_call(Msg,From,P) ->
 				reinit ->
 					{ok,NP} = init(P,cb_reinit),
 					{noreply,NP};
-				{reinit,Sql} ->
-					{ok,NP} = init(P#dp{callqueue = queue:in_r({From,{write,{undefined,Sql,undefined}}},P#dp.callqueue)},cb_reinit),
+				{reinit,Sql,NS} ->
+					{ok,NP} = init(P#dp{callqueue = queue:in_r({From,{write,{undefined,Sql,undefined}}},P#dp.callqueue),
+										cbstate = NS},cb_reinit),
 					{noreply,NP}
 			end;
 		{write,{_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
@@ -1383,7 +1384,7 @@ init(#dp{} = P,_Why) ->
 init([_|_] = Opts) ->
 	% put(opt,Opts),
 	case actordb_sqlprocutil:parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), 
-									schemanum = actordb_schema:num()}),Opts) of
+									schemanum = catch actordb_schema:num()}),Opts) of
 		{registered,Pid} ->
 			explain({registered,Pid},Opts),
 			{stop,normal};

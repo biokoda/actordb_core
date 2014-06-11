@@ -170,14 +170,7 @@ handle_info(can_start,P) ->
 			erlang:send_after(300,self(),can_start)
 	end,
 	{noreply,P};
-handle_info({bkdcore_sharedstate,_Nd,_State},P) ->
-	{noreply,P};
-handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
-	{noreply,P};
-handle_info({bkdcore_sharedstate,global_state_change},P) ->
-	?ADBG("Global statechange ~p",[bkdcore:node_name()]),
-	{noreply,P};
-handle_info({bkdcore_sharedstate,cluster_connected},P) ->
+handle_info({actordb,sharedstate_change},P) ->
 	case get_toget() of
 		[_|_] = TG when P#dp.shardstoget == [] ->
 			?AINF("cluster_connected shards to get ~p",[TG]),
@@ -209,15 +202,15 @@ code_change(_, P, _) ->
 init([]) ->
 	erlang:send_after(60000,self(),check_steal),
 	erlang:send_after(400,self(),can_start),
-	ok = bkdcore_sharedstate:subscribe_changes(?MODULE),
+	actordb_sharedstate:subscribe_changes(?MODULE),
 	{ok,#dp{}}.
 
 
 store_toget(TG) ->
-	ok = bkdcore_sharedstate:set_cluster_state(shardmngr,{shardstoget,bkdcore:node_name()},TG),
+	ok = actordb_sharedstate:write_cluster(["shardstoget,",bkdcore:node_name()],TG),
 	ok.
 get_toget() ->
-	case bkdcore_sharedstate:get_cluster_state(shardmngr,{shardstoget,bkdcore:node_name()}) of
+	case actordb_sharedstate:read_cluster(["shardstoget,",bkdcore:node_name()]) of
 		undefined ->
 			[];
 		R ->

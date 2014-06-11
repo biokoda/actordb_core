@@ -53,8 +53,6 @@ cmd(init,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
 		Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
 		[Schema] = yamerl_constr:file(Etc++"/schema.yaml"),
-		% ok = bkdcore_sharedstate:set_global_state([{bkdcore,nodes,Nodes},{bkdcore,groups,Groups},
-		% 				{actordb,'schema.yaml',Schema}]) of
 		ok = actordb_sharedstate:init_state(Nodes,Groups,[{'schema.yaml',Schema}]) of
 		ok ->
 			"ok"
@@ -88,7 +86,7 @@ cmd(updatenodes,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
 		Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
 		[_|_] = compare_groups(nodes_to_names(Nodes),Groups,compare_nodes(Nodes,[])),
-		bkdcore_sharedstate:set_global_state([{bkdcore,nodes,Nodes},{bkdcore,groups,Groups}]) of
+		actordb_sharedstate:write_global([{nodes,Nodes},{groups,Groups}]) of
 		ok ->
 			"done";
 		Err ->
@@ -124,7 +122,7 @@ cmd(updateschema,parse,Etc) ->
 	end;
 cmd(updateschema,commit,Etc) ->
 	try [Schema] = yamerl_constr:file(Etc++"/schema.yaml"),
-		bkdcore_sharedstate:set_global_state([{actordb,'schema.yaml',Schema}]) of
+		actordb_sharedstate:write_global([{'schema.yaml',Schema}]) of
 		ok ->
 			"done";
 		Err ->

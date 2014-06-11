@@ -638,13 +638,13 @@ statements_to_binary(CurActor,[H|T],Out,Varlist) ->
 								curactor ->
 									<<B/binary,CurActor/binary>>;
 								uniqid ->
-									{ok,Idi} = bkdcore_idgen:getid(),
+									{ok,Idi} = actordb_idgen:getid(),
 									Id = butil:tobin(Idi),
 									<<B/binary,Id/binary>>;
 								{uniqid,Column} ->
 									case get({uniqid,Column}) of
 										undefined ->
-											{ok,Idi} = bkdcore_idgen:getid(),
+											{ok,Idi} = actordb_idgen:getid(),
 											Id = butil:tobin(Idi),
 											put({uniqid,Column},Id);
 										Id ->

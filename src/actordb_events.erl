@@ -111,7 +111,7 @@ init(_) ->
 
 
 process_ev() ->
-	case bkdcore_sharedstate:get_cluster_state(?MODULE,{last_evnum,bkdcore:node_name()}) of
+	case actordb_sharedstate:read_cluster(["last_evnum,",bkdcore:node_name()]) of
 		undefined ->
 			Evnum = 0;
 		Evnum when is_integer(Evnum) ->
@@ -156,7 +156,7 @@ process_ev(Evnum,[{Id,Data}|T]) when Id > Evnum ->
 	end,
 	process_ev(Id,T);
 process_ev(Evnum,[]) ->
-	bkdcore_sharedstate:set_cluster_state(?MODULE,{last_evnum,bkdcore:node_name()},Evnum),
+	actordb_sharedstate:write_cluster(["last_evnum,",bkdcore:node_name()],Evnum),
 	process_ev().
 
 
