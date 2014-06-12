@@ -142,7 +142,7 @@ startactor(Name,Start,Flags) ->
 call_slave(Cb,Actor,Type,Msg) ->
 	call_slave(Cb,Actor,Type,Msg,[]).
 call_slave(Cb,Actor,Type,Msg,Flags) ->
-	actordb_util:wait_for_startup(Actor,0),
+	actordb_util:wait_for_startup(Type,Actor,0),
 	case apply(Cb,cb_slave_pid,[Actor,Type,[{startreason,Msg}|Flags]]) of %
 		{ok,Pid} ->
 			ok;
@@ -349,7 +349,7 @@ commit_call(Doit,Id,From,P) ->
 												P#dp.evterm,EvNum,<<>>)),
 					{noreply,P#dp{callfrom = From, activity = make_ref(),
 								  callres = ok,evnum = EvNum,
-								  follower_indexes = update_followers(P#dp.follower_indexes),
+								  follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
 								 transactionid = undefined, transactioninfo = undefined,transactioncheckref = undefined}};
 				false when P#dp.follower_indexes == [] ->
 					case Sql of
@@ -396,6 +396,9 @@ state_rw_call(What,From,P) ->
 			end;
 		donothing ->
 			{reply,ok,P};
+		recovered ->
+			?DBG("No longer in recovery"),
+			{reply,ok,P#dp{inrecovery = false}};
 		% Executed on follower.
 		% AE is split into multiple calls (because wal is sent page by page as it is written)
 		% Start sets parameters. There may not be any wal append calls after if empty write.
@@ -404,6 +407,9 @@ state_rw_call(What,From,P) ->
 			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[{P#dp.actorname,P#dp.actortype,AEType},
 												{PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
+				_ when P#dp.inrecovery, AEType == head ->
+					?DBG("Ignoring head because inrecovery"),
+					{reply,false,P};
 				_ when Term < P#dp.current_term ->
 					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
 							[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
@@ -476,7 +482,8 @@ state_rw_call(What,From,P) ->
 					{noreply,P#dp{verified = true,activity = make_ref()}};
 				% Ok, now it will start receiving wal pages
 				_ ->
-					{reply,ok,P#dp{verified = true,activity = make_ref()}}
+					?DBG("AE start ok"),
+					{reply,ok,P#dp{verified = true,activity = make_ref(), inrecovery = AEType == recover}}
 			end;
 		% Executed on follower.
 		% sqlite wal, header tells you if done (it has db size in header)
@@ -513,7 +520,13 @@ state_rw_call(What,From,P) ->
 					?DBG("AE response, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
 							[Node,Success,AEType,
 							 {Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
-					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
+					case Follower#flw.next_index > EvNum of
+						true ->
+							NextIndex = Follower#flw.next_index;
+						false ->
+							NextIndex = EvNum+1
+					end,
+					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = NextIndex,
 											wait_for_response_since = undefined}, 
 					case Success of
 						% An earlier response.
@@ -523,7 +536,7 @@ state_rw_call(What,From,P) ->
 							reply(From,ok),
 							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw,AEType)),
 							?DBG("AE response for node ~p, followers=~p",
-									[Node,[{F#flw.node,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
+									[Node,[{F#flw.node,F#flw.match_index,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
 							{noreply,doqueue(NP)};
 						% What we thought was follower is ahead of us and we need to step down
 						false when P#dp.current_term < CurrentTerm ->
@@ -709,7 +722,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call({MFA,Sql,Transaction},From,P) ->
-	?DBG("writecall evnum_prewrite=~p",[P#dp.evnum]),
+	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -777,7 +790,7 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 						_ ->
 							% reply on appendentries response or later if nodes are behind.
 							{noreply, P#dp{callfrom = From, callres = Res, 
-											follower_indexes = update_followers(P#dp.follower_indexes),
+											follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
 										evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers}}
 					end;
 				Resp ->
@@ -879,12 +892,12 @@ write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader)),
 			{noreply,P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
 						  transactioninfo = {Sql,EvNum+1,NewVers},
-						  follower_indexes = update_followers(P#dp.follower_indexes),
+						  follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
 						  transactioncheckref = CheckRef,
 						  transactionid = TransactionId}}
 	end.
 
-update_followers(L) ->
+update_followers(_Evnum,L) ->
 	Ref = make_ref(),
 	[begin
 		F#flw{wait_for_response_since = Ref}

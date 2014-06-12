@@ -273,7 +273,7 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 
 continue_maybe(P,F,AEType) ->
 	% Check if follower behind
-	?DBG("Continue maybe ~p ~p",[F#flw.node,{P#dp.evnum,F#flw.next_index}]),
+	?DBG("Continue maybe ~p {MyEvnum,NextIndex}=~p",[F#flw.node,{P#dp.evnum,F#flw.next_index}]),
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
 			case AEType of
@@ -287,8 +287,8 @@ continue_maybe(P,F,AEType) ->
 			end;
 		true ->
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-						{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-									F#flw.match_index,F#flw.match_term,recover}}]}),
+				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
+							F#flw.match_index,F#flw.match_term,recover}}]}),
 			case StartRes of
 				false ->
 					% to be continued in appendentries_response
@@ -308,6 +308,7 @@ continue_maybe(P,F,AEType) ->
 			store_follower(P,F);
 		false ->
 			file:close(F#flw.file),
+			bkdcore_rpc:cast(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}]}),
 			store_follower(P,F#flw{file = undefined})
 	end.
 
@@ -437,7 +438,7 @@ check_redirect(P,Copyfrom) ->
 	case Copyfrom of
 		{move,NewShard,Node} ->
 			case bkdcore:rpc(Node,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[],
-											{state_rw,donothing,[]},P#dp.cbmod]}) of
+											{state_rw,donothing},P#dp.cbmod]}) of
 				{redirect,SomeNode} ->
 					case lists:member(SomeNode,bkdcore:all_cluster_nodes()) of
 						true ->
@@ -571,6 +572,7 @@ start_election(P) ->
 	Me = actordb_conf:node_name(),
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	Nodes = follower_nodes(P#dp.follower_indexes),
+	?DBG("Multicall to ~p",[Nodes]),
 	{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]}),
 	?DBG("Election, results ~p failed ~p, contacted ~p",[Results,_GetFailed,Nodes]),
@@ -902,7 +904,10 @@ semicolon(S) ->
 	S.
 
 has_schema_updated(P,Sql) ->
-	Schema = actordb_schema:num(),
+	case catch actordb_schema:num() of
+		Schema ->
+			ok
+	end,
 	case P#dp.schemanum == Schema orelse P#dp.transactionid /= undefined orelse Sql == delete of
 		true ->
 			ok;

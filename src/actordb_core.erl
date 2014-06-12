@@ -179,12 +179,12 @@ start(_Type, _Args) ->
 	butil:wait_for_app(bkdcore),
 
 	case file:read_file_info([actordb_sharedstate:cb_path(undefined,undefined,undefined),
-								?STATE_NM_GLOBAL,".",butil:tolist(?STATE_TYPE)]) of
+								butil:tolist(?STATE_NM_GLOBAL),".",butil:tolist(?STATE_TYPE)]) of
 		{ok,I} when I#file_info.size > 0 ->
 			StateStart = normal;
-		_ ->
+		_I ->
 			case butil:readtermfile([bkdcore:statepath(),"/stateglobal"]) of
-				{_,[_|_]} = State ->
+				{_,[_|_] = State} ->
 					Nodes = butil:ds_val({bkdcore,master_group},State),
 					case lists:member(actordb_conf:node_name(),Nodes) of
 						true ->

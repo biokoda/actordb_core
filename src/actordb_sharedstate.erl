@@ -105,9 +105,16 @@ am_i_global_master() ->
 % 							Helpers
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% set_init_state(Nodes,Groups,Configs) ->
-% 	[ok = bkdcore_changecheck:setcfg(butil:tolist(Key),Val) || {Key,Val} <- Configs],
-% 	bkdcore_changecheck:set_nodes_groups(Nodes,Groups),
+set_init_state_if_none(N,G,C) ->
+	case bkdcore:nodelist() of
+		[] ->
+			set_init_state(N,G,C);
+		_ ->
+			ok
+	end.
+set_init_state(Nodes,Groups,Configs) ->
+	[ok = bkdcore_changecheck:setcfg(butil:tolist(Key),Val) || {Key,Val} <- Configs],
+	bkdcore_changecheck:set_nodes_groups(Nodes,Groups).
 	
 
 cfgnames() ->
@@ -150,7 +157,7 @@ state_to_sql(Name) ->
 			File = "statecluster"
 	end,
 	case butil:readtermfile([bkdcore:statepath(),"/",File]) of
-		{_,[_|_]} = State ->
+		{_,[_|_] = State} ->
 			[[$$,write_sql(Key,Val)] || {{_App,Key},Val} <- State, Key /= master_group];
 		_ ->
 			[]
@@ -377,8 +384,11 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Configs}) ->
 		false ->
 			{reply,{error,already_started}};
 		true ->
-			[bkdcore_changecheck:setcfg(butil:tolist(CfgName),CfgVal) || {CfgName,CfgVal} <- Configs],
-			bkdcore_changecheck:set_nodes_groups(Nodes,Groups),
+			% [bkdcore_changecheck:setcfg(butil:tolist(CfgName),CfgVal) || {CfgName,CfgVal} <- Configs],
+			% bkdcore_changecheck:set_nodes_groups(Nodes,Groups),
+			set_init_state(Nodes,Groups,Configs),
+			[bkdcore_rpc:cast(Nd,{?MODULE,set_init_state_if_none,[Nodes,Groups,Configs]}) || 
+				Nd <- bkdcore:nodelist(), Nd /= actordb_conf:node_name()],
 			Sql = [$$,write_sql(nodes,Nodes),
 				   $$,write_sql(groups,Groups),
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Configs]],
@@ -403,7 +413,7 @@ cb_nodelist(#st{name = ?STATE_NM_GLOBAL} = S,HasSchema) ->
 			{read,read_sql(master_group)};
 		false ->
 			case butil:readtermfile([bkdcore:statepath(),"/stateglobal"]) of
-				{_,[_|_]} = State ->
+				{_,[_|_] = State} ->
 					Nodes = butil:ds_val({bkdcore,master_group},State);
 				_ ->
 					case lists:sort(bkdcore:nodelist()) of
@@ -441,6 +451,13 @@ cb_cast(_Msg,_S) ->
 cb_info(ping_timer,S) ->
 	Now = os:timestamp(),
 	self() ! raft_refresh,
+	case S#st.name of
+		?STATE_NM_GLOBAL ->
+			Msg = {master_ping,actordb_conf:node_name(),S#st.evnum,ets:tab2list(?GLOBALETS)},
+			[bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,[?MODULE,S#st.name,S#st.type,Msg]}) || Nd <- S#st.master_group];
+		_ ->
+			ok
+	end,
 	{noreply,check_timer(S#st{time_since_ping = Now})}.
 
 cb_init(#st{name = ?STATE_NM_LOCAL} = S,_EvNum) ->

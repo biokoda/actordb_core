@@ -126,10 +126,12 @@ handle_cast(_, P) ->
 can_start() ->
 	case catch actordb_shardtree:local() of
 		{'EXIT',_} ->
+			?ADBG("Do not have shardtree"),
 			ok;
 		_X ->
 			case catch actordb_schema:types() of
 				{'EXIT',_} ->
+					?ADBG("Do not have schema"),
 					ok;
 				_ ->
 					[spawn_monitor(fun() ->  
@@ -155,6 +157,7 @@ gather_concluded(N) ->
 		{'DOWN',_Monitor,_,_PID,true} ->
 			gather_concluded(N-1);
 		{'DOWN',_Monitor,_,_PID,false} ->
+			?ADBG("Some node does not have shardtree"),
 			false;
 		{'DOWN',_,_,_,_} ->
 			false

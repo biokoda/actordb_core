@@ -68,9 +68,9 @@ start(Name,Type1,Slave) when is_atom(Slave) ->
 	start(Name,Type1,Slave,[]).
 start(Name,Type1,Slave,Opt) ->
 	?ADBG("shard start ~p ~p ~p",[Name,Type1,Opt]),
-	actordb_util:wait_for_startup(Name,0),
-	% #state will be provided with every callback from sqlproc.
 	Type = butil:toatom(Type1),
+	actordb_util:wait_for_startup(Type,Name,0),
+	% #state will be provided with every callback from sqlproc.
 	Idtype = actordb:actor_id_type(Type),
 	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,Slave},{mod,?MODULE},create,nohibernate,
 										{state,#state{idtype = Idtype,name = Name,type = Type}}|Opt]),

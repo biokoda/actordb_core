@@ -23,8 +23,8 @@ start({Name,Type},Flags) ->
 start(Name,Type) ->
 	start(Name,Type,[{slave,false}]).
 start(Name,Type1,Opt) ->
-	actordb_util:wait_for_startup(Name,0),
 	Type = actordb_util:typeatom(Type1),
+	actordb_util:wait_for_startup(Type,Name,0),
 	case distreg:whereis({Name,Type}) of
 		undefined ->
 			actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},

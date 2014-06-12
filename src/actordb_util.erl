@@ -29,7 +29,9 @@ typeatom(<<_/binary>> = Type) ->
 typeatom(T) when is_atom(T) ->
 	T.
 
-wait_for_startup(Who,N) ->
+wait_for_startup(?STATE_TYPE,_,_) ->
+	ok;
+wait_for_startup(Type,Who,N) ->
 	case catch actordb_schema:num() of
 		X when is_integer(X) ->
 			ok;
@@ -37,10 +39,10 @@ wait_for_startup(Who,N) ->
 			?ADBG("WAIT FOR STARTUP ~p",[Who]),
 			case N > 100 of
 				true ->
-					throw(timeout);
+					throw(startup_timeout);
 				_ ->
 					timer:sleep(50),
-					wait_for_startup(Who,N+1)
+					wait_for_startup(Type,Who,N+1)
 			end
 	end.
 

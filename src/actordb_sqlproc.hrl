@@ -40,7 +40,8 @@
 
 
 
--record(flw,{node, match_index = 0, match_term = 0, next_index = 0, file, wait_for_response_since}).
+-record(flw,{node, match_index = 0, match_term = 0, next_index = 0, 
+              file, wait_for_response_since}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0, 
 			activity, timerref = {undefined,0}, 
@@ -51,7 +52,7 @@
 	% EvNum,EvTerm of first item in wal
 	wal_from = {0,0},
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
-	locked = [],
+	locked = [],inrecovery = false,
 	% Multiupdate id, set to {Multiupdateid,TransactionNum,OriginNode} if in the middle of a distributed transaction
 	transactioninfo,transactionid, transactioncheckref,
   % actordb_sqlproc is not used directly, it always has a callback module that sits in front of it,
