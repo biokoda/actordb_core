@@ -248,28 +248,29 @@ handle_call(Msg,From,P) ->
 					end
 			end;
 		_ when P#dp.verified == false ->
-			case apply(P#dp.cbmod,cb_unverified_call,[P#dp.cbstate,Msg]) of
-				queue ->
-					case is_pid(P#dp.election) andalso P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
-						true ->
-							P#dp.election ! exit;
-						_ ->
-							ok
-					end,
-					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
-				{moved,Moved} ->
-					{noreply,check_timer(P#dp{movedtonode = Moved})};
-				{moved,Moved,NS} ->
-					{noreply,check_timer(P#dp{movedtonode = Moved, cbstate = NS})};
-				{reply,What} ->
-					{reply,What,P};
-				reinit ->
-					{ok,NP} = init(P,cb_reinit),
-					{noreply,NP};
-				{reinit,Sql,NS} ->
-					{ok,NP} = init(P#dp{callqueue = queue:in_r({From,{write,{undefined,Sql,undefined}}},P#dp.callqueue),
-										cbstate = NS},cb_reinit),
-					{noreply,NP}
+			case is_pid(P#dp.election) andalso P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
+				true ->
+					P#dp.election ! exit,
+					handle_call(Msg,From,P#dp{flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)});
+				_ ->
+					case apply(P#dp.cbmod,cb_unverified_call,[P#dp.cbstate,Msg]) of
+						queue ->
+							
+							{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
+						{moved,Moved} ->
+							{noreply,check_timer(P#dp{movedtonode = Moved})};
+						{moved,Moved,NS} ->
+							{noreply,check_timer(P#dp{movedtonode = Moved, cbstate = NS})};
+						{reply,What} ->
+							{reply,What,P};
+						reinit ->
+							{ok,NP} = init(P,cb_reinit),
+							{noreply,NP};
+						{reinit,Sql,NS} ->
+							{ok,NP} = init(P#dp{callqueue = queue:in_r({From,{write,{undefined,Sql,undefined}}},P#dp.callqueue),
+												cbstate = NS},cb_reinit),
+							{noreply,NP}
+					end
 			end;
 		{write,{_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
@@ -520,13 +521,7 @@ state_rw_call(What,From,P) ->
 					?DBG("AE response, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
 							[Node,Success,AEType,
 							 {Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
-					case Follower#flw.next_index > EvNum of
-						true ->
-							NextIndex = Follower#flw.next_index;
-						false ->
-							NextIndex = EvNum+1
-					end,
-					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = NextIndex,
+					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
 											wait_for_response_since = undefined}, 
 					case Success of
 						% An earlier response.

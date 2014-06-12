@@ -585,7 +585,7 @@ start_election(P) ->
 		NumVotes when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
 				true ->
-					start_election_done(leader,P#dp.flags);
+					start_election_done(P,leader,P#dp.flags);
 				false when (length(Results)+1)*2 =< ClusterSize ->
 					% Majority isn't possible anyway.
 					exit(follower);
@@ -609,14 +609,14 @@ start_election(P) ->
 					exit(follower)
 			end
 	end.
-start_election_done(Signal,Flags) ->
+start_election_done(P,Signal,Flags) ->
 	case Flags band ?FLAG_WAIT_ELECTION > 0 of
 		true ->
 			receive
 				exit ->
 					exit(Signal)
 				after 3000 ->
-					?AERR("Wait election write waited too long."),
+					?ERR("Wait election write waited too long."),
 					exit(Signal)
 			end;
 		false ->
@@ -875,8 +875,8 @@ delete_actor(P) ->
 		[] ->
 			ok;
 		_ ->
-			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),actordb_sqlproc,call_slave,
-							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}},[]])
+			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
+							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}}]})
 	end,
 	actordb_sqlite:stop(P#dp.db),
 	delactorfile(P).
