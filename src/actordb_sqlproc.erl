@@ -238,7 +238,8 @@ handle_call(Msg,From,P) ->
 		_ when P#dp.mors == slave ->
 			case P#dp.masternode of
 				undefined ->
-					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
+					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), 
+									flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}};
 				_ ->
 					case apply(P#dp.cbmod,cb_redirected_call,[P#dp.cbstate,P#dp.masternode,Msg,slave]) of
 						{reply,What,NS,_} ->
@@ -405,7 +406,7 @@ state_rw_call(What,From,P) ->
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType} ->
-			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[{P#dp.actorname,P#dp.actortype,AEType},
+			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType,
 												{PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
 				_ when P#dp.inrecovery, AEType == head ->
@@ -413,7 +414,7 @@ state_rw_call(What,From,P) ->
 					{reply,false,P};
 				_ when Term < P#dp.current_term ->
 					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
-							[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
+							[AEType,{Term,P#dp.current_term}]),
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType),
 					% Some node thinks its master and sent us appendentries start.
@@ -426,7 +427,7 @@ state_rw_call(What,From,P) ->
 							{noreply,P}
 					end;
 				_ when P#dp.mors == slave, P#dp.masternode == undefined ->
-					?DBG("AE start, slave now knows leader ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},LeaderNode]),
+					?INF("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
 					case P#dp.callres /= undefined of
 						true ->
 							reply(P#dp.callfrom,{redirect,LeaderNode});
@@ -441,7 +442,7 @@ state_rw_call(What,From,P) ->
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
 					?ERR("AE start, stepping down as leader ~p ~p",
-							[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
+							[AEType,{Term,P#dp.current_term}]),
 					case P#dp.callres /= undefined of
 						true ->
 							reply(P#dp.callfrom,{redirect,LeaderNode});
@@ -457,7 +458,7 @@ state_rw_call(What,From,P) ->
 													current_term = Term}))));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
 					?ERR("AE start attempt failed, evnum evterm do not match ~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
-								[{P#dp.actorname,P#dp.actortype,AEType},{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
+								[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
 					case P#dp.evnum > PrevEvnum andalso PrevEvnum > 0 of
 						% Node is conflicted, delete last entry
 						true when AEType /= empty ->
@@ -471,19 +472,24 @@ state_rw_call(What,From,P) ->
 					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType),
 					{noreply,NP#dp{activity = make_ref()}};
 				_ when Term > P#dp.current_term ->
-					?ERR("AE start, my term out of date ~p ~p",[{P#dp.actorname,P#dp.actortype,AEType},{Term,P#dp.current_term}]),
+					?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",[AEType,{Term,P#dp.current_term}]),
 					state_rw_call(What,From,actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
 												 masternode = LeaderNode,verified = true,activity = make_ref(),
 												 masternodedist = bkdcore:dist_name(LeaderNode)}));
 				_ when AEType == empty ->
-					?DBG("AE start, ok for empty ~p",[{P#dp.actorname,P#dp.actortype,AEType}]),
+					?INF("AE start, ok for empty"),
 					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType),
 					{noreply,P#dp{verified = true,activity = make_ref()}};
 				% Ok, now it will start receiving wal pages
 				_ ->
-					?DBG("AE start ok"),
+					case AEType of
+						recover ->
+							?DBG("AE start ok");
+						_ ->
+							ok
+					end,
 					{reply,ok,P#dp{verified = true,activity = make_ref(), inrecovery = AEType == recover}}
 			end;
 		% Executed on follower.
@@ -498,8 +504,13 @@ state_rw_call(What,From,P) ->
 							{reply,ok,P#dp{activity = make_ref()}};
 						% last page
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
-							?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p",
-									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
+							case AEType of
+								recover ->
+									?INF("AE WAL done evnum=~p aetype=~p queueempty=~p",
+									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]);
+								_ ->
+									ok
+							end,
 							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref()},
 							reply(From,ok),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType),
@@ -516,6 +527,7 @@ state_rw_call(What,From,P) ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
 			case Follower of
 				false ->
+					?AINF("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
 					?DBG("AE response, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
@@ -541,17 +553,17 @@ state_rw_call(What,From,P) ->
 						% In case of overlapping responses for appendentries rpc. We do not care about responses
 						%  for appendentries with a match index different than current match index.
 						false when Follower#flw.match_index /= MatchEvnum, Follower#flw.match_index > 0 ->
-							?DBG("Ignoring false response to appendentries"),
+							?INF("Ignoring false response to appendentries"),
 							{reply,ok,P};
 						false ->
 							case lists:keymember(Follower#flw.node,1,P#dp.dbcopy_to) of
 								true ->
-									?DBG("Ignoring appendendentries false response because copying to"),
+									?INF("Ignoring appendendentries false response because copying to"),
 									{reply,ok,P};
 								false ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
 										{false,NP,NF} ->
-											?DBG("Can not recover from log, sending entire db"),
+											?INF("Can not recover from log, sending entire db"),
 											% We can not recover from wal. Send entire db.
 											Ref = make_ref(),
 											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,
@@ -566,7 +578,7 @@ state_rw_call(What,From,P) ->
 											end;
 										{true,NP,NF} ->
 											% we can recover from wal
-											?DBG("Recovering from wal, for node=~p, {HisIndex,MyMaxIndex}=~p",
+											?INF("Recovering from wal, for node=~p, {HisIndex,MyMaxIndex}=~p",
 													[NF#flw.node,{NF#flw.match_index,P#dp.evnum}]),
 											reply(From,ok),
 											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,recover)}

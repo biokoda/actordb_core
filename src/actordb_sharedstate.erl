@@ -63,11 +63,11 @@ write_global_on(Node,K,V) ->
 			Err
 	end.
 write_global([_|_] = L) ->
-	write_global(?STATE_NM_GLOBAL,L).
+	write(?STATE_NM_GLOBAL,L).
 write_global(Key,Val) ->
 	write(?STATE_NM_GLOBAL,[{Key,Val}]).
 write_cluster([_|_] = L) ->
-	write_cluster(?STATE_NM_LOCAL,L).
+	write(?STATE_NM_LOCAL,L).
 write_cluster(Key,Val) ->
 	write(?STATE_NM_LOCAL,[{Key,Val}]).
 
@@ -134,7 +134,7 @@ write(Name,L) ->
 read(Name,Key) ->
 	case actordb_sqlproc:read({Name,?STATE_TYPE},[create],read_sql(Key),?MODULE) of
 		{ok,[{columns,_},{rows,[{_,ValEncoded}]}]} ->
-			{ok,binary_to_term(base64:decode(ValEncoded))};
+			binary_to_term(base64:decode(ValEncoded));
 		_ ->
 			undefined
 	end.
@@ -163,10 +163,9 @@ state_to_sql(Name) ->
 			[]
 	end.
 
-set_global_state(MasterNode,[_|_] = State) ->
+set_global_state(MasterNode,State) ->
 	case ets:info(?GLOBALETS,size) of
 		undefined ->
-			?AINF("Creating globalstate ~p",[State]),
 			ets:new(?GLOBALETS, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]);
 		_ ->
 			ok
@@ -256,6 +255,7 @@ cb_write(#st{name = ?STATE_NM_GLOBAL} = S,Master,L) ->
 	end.
 
 cb_write(#st{name = ?STATE_NM_LOCAL} = _S,L) ->
+	?AINF("Write local ~p",[L]),
 	[write_sql(Key,Val) || {Key,Val} <- L];
 cb_write(#st{name = ?STATE_NM_GLOBAL} = S, L) ->
 	{[write_sql(Key,Val) || {Key,Val} <- L],S#st{current_write = L}}.
@@ -321,12 +321,15 @@ cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 	NS = check_timer(S#st{current_write = [], evnum = Evnum, am_i_master = true}),
 
 	Masters = butil:ds_val(master_group,?GLOBALETS),
+	?AINF("Global write done masters ~p",[Masters]),
 	case [Nd || Nd <- Masters, bkdcore:node_address(Nd) == undefined] of
 		[] when length(Masters) < ?MASTER_GROUP_SIZE ->
 			case add_master_group(Masters) of
 				[] ->
+					?AINF("No nodes to add to masters ~p",[bkdcore:nodelist()]),
 					ok;
 				New ->
+					?AINF("Adding new node to master group ~p",[New]),
 					spawn(fun() -> write_global(master_group,New++Masters) end)
 			end;
 		[] ->

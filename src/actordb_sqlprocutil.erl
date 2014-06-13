@@ -596,8 +596,8 @@ start_election(P) ->
 						% If none, sort nodes by name. Pick the one after me and tell him to try to get elected.
 						% If he fails, he will pick the node after him. One must succeed because majority is online.
 						[] ->
-							Nodes = lists:sort([actordb_conf:node_name()|[Nd || {_What,Nd,_HisLatestTerm,_} <- Results]]),
-							case butil:lists_split_at(actordb_conf:node_name(),Nodes) of
+							SortedNodes = lists:sort([actordb_conf:node_name()|[Nd || {_What,Nd,_HisLatestTerm,_} <- Results]]),
+							case butil:lists_split_at(actordb_conf:node_name(),SortedNodes) of
 								{_,[Next|_]} ->
 									send_doelection(Next,P);
 								{[Next|_],_} ->

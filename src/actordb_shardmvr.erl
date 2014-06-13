@@ -100,8 +100,8 @@ handle_cast(can_start,P) ->
 handle_cast({local_shards_changed,A,L},#dp{can_start = false} = P) ->
 	{noreply,P#dp{allshards = A, localshards = L}};
 handle_cast({local_shards_changed,A,L},P) ->
-	?ADBG("local_shards_changed ~p ~p~n~p~n~p",[bkdcore:node_name(),A,L,P#dp.movingdone]),
-	?ADBG("stillmoving ~p ~p",[bkdcore:node_name(),P#dp.shardstoget]),
+	?AINF("local_shards_changed ~p ~p~n~p~n~p",[bkdcore:node_name(),A,L,P#dp.movingdone]),
+	?AINF("stillmoving ~p ~p",[bkdcore:node_name(),P#dp.shardstoget]),
 	% If first time this message sent, read if any toget in state
 	case P#dp.init of
 		false ->
