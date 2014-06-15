@@ -223,7 +223,7 @@ try_wal_recover(P,F) ->
 		[F#flw.node,{F#flw.match_index,element(1,P#dp.wal_from)}]),
 	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
 	% Compare match_index not next_index because we need to send prev term as well
-	case F#flw.match_index >= WalEvfrom orelse F#flw.match_index == 0 andalso WalEvfrom == 1 of
+	case F#flw.match_index >= WalEvfrom andalso F#flw.match_index > 0 of
 		% We can recover from wal if terms match
 		true ->
 			{File,PrevNum,PrevTerm} = open_wal_at(P,F#flw.next_index),
@@ -273,7 +273,8 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 
 continue_maybe(P,F,AEType) ->
 	% Check if follower behind
-	?DBG("Continue maybe ~p {MyEvnum,NextIndex}=~p",[F#flw.node,{P#dp.evnum,F#flw.next_index}]),
+	?DBG("Continue maybe ~p {MyEvnum,NextIndex}=~p havefile=~p",
+			[F#flw.node,{P#dp.evnum,F#flw.next_index},F#flw.file /= undefined]),
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
 			case AEType of

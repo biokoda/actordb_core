@@ -240,7 +240,7 @@ multiupdate_read() ->
 				"{{RESULT}}SELECT * FROM tab;"]),
 	?assertMatch({ok,[_,_]},Res),
 	{ok,[{columns,Cols},{rows,Rows}]} = Res,
-	?debugFmt("Result all actors ~p",[{Cols,lists:keysort(3,Rows)}]),
+	?debugFmt("Result all actors ~p",[{Cols,lists:keysort(4,Rows)}]),
 	?assertEqual({<<"id">>,<<"txt">>,<<"i">>,<<"actor">>},Cols),
 	% 6 actors were deleted, 2 were added
 	?assertEqual((numactors()-6)*2,length(Rows)),

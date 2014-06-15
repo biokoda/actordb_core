@@ -426,8 +426,8 @@ state_rw_call(What,From,P) ->
 						_ ->
 							{noreply,P}
 					end;
-				_ when P#dp.mors == slave, P#dp.masternode == undefined ->
-					?INF("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
+				_ when P#dp.mors == slave, P#dp.masternode /= LeaderNode ->
+					?DBG("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
 					case P#dp.callres /= undefined of
 						true ->
 							reply(P#dp.callfrom,{redirect,LeaderNode});
@@ -478,7 +478,7 @@ state_rw_call(What,From,P) ->
 												 masternode = LeaderNode,verified = true,activity = make_ref(),
 												 masternodedist = bkdcore:dist_name(LeaderNode)}));
 				_ when AEType == empty ->
-					?INF("AE start, ok for empty"),
+					?DBG("AE start, ok for empty"),
 					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType),
 					{noreply,P#dp{verified = true,activity = make_ref()}};
@@ -504,13 +504,8 @@ state_rw_call(What,From,P) ->
 							{reply,ok,P#dp{activity = make_ref()}};
 						% last page
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
-							case AEType of
-								recover ->
-									?INF("AE WAL done evnum=~p aetype=~p queueempty=~p",
-									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]);
-								_ ->
-									ok
-							end,
+							?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p",
+									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
 							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref()},
 							reply(From,ok),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType),
@@ -527,7 +522,7 @@ state_rw_call(What,From,P) ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
 			case Follower of
 				false ->
-					?AINF("Adding node to follower list ~p",[Node]),
+					?DBG("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
 					?DBG("AE response, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
@@ -547,23 +542,23 @@ state_rw_call(What,From,P) ->
 							{noreply,doqueue(NP)};
 						% What we thought was follower is ahead of us and we need to step down
 						false when P#dp.current_term < CurrentTerm ->
-							?INF("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
+							?DBG("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
 								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
 						% In case of overlapping responses for appendentries rpc. We do not care about responses
 						%  for appendentries with a match index different than current match index.
 						false when Follower#flw.match_index /= MatchEvnum, Follower#flw.match_index > 0 ->
-							?INF("Ignoring false response to appendentries"),
+							?DBG("Ignoring false response to appendentries"),
 							{reply,ok,P};
 						false ->
 							case lists:keymember(Follower#flw.node,1,P#dp.dbcopy_to) of
 								true ->
-									?INF("Ignoring appendendentries false response because copying to"),
+									?DBG("Ignoring appendendentries false response because copying to"),
 									{reply,ok,P};
 								false ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
 										{false,NP,NF} ->
-											?INF("Can not recover from log, sending entire db"),
+											?DBG("Can not recover from log, sending entire db"),
 											% We can not recover from wal. Send entire db.
 											Ref = make_ref(),
 											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,
@@ -578,7 +573,7 @@ state_rw_call(What,From,P) ->
 											end;
 										{true,NP,NF} ->
 											% we can recover from wal
-											?INF("Recovering from wal, for node=~p, {HisIndex,MyMaxIndex}=~p",
+											?DBG("Recovering from wal, for node=~p, {HisIndex,MyMaxIndex}=~p",
 													[NF#flw.node,{NF#flw.match_index,P#dp.evnum}]),
 											reply(From,ok),
 											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,recover)}
@@ -1296,7 +1291,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 															P#dp.callqueue)}}
 			end;
 		follower ->
-			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = os:timestamp(), mors = slave})}
+			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = os:timestamp(), masternode = undefined, mors = slave})}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 	?DBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
