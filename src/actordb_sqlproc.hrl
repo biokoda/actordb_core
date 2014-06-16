@@ -43,6 +43,9 @@
 -record(flw,{node, match_index = 0, match_term = 0, next_index = 0, 
               file, wait_for_response_since}).
 
+-record(cpto,{node,pid,ref,ismove,actorname}).
+-record(lck,{ref,pid,ismove,node,time,actorname}).
+
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0, 
 			activity, timerref = {undefined,0}, 
 			activity_now,schemanum,schemavers,flags = 0,
@@ -80,7 +83,7 @@
   % Path to sqlite file.
   dbpath,
   % Which nodes current process is sending dbfile to.
-  % [{Node,Pid,Ref,IsMove},..]
+  % [#cpto{},..]
   dbcopy_to = [],
   % If copy/move is unable to execute. Place data here and try later
   % {TimeOfLastTry,Copy/Move data}

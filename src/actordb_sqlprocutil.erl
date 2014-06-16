@@ -219,11 +219,11 @@ try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
 			try_wal_recover(P#dp{wal_from = WF},F)
 	end;
 try_wal_recover(P,F) ->
-	?DBG("Try_wal_recover for=~p, {MatchIndex,MyEvFrom}=~p",
-		[F#flw.node,{F#flw.match_index,element(1,P#dp.wal_from)}]),
+	?INF("Try_wal_recover for=~p, myev=~p MatchIndex=~p MyEvFrom=~p",
+		[F#flw.node,P#dp.evnum,F#flw.match_index,element(1,P#dp.wal_from)]),
 	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
 	% Compare match_index not next_index because we need to send prev term as well
-	case F#flw.match_index >= WalEvfrom andalso F#flw.match_index > 0 of
+	case F#flw.match_index >= WalEvfrom andalso F#flw.match_index > 0 andalso F#flw.match_index < P#dp.evnum of
 		% We can recover from wal if terms match
 		true ->
 			{File,PrevNum,PrevTerm} = open_wal_at(P,F#flw.next_index),
@@ -266,7 +266,7 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 			end;
 		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
 			{ok,_NPos} = file:position(F,{cur,?PAGESIZE}),
-			?DBG("open wal at ~p",[_NPos]),
+			?DBG("open wal, atoffset=~p, looking_for_index=~p, went_past=~p",[_NPos,Index,Evnum]),
 			open_wal_at(P,Index,F,Evnum,Evterm)
 	end.
 
@@ -550,7 +550,7 @@ start_verify(P,JustStarted) ->
 		_ when is_pid(P#dp.election) ->
 			P;
 		_ ->
-			case timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
+			case JustStarted == force orelse timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
 				true ->
 					CurrentTerm = P#dp.current_term+1,
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm}),
@@ -560,6 +560,7 @@ start_verify(P,JustStarted) ->
 										end),
 					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
 				false ->
+					?DBG("Election just done, ignoring."),
 					P
 			end
 	end.
@@ -747,7 +748,7 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 			end,
 			NS = P#dp.cbstate;
 		{split,Mfa,Node,ActorFrom,ActorTo} ->
-			?INF("Split done we are on, moved out of ~p",[ActorFrom]),
+			?INF("Split done, moved out of ~p",[ActorFrom]),
 			{M,F,A} = Mfa,
 			MovedToNode = P#dp.movedtonode,
 			case apply(M,F,[P#dp.cbstate,check|A]) of
@@ -1014,6 +1015,7 @@ parse_opts(P,[]) ->
 % 
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+
 % Initialize call on node that is source of copy
 dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 	% Send database to another node.
@@ -1026,13 +1028,14 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 			?DBG("senddb myname, remotename ~p info ~p, copyto already ~p",
 					[ActornameToCopyto,{Node,Ref,IsMove},P#dp.dbcopy_to]),
 			Me = self(),
-			case lists:keyfind(Ref,3,P#dp.dbcopy_to) of
+			case lists:keyfind(Ref,#cpto.ref,P#dp.dbcopy_to) of
 				false ->
 					Db = P#dp.db,
 					{Pid,_} = spawn_monitor(fun() -> 
 							dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
 					{reply,{ok,Ref},P#dp{db = Db,
-										dbcopy_to = [{Node,Pid,Ref,IsMove}|P#dp.dbcopy_to], 
+										dbcopy_to = [#cpto{node = Node, pid = Pid, ref = Ref, ismove = IsMove, 
+															actorname = ActornameToCopyto}|P#dp.dbcopy_to], 
 										activity = make_ref()}};
 				{_,_Pid,Ref,_} ->
 					?DBG("senddb already exists with same ref!"),
@@ -1068,7 +1071,7 @@ dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 	Size = filelib:file_size([P#dp.dbpath,"-wal"]),
 	case Size =< Data of
 		true when P#dp.transactionid == undefined ->
-			{reply,{[P#dp.dbpath,"-wal"],Size},P#dp{locked = butil:lists_add({FromPid,Ref},P#dp.locked)}};
+			{reply,{[P#dp.dbpath,"-wal"],Size},P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 		true ->
 			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
 		false ->
@@ -1081,22 +1084,22 @@ dbcopy_call({checksplit,Data},_,P) ->
 % Final call when copy done
 dbcopy_call({unlock,Data},CallFrom,P) ->
 	% For unlock data = copyref
-	case lists:keyfind(Data,2,P#dp.locked) of
+	case lists:keyfind(Data,#lck.ref,P#dp.locked) of
 		false ->
 			?ERR("Unlock attempt on non existing lock ~p, locks ~p",[Data,P#dp.locked]),
 			{reply,false,P};
-		{wait_copy,Data,IsMove,Node,_TimeOfLock} ->
-			?DBG("Actor unlocked ~p ~p ~p",[P#dp.evnum,Data,P#dp.dbcopy_to]),
-			DbCopyTo = lists:keydelete(Data,3,P#dp.dbcopy_to),
-			case IsMove of
+		% {wait_copy,Data,IsMove,Node,_TimeOfLock} ->
+		LC when LC#lck.time /= undefined ->
+			?INF("Actor unlocked ~p ~p ~p",[P#dp.evnum,Data,P#dp.dbcopy_to]),
+			DbCopyTo = lists:keydelete(Data,#cpto.ref,P#dp.dbcopy_to),
+			WithoutLock = lists:keydelete(Data,#lck.ref,P#dp.locked),
+			case LC#lck.ismove of
 				true ->
-					actordb_sqlproc:write_call({undefined,{moved,Node},undefined},CallFrom,
-										P#dp{locked = lists:keydelete(Data,2,P#dp.locked),dbcopy_to = DbCopyTo});
+					actordb_sqlproc:write_call({undefined,{moved,LC#lck.node},undefined},CallFrom,
+										P#dp{locked = WithoutLock,dbcopy_to = DbCopyTo});
 				_ ->
 					self() ! doqueue,
-					WithoutLock = [Tuple || Tuple <- P#dp.locked, element(2,Tuple) /= Data],
-					
-					case IsMove of
+					case LC#lck.ismove of
 						{split,{M,F,A}} ->
 							case apply(M,F,[P#dp.cbstate,split|A]) of
 								{ok,Sql} ->
@@ -1115,24 +1118,36 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 									{noreply,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
 							end;
 						_ ->
-							case ok of
-								_ when WithoutLock == [], DbCopyTo == [] ->
-									{reply,ok,P#dp{locked = WithoutLock, 
-												dbcopy_to = DbCopyTo}};
-								_ ->
-									{reply,ok,P#dp{locked = WithoutLock, dbcopy_to = DbCopyTo}}
+							?INF("Copy done"),
+							NP = P#dp{locked = WithoutLock, dbcopy_to = DbCopyTo},
+							case LC#lck.actorname == P#dp.actorname of
+								true ->
+									case lists:keyfind(LC#lck.node,#flw.node,P#dp.follower_indexes) of
+										% Flw when is_tuple(Flw), WithoutLock == [], DbCopyTo == [] ->
+										% 	{reply,ok,start_verify(reply_maybe(store_follower(NP,
+										% 				Flw#flw{match_index = P#dp.evnum, next_index = P#dp.evnum+1})),force)};
+										Flw when is_tuple(Flw) ->
+											{reply,ok,reply_maybe(store_follower(NP,
+														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.current_term, next_index = P#dp.evnum+1}))};
+										_ ->
+											{reply,ok,NP}
+									end;
+								false ->
+									{reply,ok,NP}
 							end
 					end
 			end;
-		{_FromPid,Data} ->
+		LC ->
 			% Check if race condition
-			case lists:keyfind(Data,3,P#dp.dbcopy_to) of
-				{Node,_PID,Data,IsMove} ->
-					dbcopy_call({unlock,Data},CallFrom,
-							P#dp{locked = [{wait_copy,Data,IsMove,Node,os:timestamp()}|P#dp.locked]});
+			case lists:keyfind(Data,#cpto.ref,P#dp.dbcopy_to) of
 				false ->
 					?ERR("dbcopy_to does not contain ref ~p, ~p",[Data,P#dp.dbcopy_to]),
-					{reply,false,P}
+					{reply,false,P};
+				Cpto ->
+					NLC = LC#lck{actorname = Cpto#cpto.actorname, node = Cpto#cpto.node, 
+									ismove = Cpto#cpto.ismove, time = os:timestamp()},
+					dbcopy_call({unlock,Data},CallFrom,
+							P#dp{locked = lists:keystore(LC#lck.ref,#lck.ref,P#dp.locked,NLC)})
 			end
 	end.
 

@@ -228,7 +228,7 @@ handle_call(Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
 			{reply,{redirect,P#dp.movedtonode},P#dp{activity = make_ref()}}
 	end;
 handle_call({dbcopy,Msg},CallFrom,P) ->
-	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,P);
+	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,check_timer(P));
 handle_call({state_rw,What},From,P) ->
 	state_rw_call(What,From,P#dp{activity = make_ref()});
 handle_call({commit,Doit,Id},From, P) ->
@@ -406,11 +406,13 @@ state_rw_call(What,From,P) ->
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType} ->
-			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType,
+			?INF("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType,
 												{PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
 				_ when P#dp.inrecovery, AEType == head ->
 					?DBG("Ignoring head because inrecovery"),
+					{reply,false,P};
+				_ when is_pid(P#dp.copyproc) ->
 					{reply,false,P};
 				_ when Term < P#dp.current_term ->
 					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
@@ -427,7 +429,7 @@ state_rw_call(What,From,P) ->
 							{noreply,P}
 					end;
 				_ when P#dp.mors == slave, P#dp.masternode /= LeaderNode ->
-					?DBG("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
+					?INF("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
 					case P#dp.callres /= undefined of
 						true ->
 							reply(P#dp.callfrom,{redirect,LeaderNode});
@@ -478,7 +480,7 @@ state_rw_call(What,From,P) ->
 												 masternode = LeaderNode,verified = true,activity = make_ref(),
 												 masternodedist = bkdcore:dist_name(LeaderNode)}));
 				_ when AEType == empty ->
-					?DBG("AE start, ok for empty"),
+					?INF("AE start, ok for empty"),
 					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType),
 					{noreply,P#dp{verified = true,activity = make_ref()}};
@@ -486,7 +488,7 @@ state_rw_call(What,From,P) ->
 				_ ->
 					case AEType of
 						recover ->
-							?DBG("AE start ok");
+							?INF("AE start ok");
 						_ ->
 							ok
 					end,
@@ -522,10 +524,10 @@ state_rw_call(What,From,P) ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
 			case Follower of
 				false ->
-					?DBG("Adding node to follower list ~p",[Node]),
+					?INF("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
-					?DBG("AE response, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
+					?INF("AE response, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
 							[Node,Success,AEType,
 							 {Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
@@ -545,20 +547,19 @@ state_rw_call(What,From,P) ->
 							?DBG("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
 								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
-						% In case of overlapping responses for appendentries rpc. We do not care about responses
-						%  for appendentries with a match index different than current match index.
-						false when Follower#flw.match_index /= MatchEvnum, Follower#flw.match_index > 0 ->
-							?DBG("Ignoring false response to appendentries"),
-							{reply,ok,P};
+						false when NFlw#flw.match_index /= MatchEvnum, NFlw#flw.match_index == P#dp.evnum ->
+							% Ignore false since we sent the wrong evnum anyway. Follower is up to date.
+							{reply,ok,doqueue(actordb_sqlprocutil:reply_maybe(P))};
 						false ->
-							case lists:keymember(Follower#flw.node,1,P#dp.dbcopy_to) of
-								true ->
+							% If we are copying entire db to that node already, do nothing.
+							case [C || C <- P#dp.dbcopy_to, C#cpto.node == Node, C#cpto.actorname == P#dp.actorname] of
+								[_|_] ->
 									?DBG("Ignoring appendendentries false response because copying to"),
 									{reply,ok,P};
-								false ->
+								[] ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
 										{false,NP,NF} ->
-											?DBG("Can not recover from log, sending entire db"),
+											?INF("Can not recover from log, sending entire db"),
 											% We can not recover from wal. Send entire db.
 											Ref = make_ref(),
 											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,
@@ -724,7 +725,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call({MFA,Sql,Transaction},From,P) ->
-	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
+	?INF("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -1189,10 +1190,10 @@ check_inactivity(NTimer,P) ->
 												locked = abandon_locks(P,P#dp.locked,[])}))}
 	end.
 
-abandon_locks(P,[{wait_copy,_CpRef,_IsMove,_Node,TimeOfLock} = H|T],L) ->
-	case timer:now_diff(os:timestamp(),TimeOfLock) > 3000000 of
+abandon_locks(P,[H|T],L) when is_tuple(H#lck.time) ->
+	case timer:now_diff(os:timestamp(),H#lck.time) > 3000000 of
 		true ->
-			?ERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,_Node,_CpRef]),
+			?ERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,H#lck.node,H#lck.ref]),
 			abandon_locks(P,T,L);
 		false ->
 			abandon_locks(P,T,[H|L])
@@ -1345,20 +1346,29 @@ down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 			{stop,Reason,P}
 	end;
 down_info(PID,_Ref,Reason,P) ->
-	case lists:keyfind(PID,2,P#dp.dbcopy_to) of
-		{Node,PID,Ref,IsMove} ->
-			?DBG("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,Ref,P#dp.locked,P#dp.dbcopy_to]),
+	case lists:keyfind(PID,#cpto.pid,P#dp.dbcopy_to) of
+		false ->
+			?DBG("downmsg, verify maybe? ~p",[P#dp.election]),
+			case apply(P#dp.cbmod,cb_info,[{'DOWN',_Ref,process,PID,Reason},P#dp.cbstate]) of
+				{noreply,S} ->
+					{noreply,P#dp{cbstate = S}};
+				noreply ->
+					{noreply,P}
+			end;
+		C ->
+			?DBG("Down copyto proc ~p ~p ~p ~p ~p",[P#dp.actorname,Reason,C#cpto.ref,P#dp.locked,P#dp.dbcopy_to]),
 			case Reason of
 				ok ->
 					ok;
 				_ ->
 					?ERR("Copyto process invalid exit ~p",[Reason])
 			end,
-			WithoutCopy = lists:keydelete(PID,1,P#dp.locked),
-			NewCopyto = lists:keydelete(PID,2,P#dp.dbcopy_to),
-			false = lists:keyfind(Ref,2,WithoutCopy),
+			WithoutCopy = lists:keydelete(PID,#lck.pid,P#dp.locked),
+			NewCopyto = lists:keydelete(PID,#cpto.pid,P#dp.dbcopy_to),
+			false = lists:keyfind(C#cpto.ref,2,WithoutCopy),
 			% wait_copy not in list add it (2nd stage of lock)
-			WithoutCopy1 =  [{wait_copy,Ref,IsMove,Node,os:timestamp()}|WithoutCopy],
+			WithoutCopy1 =  [#lck{ref = C#cpto.ref, ismove = C#cpto.ismove,node = C#cpto.node,time = os:timestamp(),
+									actorname = C#cpto.actorname}|WithoutCopy],
 			NP = P#dp{dbcopy_to = NewCopyto, 
 						locked = WithoutCopy1,
 						activity = make_ref()},
@@ -1367,14 +1377,6 @@ down_info(PID,_Ref,Reason,P) ->
 					{noreply,NP};
 				false ->
 					handle_info(doqueue,NP)
-			end;
-		false ->
-			?DBG("downmsg, verify maybe? ~p",[P#dp.election]),
-			case apply(P#dp.cbmod,cb_info,[{'DOWN',_Ref,process,PID,Reason},P#dp.cbstate]) of
-				{noreply,S} ->
-					{noreply,P#dp{cbstate = S}};
-				noreply ->
-					{noreply,P}
 			end
 	end.
 

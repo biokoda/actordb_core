@@ -81,7 +81,7 @@ start(Name,Type1,Slave,Opt) ->
 % start_steal({Name,Type},Nd) ->
 % 	start_steal(Nd,Name,Type).
 start_steal(Nd,FromName,_To,NewName,Type1) ->
-	?AINF("start_steal ~p ~p ~p ~p",[Nd,NewName,Type1,try_whereis(NewName,Type1)]),
+	?AINF("start_steal node=~p, shardfrom=~p newname=~p type=~p isrunning=~p",[Nd,FromName,NewName,Type1,try_whereis(NewName,Type1)]),
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
 	case lists:member(Nd,bkdcore:cluster_nodes()) of 
@@ -149,7 +149,7 @@ do_cleanup(ShardName,Type,Pre,After) ->
 			ReadSql = [<<"SELECT count(hash) FROM actors WHERE hash >= ">>,butil:tobin(After)," OR hash < ",butil:tobin(Pre),";"]
 	end,
 	Res = actordb_sqlproc:read({ShardName,Type},[create],{ReadSql,{?MODULE,cb_do_cleanup,[]}},?MODULE),
-	?ADBG("Docleanup ~p.~p result=~p",[ShardName,Type,Res]).
+	?AINF("Docleanup ~p.~p result=~p",[ShardName,Type,Res]).
 
 % callmvr(Shard,M,F,A) ->
 % 	Me = bkdcore:node_name(),
@@ -559,6 +559,7 @@ cb_init(S,_Ev,{ok,[{columns,_},{rows,Rows}]}) ->
 	end.
 
 cb_idle(#state{cleanup_proc = undefined} = S) when S#state.cleanup_pre /= undefined; S#state.cleanup_after /= undefined ->
+	?AINF("Idle continue cleanup ~p ~p",[{S#state.name,S#state.type},{S#state.cleanup_pre,S#state.cleanup_after}]),
 	{Pid,_} = spawn_monitor(fun() ->  do_cleanup(S#state.name,S#state.type,S#state.cleanup_pre, S#state.cleanup_after) end),
 	{ok,S#state{cleanup_proc = Pid}};
 cb_idle(_S) ->

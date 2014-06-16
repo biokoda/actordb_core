@@ -461,8 +461,9 @@ cb_info(ping_timer,S) ->
 		_ ->
 			ok
 	end,
-	{noreply,check_timer(S#st{time_since_ping = Now})}.
-
+	{noreply,check_timer(S#st{time_since_ping = Now})};
+cb_info(_,S) ->
+	noreply.
 cb_init(#st{name = ?STATE_NM_LOCAL} = S,_EvNum) ->
 	{ok,check_timer(S)};
 cb_init(#st{name = ?STATE_NM_GLOBAL} = _S,_EvNum) ->

@@ -46,6 +46,8 @@ wait_for_startup(Type,Who,N) ->
 			end
 	end.
 
+tunnel_bin(<<>>) ->
+	ok;
 tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
              LenVarPrefix:16/unsigned,VarPrefix:LenVarPrefix/binary,
              LenHeader,Header:LenHeader/binary,
@@ -60,7 +62,11 @@ tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 					ok;
 				{Term,Leader,PrevEvnum,PrevTerm,DbFile} ->
 					ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
-								{state_rw,{set_dbfile,DbFile}})
+								{state_rw,{set_dbfile,DbFile}});
+				Invalid ->
+					Leader = PrevEvnum = PrevTerm = undefined,
+					?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
+					exit(error)
 			end,
 			Res = actordb_sqlproc:call_slave(Cb,Actor,Type,
 					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head}}),
