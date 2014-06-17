@@ -409,7 +409,7 @@ state_rw_call(What,From,P) ->
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType} ->
-			?INF("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType,
+			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType,
 												{PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
 				_ when P#dp.inrecovery, AEType == head ->
@@ -433,7 +433,7 @@ state_rw_call(What,From,P) ->
 							{noreply,P}
 					end;
 				_ when P#dp.mors == slave, P#dp.masternode /= LeaderNode ->
-					?INF("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
+					?DBG("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
 					case P#dp.callres /= undefined of
 						true ->
 							reply(P#dp.callfrom,{redirect,LeaderNode});
@@ -484,7 +484,7 @@ state_rw_call(What,From,P) ->
 												 masternode = LeaderNode,verified = true,activity = make_ref(),
 												 masternodedist = bkdcore:dist_name(LeaderNode)}));
 				_ when AEType == empty ->
-					?INF("AE start, ok for empty"),
+					?DBG("AE start, ok for empty"),
 					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType),
 					{noreply,P#dp{verified = true,activity = make_ref()}};
@@ -523,10 +523,10 @@ state_rw_call(What,From,P) ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
 			case Follower of
 				false ->
-					?INF("Adding node to follower list ~p",[Node]),
+					?DBG("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
-					?INF("AE response, from=~p, success=~p, type=~p, {PrevEvnum,HisEvNum,MatchSent}=~p, {From,Res}=~p",
+					?DBG("AE response, from=~p, success=~p, type=~p, {PrevEvnum,HisEvNum,MatchSent}=~p, {From,Res}=~p",
 							[Node,Success,AEType,
 							 {Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
@@ -558,7 +558,7 @@ state_rw_call(What,From,P) ->
 								[] ->
 									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
 										{false,NP,NF} ->
-											?INF("Can not recover from log, sending entire db"),
+											?DBG("Can not recover from log, sending entire db"),
 											% We can not recover from wal. Send entire db.
 											Ref = make_ref(),
 											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,
@@ -724,7 +724,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call({MFA,Sql,Transaction},From,P) ->
-	?INF("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
+	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -1092,7 +1092,7 @@ check_inactivity(NTimer,P) ->
 							true ->
 								case bkdcore_rpc:is_connected(F#flw.node) of
 									true ->
-										?INF("Resending appendentries"),
+										?DBG("Resending appendentries"),
 										bkdcore_rpc:cast(F#flw.node,
 											{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 											 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
@@ -1245,7 +1245,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													verified = true}),
-			?INF("Elected leader term=~p",[P1#dp.current_term]),
+			?DBG("Elected leader term=~p",[P1#dp.current_term]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
 
 			case P#dp.schemavers of

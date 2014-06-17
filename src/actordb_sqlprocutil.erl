@@ -221,7 +221,7 @@ try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
 			try_wal_recover(P#dp{wal_from = WF},F)
 	end;
 try_wal_recover(P,F) ->
-	?INF("Try_wal_recover for=~p, myev=~p MatchIndex=~p MyEvFrom=~p",
+	?DBG("Try_wal_recover for=~p, myev=~p MatchIndex=~p MyEvFrom=~p",
 		[F#flw.node,P#dp.evnum,F#flw.match_index,element(1,P#dp.wal_from)]),
 	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
 	% Compare match_index not next_index because we need to send prev term as well
@@ -865,7 +865,7 @@ do_checkpoint(P) ->
 	end.
 
 delete_actor(P) ->
-	?INF("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
+	?DBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
 	case (P#dp.flags band ?FLAG_TEST == 0) andalso P#dp.movedtonode == undefined of
 		true ->
 			case actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype) of
@@ -1099,7 +1099,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 			{reply,false,P};
 		% {wait_copy,Data,IsMove,Node,_TimeOfLock} ->
 		LC when LC#lck.time /= undefined ->
-			?INF("Actor unlocked ~p ~p ~p",[P#dp.evnum,Data,P#dp.dbcopy_to]),
+			?DBG("Actor unlocked ~p ~p ~p",[P#dp.evnum,Data,P#dp.dbcopy_to]),
 			DbCopyTo = lists:keydelete(Data,#cpto.ref,P#dp.dbcopy_to),
 			WithoutLock = lists:keydelete(Data,#lck.ref,P#dp.locked),
 			case LC#lck.ismove of
@@ -1128,7 +1128,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 									{noreply,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
 							end;
 						_ ->
-							?INF("Copy done"),
+							?DBG("Copy done"),
 							NP = P#dp{locked = WithoutLock, dbcopy_to = DbCopyTo},
 							case LC#lck.actorname == P#dp.actorname of
 								true ->
