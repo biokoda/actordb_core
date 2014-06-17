@@ -797,7 +797,8 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 					end;
 				Resp ->
 					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-					{reply,Resp,P}
+					reply(From,Resp),
+					{noreply,P}
 			end
 	end;
 write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
@@ -1237,14 +1238,14 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 	case Reason of
 		% We are leader, evnum == 0, which means no other node has any data.
 		% If create flag not set stop.
-		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.evnum == 0 ->
+		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
 			{stop,nocreate,P1};
 		leader ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													verified = true}),
-			?DBG("Elected leader term=~p",[P1#dp.current_term]),
+			?INF("Elected leader term=~p",[P1#dp.current_term]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
 
 			case P#dp.schemavers of
