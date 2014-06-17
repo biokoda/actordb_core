@@ -288,14 +288,17 @@ handle_call(Msg,From,P) ->
 			% When write done, reply to caller and start with move process (in ..util:reply_maybe.
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
 						(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,CbState})))/binary,"');">>,
-			write_call({undefined,Sql,undefined},{exec,From,{move,Node}},check_timer(P));
+			write_call({undefined,Sql,undefined},{exec,From,{move,Node}},check_timer(actordb_sqlprocutil:set_followers(true,P)));
 		{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
 			% Similar to above. Both have just insert and not insert and replace because
 			%  we can only do one move/split at a time. It makes no sense to do both at the same time.
 			% So rely on DB to return error for these conflicting calls.
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
 						(base64:encode(term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,CbState})))/binary,"');">>,
-			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},check_timer(P));
+			% Split is called when shards are moving around (nodes were added). If different number of nodes in cluster, we need
+			%  to have an updated list of nodes.
+			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},
+				check_timer(actordb_sqlprocutil:set_followers(true,P)));
 		{copy,{Node,OldActor,NewActor}} ->
 			Ref = make_ref(),
 			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
@@ -412,7 +415,8 @@ state_rw_call(What,From,P) ->
 				_ when P#dp.inrecovery, AEType == head ->
 					?DBG("Ignoring head because inrecovery"),
 					{reply,false,P};
-				_ when element(1,P#dp.copyproc) == active  ->
+				_ when is_pid(P#dp.copyproc) ->
+					?DBG("Ignoring AE because copy in progress"),
 					{reply,false,P};
 				_ when Term < P#dp.current_term ->
 					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
@@ -459,7 +463,7 @@ state_rw_call(What,From,P) ->
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term}))));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
-					?ERR("AE start attempt failed, evnum evterm do not match ~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
+					?ERR("AE start attempt failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 								[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
 					case P#dp.evnum > PrevEvnum andalso PrevEvnum > 0 of
 						% Node is conflicted, delete last entry
@@ -486,12 +490,7 @@ state_rw_call(What,From,P) ->
 					{noreply,P#dp{verified = true,activity = make_ref()}};
 				% Ok, now it will start receiving wal pages
 				_ ->
-					case AEType of
-						recover ->
-							?INF("AE start ok");
-						_ ->
-							ok
-					end,
+					?DBG("AE start ok"),
 					{reply,ok,P#dp{verified = true,activity = make_ref(), inrecovery = AEType == recover}}
 			end;
 		% Executed on follower.
@@ -527,7 +526,7 @@ state_rw_call(What,From,P) ->
 					?INF("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ ->
-					?INF("AE response, from=~p, success=~p, type=~p, {PrevEvnum,EvNum,Match}=~p, {From,Res}=~p",
+					?INF("AE response, from=~p, success=~p, type=~p, {PrevEvnum,HisEvNum,MatchSent}=~p, {From,Res}=~p",
 							[Node,Success,AEType,
 							 {Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
@@ -910,10 +909,9 @@ update_followers(_Evnum,L) ->
 
 
 handle_cast({diepls,Reason},P) ->
-	?DBG("diepls"),
+	?DBG("diepls ~p ~p",[P#dp.mors,Reason]),
 	case Reason of
 		nomaster when P#dp.mors == slave ->
-			?ERR("Die because nomaster"),
 			{stop,normal,P};
 		_ ->
 			case handle_info(check_inactivity,P) of
@@ -967,13 +965,6 @@ handle_info({stop,Reason},P) ->
 	{stop, normal, P};
 handle_info(print_info,P) ->
 	handle_cast(print_info,P);
-handle_info(set_copy_done,P) ->
-	case P#dp.copyproc of
-		{_,Pid} ->
-			{noreply,P#dp{copyproc = {done,Pid}}};
-		_ ->
-			{noreply,P}
-	end;
 handle_info(commit_transaction,P) ->
 	down_info(0,12345,done,P#dp{transactioncheckref = 12345});
 handle_info(start_copy,P) ->
@@ -1156,6 +1147,7 @@ check_inactivity(NTimer,P) ->
 		_ when Empty == false, P#dp.verified == false, NTimer > 1, is_tuple(P#dp.election) ->
 			case timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
 				true ->
+					?DBG("Restarting election due to timeout"),
 					{noreply, check_timer(actordb_sqlprocutil:start_verify(P,false))};
 				false ->
 					{noreply, check_timer(P)}
@@ -1331,12 +1323,17 @@ down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 		_ ->
 			{noreply,P#dp{transactioncheckref = undefined}}
 	end;
-down_info(PID,_Ref,Reason,#dp{copyproc = {_,PID}} = P) ->
+down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 	?DBG("copyproc died ~p ~p ~p",[Reason,P#dp.mors,P#dp.copyfrom]),
 	case Reason of
-		ok when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
-			{ok,NP} = init(P,copyproc_done),
-			{noreply,NP};
+		unlock -> %when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
+			case actordb_sqlprocutil:callback_unlock(P) of
+				ok ->
+					{ok,NP} = init(P,copyproc_done),
+					{noreply,NP};
+				Err ->
+					{stop,Err,P}
+			end;
 		ok when P#dp.mors == slave ->
 			{stop,normal,P};
 		nomajority ->
@@ -1388,8 +1385,8 @@ down_info(PID,_Ref,Reason,P) ->
 	end.
 
 
-terminate(_, P) ->
-	?DBG("Terminating"),
+terminate(Reason, P) ->
+	?DBG("Terminating ~p",[Reason]),
 	actordb_sqlite:stop(P#dp.db),
 	distreg:unreg(self()),
 	ok.
@@ -1425,7 +1422,7 @@ init([_|_] = Opts) ->
 					?DBG("Starting actor slave lock for copy on ref ~p",[Ref]),
 					{ok,Pid} = actordb_sqlprocutil:start_copyrec(P#dp{mors = slave, cbstate = CbState, 
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
-					{ok,P#dp{copyproc = {active,Pid}, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
+					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
 				{lockinfo,wait} ->
 					{ok,cancel_timer(P)}
 			end;

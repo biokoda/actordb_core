@@ -182,7 +182,9 @@ set_followers(HaveSchema,P) ->
 		{ok,NS,NL} ->
 			ok
 	end,
-	P#dp{cbstate = NS,follower_indexes = [#flw{node = Nd,match_index = 0,next_index = P#dp.evnum+1} || Nd <- NL]}.
+	P#dp{cbstate = NS,follower_indexes = P#dp.follower_indexes ++ 
+			[#flw{node = Nd,match_index = 0,next_index = P#dp.evnum+1} || Nd <- NL, 
+					lists:keymember(Nd,#flw.node,P#dp.follower_indexes) == false]}.
 
 % Find first valid evnum,evterm in wal (from beginning)
 wal_from([_|_] = Path) ->
@@ -287,6 +289,7 @@ continue_maybe(P,F,AEType) ->
 					continue_maybe(NP,NF,AEType)
 			end;
 		true ->
+			?DBG("Sending AE start on evnum=~p",[F#flw.match_index]),
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 							F#flw.match_index,F#flw.match_term,recover}}]}),
@@ -301,6 +304,7 @@ continue_maybe(P,F,AEType) ->
 						wal_corruption ->
 							store_follower(P,F#flw{wait_for_response_since = make_ref()});
 						_ ->
+							?DBG("Sent AE on evnum=~p",[F#flw.match_index]),
 							store_follower(P,F#flw{wait_for_response_since = make_ref()})
 					end
 			end;
@@ -554,13 +558,13 @@ start_verify(P,JustStarted) ->
 				true ->
 					CurrentTerm = P#dp.current_term+1,
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm}),
-					NP = P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name()},
+					NP = reopen_db(P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name(), mors = master, verified = false}),
 					{Verifypid,_} = spawn_monitor(fun() -> 
 									start_election(NP)
 										end),
 					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
 				false ->
-					?DBG("Election just done, ignoring."),
+					?DBG("Election just done, ignoring call."),
 					P
 			end
 	end.
@@ -574,23 +578,23 @@ start_election(P) ->
 	Me = actordb_conf:node_name(),
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	Nodes = follower_nodes(P#dp.follower_indexes),
-	?DBG("Multicall to ~p",[Nodes]),
+	?DBG("Election, multicall to ~p",[Nodes]),
 	{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
-			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags}]]}),
+			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}]]}),
 	?DBG("Election, results ~p failed ~p, contacted ~p",[Results,_GetFailed,Nodes]),
 
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,1) of
 		{outofdate,Node,_NewerTerm} ->
 			send_doelection(Node,P),
-			exit(follower);
+			start_election_done(P,follower);
 		NumVotes when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
 				true ->
-					start_election_done(P,leader,P#dp.flags);
+					start_election_done(P,leader);
 				false when (length(Results)+1)*2 =< ClusterSize ->
 					% Majority isn't possible anyway.
-					exit(follower);
+					start_election_done(P,follower);
 				false ->
 					% Majority is possible.
 					% This election failed. Check if any of the nodes said they will try to get elected.
@@ -608,22 +612,26 @@ start_election(P) ->
 						_ ->
 							ok
 					end,
-					exit(follower)
+					start_election_done(P,follower)
 			end
 	end.
-start_election_done(P,Signal,Flags) ->
-	case Flags band ?FLAG_WAIT_ELECTION > 0 of
+start_election_done(P,leader) ->
+	?DBG("Exiting with signal ~p",[leader]),
+	case P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
 		true ->
 			receive
 				exit ->
-					exit(Signal)
-				after 3000 ->
+					exit(leader)
+				after 300 ->
 					?ERR("Wait election write waited too long."),
-					exit(Signal)
+					exit(leader)
 			end;
 		false ->
-			exit(Signal)
-	end.
+			exit(leader)
+	end;
+start_election_done(P,Signal) ->
+	?DBG("Exiting with signal ~p",[Signal]),
+	exit(Signal).
 
 send_doelection(Node,P) ->
 	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
@@ -1063,7 +1071,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 			actordb_sqlite:stop(P#dp.db),
 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
 
-			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = {active,RecvPid}}}
+			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}}
 	end;
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
@@ -1115,6 +1123,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 												dbcopy_to = DbCopyTo,
 												cbstate = NS});
 								_ ->
+									?DBG("Queing write call"),
 									CQ = queue:in_r({CallFrom,{write,WriteMsg}},P#dp.callqueue),
 									{noreply,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
 							end;
@@ -1128,7 +1137,8 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 										% 	{reply,ok,start_verify(reply_maybe(store_follower(NP,
 										% 				Flw#flw{match_index = P#dp.evnum, next_index = P#dp.evnum+1})),force)};
 										Flw when is_tuple(Flw) ->
-											{reply,ok,reply_maybe(store_follower(NP,
+											CQ = queue:in_r({CallFrom,{write,{undefined,<<>>,undefined}}},P#dp.callqueue),
+											{reply,ok,reply_maybe(store_follower(NP#dp{callqueue = CQ},
 														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.current_term, next_index = P#dp.evnum+1}))};
 										_ ->
 											{reply,ok,NP}
@@ -1158,13 +1168,14 @@ dbcopy(P,Home,ActorTo) ->
 dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 	still_alive(P,Home,ActorTo),
 	case gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}) of
-		{_Walname,Offset} ->
+		{_Walname,Offset,Evnum,Evterm} ->
 			?DBG("dbsend done ",[]),
-			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,<<>>,done,original]}));
-		{_Walname,Walsize} when Offset > Walsize ->
+			Param = [{bin,<<>>},{status,done},{origin,original},{evnum,Evnum},{evterm,Evterm}],
+			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));
+		{_Walname,Walsize,_,_} when Offset > Walsize ->
 			?ERR("Offset larger than walsize ~p ~p",[{ActorTo,P#dp.actortype},Offset,Walsize]),
 			exit(copyfail);
-		{Walname,Walsize} ->
+		{Walname,Walsize,Evnum,Evterm} ->
 			Readnum = min(1024*1024,Walsize-Offset),
 			case Offset of
 				0 ->
@@ -1174,14 +1185,16 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 			end,
 			{ok,Bin} = file:read(F1,Readnum),
 			?DBG("dbsend wal ~p",[{Walname,Walsize}]),
-			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,Bin,wal,original]}),
+			Param = [{bin,Bin},{status,wal},{origin,original},{evnum,Evnum},{evterm,Evterm}],
+			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
 			dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
 	end;
 dbcopy(P,Home,ActorTo,F,0,db) ->
 	still_alive(P,Home,ActorTo),
 	{ok,Bin} = file:read(F,1024*1024),
 	?DBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
-	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P,P#dp.dbcopyref,Bin,db,original]}),
+	Param = [{bin,Bin},{status,db},{origin,original}],
+	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
 	case byte_size(Bin) == 1024*1024 of
 		true ->
 			dbcopy(P,Home,ActorTo,F,0,db);
@@ -1190,7 +1203,7 @@ dbcopy(P,Home,ActorTo,F,0,db) ->
 			dbcopy(P,Home,ActorTo,undefined,0,wal)
 	end.
 
-dbcopy_send(_P,Ref,Bin,Status,Origin) ->
+dbcopy_send(Ref,Param) ->
 	F = fun(_F,N) when N < 0 ->
 			{error,timeout};
 			(F,N) ->
@@ -1204,7 +1217,7 @@ dbcopy_send(_P,Ref,Bin,Status,Origin) ->
 	end,
 	{ok,Pid} = F(F,5000),
 	MonRef = erlang:monitor(process,Pid),
-	Pid ! {Ref,self(),Bin,Status,Origin},
+	Pid ! {Ref,self(),Param},
 	receive
 		{'DOWN',MonRef,_,Pid,Reason} ->
 			erlang:demonitor(MonRef),
@@ -1266,10 +1279,12 @@ start_copyrec(P) ->
 
 dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 	receive
-		{Ref,Source,Bin,Status,Origin} when Ref == P#dp.dbcopyref ->
+		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
+			[Bin,Status,Origin,Evnum,Evterm] = butil:ds_vals([bin,status,origin,evnum,evterm],Param),
 			case Origin of
 				original ->
-					[ok = rpc(Nd,{?MODULE,dbcopy_send,[P,Ref,Bin,Status,master]}) || Nd <- ChildNodes];
+					Param1 = [{bin,Bin},{status,Status},{origin,master},	{evnum,Evnum},{evterm,Evterm}],
+					[ok = rpc(Nd,{?MODULE,dbcopy_send,[Ref,Param1]}) || Nd <- ChildNodes];
 				master ->
 					ok
 			end,
@@ -1295,6 +1310,12 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 					end,
 					F1 = undefined,
 					{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					case is_integer(Evnum) of
+						true ->
+							ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Evterm,Evnum});
+						false ->
+							ok
+					end,
 					case SchemaTables of
 						[] ->
 							?ERR("DB open after move without schema?",[]),
@@ -1308,7 +1329,8 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							Source ! {Ref,self(),ok},
 							case Origin of
 								original ->
-									callback_unlock(Home,P);
+									% callback_unlock(Home,Evnum,Evterm,P);
+									exit(unlock);
 								_ ->
 									exit(ok)
 							end
@@ -1322,7 +1344,8 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 		exit(timeout_db_receive)
 	end.
 
-callback_unlock(Home,P) ->
+callback_unlock(P) ->
+	?DBG("Callback unlock ~p",[P#dp.copyfrom]),
 	case P#dp.copyfrom of
 		{move,Node} ->
 			ActorName = P#dp.actorname;
@@ -1336,25 +1359,22 @@ callback_unlock(Home,P) ->
 			true = Node /= actordb_conf:node_name(),
 			ActorName = P#dp.actorname
 	end,
-	% This prevents a race condition. Node on other side may get unlocked and execute a write
-	%  before this process exits. 
-	Home ! set_copy_done,
 	% Unlock database on source side. Once unlocked move/copy is complete.
 	case rpc(Node,{actordb_sqlproc,call,[{ActorName,P#dp.actortype},[],{dbcopy,{unlock,P#dp.dbcopyref}},P#dp.cbmod,onlylocal]}) of
 		ok ->
-			exit(ok);
+			ok;
 		{ok,_} ->
-			exit(ok);
+			ok;
 		{redirect,Somenode} ->
 			case lists:member(Somenode,bkdcore:all_cluster_nodes()) of
 				true ->
-					exit(ok);
+					ok;
 				false ->
-					exit({unlock_invalid_redirect,Somenode})
+					{unlock_invalid_redirect,Somenode}
 			end;
 		{error,Err} ->
 			?ERR("Failed to execute dbunlock ~p",[Err]),
-			exit(failed_unlock)
+			failed_unlock
 	end.
 
 still_alive(P,Home,ActorTo) ->
