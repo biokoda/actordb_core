@@ -379,7 +379,7 @@ cb_do_cleanup(P,ReadResult) ->
 	{write,Sql,NP}.
 
 cb_list_actors(P,From,Limit) ->
-	?ADBG("cb_list_actors ~p",[P]),
+	?AINF("cb_list_actors ~p",[P]),
 	case is_integer(P#state.nextshard) of
 		true ->
 			Sql = [<<"SELECT id FROM actors WHERE hash<">>,butil:tobin(P#state.nextshard),<<" LIMIT ">>, (butil:tobin(Limit)),

@@ -691,7 +691,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->

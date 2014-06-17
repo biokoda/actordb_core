@@ -326,7 +326,7 @@ do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
 				{StBin,Varlist} ->
 					case Actors of
 						$* ->
-							% ?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
+							?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
 							move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,actordb_shardtree:all());
 						_ ->
 							case Actors of
@@ -403,7 +403,7 @@ move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,
 				false ->
 					List = actordb:rpc(Nd,Shard,{actordb_shard,list_actors,[Shard,Type,CountAll,1000]})
 			end,
-			?ADBG("Moving over shard ~p ~p ~p",[Shard,Type,List]),
+			?AINF("Moving over shard ~p ~p ~p",[Shard,Type,List]),
 			case List of
 				{ok,[]} ->
 					ok;
