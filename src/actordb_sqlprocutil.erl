@@ -1063,7 +1063,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 			actordb_sqlite:stop(P#dp.db),
 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
 
-			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}}
+			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = {active,RecvPid}}}
 	end;
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
@@ -1071,12 +1071,13 @@ dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 	Size = filelib:file_size([P#dp.dbpath,"-wal"]),
 	case Size =< Data of
 		true when P#dp.transactionid == undefined ->
-			{reply,{[P#dp.dbpath,"-wal"],Size},P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
+			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},
+				P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 		true ->
 			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
 		false ->
 			?DBG("wal_size ~p",[{From1,Data}]), 
-			{reply,{[P#dp.dbpath,"-wal"],Size},P}
+			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},P}
 	end;
 dbcopy_call({checksplit,Data},_,P) ->
 	{M,F,A} = Data,
@@ -1251,7 +1252,7 @@ start_copyrec(P) ->
 					_ ->
 						ConnectedNodes = []
 				end,
-				dbcopy_receive(P,undefined,undefined,ConnectedNodes);
+				dbcopy_receive(Home,P,undefined,undefined,ConnectedNodes);
 			name_exists ->
 				Home ! {StartRef,distreg:whereis({copyproc,P#dp.dbcopyref})}
 		end
@@ -1263,7 +1264,7 @@ start_copyrec(P) ->
 		exit(dbcopy_receive_error)
 	end.
 
-dbcopy_receive(P,F,CurStatus,ChildNodes) ->
+dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 	receive
 		{Ref,Source,Bin,Status,Origin} when Ref == P#dp.dbcopyref ->
 			case Origin of
@@ -1307,21 +1308,21 @@ dbcopy_receive(P,F,CurStatus,ChildNodes) ->
 							Source ! {Ref,self(),ok},
 							case Origin of
 								original ->
-									callback_unlock(P);
+									callback_unlock(Home,P);
 								_ ->
 									exit(ok)
 							end
 					end
 			end,
 			Source ! {Ref,self(),ok},
-			dbcopy_receive(P,F1,Status,ChildNodes);
+			dbcopy_receive(Home,P,F1,Status,ChildNodes);
 		X ->
 			?ERR("dpcopy_receive ~p received invalid msg ~p",[P#dp.dbcopyref,X])
 	after 30000 ->
 		exit(timeout_db_receive)
 	end.
 
-callback_unlock(P) ->
+callback_unlock(Home,P) ->
 	case P#dp.copyfrom of
 		{move,Node} ->
 			ActorName = P#dp.actorname;
@@ -1335,6 +1336,9 @@ callback_unlock(P) ->
 			true = Node /= actordb_conf:node_name(),
 			ActorName = P#dp.actorname
 	end,
+	% This prevents a race condition. Node on other side may get unlocked and execute a write
+	%  before this process exits. 
+	Home ! set_copy_done,
 	% Unlock database on source side. Once unlocked move/copy is complete.
 	case rpc(Node,{actordb_sqlproc,call,[{ActorName,P#dp.actortype},[],{dbcopy,{unlock,P#dp.dbcopyref}},P#dp.cbmod,onlylocal]}) of
 		ok ->

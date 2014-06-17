@@ -412,7 +412,7 @@ state_rw_call(What,From,P) ->
 				_ when P#dp.inrecovery, AEType == head ->
 					?DBG("Ignoring head because inrecovery"),
 					{reply,false,P};
-				_ when is_pid(P#dp.copyproc) ->
+				_ when element(1,P#dp.copyproc) == active  ->
 					{reply,false,P};
 				_ when Term < P#dp.current_term ->
 					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
@@ -967,6 +967,13 @@ handle_info({stop,Reason},P) ->
 	{stop, normal, P};
 handle_info(print_info,P) ->
 	handle_cast(print_info,P);
+handle_info(set_copy_done,P) ->
+	case P#dp.copyproc of
+		{_,Pid} ->
+			{noreply,P#dp{copyproc = {done,Pid}}};
+		_ ->
+			{noreply,P}
+	end;
 handle_info(commit_transaction,P) ->
 	down_info(0,12345,done,P#dp{transactioncheckref = 12345});
 handle_info(start_copy,P) ->
@@ -1324,7 +1331,7 @@ down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 		_ ->
 			{noreply,P#dp{transactioncheckref = undefined}}
 	end;
-down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
+down_info(PID,_Ref,Reason,#dp{copyproc = {_,PID}} = P) ->
 	?DBG("copyproc died ~p ~p ~p",[Reason,P#dp.mors,P#dp.copyfrom]),
 	case Reason of
 		ok when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
@@ -1418,7 +1425,7 @@ init([_|_] = Opts) ->
 					?DBG("Starting actor slave lock for copy on ref ~p",[Ref]),
 					{ok,Pid} = actordb_sqlprocutil:start_copyrec(P#dp{mors = slave, cbstate = CbState, 
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
-					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
+					{ok,P#dp{copyproc = {active,Pid}, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
 				{lockinfo,wait} ->
 					{ok,cancel_timer(P)}
 			end;
