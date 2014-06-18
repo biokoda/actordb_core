@@ -577,12 +577,12 @@ failednodes_stop(_) ->
 	ok.
 test_failednodes(_) ->
 	[
-	 fun basic_write/0,
-	 fun basic_write/0,
-	 fun basic_read/0,
-	 fun kv_readwrite/0,
-	 fun multiupdate_write/0,
-	 fun multiupdate_read/0,
+	 {timeout,20,fun basic_write/0},
+	 {timeout,20,fun basic_write/0},
+	 {timeout,20,fun basic_read/0},
+	 {timeout,20,fun kv_readwrite/0},
+	 {timeout,20,fun multiupdate_write/0},
+	 {timeout,20,fun multiupdate_read/0},
 	 fun() -> 
 	 	?debugFmt("Taking down node 2",[]),
 	 	stop_slaves([2]),ok 
@@ -694,7 +694,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->

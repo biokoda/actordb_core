@@ -387,10 +387,10 @@ handle_info({nodedown, Nd},P) ->
 			{noreply,P};
 		Nm ->
 			% Some node has gone down, kill all slaves on this node.
-			spawn(fun() -> 
-				L = ets:match(actorsalive, #actor{masternode=Nm, pid = '$1', _='_'}),
-				[actordb_sqlproc:diepls(Pid,nomaster) || [Pid] <- L]
-			end),
+			% spawn(fun() -> 
+			% 	L = ets:match(actorsalive, #actor{masternode=Nm, pid = '$1', _='_'}),
+			% 	[actordb_sqlproc:diepls(Pid,nomaster) || [Pid] <- L]
+			% end),
 			{noreply,P}
 	end;
 handle_info({stop},P) ->
@@ -431,6 +431,7 @@ store_raft_connection([Nd|T],Tuple) ->
 				false ->
 					Type = 2
 			end,
+			?AINF("Starting raft connection to ~p",[{Nd,IP,Port}]),
 			case esqlite3:tcp_connect_async(IP,Port,[bkdcore:rpccookie(Nd),"tunnelactordb_util"],Pos-1,Type) of
 				Ref when is_reference(Ref) ->
 					store_raft_connection(T,setelement(Pos,Tuple,Nd));

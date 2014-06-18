@@ -548,8 +548,8 @@ state_rw_call(What,From,P) ->
 							?DBG("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
 								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
-						false when NFlw#flw.match_index /= MatchEvnum, NFlw#flw.match_index == P#dp.evnum ->
-							% Ignore false since we sent the wrong evnum anyway. Follower is up to date.
+						false when NFlw#flw.match_index == P#dp.evnum ->
+							% Follower is up to date. He replied false. Maybe our term is too old.
 							{reply,ok,doqueue(actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw)))};
 						false ->
 							% If we are copying entire db to that node already, do nothing.
