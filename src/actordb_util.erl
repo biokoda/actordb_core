@@ -76,7 +76,7 @@ tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 	% If not, ignore wal pages untill next header.
 	case get(proceed) of
 		ok ->
-			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head}});
+			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head}},[nostart]);
 		_ ->
 			ok
 	end,

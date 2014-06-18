@@ -12,11 +12,17 @@ reply(From,Msg) ->
 
 ae_respond(P,LeaderNode,Success,PrevEvnum,AEType) ->
 	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType},
-	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[],
+	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[nostart],
 									{state_rw,Resp},P#dp.cbmod]}).
 
 append_wal(P,Header,Bin) ->
-	ok = file:write(P#dp.db,[Header,esqlite3:lz4_decompress(Bin,?PAGESIZE)]).
+	case file:write(P#dp.db,[Header,esqlite3:lz4_decompress(Bin,?PAGESIZE)]) of
+		ok ->
+			ok;
+		Err ->
+			?AERR("Append wal failed ~p, state ~p",[Err,P]),
+			throw(cant_append)
+	end.
 
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	P;
@@ -128,6 +134,7 @@ reopen_db(#dp{mors = master} = P) ->
 		% we are master but db not open or open as file descriptor to -wal file
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
+			garbage_collect(),
 			init_opendb(P);
 		_ ->
 			case P#dp.wal_from == {0,0} of
@@ -247,6 +254,7 @@ try_wal_recover(P,F) ->
 			end;
 		% Too far behind. Send entire db.
 		false ->
+			?INF("Too far behind, can not recover from wal match=~p, wal_from=~p, evnum=~p",[F#flw.match_index,WalEvfrom,P#dp.evnum]),
 			Res = false,
 			NF = F
 	end,
@@ -285,8 +293,23 @@ continue_maybe(P,F,AEType) ->
 				head ->
 					store_follower(P,F);
 				_ ->
-					{true,NP,NF} = try_wal_recover(P,F),
-					continue_maybe(NP,NF,AEType)
+					case try_wal_recover(P,F) of
+						{true,NP,NF} ->
+							continue_maybe(NP,NF,AEType);
+						{false,NP,_} ->
+							?DBG("sending entire db to ~p",[F#flw.node]),
+							Ref = make_ref(),
+							case bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,
+												[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+												{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
+								ok ->
+									{reply,_,NP1} = dbcopy_call({send_db,{F#flw.node,Ref,false,P#dp.actorname}},undefined,NP),
+									NP1;
+								_Err ->
+									?ERR("Error sending db ~p",[_Err]),
+									NP
+							end
+					end
 			end;
 		true ->
 			?DBG("Sending AE start on evnum=~p",[F#flw.next_index]),
@@ -334,7 +357,7 @@ send_wal(P,#flw{file = File} = F) ->
 					{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
 					<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
 					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover}}]}),
+								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover}},[nostart]]}),
 					case WalRes of
 						ok when Commit == 0 ->
 							send_wal(P,F);
@@ -998,6 +1021,8 @@ parse_opts(P,[H|T]) ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOHIBERNATE},T);
 		wait_election ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_WAIT_ELECTION},T);
+		nostart ->
+			{stop,nostart};
 		_ ->
 			parse_opts(P,T)
 	end;
@@ -1066,6 +1091,8 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 % Initial call on node that is destination of copy
 dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 	?DBG("start receive entire db",[]),
+	% clean up any old sqlite handles.
+	garbage_collect(),
 	% If move, split or copy actor to a new actor this must be called on master.
 	case is_tuple(Copyfrom) of
 		true when P#dp.mors /= master ->

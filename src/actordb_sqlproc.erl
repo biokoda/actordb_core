@@ -195,7 +195,9 @@ start(Opts) ->
 				{Ref,{actornum,Path,Num}} ->
 					{ok,Path,Num};
 				{Ref,{ok,[{columns,_},_]} = Res} ->
-					Res
+					Res;
+				{Ref,nostart} ->
+					{error,nostart}
 				after 0 ->
 					{error,cantstart}
 			end;
@@ -467,7 +469,7 @@ state_rw_call(What,From,P) ->
 								[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
 					case P#dp.evnum > PrevEvnum andalso PrevEvnum > 0 of
 						% Node is conflicted, delete last entry
-						true when AEType /= empty ->
+						true when AEType /= empty, AEType /= head ->
 							NP = actordb_sqlprocutil:rewind_wal(P);
 						% If false this node is behind. If empty this is just check call.
 						% Wait for leader to send an earlier event.
@@ -502,12 +504,12 @@ state_rw_call(What,From,P) ->
 					case Header of
 						% dbsize == 0, not last page
 						<<_:32,0:32,_/binary>> ->
-							{reply,ok,P#dp{activity = make_ref()}};
+							{reply,ok,P#dp{activity = make_ref(),locked = [ae]}};
 						% last page
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
 							?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p",
 									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
-							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref()},
+							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref(),locked = []},
 							reply(From,ok),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType),
 							{noreply,NP}
@@ -548,7 +550,7 @@ state_rw_call(What,From,P) ->
 								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
 						false when NFlw#flw.match_index /= MatchEvnum, NFlw#flw.match_index == P#dp.evnum ->
 							% Ignore false since we sent the wrong evnum anyway. Follower is up to date.
-							{reply,ok,doqueue(actordb_sqlprocutil:reply_maybe(P))};
+							{reply,ok,doqueue(actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw)))};
 						false ->
 							% If we are copying entire db to that node already, do nothing.
 							case [C || C <- P#dp.dbcopy_to, C#cpto.node == Node, C#cpto.actorname == P#dp.actorname] of
@@ -1148,7 +1150,7 @@ check_inactivity(NTimer,P) ->
 		_ when Empty == false, P#dp.verified == false, NTimer > 1, is_tuple(P#dp.election) ->
 			case timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
 				true ->
-					?DBG("Restarting election due to timeout"),
+					?INF("Restarting election due to timeout"),
 					{noreply, check_timer(actordb_sqlprocutil:start_verify(P,false))};
 				false ->
 					{noreply, check_timer(P)}
@@ -1207,7 +1209,7 @@ retry_copy(#dp{copylater = undefined} = P) ->
 	P;
 retry_copy(P) ->
 	{LastTry,Copy} = P#dp.copylater,
-	case timer:node_diff(os:timestamp(),LastTry) > 1000000*3 of
+	case timer:now_diff(os:timestamp(),LastTry) > 1000000*3 of
 		true ->
 			case Copy of
 				{move,Node} ->
@@ -1239,14 +1241,18 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 		% We are leader, evnum == 0, which means no other node has any data.
 		% If create flag not set stop.
 		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
+			P = P1,
+			?INF("Stopping with nocreate ",[]),
 			{stop,nocreate,P1};
 		leader ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
+													locked = lists:delete(ae,P1#dp.locked),
 													verified = true}),
-			?DBG("Elected leader term=~p",[P1#dp.current_term]),
-			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term})),
+			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
+			?DBG("Elected leader term=~p, repltype=~p",[P1#dp.current_term,ReplType]),
+			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),ReplType),
 
 			case P#dp.schemavers of
 				undefined ->
@@ -1283,7 +1289,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 																		Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
 				undefined ->
-					?DBG("Running post election write"),
+					?DBG("Running post election write on nodes ~p",[P#dp.follower_indexes]),
 					% it must always return noreply
 					write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP);
 				_ ->
@@ -1472,6 +1478,9 @@ init([_|_] = Opts) ->
 					?DBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode}}
 			end;
+		{stop,Explain} ->
+			explain(Explain,Opts),
+			{stop,normal};
 		P ->
 			self() ! start_copy,
 			{ok,P#dp{mors = master}}

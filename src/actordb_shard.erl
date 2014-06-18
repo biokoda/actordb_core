@@ -10,7 +10,7 @@
 		kvread/4,kvwrite/4,get_schema_vers/2]). 
 -export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/2,cb_nodelist/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
-		 cb_redirected_call/4,cb_write_done/2,cb_unverified_call/2,
+		 cb_redirected_call/4,cb_write_done/2,cb_unverified_call/2,cb_replicate_type/1,
 		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2]). %split_other_done/3,
 -include_lib("actordb.hrl").
 -define(META_NEXT_SHARD,$1).
@@ -157,7 +157,7 @@ do_cleanup(ShardName,Type,Pre,After) ->
 			ReadSql = [<<"SELECT count(hash) FROM actors WHERE hash > ">>,butil:tobin(After)," OR hash < ",butil:tobin(Pre),";"]
 	end,
 	Res = actordb_sqlproc:read({ShardName,Type},[create],{ReadSql,{?MODULE,cb_do_cleanup,[]}},?MODULE),
-	?AINF("Docleanup ~p.~p result=~p",[ShardName,Type,Res]).
+	?ADBG("Docleanup ~p.~p result=~p",[ShardName,Type,Res]).
 
 % callmvr(Shard,M,F,A) ->
 % 	Me = bkdcore:node_name(),
@@ -392,17 +392,17 @@ cb_do_cleanup(P,ReadResult) ->
 	{write,Sql,NP}.
 
 cb_list_actors(P,From,Limit) ->
-	?AINF("cb_list_actors ~p",[P]),
+	?ADBG("cb_list_actors ~p",[P]),
 	case is_integer(P#state.nextshard) of
 		true ->
 			Sql = [<<"SELECT id FROM actors WHERE hash<">>,butil:tobin(P#state.nextshard),<<" LIMIT ">>, (butil:tobin(Limit)),
 				<<" OFFSET ">>,(butil:tobin(From)), ";"],
 			{reply,{P#state.nextshard,P#state.nextshardnode},Sql,P};
-		% false when is_integer(P#state.to) ->
-		% 	[<<"SELECT id FROM actors WHERE hash<=">>,butil:tobin(P#state.to)," AND ",
-		% 		"hash>=",butil:tobin(P#state.name),
-		% 		<<" LIMIT ">>, (butil:tobin(Limit)),
-		% 		<<" OFFSET ">>,(butil:tobin(From)), ";"];
+		false when is_integer(P#state.to) ->
+			[<<"SELECT id FROM actors WHERE hash<=">>,butil:tobin(P#state.to)," AND ",
+				"hash>=",butil:tobin(P#state.name),
+				<<" LIMIT ">>, (butil:tobin(Limit)),
+				<<" OFFSET ">>,(butil:tobin(From)), ";"];
 		false ->
 			[<<"SELECT id FROM actors WHERE hash >=">>,butil:tobin(P#state.name), <<" LIMIT ">>, (butil:tobin(Limit)),
 				<<" OFFSET ">>,(butil:tobin(From)), ";"]
@@ -410,7 +410,7 @@ cb_list_actors(P,From,Limit) ->
 
 cb_del_actor(P,ActorName) ->
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
-	?AINF("Del actor ~p ~p",[ActorName,{P#state.nextshard,P#state.nextshardnode,Hash}]),
+	?ADBG("Del actor ~p on shard ~p, {next,nextnode,hash}=~p",[ActorName,P#state.name,{P#state.nextshard,P#state.nextshardnode,Hash}]),
 	Sql = ["DELETE FROM actors WHERE id=",at(P#state.idtype,ActorName),";"],
 	case is_integer(P#state.nextshard) of
 		true when P#state.nextshard =< Hash, is_binary(P#state.nextshardnode) ->
@@ -577,7 +577,7 @@ cb_init(S,_Ev,{ok,[{columns,_},{rows,Rows}]}) ->
 	end.
 
 cb_idle(#state{cleanup_proc = undefined} = S) when S#state.cleanup_pre /= undefined; S#state.cleanup_after /= undefined ->
-	?AINF("Idle continue cleanup ~p ~p",[{S#state.name,S#state.type},{S#state.cleanup_pre,S#state.cleanup_after}]),
+	?ADBG("Idle continue cleanup ~p ~p",[{S#state.name,S#state.type},{S#state.cleanup_pre,S#state.cleanup_after}]),
 	% S#state.cleanup_pre, S#state.cleanup_after
 	{Pid,_} = spawn_monitor(fun() ->  do_cleanup(S#state.name,S#state.type,S#state.name,S#state.to) end),
 	{ok,S#state{cleanup_proc = Pid}};
@@ -589,6 +589,9 @@ cb_redirected_call(_S,_MovedTo,_Call,_Type) ->
 
 cb_nodelist(S,_HasSchema) ->
 	{ok,S,bkdcore:cluster_nodes()}.
+
+cb_replicate_type(_S) ->
+	1.
 
 cb_write_done(_S,_Evnum) ->
 	ok.

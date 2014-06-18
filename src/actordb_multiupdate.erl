@@ -403,7 +403,7 @@ move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,
 				false ->
 					List = actordb:rpc(Nd,Shard,{actordb_shard,list_actors,[Shard,Type,CountAll,1000]})
 			end,
-			?AINF("Moving over shard ~p ~p ~p",[Shard,Type,List]),
+			?ADBG("Moving over shard ~p ~p ~p",[Shard,Type,List]),
 			case List of
 				{ok,[]} ->
 					ok;

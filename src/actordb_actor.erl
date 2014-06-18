@@ -119,6 +119,9 @@ cb_idle(_S) ->
 cb_nodelist(S,_HasSchema) ->
 	{ok,S,bkdcore:cluster_nodes()}.
 
+cb_replicate_type(_S) ->
+	1.
+
 cb_redirected_call(_S,_MovedTo,_Call,_Type) ->
 	ok.
 

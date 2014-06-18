@@ -164,6 +164,7 @@ state_to_sql(Name) ->
 	end.
 
 set_global_state(MasterNode,State) ->
+	?ADBG("Setting global state ~p",[State]),
 	case ets:info(?GLOBALETS,size) of
 		undefined ->
 			ets:new(?GLOBALETS, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]);
@@ -175,6 +176,7 @@ set_global_state(MasterNode,State) ->
 		NewVal = butil:ds_val(Cfg,State),
 		case butil:ds_val(Cfg,?GLOBALETS) of
 			OldVal when NewVal /= undefined, OldVal /= NewVal ->
+				?ADBG("Setting config ~p",[Cfg]),
 				bkdcore_changecheck:setcfg(butil:tolist(Cfg),NewVal);
 			_ ->
 				ok
@@ -255,7 +257,7 @@ cb_write(#st{name = ?STATE_NM_GLOBAL} = S,Master,L) ->
 	end.
 
 cb_write(#st{name = ?STATE_NM_LOCAL} = _S,L) ->
-	?AINF("Write local ~p",[L]),
+	?ADBG("Write local ~p",[L]),
 	[write_sql(Key,Val) || {Key,Val} <- L];
 cb_write(#st{name = ?STATE_NM_GLOBAL} = S, L) ->
 	{[write_sql(Key,Val) || {Key,Val} <- L],S#st{current_write = L}}.
@@ -321,12 +323,12 @@ cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 	NS = check_timer(S#st{current_write = [], evnum = Evnum, am_i_master = true}),
 
 	Masters = butil:ds_val(master_group,?GLOBALETS),
-	?AINF("Global write done masters ~p",[Masters]),
+	?ADBG("Global write done masters ~p",[Masters]),
 	case [Nd || Nd <- Masters, bkdcore:node_address(Nd) == undefined] of
 		[] when length(Masters) < ?MASTER_GROUP_SIZE ->
 			case add_master_group(Masters) of
 				[] ->
-					?AINF("No nodes to add to masters ~p",[bkdcore:nodelist()]),
+					?ADBG("No nodes to add to masters ~p",[bkdcore:nodelist()]),
 					ok;
 				New ->
 					?AINF("Adding new node to master group ~p",[New]),
@@ -413,7 +415,8 @@ cb_nodelist(#st{name = ?STATE_NM_GLOBAL} = S,HasSchema) ->
 	case HasSchema of
 		true ->
 			file:delete([bkdcore:statepath(),"/stateglobal"]),
-			{read,read_sql(master_group)};
+			% {read,read_sql(master_group)};
+			{read,<<"select * from state;">>};
 		false ->
 			case butil:readtermfile([bkdcore:statepath(),"/stateglobal"]) of
 				{_,[_|_] = State} ->
@@ -429,9 +432,15 @@ cb_nodelist(#st{name = ?STATE_NM_GLOBAL} = S,HasSchema) ->
 			end,
 			return_mg(S,Nodes)
 	end.
-cb_nodelist(S,true,{ok,[{columns,_},{rows,[{_,ValEncoded}]}]}) ->
-	Nodes = binary_to_term(base64:decode(ValEncoded)),
-	return_mg(S,Nodes).
+cb_nodelist(S,true,{ok,[{columns,_},{rows,Rows}]} = ReadResult) ->
+	case bkdcore:nodelist() of
+		[] ->
+			{ok,NS} = cb_init(S,0,ReadResult);
+		_ ->
+			NS = S
+	end,
+	Nodes = binary_to_term(base64:decode(butil:ds_val(<<"master_group">>,Rows))),
+	return_mg(NS,Nodes).
 
 return_mg(S,Nodes) ->
 	case lists:member(actordb_conf:node_name(),Nodes) of
@@ -442,6 +451,11 @@ return_mg(S,Nodes) ->
 		false ->
 			exit(normal)
 	end.
+
+cb_replicate_type(#st{name = ?STATE_NM_GLOBAL} = _S) ->
+	2;
+cb_replicate_type(_) ->
+	1.
 
 % These only get called on master
 cb_call(_Msg,_From,_S) ->
@@ -462,7 +476,7 @@ cb_info(ping_timer,S) ->
 			ok
 	end,
 	{noreply,check_timer(S#st{time_since_ping = Now})};
-cb_info(_,S) ->
+cb_info(_,_S) ->
 	noreply.
 cb_init(#st{name = ?STATE_NM_LOCAL} = S,_EvNum) ->
 	{ok,check_timer(S)};
