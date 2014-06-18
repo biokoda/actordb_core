@@ -503,14 +503,14 @@ async_getstate() ->
 	exit({Global,Local}).
 
 
-start_shards([{From,_To,_Nd}|T],Existing) ->
+start_shards([{From,To,_Nd}|T],Existing) ->
 	% For every actor type, check if shard has been started for it.
 	StartedShards = butil:sparsemap(fun(Type) -> 
 										case butil:findtrue(fun({_Pid1,From1,Type1}) -> From == From1 andalso Type == Type1  
 															end,Existing) of
 											% Shard does not exist.
 											false -> 
-												Pid = startshard(Type,From),
+												Pid = startshard(Type,From,To),
 												{Pid,From,Type};
 											_X ->
 												undefined
@@ -520,10 +520,10 @@ start_shards([{From,_To,_Nd}|T],Existing) ->
 start_shards([],E) ->
 	E.
 
-startshard(Type,From) ->
+startshard(Type,From,To) ->
 	case actordb_shard:try_whereis(From,Type) of
 		undefined ->
-			{ok,Pid} = actordb_shard:start(From,Type);
+			{ok,Pid} = actordb_shard:start(From,Type,[{to,To}]);
 		Pid ->
 			ok
 	end,

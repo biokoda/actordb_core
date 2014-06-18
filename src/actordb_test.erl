@@ -342,8 +342,8 @@ test_onetwo(_) ->
 	  fun basic_read/0,
 	  {timeout,60,fun test_add_second/0},
 	  {timeout,30,fun basic_write/0},
-	  fun kv_readwrite/0,
-	  fun multiupdate_write/0,
+	  % fun kv_readwrite/0,
+	  % fun multiupdate_write/0,
 	  fun multiupdate_read/0
 	  	].
 test_add_second() ->
@@ -691,7 +691,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->

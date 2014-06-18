@@ -34,7 +34,7 @@
 % MovingAwayFlag: actor is in the process of being moved to another cluster
 % [ActorName, ActorNameHash, BlockedFlag, MovingAwayFlag]
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
--record(state,{idtype,name,type,
+-record(state,{idtype,name,type,to,
 	splitcopyfrom,splitcopynode,
 	nextshard,nextshardnode,
 	% Node name from which shard is copying
@@ -70,17 +70,24 @@ start(Name,Type1,Slave,Opt) ->
 	?ADBG("shard start ~p ~p ~p",[Name,Type1,Opt]),
 	Type = butil:toatom(Type1),
 	actordb_util:wait_for_startup(Type,Name,0),
+	case [To || {to,To} <- Opt] of
+		[To] ->
+			ok;
+		_ ->
+			To = undefined
+	end,
 	% #state will be provided with every callback from sqlproc.
 	Idtype = actordb:actor_id_type(Type),
 	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,Slave},{mod,?MODULE},create,nohibernate,
-										{state,#state{idtype = Idtype,name = Name,type = Type}}|Opt]),
+										{state,#state{idtype = Idtype,name = Name,
+														type = Type,to = To}}|Opt]),
 	{ok,Pid}.
 
 
 % Steal shard from another node
 % start_steal({Name,Type},Nd) ->
 % 	start_steal(Nd,Name,Type).
-start_steal(Nd,FromName,_To,NewName,Type1) ->
+start_steal(Nd,FromName,To,NewName,Type1) ->
 	?AINF("start_steal node=~p, shardfrom=~p newname=~p type=~p isrunning=~p",[Nd,FromName,NewName,Type1,try_whereis(NewName,Type1)]),
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
@@ -91,20 +98,20 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 			case actordb_schema:iskv(Type) of
 				true ->
 					{ok,_Pid} = start(NewName,Type,false,[nohibernate,
-								{state,#state{idtype = Idtype, name = NewName,type = Type}},
+								{state,#state{idtype = Idtype, name = NewName,type = Type, to = To}},
 								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
 								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}]);
 				false ->
 					{ok,Pid} = actordb_sqlproc:start([{actor,NewName},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
 														 {state,#state{idtype = Idtype, name = NewName, stealingfromshard = FromName,
-															 				stealingfrom = Nd,type = Type}}]),
+															 				to = To,stealingfrom = Nd,type = Type}}]),
 					spawn(fun() -> actordb_sqlproc:call({NewName,Type},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) end),
 					{ok,Pid}
 			end;
 		% If member of same cluster, we just need to run the shard normally. This will copy over the database.
 		% Master might be this new node or if shard already running on another node, it will remain master untill restart.
 		true ->
-			{ok,_Pid} = start(NewName,Type,false,[nohibernate,{state,#state{idtype = Idtype, name = NewName,type = Type}},
+			{ok,_Pid} = start(NewName,Type,false,[nohibernate,{state,#state{to = To,idtype = Idtype, name = NewName,type = Type}},
 								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
 								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}])
 	end.
@@ -114,8 +121,9 @@ start_steal(Nd,FromName,_To,NewName,Type1) ->
 % - kv shards
 % - shards that have been moved to another node in the same cluster
 origin_steal_done(P,split,NextShardNode,NextShard) ->
-	{ok,NP} = cb_idle(P#state{nextshard = NextShard, nextshardnode = NextShardNode, 
-						cleanup_pre = P#state.name, cleanup_after = NextShard}),
+	{ok,NP} = cb_idle(P#state{nextshard = NextShard, nextshardnode = NextShardNode, to = NextShard-1,
+						cleanup_pre = P#state.name, cleanup_after = NextShard
+						}),
 	{ok,[%"$DELETE FROM actors WHERE hash >= ",butil:tobin(NextShard),";"
 		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',base64:encode(term_to_binary(NextShardNode)),$', ");",
 		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");",
@@ -146,7 +154,7 @@ do_cleanup(ShardName,Type,Pre,After) ->
 		undefined ->
 			ReadSql = [<<"SELECT count(hash) FROM actors WHERE hash < ">>,butil:tobin(Pre),";"];
 		_ ->
-			ReadSql = [<<"SELECT count(hash) FROM actors WHERE hash >= ">>,butil:tobin(After)," OR hash < ",butil:tobin(Pre),";"]
+			ReadSql = [<<"SELECT count(hash) FROM actors WHERE hash > ">>,butil:tobin(After)," OR hash < ",butil:tobin(Pre),";"]
 	end,
 	Res = actordb_sqlproc:read({ShardName,Type},[create],{ReadSql,{?MODULE,cb_do_cleanup,[]}},?MODULE),
 	?AINF("Docleanup ~p.~p result=~p",[ShardName,Type,Res]).
@@ -365,14 +373,19 @@ cb_do_cleanup(P,ReadResult) ->
 		% Limit delete with: 
 		%  abs(random() % NumToDelete) < 1000
 		% If it contains a lot of items, it will delete ~1000 items at a time.
-		{ok,[{columns,_},{rows,[{Count}]}]} when P#state.cleanup_after == undefined ->
-			?AINF("Continue cleanup on ~p.~p",[P#state.name,P#state.type]),
-			Sql = [<<"DELETE FROM actors WHERE hash < ">>,butil:tobin(P#state.cleanup_pre),
-								" AND abs(random() % ",butil:tobin(Count),") < 1000;"],
-			NP = P;
+		% {ok,[{columns,_},{rows,[{Count}]}]} when P#state.cleanup_after == undefined ->
+		% 	?AINF("Continue cleanup on ~p.~p, itemsleft=~p",[P#state.name,P#state.type,Count]),
+		% 	Sql = [<<"DELETE FROM actors WHERE hash < ">>,butil:tobin(P#state.cleanup_pre),
+		% 						" AND abs(random() % ",butil:tobin(Count),") < 1000;"],
+		% 	NP = P;
+		% {ok,[{columns,_},{rows,[{Count}]}]} ->
+		% 	?AINF("Continue cleanup on ~p.~p, itemsleft=~p",[P#state.name,P#state.type,Count]),
+		% 	Sql = [<<"DELETE FROM actors WHERE (hash < ">>,butil:tobin(P#state.cleanup_after)," OR hash >= ",butil:tobin(P#state.cleanup_pre),") AND ",
+		% 			" abs(random() % ",butil:tobin(Count),") < 1000;"],
+		% 	NP = P
 		{ok,[{columns,_},{rows,[{Count}]}]} ->
-			?AINF("Continue cleanup on ~p.~p",[P#state.name,P#state.type]),
-			Sql = [<<"DELETE FROM actors WHERE (hash < ">>,butil:tobin(P#state.cleanup_after)," OR hash >= ",butil:tobin(P#state.cleanup_pre),") AND ",
+			?AINF("Continue cleanup on ~p.~p, itemsleft=~p",[P#state.name,P#state.type,Count]),
+			Sql = [<<"DELETE FROM actors WHERE (hash < ">>,butil:tobin(P#state.name)," OR hash > ",butil:tobin(P#state.to),") AND ",
 					" abs(random() % ",butil:tobin(Count),") < 1000;"],
 			NP = P
 	end,
@@ -385,6 +398,11 @@ cb_list_actors(P,From,Limit) ->
 			Sql = [<<"SELECT id FROM actors WHERE hash<">>,butil:tobin(P#state.nextshard),<<" LIMIT ">>, (butil:tobin(Limit)),
 				<<" OFFSET ">>,(butil:tobin(From)), ";"],
 			{reply,{P#state.nextshard,P#state.nextshardnode},Sql,P};
+		% false when is_integer(P#state.to) ->
+		% 	[<<"SELECT id FROM actors WHERE hash<=">>,butil:tobin(P#state.to)," AND ",
+		% 		"hash>=",butil:tobin(P#state.name),
+		% 		<<" LIMIT ">>, (butil:tobin(Limit)),
+		% 		<<" OFFSET ">>,(butil:tobin(From)), ";"];
 		false ->
 			[<<"SELECT id FROM actors WHERE hash >=">>,butil:tobin(P#state.name), <<" LIMIT ">>, (butil:tobin(Limit)),
 				<<" OFFSET ">>,(butil:tobin(From)), ";"]
@@ -560,7 +578,8 @@ cb_init(S,_Ev,{ok,[{columns,_},{rows,Rows}]}) ->
 
 cb_idle(#state{cleanup_proc = undefined} = S) when S#state.cleanup_pre /= undefined; S#state.cleanup_after /= undefined ->
 	?AINF("Idle continue cleanup ~p ~p",[{S#state.name,S#state.type},{S#state.cleanup_pre,S#state.cleanup_after}]),
-	{Pid,_} = spawn_monitor(fun() ->  do_cleanup(S#state.name,S#state.type,S#state.cleanup_pre, S#state.cleanup_after) end),
+	% S#state.cleanup_pre, S#state.cleanup_after
+	{Pid,_} = spawn_monitor(fun() ->  do_cleanup(S#state.name,S#state.type,S#state.name,S#state.to) end),
 	{ok,S#state{cleanup_proc = Pid}};
 cb_idle(_S) ->
 	ok.

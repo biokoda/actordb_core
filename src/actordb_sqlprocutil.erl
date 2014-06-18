@@ -289,7 +289,7 @@ continue_maybe(P,F,AEType) ->
 					continue_maybe(NP,NF,AEType)
 			end;
 		true ->
-			?DBG("Sending AE start on evnum=~p",[F#flw.match_index]),
+			?DBG("Sending AE start on evnum=~p",[F#flw.next_index]),
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 							F#flw.match_index,F#flw.match_term,recover}}]}),
@@ -304,7 +304,7 @@ continue_maybe(P,F,AEType) ->
 						wal_corruption ->
 							store_follower(P,F#flw{wait_for_response_since = make_ref()});
 						_ ->
-							?DBG("Sent AE on evnum=~p",[F#flw.match_index]),
+							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
 							store_follower(P,F#flw{wait_for_response_since = make_ref()})
 					end
 			end;
@@ -354,11 +354,13 @@ send_wal(P,#flw{file = File} = F) ->
 
 % Go back one entry
 rewind_wal(P) ->
+	?DBG("Rewinding wal"),
 	case file:position(P#dp.db,{cur,-(?PAGESIZE+40)}) of
 		{ok,_NPos} ->
 			{ok,<<_:32,Commit:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>>} = file:read(P#dp.db,40),
 			case ok of
 				_ when P#dp.evnum /= Evnum, Commit /= 0 ->
+					?DBG("Rewind at ~p",[Evnum]),
 					{ok,_} = file:position(P#dp.db,{cur,?PAGESIZE}),
 					file:truncate(P#dp.db),
 					P#dp{evnum = Evnum, evterm = Evterm};
@@ -557,8 +559,9 @@ start_verify(P,JustStarted) ->
 			case JustStarted == force orelse timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
 				true ->
 					CurrentTerm = P#dp.current_term+1,
-					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm}),
-					NP = reopen_db(P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name(), mors = master, verified = false}),
+					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum}),
+					NP = reopen_db(P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name(), 
+											mors = master, verified = false}),
 					{Verifypid,_} = spawn_monitor(fun() -> 
 									start_election(NP)
 										end),
@@ -1128,7 +1131,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 									{noreply,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
 							end;
 						_ ->
-							?DBG("Copy done"),
+							?DBG("Copy done at evnum=~p",[P#dp.evnum]),
 							NP = P#dp{locked = WithoutLock, dbcopy_to = DbCopyTo},
 							case LC#lck.actorname == P#dp.actorname of
 								true ->
@@ -1139,7 +1142,8 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 										Flw when is_tuple(Flw) ->
 											CQ = queue:in_r({CallFrom,{write,{undefined,<<>>,undefined}}},P#dp.callqueue),
 											{reply,ok,reply_maybe(store_follower(NP#dp{callqueue = CQ},
-														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.current_term, next_index = P#dp.evnum+1}))};
+														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.current_term, 
+																	next_index = P#dp.evnum+1}))};
 										_ ->
 											{reply,ok,NP}
 									end;
