@@ -528,8 +528,8 @@ state_rw_call(What,From,P) ->
 					?DBG("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ when Follower#flw.call_count > CallCount ->
-					?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p, cur_call_count=~p, received_count=~p",
-							[Node,Success,AEType,Follower#flw.match_index,EvNum,MatchEvnum,Follower#flw.call_count, CallCount]),
+					?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisEvNum=~p,cur_call_count=~p, received_count=~p",
+							[Node,Success,AEType,Follower#flw.match_index,Follower#flw.call_count, CallCount]),
 					{reply,ok,P};
 				_ ->
 					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p",
@@ -578,8 +578,8 @@ state_rw_call(What,From,P) ->
 											end;
 										{true,NP,NF} ->
 											% we can recover from wal
-											?DBG("Recovering from wal, for node=~p, {HisIndex,MyMaxIndex}=~p",
-													[NF#flw.node,{NF#flw.match_index,P#dp.evnum}]),
+											?DBG("Recovering from wal, for node=~p, match_index=~p,myevnum=~p",
+													[NF#flw.node,NF#flw.match_index,P#dp.evnum]),
 											reply(From,ok),
 											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF)}
 									end
@@ -1151,14 +1151,14 @@ check_inactivity(NTimer,P,NResponsesWaiting) ->
 					Now = actordb_local:actor_activity(P#dp.activity_now),
 					{noreply,check_timer(P#dp{activity_now = Now})}
 			end;
-		_ when Empty == false, P#dp.verified == false, NTimer > 1, is_tuple(P#dp.election) ->
-			case timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
-				true ->
-					?INF("Restarting election due to timeout"),
-					{noreply, check_timer(actordb_sqlprocutil:start_verify(P,false))};
-				false ->
-					{noreply, check_timer(P)}
-			end;
+		% _ when Empty == false, P#dp.verified == false, NTimer > 1, is_tuple(P#dp.election) ->
+		% 	case timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
+		% 		true ->
+		% 			?INF("Restarting election due to timeout"),
+		% 			{noreply, check_timer(actordb_sqlprocutil:start_verify(P,false))};
+		% 		false ->
+		% 			{noreply, check_timer(P)}
+		% 	end;
 		_ ->
 			Now = actordb_local:actor_activity(P#dp.activity_now),
 			case P#dp.mors of

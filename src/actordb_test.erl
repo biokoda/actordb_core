@@ -593,19 +593,19 @@ test_failednodes(_) ->
 	 	start_slaves([2]), ok 
 	 end},
 	 {timeout,20,fun basic_write/0},
-	 % fun() -> 
-	 % 	?debugFmt("Taking down node 2 and node 3",[]),
-	 % 	stop_slaves([2,3]),ok 
-	 % end,
-	 % fun() -> case catch fun basic_write/0 of
-	 % 			_ ->
-	 % 				ok
-	 % 		end end,
-	 % {timeout,20,fun() ->
-	 % 	?debugFmt("Starting back node 2 and node 3",[]),
-	 % 	start_slaves([2,3]), wait_is_ready(2),wait_is_ready(3), ok 
-	 % end},
-	 % {timeout,20,fun basic_write/0},
+	 fun() -> 
+	 	?debugFmt("Taking down node 2 and node 3",[]),
+	 	stop_slaves([2,3]),ok 
+	 end,
+	 fun() -> case catch fun basic_write/0 of
+	 			_ ->
+	 				ok
+	 		end end,
+	 {timeout,20,fun() ->
+	 	?debugFmt("Starting back node 2 and node 3",[]),
+	 	start_slaves([2,3]), wait_is_ready(2),wait_is_ready(3), ok 
+	 end},
+	 {timeout,20,fun basic_write/0},
 	 fun() -> test_print_end([1,2,3]) end
 	].
 
@@ -694,7 +694,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->
