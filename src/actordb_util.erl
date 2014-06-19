@@ -58,25 +58,32 @@ tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 			ok;
 		_ ->
 			case binary_to_term(VarPrefix) of
-				{Term,Leader,PrevEvnum,PrevTerm} ->
+				{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
 					ok;
-				{Term,Leader,PrevEvnum,PrevTerm,DbFile} ->
+				{Term,Leader,PrevEvnum,PrevTerm,CallCount,DbFile} ->
 					ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
 								{state_rw,{set_dbfile,DbFile}});
 				Invalid ->
-					Leader = PrevEvnum = PrevTerm = undefined,
+					CallCount = Leader = PrevEvnum = PrevTerm = undefined,
 					?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
 					exit(error)
 			end,
+			case lists:keyfind(actordb_conf:node_name(),1,CallCount) of
+				{_Me,Count} ->
+					ok;
+				_ ->
+					Count = 1
+			end,
+			put(count,Count),
 			Res = actordb_sqlproc:call_slave(Cb,Actor,Type,
-					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head}}),
+					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head,Count}}),
 			put(proceed,Res)
 	end,
 	% When header arrives, we check parameters if all ok.
 	% If not, ignore wal pages untill next header.
 	case get(proceed) of
 		ok ->
-			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head}},[nostart]);
+			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,get(count)}},[nostart]);
 		_ ->
 			ok
 	end,

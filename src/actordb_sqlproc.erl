@@ -410,7 +410,7 @@ state_rw_call(What,From,P) ->
 		% AE is split into multiple calls (because wal is sent page by page as it is written)
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
-		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType} ->
+		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,CallCount} ->
 			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType,
 												{PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
@@ -424,7 +424,7 @@ state_rw_call(What,From,P) ->
 					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
 							[AEType,{Term,P#dp.current_term}]),
 					reply(From,false),
-					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType),
+					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType,CallCount),
 					% Some node thinks its master and sent us appendentries start.
 					% Because we are master with higher term, we turn it down.
 					% But we also start a new election so that nodes get synchronized.
@@ -477,7 +477,7 @@ state_rw_call(What,From,P) ->
 							NP = P
 					end,
 					reply(From,false),
-					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType),
+					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType,CallCount),
 					{noreply,NP#dp{activity = make_ref()}};
 				_ when Term > P#dp.current_term ->
 					?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",[AEType,{Term,P#dp.current_term}]),
@@ -488,7 +488,7 @@ state_rw_call(What,From,P) ->
 				_ when AEType == empty ->
 					?DBG("AE start, ok for empty"),
 					reply(From,ok),
-					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType),
+					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType,CallCount),
 					{noreply,P#dp{verified = true,activity = make_ref()}};
 				% Ok, now it will start receiving wal pages
 				_ ->
@@ -497,7 +497,7 @@ state_rw_call(What,From,P) ->
 			end;
 		% Executed on follower.
 		% sqlite wal, header tells you if done (it has db size in header)
-		{appendentries_wal,Term,Header,Body,AEType} ->
+		{appendentries_wal,Term,Header,Body,AEType,CallCount} ->
 			case ok of
 				_ when Term == P#dp.current_term ->
 					actordb_sqlprocutil:append_wal(P,Header,Body),
@@ -511,26 +511,29 @@ state_rw_call(What,From,P) ->
 									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
 							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref(),locked = []},
 							reply(From,ok),
-							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType),
+							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
 							{noreply,NP}
 					end;
 				_ ->
 					?ERR("AE WAL received wrong term ~p",[{Term,P#dp.current_term}]),
 					reply(From,false),
-					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType),
+					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
 					{noreply,P}
 			end;
 		% Executed on leader.
-		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum,AEType} ->
+		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum,AEType,CallCount} ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
 			case Follower of
 				false ->
 					?DBG("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
+				_ when Follower#flw.call_count > CallCount ->
+					?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p, cur_call_count=~p, received_count=~p",
+							[Node,Success,AEType,Follower#flw.match_index,EvNum,MatchEvnum,Follower#flw.call_count, CallCount]),
+					{reply,ok,P};
 				_ ->
-					?DBG("AE response, from=~p, success=~p, type=~p, {PrevEvnum,HisEvNum,MatchSent}=~p, {From,Res}=~p",
-							[Node,Success,AEType,
-							 {Follower#flw.match_index,EvNum,MatchEvnum},{P#dp.callfrom,P#dp.callres}]),
+					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p",
+							[Node,Success,AEType,Follower#flw.match_index,EvNum,MatchEvnum]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
 											wait_for_response_since = undefined}, 
 					case Success of
@@ -539,7 +542,7 @@ state_rw_call(What,From,P) ->
 							{reply,ok,P};
 						true ->
 							reply(From,ok),
-							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw,AEType)),
+							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw)),
 							?DBG("AE response for node ~p, followers=~p",
 									[Node,[{F#flw.node,F#flw.match_index,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
 							{noreply,doqueue(NP)};
@@ -549,7 +552,7 @@ state_rw_call(What,From,P) ->
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
 								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
 						false when NFlw#flw.match_index == P#dp.evnum ->
-							% Follower is up to date. He replied false. Maybe our term is too old.
+							% Follower is up to date. He replied false. Maybe our term was too old.
 							{reply,ok,doqueue(actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw)))};
 						false ->
 							% If we are copying entire db to that node already, do nothing.
@@ -578,7 +581,7 @@ state_rw_call(What,From,P) ->
 											?DBG("Recovering from wal, for node=~p, {HisIndex,MyMaxIndex}=~p",
 													[NF#flw.node,{NF#flw.match_index,P#dp.evnum}]),
 											reply(From,ok),
-											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,recover)}
+											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF)}
 									end
 							end
 					end
@@ -770,17 +773,11 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
 					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
-			% We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only 
-			%  when election is won and this is first write after it.
 			case EvNum of
 				1 ->
-					{ok,Dbfile} = file:read_file(P#dp.dbpath),
-					{Compressed,CompressedSize} = esqlite3:lz4_compress(Dbfile),
-					<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
-					VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),
-												P#dp.evnum,P#dp.evterm,DbCompressed});
+					VarHeader = actordb_sqlprocutil:create_var_header_with_db(P);
 				_ ->
-					VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm})
+					VarHeader = actordb_sqlprocutil:create_var_header(P)
 			end,
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader),
 			case actordb_sqlite:okornot(Res) of
@@ -893,7 +890,7 @@ write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
 					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
-			VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
+			VarHeader = actordb_sqlprocutil:create_var_header(P),
 			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader)),
 			{noreply,P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
 						  transactioninfo = {Sql,EvNum+1,NewVers},
@@ -905,7 +902,7 @@ write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 update_followers(_Evnum,L) ->
 	Ref = make_ref(),
 	[begin
-		F#flw{wait_for_response_since = Ref}
+		F#flw{wait_for_response_since = Ref, call_count = F#flw.call_count+1}
 	end || F <- L].
 
 
@@ -1009,8 +1006,8 @@ handle_info(raft_refresh,P) ->
 						bkdcore_rpc:cast(F#flw.node,
 							{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 							 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-							 F#flw.match_index,F#flw.match_term,empty}}]}),
-						F#flw{wait_for_response_since = make_ref()};
+							 	F#flw.match_index,F#flw.match_term,empty,F#flw.call_count+1}}]}),
+						F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1};
 					false ->
 						F
 				end;
@@ -1075,44 +1072,51 @@ doqueue(P) ->
 	% ?INF("Queue notyet ~p",[{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
 	P.
 
+resend(P,N,[F|T],L) ->
+	case F#flw.wait_for_response_since of
+		undefined ->
+			resend(P,N,T,[F|L]);
+		_ ->
+			case actordb_local:min_ref_age(F#flw.wait_for_response_since) > 600 of
+				true ->
+					case bkdcore_rpc:is_connected(F#flw.node) of
+						true ->
+							?DBG("Resending appendentries ~p",[F#flw.node]),
+							bkdcore_rpc:cast(F#flw.node,
+								{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+								 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
+								 F#flw.match_index,F#flw.match_term,empty,F#flw.call_count+1}}]}),
+							resend(P,N+1,T,[F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1}|L]);
+						% Do not count nodes that are gone. If those would be counted then actors
+						%  would never go to sleep.
+						false ->
+							resend(P,N,T,[F|L])
+					end;
+				false ->
+					resend(P,N,T,[F|L])
+			end
+	end;
+resend(_,N,[],L) ->
+	{N,L}.
 
-check_inactivity(NTimer,P) ->
-	% ?INF("check inactivity"),
-	Empty = queue:is_empty(P#dp.callqueue),
-	Age = actordb_local:min_ref_age(P#dp.activity),
+check_inactivity(NTimer,#dp{mors = master} = P) ->
 	case P#dp.mors of
 		master ->
 			% If we have been waiting for response for an unreasonable amount of time (600ms),
 			%  call appendentries_start on node. If received node will call back appendentries_response.
-			NResponsesWaiting =
-			lists:foldl(fun(F,Count) ->
-				case F#flw.wait_for_response_since of
-					undefined ->
-						Count;
-					_ ->
-						case actordb_local:min_ref_age(F#flw.wait_for_response_since) > 600 of
-							true ->
-								case bkdcore_rpc:is_connected(F#flw.node) of
-									true ->
-										?DBG("Resending appendentries"),
-										bkdcore_rpc:cast(F#flw.node,
-											{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-											 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-											 F#flw.match_index,F#flw.match_term,empty}}]}),
-										Count+1;
-									% Do not count nodes that are gone. If those would be counted then actors
-									%  would never go to sleep.
-									false ->
-										Count
-								end;
-							false ->
-								Count
-						end
-				end
-			end,0,P#dp.follower_indexes);
+			{NResponsesWaiting,Followers} = resend(P,0,P#dp.follower_indexes,[]);
 		_ ->
-			NResponsesWaiting = 0
+			NResponsesWaiting = 0,
+			Followers = P#dp.follower_indexes
 	end,
+	check_inactivity(NTimer,P#dp{follower_indexes = Followers},NResponsesWaiting);
+check_inactivity(NTimer,P) ->
+	check_inactivity(NTimer,P,0).
+
+check_inactivity(NTimer,P,NResponsesWaiting) ->
+	% ?INF("check inactivity"),
+	Empty = queue:is_empty(P#dp.callqueue),
+	Age = actordb_local:min_ref_age(P#dp.activity),
 	case P of
 		#dp{callfrom = undefined, verified = true, transactionid = undefined,dbcopyref = undefined,
 			 dbcopy_to = [], locked = [], copyproc = undefined, copylater = undefined} when Empty, Age >= 1000, 

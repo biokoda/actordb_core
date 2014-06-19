@@ -10,8 +10,8 @@ reply(undefined,_Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
-ae_respond(P,LeaderNode,Success,PrevEvnum,AEType) ->
-	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType},
+ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
+	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType,CallCount},
 	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[nostart],
 									{state_rw,Resp},P#dp.cbmod]}).
 
@@ -65,7 +65,7 @@ reply_maybe(P,N,[]) ->
 									 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
 									 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
 									 ],
-							VarHeader = term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm}),
+							VarHeader = create_var_header(P),
 							Res1 = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.evterm,EvNumNew,VarHeader),
 							Res = {actordb_conf:node_name(),Res1},
 							case actordb_sqlite:okornot(Res1) of
@@ -127,7 +127,19 @@ reply_maybe(P,N,[]) ->
 			P
 	end.
 
+% We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only 
+%  when election is won and this is first write after it.
+create_var_header(P) ->
+	term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,follower_call_counts(P)}).
+create_var_header_with_db(P) ->
+	{ok,Dbfile} = file:read_file(P#dp.dbpath),
+	{Compressed,CompressedSize} = esqlite3:lz4_compress(Dbfile),
+	<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
+	term_to_binary({P#dp.current_term,actordb_conf:node_name(),
+							P#dp.evnum,P#dp.evterm,follower_call_counts(P),DbCompressed}).
 
+follower_call_counts(P) ->
+	[{F#flw.node,F#flw.call_count+1} || F <- P#dp.follower_indexes].
 
 reopen_db(#dp{mors = master} = P) ->
 	case ok of
@@ -281,54 +293,47 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 	end.
 
 
-continue_maybe(P,F,AEType) ->
+continue_maybe(P,F) ->
 	% Check if follower behind
 	?DBG("Continue maybe ~p {MyEvnum,NextIndex}=~p havefile=~p",
 			[F#flw.node,{P#dp.evnum,F#flw.next_index},F#flw.file /= undefined]),
 	case P#dp.evnum >= F#flw.next_index of
 		true when F#flw.file == undefined ->
-			case AEType of
-				% If head, then this was successful write from log head. But follower seems to be behind, this is because
-				%  there was a new write before this response reached leader.
-				head ->
-					store_follower(P,F);
-				_ ->
-					case try_wal_recover(P,F) of
-						{true,NP,NF} ->
-							continue_maybe(NP,NF,AEType);
-						{false,NP,_} ->
-							?DBG("sending entire db to ~p",[F#flw.node]),
-							Ref = make_ref(),
-							case bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,
-												[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-												{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
-								ok ->
-									{reply,_,NP1} = dbcopy_call({send_db,{F#flw.node,Ref,false,P#dp.actorname}},undefined,NP),
-									NP1;
-								_Err ->
-									?ERR("Error sending db ~p",[_Err]),
-									NP
-							end
+			case try_wal_recover(P,F) of
+				{true,NP,NF} ->
+					continue_maybe(NP,NF);
+				{false,NP,_} ->
+					?DBG("sending entire db to ~p",[F#flw.node]),
+					Ref = make_ref(),
+					case bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,
+										[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+										{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
+						ok ->
+							{reply,_,NP1} = dbcopy_call({send_db,{F#flw.node,Ref,false,P#dp.actorname}},undefined,NP),
+							NP1;
+						_Err ->
+							?ERR("Error sending db ~p",[_Err]),
+							NP
 					end
 			end;
 		true ->
 			?DBG("Sending AE start on evnum=~p",[F#flw.next_index]),
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-							F#flw.match_index,F#flw.match_term,recover}}]}),
+							F#flw.match_index,F#flw.match_term,recover,F#flw.call_count+1}}]}),
 			case StartRes of
 				false ->
 					% to be continued in appendentries_response
 					file:close(F#flw.file),
-					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref()});
+					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref(), call_count = F#flw.call_count+1});
 				ok ->
 					% Send wal
 					case send_wal(P,F) of
 						wal_corruption ->
-							store_follower(P,F#flw{wait_for_response_since = make_ref()});
+							store_follower(P,F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1});
 						_ ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
-							store_follower(P,F#flw{wait_for_response_since = make_ref()})
+							store_follower(P,F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1})
 					end
 			end;
 		% Follower uptodate, close file if open
@@ -357,7 +362,7 @@ send_wal(P,#flw{file = File} = F) ->
 					{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
 					<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
 					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover}},[nostart]]}),
+								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,F#flw.call_count+1}},[nostart]]}),
 					case WalRes of
 						ok when Commit == 0 ->
 							send_wal(P,F);

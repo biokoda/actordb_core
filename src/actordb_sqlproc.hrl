@@ -41,7 +41,7 @@
 
 
 -record(flw,{node, match_index = 0, match_term = 0, next_index = 0, 
-              file, wait_for_response_since}).
+              file, wait_for_response_since, call_count = 0}).
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
