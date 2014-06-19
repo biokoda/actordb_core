@@ -15,7 +15,8 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 -record(st,{name,type,time_since_ping = {0,0,0}, 
 			master_group = [], waiting = false, 
-			current_write = [], evnum = 0, am_i_master = false, timer}).
+			current_write = [], evnum = 0, am_i_master = false, timer,
+			nodelist, nodepos = 0}).
 
 start({Name,Type}) ->
 	start(Name,Type).
@@ -241,6 +242,12 @@ takemax(N,L) when N > 0 ->
 takemax(_,_) ->
 	[].
 
+create_nodelist() ->
+	L = lists:delete(actordb_conf:node_name(),bkdcore:nodelist()),
+	list_to_tuple(lists:sort(fun(A,B) -> actordb_util:hash([actordb_conf:node_name(), A]) <
+						   actordb_util:hash([actordb_conf:node_name(), B]) 
+				end,L)).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 
 % 							Callbacks
@@ -353,12 +360,6 @@ cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 % But master_ping needs to be handled. It tells us if state has changed.
 cb_redirected_call(S,MovedTo,{master_ping,MasterNode,Evnum,State},_MovedOrSlave) ->
 	Now = os:timestamp(),
-	case timer:now_diff(Now,S#st.time_since_ping) >= 900000 of
-		true ->
-			Time = Now;
-		false ->
-			Time = S#st.time_since_ping
-	end,
 	case S#st.evnum < Evnum of
 		true ->
 			case S#st.name of
@@ -367,15 +368,17 @@ cb_redirected_call(S,MovedTo,{master_ping,MasterNode,Evnum,State},_MovedOrSlave)
 				?STATE_NM_LOCAL ->
 					ok
 			end,
-			{reply,ok,S#st{evnum = Evnum, time_since_ping = Time, am_i_master = false},MasterNode};
+			{reply,ok,check_timer(S#st{evnum = Evnum, nodelist = create_nodelist(),
+										time_since_ping = Now, am_i_master = false}),MasterNode};
 		false ->
-			{reply,ok,S#st{time_since_ping = Time, am_i_master = false},MovedTo}
+			{reply,ok,check_timer(S#st{time_since_ping = Now, am_i_master = false}),MovedTo}
 	end;
 cb_redirected_call(_,_,_,_) ->
 	ok.
 
 % Initialize state on slaves (either inactive or part of master group).
 cb_unverified_call(#st{waiting = true, name = ?STATE_NM_GLOBAL} = S,{master_ping,MasterNode,Evnum,State})  ->
+	?ADBG("unverified call ping for global sharedstate",[]),
 	[MasterGroup] = butil:ds_vals([master_group],State),
 	set_global_state(MasterNode,State),
 	% set_init_state(Nodes,Groups,cfgnames()),
@@ -406,6 +409,7 @@ cb_unverified_call(_S,_Msg)  ->
 
 
 cb_nodelist(#st{name = ?STATE_NM_LOCAL} = S,_HasSchema) ->
+	?ADBG("local nodelist",[]),
 	case bkdcore:nodelist() of
 		[] ->
 			?AERR("Local state without nodelist."),
@@ -414,6 +418,7 @@ cb_nodelist(#st{name = ?STATE_NM_LOCAL} = S,_HasSchema) ->
 			{ok,S,bkdcore:cluster_nodes()}
 	end;
 cb_nodelist(#st{name = ?STATE_NM_GLOBAL} = S,HasSchema) ->
+	?ADBG("global nodelist",[]),
 	case HasSchema of
 		true ->
 			file:delete([bkdcore:statepath(),"/stateglobal"]),
@@ -467,22 +472,46 @@ cb_cast(_Msg,_S) ->
 
 % Either global or cluster master executes timer. Master always pings slaves. Slaves ping 
 %  passive nodes (nodes outside master_group)
-cb_info(ping_timer,S) ->
+cb_info(ping_timer,#st{am_i_master = false,nodelist = undefined} = S)  ->
+	cb_info(ping_timer,S#st{nodelist = create_nodelist()});
+cb_info(ping_timer,#st{} = S)  ->
 	Now = os:timestamp(),
 	self() ! raft_refresh,
 	case S#st.name of
 		?STATE_NM_GLOBAL ->
 			Msg = {master_ping,actordb_conf:node_name(),S#st.evnum,ets:tab2list(?GLOBALETS)},
-			[bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,[?MODULE,S#st.name,S#st.type,Msg]}) || Nd <- S#st.master_group];
+			case S#st.am_i_master of
+				true ->
+					Pos = S#st.nodepos,
+					[bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
+								[?MODULE,S#st.name,S#st.type,Msg]}) || Nd <- S#st.master_group];
+				false ->
+					Pos = S#st.nodepos+3,
+					case tuple_size(S#st.nodelist) >= 3 of
+						true ->
+							[begin
+								Nd = element(((NdPos+S#st.nodepos) rem tuple_size(S#st.nodelist))+1,S#st.nodelist),
+								bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
+										[?MODULE,S#st.name,S#st.type,Msg]}) 
+							 end || NdPos <- lists:seq(0,2)];
+						false ->
+							[begin
+								bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
+										[?MODULE,S#st.name,S#st.type,Msg]}) 
+							 end || Nd <- tuple_to_list(S#st.nodelist)]
+					end
+			end;
 		_ ->
-			ok
+			Pos = S#st.nodepos
 	end,
-	{noreply,check_timer(S#st{time_since_ping = Now})};
+	{noreply,check_timer(S#st{time_since_ping = Now, nodepos = Pos})};
 cb_info(_,_S) ->
 	noreply.
 cb_init(#st{name = ?STATE_NM_LOCAL} = S,_EvNum) ->
+	?ADBG("local cb_init",[]),
 	{ok,check_timer(S)};
 cb_init(#st{name = ?STATE_NM_GLOBAL} = _S,_EvNum) ->
+	?ADBG("global cb_init",[]),
 	{doread,<<"select * from state;">>}.
 cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	State = [{butil:toatom(Key),binary_to_term(base64:decode(Val))} || {Key,Val} <- State1],

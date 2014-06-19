@@ -44,7 +44,7 @@ find_local_shard(Actor,Type,Hash) ->
 find_local_shard(Actor,Type,Hash,Retry) ->
 	case catch find_shard(actordb_shardtree:local(),Hash) of
 		{'EXIT',_} ->
-			case Retry > 50 of
+			case Retry > 100 of
 				true ->
 					exit(initialize_timeout);
 				_ ->
