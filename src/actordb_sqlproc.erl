@@ -232,7 +232,7 @@ handle_call(Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
 handle_call({dbcopy,Msg},CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,check_timer(P));
 handle_call({state_rw,What},From,P) ->
-	state_rw_call(What,From,P#dp{activity = make_ref()});
+	state_rw_call(What,From,check_timer(P#dp{activity = make_ref()}));
 handle_call({commit,Doit,Id},From, P) ->
 	commit_call(Doit,Id,From,P);
 handle_call(Msg,From,P) ->
@@ -457,6 +457,7 @@ state_rw_call(What,From,P) ->
 						false ->
 							ok
 					end,
+					actordb_local:actor_mors(slave,LeaderNode),
 					state_rw_call(What,From,
 									doqueue(actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(
 												P#dp{mors = slave, verified = true, 
@@ -607,7 +608,7 @@ state_rw_call(What,From,P) ->
 				% Candidates term is lower than current_term, ignore.
 				_ when NewTerm < P#dp.current_term ->
 					DoElection = P#dp.mors == master,
-					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term,DoElection}),
+					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
 					NP = P;
 				% We've already seen this term, only vote yes if we have not voted
 				%  or have voted for this candidate already.
@@ -615,29 +616,29 @@ state_rw_call(What,From,P) ->
 					case (P#dp.voted_for == undefined orelse P#dp.voted_for == Candidate) of
 						true when Uptodate ->
 							DoElection = false,
-							reply(From,{true,actordb_conf:node_name(),NewTerm,DoElection}),
+							reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,election = Now,
 																masternode = undefined, masternodedist = undefined});
 						true ->
 							DoElection = P#dp.mors == master,
-							reply(From,{outofdate,actordb_conf:node_name(),NewTerm,DoElection}),
+							reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm});
 						false ->
 							DoElection = P#dp.mors == master,
-							reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term,DoElection}),
+							reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
 							NP = P
 					end;
 				% New candidates term is higher than ours, is he as up to date?
 				_ when Uptodate ->
 					DoElection = false,
-					reply(From,{true,actordb_conf:node_name(),NewTerm,DoElection}),
+					reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,election = Now,
 																masternode = undefined, masternodedist = undefined});
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
 				_ ->
 					DoElection = P#dp.mors == master,
-					reply(From,{outofdate,actordb_conf:node_name(),NewTerm,DoElection}),
+					reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm})
 			end,
 			% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
@@ -679,44 +680,49 @@ read_call([exists],_From,#dp{mors = master} = P) ->
 read_call(Msg,From,#dp{mors = master} = P) ->	
 	case actordb_sqlprocutil:has_schema_updated(P,[]) of
 		ok ->
-			case Msg of	
-				{Mod,Func,Args} ->
-					case apply(Mod,Func,[P#dp.cbstate|Args]) of
-						{reply,What,Sql,NS} ->
-							{reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
-						{reply,What,NS} ->
-							{reply,What,P#dp{cbstate = NS}};
-						{reply,What} ->
-							{reply,What,P};
-						{Sql,State} ->
-							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P#dp{cbstate = State}};
+			case P#dp.netchanges == actordb_local:net_changes() of
+				false ->
+					{noreply,P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)}};
+				true ->
+					case Msg of	
+						{Mod,Func,Args} ->
+							case apply(Mod,Func,[P#dp.cbstate|Args]) of
+								{reply,What,Sql,NS} ->
+									{reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
+								{reply,What,NS} ->
+									{reply,What,P#dp{cbstate = NS}};
+								{reply,What} ->
+									{reply,What,P};
+								{Sql,State} ->
+									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P#dp{cbstate = State}};
+								Sql ->
+									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
+							end;
+						{Sql,{Mod,Func,Args}} ->
+							case apply(Mod,Func,[P#dp.cbstate,actordb_sqlite:exec(P#dp.db,Sql,read)|Args]) of
+								{write,Write} ->
+									case Write of
+										_ when is_binary(Write); is_list(Write) ->
+											write_call({undefined,iolist_to_binary(Write),undefined},From,P);
+										{_,_,_} ->
+											write_call({Write,undefined,undefined},From,P)
+									end;
+								{write,Write,NS} ->
+									case Write of
+										_ when is_binary(Write); is_list(Write) ->
+											write_call({undefined,iolist_to_binary(Write),undefined},
+													   From,P#dp{cbstate = NS});
+										{_,_,_} ->
+											write_call({Write,undefined,undefined},From,P#dp{cbstate = NS})
+									end;
+								{reply,What,NS} ->
+									{reply,What,P#dp{cbstate = NS}};
+								{reply,What} ->
+									{reply,What,P}
+							end;
 						Sql ->
 							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
-					end;
-				{Sql,{Mod,Func,Args}} ->
-					case apply(Mod,Func,[P#dp.cbstate,actordb_sqlite:exec(P#dp.db,Sql,read)|Args]) of
-						{write,Write} ->
-							case Write of
-								_ when is_binary(Write); is_list(Write) ->
-									write_call({undefined,iolist_to_binary(Write),undefined},From,P);
-								{_,_,_} ->
-									write_call({Write,undefined,undefined},From,P)
-							end;
-						{write,Write,NS} ->
-							case Write of
-								_ when is_binary(Write); is_list(Write) ->
-									write_call({undefined,iolist_to_binary(Write),undefined},
-											   From,P#dp{cbstate = NS});
-								{_,_,_} ->
-									write_call({Write,undefined,undefined},From,P#dp{cbstate = NS})
-							end;
-						{reply,What,NS} ->
-							{reply,What,P#dp{cbstate = NS}};
-						{reply,What} ->
-							{reply,What,P}
-					end;
-				Sql ->
-					{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
+					end
 			end;
 		% Schema has changed. Execute write on schema update.
 		% Place this read in callqueue for later execution.
@@ -773,8 +779,8 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
 					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
-			case EvNum of
-				1 ->
+			case P#dp.flags bor ?FLAG_SEND_DB > 0 of
+				true ->
 					VarHeader = actordb_sqlprocutil:create_var_header_with_db(P);
 				_ ->
 					VarHeader = actordb_sqlprocutil:create_var_header(P)
@@ -786,12 +792,14 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 					case ok of
 						_ when P#dp.follower_indexes == [] ->
 							{noreply,doqueue(actordb_sqlprocutil:reply_maybe(
-										P#dp{callfrom = From, callres = Res,evnum = EvNum, 
+										P#dp{callfrom = From, callres = Res,evnum = EvNum, flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+												netchanges = actordb_local:net_changes(),
 												schemavers = NewVers,evterm = P#dp.current_term},1,[]))};
 						_ ->
 							% reply on appendentries response or later if nodes are behind.
-							{noreply, P#dp{callfrom = From, callres = Res, 
+							{noreply, P#dp{callfrom = From, callres = Res, flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 											follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
+											netchanges = actordb_local:net_changes(),
 										evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers}}
 					end;
 				Resp ->
@@ -967,6 +975,14 @@ handle_info(print_info,P) ->
 	handle_cast(print_info,P);
 handle_info(commit_transaction,P) ->
 	down_info(0,12345,done,P#dp{transactioncheckref = 12345});
+handle_info(do_checkpoint,P) ->
+	case P#dp.locked of
+		[ae] ->
+			erlang:send_after(100,self(),do_checkpoint);
+		_ ->
+			actordb_sqlprocutil:do_checkpoint(P)
+	end,
+	{noreply,P};
 handle_info(start_copy,P) ->
 	?DBG("Start copy ~p",[P#dp.copyfrom]),
 	case P#dp.copyfrom of
@@ -1113,7 +1129,7 @@ check_inactivity(NTimer,#dp{mors = master} = P) ->
 check_inactivity(NTimer,P) ->
 	check_inactivity(NTimer,P,0).
 
-check_inactivity(NTimer,P,NResponsesWaiting) ->
+check_inactivity(_NTimer,P,NResponsesWaiting) ->
 	% ?INF("check inactivity"),
 	Empty = queue:is_empty(P#dp.callqueue),
 	Age = actordb_local:min_ref_age(P#dp.activity),
@@ -1177,12 +1193,10 @@ check_inactivity(NTimer,P,NResponsesWaiting) ->
 							end,0,P#dp.follower_indexes),
 							case NotSynced of
 								0 ->
-									WalFrom = {0,0},
-									actordb_sqlprocutil:do_checkpoint(P);
+									WalFrom = actordb_sqlprocutil:do_checkpoint(P);
 								% If nodes arent synced, tolerate 30MB of wal size.
 								_ when DbSize >= 1024*1024*30 ->
-									WalFrom = {0,0},
-									actordb_sqlprocutil:do_checkpoint(P);
+									WalFrom = actordb_sqlprocutil:do_checkpoint(P);
 								_ ->
 									WalFrom = P#dp.wal_from
 							end;
@@ -1244,11 +1258,11 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 	case Reason of
 		% We are leader, evnum == 0, which means no other node has any data.
 		% If create flag not set stop.
-		leader when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
+		{leader,_} when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
 			P = P1,
 			?INF("Stopping with nocreate ",[]),
 			{stop,nocreate,P1};
-		leader ->
+		{leader,AllSynced} ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
@@ -1293,6 +1307,9 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 																		Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
 				undefined ->
+					% case iolist_size(Sql) of
+					% 	0 ->
+
 					?DBG("Running post election write on nodes ~p",[P#dp.follower_indexes]),
 					% it must always return noreply
 					write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP);

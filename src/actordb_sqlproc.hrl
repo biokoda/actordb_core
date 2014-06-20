@@ -15,6 +15,7 @@
 -define(ANUM,<<"7">>).
 -define(WLOG_STATUS,<<"8">>).
 -define(EVTERM,<<"9">>).
+-define(BASE_SCHEMA_VERS,<<"10">>).
 -define(EVNUMI,1).
 -define(EVCRCI,2).
 -define(SCHEMA_VERSI,3).
@@ -24,6 +25,7 @@
 -define(ANUMI,7).
 -define(WLOG_STATUSI,8).
 -define(EVTERMI,9).
+-define(BASE_SCHEMA_VERSI,10).
 
 -define(WLOG_NONE,0).
 -define(WLOG_ABANDONDED,-1).
@@ -36,7 +38,9 @@
 -define(FLAG_TEST,16).
 -define(FLAG_STARTLOCK,32).
 -define(FLAG_NOHIBERNATE,64).
+% internal flags
 -define(FLAG_WAIT_ELECTION,128).
+-define(FLAG_SEND_DB,256).
 
 
 
@@ -48,7 +52,7 @@
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0, 
 			activity, timerref = {undefined,0}, 
-			activity_now,schemanum,schemavers,flags = 0,
+			activity_now,schemanum,schemavers,flags = 0, netchanges = 0, %base_schemavers = 0
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]
 	current_term = 0,voted_for, follower_indexes = [],

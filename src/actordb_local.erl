@@ -13,17 +13,20 @@
 -export([subscribe_stat/0,report_write/0, report_read/0,get_nreads/0,get_nactors/0]).
 % Ref age
 -export([min_ref_age/1]).
+-export([net_changes/0]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
 -define(MB,1024*1024).
 -define(GB,1024*1024*1024).
 -define(STATS,runningstats).
 -define(REF_TIMES,reftimes).
+-define(NETCHANGES,netchanges).
 
 killactors() ->
 	gen_server:cast(?MODULE,killactors).
 
-
+net_changes() ->
+	butil:ds_val(netchanges,?NETCHANGES).
 
 % Tells you at least how old a ref is. Precision is only ~200ms and it goes up to 2s.
 % After 2s, it goes to 10s with precision 1s.
@@ -382,6 +385,7 @@ handle_info(save_updaters,P) ->
 			{noreply,P#dp{updaters_saved = false}}
 	end;
 handle_info({nodedown, Nd},P) ->
+	ets:update_counter(?NETCHANGES,netchanges,1),
 	case bkdcore:name_from_dist_name(Nd) of
 		undefined ->
 			{noreply,P};
@@ -393,6 +397,9 @@ handle_info({nodedown, Nd},P) ->
 			% end),
 			{noreply,P}
 	end;
+handle_info({nodeup,_},P)  ->
+	ets:update_counter(?NETCHANGES,netchanges,1),
+	{noreply,P};
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
@@ -472,6 +479,13 @@ init(_) ->
 		undefined ->
 			ets:new(actorsalive, [named_table,public,ordered_set,{heir,whereis(actordb_sup),<<>>},
 									{write_concurrency,true},{keypos,#actor.pid}]);
+		_ ->
+			ok
+	end,
+	case ets:info(?NETCHANGES,size) of
+		undefined ->
+			ets:new(?NETCHANGES, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]),
+			butil:ds_add(netchanges,0,?NETCHANGES);
 		_ ->
 			ok
 	end,

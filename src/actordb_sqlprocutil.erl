@@ -132,11 +132,17 @@ reply_maybe(P,N,[]) ->
 create_var_header(P) ->
 	term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,follower_call_counts(P)}).
 create_var_header_with_db(P) ->
-	{ok,Dbfile} = file:read_file(P#dp.dbpath),
-	{Compressed,CompressedSize} = esqlite3:lz4_compress(Dbfile),
-	<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
-	term_to_binary({P#dp.current_term,actordb_conf:node_name(),
-							P#dp.evnum,P#dp.evterm,follower_call_counts(P),DbCompressed}).
+	case filelib:file_size(P#dp.dbpath) of
+		?PAGESIZE ->
+			{ok,Dbfile} = file:read_file(P#dp.dbpath),
+			{Compressed,CompressedSize} = esqlite3:lz4_compress(Dbfile),
+			<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
+			term_to_binary({P#dp.current_term,actordb_conf:node_name(),
+									P#dp.evnum,P#dp.evterm,follower_call_counts(P),DbCompressed});
+		Size ->
+			?ERR("DB not pagesize, can not replicate the base db ~p",[Size]),
+			create_var_header(P)
+	end.
 
 follower_call_counts(P) ->
 	[{F#flw.node,F#flw.call_count+1} || F <- P#dp.follower_indexes].
@@ -184,6 +190,7 @@ init_opendb(P) ->
 			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
+			% BaseVers = butil:toint(butil:ds_val(?BASE_SCHEMA_VERSI,Rows,0)),
 			set_followers(true,NP#dp{evnum = Evnum, schemavers = Vers,
 						wal_from = wal_from([P#dp.dbpath,"-wal"]),
 						evterm = EvTerm,
@@ -615,14 +622,14 @@ start_election(P) ->
 	?DBG("Election, results ~p failed ~p, contacted ~p",[Results,_GetFailed,Nodes]),
 
 	% Sum votes. Start with 1 (we vote for ourselves)
-	case count_votes(Results,1) of
+	case count_votes(Results,{P#dp.evnum,P#dp.evterm},true,1) of
 		{outofdate,Node,_NewerTerm} ->
 			send_doelection(Node,P),
 			start_election_done(P,follower);
-		NumVotes when is_integer(NumVotes) ->
+		{NumVotes,AllSynced} when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
 				true ->
-					start_election_done(P,leader);
+					start_election_done(P,{leader,AllSynced});
 				false when (length(Results)+1)*2 =< ClusterSize ->
 					% Majority isn't possible anyway.
 					start_election_done(P,follower);
@@ -646,19 +653,19 @@ start_election(P) ->
 					start_election_done(P,follower)
 			end
 	end.
-start_election_done(P,leader) ->
-	?DBG("Exiting with signal ~p",[leader]),
+start_election_done(P,X) when is_tuple(X) ->
+	?DBG("Exiting with signal ~p",[X]),
 	case P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
 		true ->
 			receive
 				exit ->
-					exit(leader)
+					exit(X)
 				after 300 ->
 					?ERR("Wait election write waited too long."),
-					exit(leader)
+					exit(X)
 			end;
 		false ->
-			exit(leader)
+			exit(X)
 	end;
 start_election_done(P,Signal) ->
 	?DBG("Exiting with signal ~p",[Signal]),
@@ -667,18 +674,20 @@ start_election_done(P,Signal) ->
 send_doelection(Node,P) ->
 	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
 	bkdcore_rpc:call(Node,{actordb_sqlproc,call_slave,DoElectionMsg}).
-count_votes([{What,Node,HisLatestTerm,_WillHeDoElection}|T],N) ->
+count_votes([{What,Node,HisLatestTerm,NodeNumTerm}|T],NumTerm,AllSynced,N) ->
 	case What of
+		true when AllSynced, NodeNumTerm == NumTerm ->
+			count_votes(T,NumTerm,true,N+1);
 		true ->
-			count_votes(T,N+1);
+			count_votes(T,NodeNumTerm,false,N+1);
 		outofdate ->
 			{outofdate,Node,HisLatestTerm};
 		% already voted or something crashed
 		_ ->
-			count_votes(T,N)
+			count_votes(T,NumTerm,false,N)
 	end;
-count_votes([],N) ->
-	N.
+count_votes([],_,AllSynced,N) ->
+	{N,AllSynced}.
 
 
 post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
@@ -706,6 +715,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 				undefined ->
 					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
 					NP = P#dp{schemavers = SchemaVers},
+					Flags = P#dp.flags bor ?FLAG_SEND_DB,
 					% Set on firt write and not changed after. This is used to prevent a case of an actor
 					% getting deleted, but later created new. A server that was offline during delete missed
 					% the delete call and relies on actordb_events.
@@ -714,6 +724,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 								 Schema,CallWrite,
 							<<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>];
 				_ ->
+					Flags = P#dp.flags,
 					case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
 						{_,[]} ->
 							NP = P,
@@ -725,7 +736,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 										<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
 					end
 			end,
-			{NP#dp{callqueue = CQ},Sql,Callfrom};
+			{NP#dp{callqueue = CQ, flags = Flags},Sql,Callfrom};
 		_ ->
 			{P,SqlIn,Callfrom1}
 	end;
@@ -883,16 +894,33 @@ delactorfile(P) ->
 	end.
 
 do_checkpoint(P) ->
-	case P#dp.mors of
-		master ->
-			actordb_sqlite:checkpoint(P#dp.db),
-			[bkdcore_rpc:cast(F#flw.node,
-						{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}]})
-					 || F <- P#dp.follower_indexes, F#flw.match_index == P#dp.evnum];
+	% Only do one check point at a time.
+	case catch register(checkpointer,self()) of
+		true ->
+			?DBG("Executing checkpoint ~p",[P#dp.mors]),
+			case P#dp.mors of
+				master ->
+					actordb_sqlite:checkpoint(P#dp.db),
+					unregister(checkpointer),
+					[bkdcore_rpc:cast(F#flw.node,
+								{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}]})
+							 || F <- P#dp.follower_indexes, F#flw.match_index == P#dp.evnum];
+				_ ->
+					{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					actordb_sqlite:checkpoint(Db),
+					unregister(checkpointer),
+					actordb_sqlite:stop(Db)
+			end,
+			{0,0};
 		_ ->
-			{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-			actordb_sqlite:checkpoint(Db),
-			actordb_sqlite:stop(Db)
+			?DBG("Delaying checkpoint ~p",[P#dp.mors]),
+			case P#dp.mors of
+				master ->
+					ok;
+				_ ->
+					erlang:send_after(100,self(),do_checkpoint)
+			end,
+			P#dp.wal_from
 	end.
 
 delete_actor(P) ->
@@ -1038,7 +1066,7 @@ parse_opts(P,[]) ->
 			DbPath = lists:flatten(apply(P#dp.cbmod,cb_path,
 									[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
 									butil:tolist(P#dp.actorname)++"."++butil:tolist(P#dp.actortype),
-			P#dp{dbpath = DbPath,activity_now = actordb_sqlprocutil:actor_start(P)};
+			P#dp{dbpath = DbPath,activity_now = actor_start(P)};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.
