@@ -361,8 +361,9 @@ handle_info(compileshards,P) ->
 	?AINF("Compileshards ~p",[Local]),
 	bkdcore:mkmodule(actordb_shardtree,[{local,Local},{all,All}]),
 	actordb_shardmvr:local_shards_changed(P#dp.allshards,P#dp.localshards),
-	erlang:send_after(2000,self(),startshards),
-	{noreply,P#dp{shardsbeingtaken = Taken}};
+	% erlang:send_after(2000,self(),startshards),
+	% {noreply,P#dp{shardsbeingtaken = Taken}};
+	handle_info(startshards,P#dp{shardsbeingtaken = Taken});
 handle_info(readshards,P) ->
 	?AINF("Readshards ~p",[P#dp.allshards]),
 	case P#dp.allshards of

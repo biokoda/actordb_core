@@ -359,9 +359,11 @@ cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 % We are redirecting calls (so we know who master is and state is established).
 % But master_ping needs to be handled. It tells us if state has changed.
 cb_redirected_call(S,MovedTo,{master_ping,MasterNode,Evnum,State},_MovedOrSlave) ->
+	?ADBG("received ping"),
 	Now = os:timestamp(),
 	case S#st.evnum < Evnum of
 		true ->
+			?ADBG("Setting new state from ping"),
 			case S#st.name of
 				?STATE_NM_GLOBAL ->
 					set_global_state(MasterNode,State);
@@ -479,6 +481,7 @@ cb_info(ping_timer,#st{} = S)  ->
 	self() ! raft_refresh,
 	case S#st.name of
 		?STATE_NM_GLOBAL ->
+			?ADBG("Pinging nodes amimaster=~p",[S#st.am_i_master]),
 			Msg = {master_ping,actordb_conf:node_name(),S#st.evnum,ets:tab2list(?GLOBALETS)},
 			case S#st.am_i_master of
 				true ->
