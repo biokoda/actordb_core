@@ -147,6 +147,13 @@ create_var_header_with_db(P) ->
 follower_call_counts(P) ->
 	[{F#flw.node,F#flw.call_count+1} || F <- P#dp.follower_indexes].
 
+send_empty_ae(P,F) ->
+	bkdcore_rpc:cast(F#flw.node,
+			{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+			 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
+			 F#flw.match_index,F#flw.match_term,empty,F#flw.call_count+1}}]}),
+	F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1}.
+
 reopen_db(#dp{mors = master} = P) ->
 	case ok of
 		% we are master but db not open or open as file descriptor to -wal file
@@ -622,14 +629,14 @@ start_election(P) ->
 	?DBG("Election, results ~p failed ~p, contacted ~p",[Results,_GetFailed,Nodes]),
 
 	% Sum votes. Start with 1 (we vote for ourselves)
-	case count_votes(Results,{P#dp.evnum,P#dp.evterm},true,1) of
+	case count_votes(Results,{P#dp.evnum,P#dp.evterm},true,P#dp.follower_indexes,1) of
 		{outofdate,Node,_NewerTerm} ->
 			send_doelection(Node,P),
 			start_election_done(P,follower);
-		{NumVotes,AllSynced} when is_integer(NumVotes) ->
+		{NumVotes,Followers,AllSynced} when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
 				true ->
-					start_election_done(P,{leader,AllSynced});
+					start_election_done(P,{leader,Followers,AllSynced});
 				false when (length(Results)+1)*2 =< ClusterSize ->
 					% Majority isn't possible anyway.
 					start_election_done(P,follower);
@@ -674,20 +681,22 @@ start_election_done(P,Signal) ->
 send_doelection(Node,P) ->
 	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
 	bkdcore_rpc:call(Node,{actordb_sqlproc,call_slave,DoElectionMsg}).
-count_votes([{What,Node,HisLatestTerm,NodeNumTerm}|T],NumTerm,AllSynced,N) ->
+count_votes([{What,Node,HisLatestTerm,{Num,Term} = NodeNumTerm}|T],NumTerm,AllSynced,Followers,N) ->
+	F = lists:keyfind(Node,#flw.node,Followers),
+	NF = F#flw{match_index = Num, next_index = Num+1, match_term = Term},
 	case What of
 		true when AllSynced, NodeNumTerm == NumTerm ->
-			count_votes(T,NumTerm,true,N+1);
+			count_votes(T,NumTerm,true,lists:keystore(Node,#flw.node,Followers,NF),N+1);
 		true ->
-			count_votes(T,NodeNumTerm,false,N+1);
+			count_votes(T,NodeNumTerm,false,Followers,N+1);
 		outofdate ->
 			{outofdate,Node,HisLatestTerm};
 		% already voted or something crashed
 		_ ->
-			count_votes(T,NumTerm,false,N)
+			count_votes(T,NumTerm,false,Followers,N)
 	end;
-count_votes([],_,AllSynced,N) ->
-	{N,AllSynced}.
+count_votes([],_,AllSynced,F,N) ->
+	{N,F,AllSynced}.
 
 
 post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
@@ -1066,7 +1075,7 @@ parse_opts(P,[]) ->
 			DbPath = lists:flatten(apply(P#dp.cbmod,cb_path,
 									[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
 									butil:tolist(P#dp.actorname)++"."++butil:tolist(P#dp.actortype),
-			P#dp{dbpath = DbPath,activity_now = actor_start(P)};
+			P#dp{dbpath = DbPath,activity_now = actor_start(P), netchanges = actordb_local:net_changes()};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.

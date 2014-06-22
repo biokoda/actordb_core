@@ -682,7 +682,8 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 		ok ->
 			case P#dp.netchanges == actordb_local:net_changes() of
 				false ->
-					{noreply,P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)}};
+					?DBG("Running re-election before read"),
+					{noreply,actordb_sqlproc:start_verify(P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)},false)};
 				true ->
 					case Msg of	
 						{Mod,Func,Args} ->
@@ -1019,11 +1020,7 @@ handle_info(raft_refresh,P) ->
 			undefined ->
 				case bkdcore_rpc:is_connected(F#flw.node) of
 					true ->
-						bkdcore_rpc:cast(F#flw.node,
-							{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-							 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-							 	F#flw.match_index,F#flw.match_term,empty,F#flw.call_count+1}}]}),
-						F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1};
+						F = actordb_sqlprocutil:send_empty_ae(P,F);
 					false ->
 						F
 				end;
@@ -1098,11 +1095,7 @@ resend(P,N,[F|T],L) ->
 					case bkdcore_rpc:is_connected(F#flw.node) of
 						true ->
 							?DBG("Resending appendentries ~p",[F#flw.node]),
-							bkdcore_rpc:cast(F#flw.node,
-								{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-								 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-								 F#flw.match_index,F#flw.match_term,empty,F#flw.call_count+1}}]}),
-							resend(P,N+1,T,[F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1}|L]);
+							resend(P,N+1,T,[actordb_sqlprocutil:send_empty_ae(P,F)|L]);
 						% Do not count nodes that are gone. If those would be counted then actors
 						%  would never go to sleep.
 						false ->
@@ -1262,14 +1255,14 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			P = P1,
 			?INF("Stopping with nocreate ",[]),
 			{stop,nocreate,P1};
-		{leader,AllSynced} ->
+		{leader,NewFollowers,AllSynced} ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													locked = lists:delete(ae,P1#dp.locked),
 													verified = true}),
 			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
-			?DBG("Elected leader term=~p, repltype=~p",[P1#dp.current_term,ReplType]),
+			?DBG("Elected leader term=~p, nodes_synec=~p",[P1#dp.current_term,AllSynced]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),ReplType),
 
 			case P#dp.schemavers of
@@ -1307,12 +1300,17 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 																		Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
 				undefined ->
-					% case iolist_size(Sql) of
-					% 	0 ->
-
-					?DBG("Running post election write on nodes ~p",[P#dp.follower_indexes]),
-					% it must always return noreply
-					write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP);
+					% If nothing to store and all nodes synced, send an empty AE.
+					case iolist_size(Sql) of
+						0 when AllSynced ->
+							?DBG("Nodes synced, running empty AE."),
+							NewFollowers1 = [send_empty_ae(P,NF) || NF <- NewFollowers],
+							{noreply,NP#dp{callres = ok,follower_indexes = NewFollowers1}};
+						_ ->
+							?DBG("Running post election write on nodes ~p",[P#dp.follower_indexes]),
+							% it must always return noreply
+							write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP)
+					end;
 				_ ->
 					?DBG("Delaying election write callres=~p, followers=~p",[P#dp.callres,P#dp.follower_indexes]),
 					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,{write,{undefined,Sql,NP#dp.transactionid}}},
