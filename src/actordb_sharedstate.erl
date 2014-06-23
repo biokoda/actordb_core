@@ -487,7 +487,7 @@ cb_info(ping_timer,#st{} = S)  ->
 				true ->
 					Pos = S#st.nodepos,
 					[bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
-								[?MODULE,S#st.name,S#st.type,Msg]}) || Nd <- S#st.master_group];
+								[?MODULE,S#st.name,S#st.type,Msg]}) || Nd <- S#st.master_group, Nd /= actordb_conf:node_name()];
 				false ->
 					Pos = S#st.nodepos+3,
 					case tuple_size(S#st.nodelist) >= 3 of

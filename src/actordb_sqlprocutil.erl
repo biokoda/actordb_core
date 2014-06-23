@@ -149,7 +149,7 @@ follower_call_counts(P) ->
 
 send_empty_ae(P,F) ->
 	bkdcore_rpc:cast(F#flw.node,
-			{?MODULE,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+			{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 			 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 			 F#flw.match_index,F#flw.match_term,empty,F#flw.call_count+1}}]}),
 	F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1}.

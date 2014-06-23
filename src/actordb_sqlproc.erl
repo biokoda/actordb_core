@@ -1020,7 +1020,7 @@ handle_info(raft_refresh,P) ->
 			undefined ->
 				case bkdcore_rpc:is_connected(F#flw.node) of
 					true ->
-						F = actordb_sqlprocutil:send_empty_ae(P,F);
+						actordb_sqlprocutil:send_empty_ae(P,F);
 					false ->
 						F
 				end;
@@ -1128,13 +1128,12 @@ check_inactivity(_NTimer,P,NResponsesWaiting) ->
 	Age = actordb_local:min_ref_age(P#dp.activity),
 	case P of
 		#dp{callfrom = undefined, verified = true, transactionid = undefined,dbcopyref = undefined,
-			 dbcopy_to = [], locked = [], copyproc = undefined, copylater = undefined} when Empty, Age >= 1000, 
-			 																				NResponsesWaiting == 0 ->
+			 dbcopy_to = [], locked = [], copyproc = undefined, copylater = undefined} when Empty, Age >= 1000 ->
 		
 			case P#dp.movedtonode of
 				undefined ->
 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
-						true ->
+						true when NResponsesWaiting == 0 ->
 							?DBG("Die because temporary ~p ~p master ~p",[P#dp.actorname,P#dp.actortype,P#dp.masternode]),
 							{stop,normal,P};
 						never ->
@@ -1251,7 +1250,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 	case Reason of
 		% We are leader, evnum == 0, which means no other node has any data.
 		% If create flag not set stop.
-		{leader,_} when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
+		{leader,_,_} when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
 			P = P1,
 			?INF("Stopping with nocreate ",[]),
 			{stop,nocreate,P1};
@@ -1304,7 +1303,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 					case iolist_size(Sql) of
 						0 when AllSynced ->
 							?DBG("Nodes synced, running empty AE."),
-							NewFollowers1 = [send_empty_ae(P,NF) || NF <- NewFollowers],
+							NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
 							{noreply,NP#dp{callres = ok,follower_indexes = NewFollowers1}};
 						_ ->
 							?DBG("Running post election write on nodes ~p",[P#dp.follower_indexes]),
