@@ -145,7 +145,7 @@ actor_started(Name,Type,Size) ->
 			put(localstarted,true),
 			butil:ds_add({Now,self()},actoractivity),
 			butil:ds_add(#actor{pid = self(),name = Name, type = Type, now = Now, cachesize = Size},actorsalive),
-			ets:update_counter(actorsalive,whereis(?MODULE),{#actor.cachesize,Size}),
+			ets:update_counter(actorsalive,0,{#actor.cachesize,Size}),
 			gen_server:cast(?MODULE,{actor_started,self()}),
 			Now;
 		_ ->
@@ -177,7 +177,7 @@ actor_mors(Mors,MasterNode) ->
 actor_cachesize(Size) ->
 	A = butil:ds_val(self(),actorsalive),
 	ets:update_element(actorsalive,self(),{#actor.cachesize,Size}),
-	ets:update_counter(actorsalive,whereis(?MODULE),{#actor.cachesize,Size - A#actor.cachesize}).
+	ets:update_counter(actorsalive,0,{#actor.cachesize,Size - A#actor.cachesize}).
 
 % Call when actor does something. No need for every activity, < 5 times per second at the most.
 actor_activity(PrevNow) ->
@@ -256,6 +256,7 @@ killactors(N,Key) ->
 
 
 handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
+	start_timer(P),
 	case butil:ds_val(PID,actorsalive) of
 		undefined ->
 			case lists:keyfind(PID,2,P#dp.mpids) of
@@ -268,42 +269,11 @@ handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 		Actor ->
 			butil:ds_rem(PID,actorsalive),
 			butil:ds_rem(Actor#actor.now,actoractivity),
-			ets:update_counter(actorsalive,whereis(?MODULE),{#actor.cachesize,-Actor#actor.cachesize}),
+			ets:update_counter(actorsalive,0,{#actor.cachesize,-Actor#actor.cachesize}),
 			{noreply,P}
 	end;
-handle_info({timeout,N},P) ->
-	erlang:send_after(200,self(),{timeout,N+1}),
-	{T1,T2,T3,T4,T5,T6,T7,T8,T9,_} = butil:ds_val(twoseconds,?REF_TIMES),
-	butil:ds_add(twoseconds,{make_ref(),T1,T2,T3,T4,T5,T6,T7,T8,T9},?REF_TIMES),
-	case N rem 5 == 0 of
-		true ->
-			{S1,S2,S3,S4,S5,S6,S7,S8,S9,_} = butil:ds_val(tenseconds,?REF_TIMES),
-			butil:ds_add(tenseconds,{make_ref(),S1,S2,S3,S4,S5,S6,S7,S8,S9},?REF_TIMES);
-		false ->
-			ok
-	end,
-	handle_info(check_limits,P);
-handle_info(check_limits,P) ->
-	NProc = ets:info(actoractivity,size),
-	Memsize = (butil:ds_val(self(),actorsalive))#actor.cachesize,
-	case NProc < P#dp.proclimit andalso Memsize < P#dp.memlimit of
-		true ->
-			% io:format("NOKILL ~p ~p~n",[Memsize,0.1*P#dp.memlimit]),
-			LastCull = P#dp.lastcull;
-		false ->
-			Now = os:timestamp(),
-			case timer:now_diff(Now,P#dp.lastcull) > 1000000 of
-				true ->
-					?AINF("Killing off inactive actors proc ~p, mem ~p",[{NProc,P#dp.proclimit},{Memsize,P#dp.memlimit}]),
-					Killn = NProc - P#dp.proclimit - erlang:round(P#dp.proclimit*0.2),
-					LastCull = Now,
-					killactors(Killn,ets:last(actoractivity));
-				false ->
-					LastCull = P#dp.lastcull
-			end
-	end,
-	{noreply,P#dp{lastcull = LastCull}};
 handle_info(reconnect_raft,P) ->
+	start_timer(P),
 	erlang:send_after(500,self(),reconnect_raft),
 	esqlite3:tcp_reconnect(),
 	{noreply,P};
@@ -458,7 +428,7 @@ code_change(_, P, _) ->
 	{ok, P}.
 init(_) ->
 	net_kernel:monitor_nodes(true),
-	erlang:send_after(200,self(),{timeout,0}),
+	% erlang:send_after(200,self(),{timeout,0}),
 	erlang:send_after(10000,self(),check_mem),
 	erlang:send_after(1000,self(),read_ref),
 	erlang:send_after(500,self(),reconnect_raft),
@@ -508,7 +478,7 @@ init(_) ->
 		_ ->
 			ok
 	end,
-	butil:ds_add(#actor{pid = self(),cachesize = 0},actorsalive),
+	butil:ds_add(#actor{pid = 0,cachesize = 0},actorsalive),
 	case butil:get_os() of
 		win ->
 			Ulimit = (#dp{})#dp.ulimit;
@@ -539,8 +509,54 @@ init(_) ->
 		_ ->
 			Memlimit = erlang:round(Memlimit1*0.5)
 	end,
-	{ok,#dp{memlimit = Memlimit, ulimit = Ulimit, proclimit = Proclimit, prev_sec_from = make_ref(),prev_sec_to = make_ref()}}.
+	P = #dp{memlimit = Memlimit, ulimit = Ulimit, proclimit = Proclimit, prev_sec_from = make_ref(),prev_sec_to = make_ref()},
+	start_timer(P),
+	{ok,P}.
 
+
+-record(tmr,{proclimit, memlimit, lastcull = {0,0,0},n = 0}).
+
+start_timer(P) ->
+	case whereis(short_timer) of
+		undefined ->
+			spawn_monitor(fun() -> register(short_timer,self()), 
+								timer(#tmr{proclimit = P#dp.proclimit, memlimit = P#dp.memlimit}) end);
+		_ ->
+			ok
+	end.
+timer(P) ->
+	receive
+	after 200 ->
+		{T1,T2,T3,T4,T5,T6,T7,T8,T9,_} = butil:ds_val(twoseconds,?REF_TIMES),
+		butil:ds_add(twoseconds,{make_ref(),T1,T2,T3,T4,T5,T6,T7,T8,T9},?REF_TIMES),
+		case P#tmr.n rem 5 == 0 of
+			true ->
+				{S1,S2,S3,S4,S5,S6,S7,S8,S9,_} = butil:ds_val(tenseconds,?REF_TIMES),
+				butil:ds_add(tenseconds,{make_ref(),S1,S2,S3,S4,S5,S6,S7,S8,S9},?REF_TIMES);
+			false ->
+				ok
+		end,
+		
+		NProc = ets:info(actoractivity,size),
+		Memsize = (butil:ds_val(0,actorsalive))#actor.cachesize,
+		case NProc < P#tmr.proclimit andalso Memsize < P#tmr.memlimit of
+			true ->
+				% io:format("NOKILL ~p ~p~n",[Memsize,0.1*P#dp.memlimit]),
+				LastCull1 = P#tmr.lastcull;
+			false ->
+				Now = os:timestamp(),
+				case timer:now_diff(Now,P#tmr.lastcull) > 1000000 of
+					true ->
+						?AINF("Killing off inactive actors proc ~p, mem ~p",[{NProc,P#tmr.proclimit},{Memsize,P#tmr.memlimit}]),
+						Killn = NProc - P#tmr.proclimit - erlang:round(P#tmr.proclimit*0.2),
+						LastCull1 = Now,
+						killactors(Killn,ets:last(actoractivity));
+					false ->
+						LastCull1 = P#tmr.lastcull
+				end
+		end,
+		timer(P#tmr{lastcull = LastCull1, n = P#tmr.n+1})
+	end.
 
 create_mupdaters(0,L) ->
 	L;

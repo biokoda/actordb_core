@@ -478,13 +478,13 @@ cb_info(ping_timer,#st{am_i_master = false,nodelist = undefined} = S)  ->
 	cb_info(ping_timer,S#st{nodelist = create_nodelist()});
 cb_info(ping_timer,#st{} = S)  ->
 	Now = os:timestamp(),
-	self() ! raft_refresh,
+	% self() ! raft_refresh,
 	case S#st.name of
 		?STATE_NM_GLOBAL ->
-			?ADBG("Pinging nodes amimaster=~p",[S#st.am_i_master]),
 			Msg = {master_ping,actordb_conf:node_name(),S#st.evnum,ets:tab2list(?GLOBALETS)},
 			case S#st.am_i_master of
 				true ->
+					?ADBG("Pinging nodes amimaster=~p, nodes=~p",[S#st.am_i_master,S#st.master_group]),
 					Pos = S#st.nodepos,
 					[bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
 								[?MODULE,S#st.name,S#st.type,Msg]}) || Nd <- S#st.master_group, Nd /= actordb_conf:node_name()];
@@ -494,6 +494,7 @@ cb_info(ping_timer,#st{} = S)  ->
 						true ->
 							[begin
 								Nd = element(((NdPos+S#st.nodepos) rem tuple_size(S#st.nodelist))+1,S#st.nodelist),
+								?ADBG("Pinging node=~p",[Nd]),
 								bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
 										[?MODULE,S#st.name,S#st.type,Msg]}) 
 							 end || NdPos <- lists:seq(0,2)];
@@ -508,7 +509,8 @@ cb_info(ping_timer,#st{} = S)  ->
 			Pos = S#st.nodepos
 	end,
 	{noreply,check_timer(S#st{time_since_ping = Now, nodepos = Pos})};
-cb_info(_,_S) ->
+cb_info(_Msg,S) ->
+	% ?AERR("Invalid info msg ~p ~p",[_Msg,S]),
 	noreply.
 cb_init(#st{name = ?STATE_NM_LOCAL} = S,_EvNum) ->
 	?ADBG("local cb_init",[]),

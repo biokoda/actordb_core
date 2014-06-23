@@ -104,7 +104,7 @@ reply_maybe(P,N,[]) ->
 									schemavers = NewVers,activity = make_ref()}),
 			case Msg of
 				undefined ->
-					NP;
+					checkpoint(NP);
 				_ ->
 					Ref = make_ref(),
 					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
@@ -113,6 +113,7 @@ reply_maybe(P,N,[]) ->
 							{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
 							NP1;
 						_ ->
+							erlang:send_after(3000,self(),retry_copy),
 							% Unable to start copy/move operation. Store it for later.
 							NP#dp{copylater = {os:timestamp(),Msg}}
 					end
@@ -120,7 +121,7 @@ reply_maybe(P,N,[]) ->
 		true ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
 			reply(P#dp.callfrom,P#dp.callres),
-			do_cb(P#dp{callfrom = undefined, callres = undefined});
+			checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined}));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
 				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
@@ -147,7 +148,36 @@ create_var_header_with_db(P) ->
 follower_call_counts(P) ->
 	[{F#flw.node,F#flw.call_count+1} || F <- P#dp.follower_indexes].
 
+
+resend_ae(P,N,[F|T],L) ->
+	case F#flw.wait_for_response_since of
+		undefined ->
+			resend_ae(P,N,T,[F|L]);
+		_ ->
+			Age = actordb_local:min_ref_age(F#flw.wait_for_response_since),
+			case Age > 600 of
+				true ->
+					case bkdcore_rpc:is_connected(F#flw.node) of
+						true ->
+							?DBG("Resending appendentries ~p",[F#flw.node]),
+							resend_ae(P,N+1,T,[send_empty_ae(P,F)|L]);
+						% Do not count nodes that are gone. If those would be counted then actors
+						%  would never go to sleep.
+						false ->
+							?DBG("Not connected to ~p",[F#flw.node]),
+							resend_ae(P,N,T,[F|L])
+					end;
+				false ->
+					?DBG("Have not waited long enough ~p ~p ~p",[Age,F#flw.wait_for_response_since, ets:tab2list(reftimes)]),
+					% Increment counter to keep timer running.
+					resend_ae(P,N+1,T,[F|L])
+			end
+	end;
+resend_ae(_,N,[],L) ->
+	{N,L}.
+
 send_empty_ae(P,F) ->
+	?DBG("sending empty ae to ~p",[F#flw.node]),
 	bkdcore_rpc:cast(F#flw.node,
 			{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 			 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
@@ -902,6 +932,32 @@ delactorfile(P) ->
 			file:delete(P#dp.dbpath++"-shm")
 	end.
 
+checkpoint(P) ->
+	{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
+	DbSize = NPages*(?PAGESIZE+40),
+	case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
+		true ->
+			NotSynced = lists:foldl(fun(F,Count) ->
+				case F#flw.match_index /= P#dp.evnum of
+					true ->
+						Count+1;
+					false ->
+						Count
+				end 
+			end,0,P#dp.follower_indexes),
+			case NotSynced of
+				0 ->
+					P#dp{wal_from = do_checkpoint(P)};
+				% If nodes arent synced, tolerate 30MB of wal size.
+				_ when DbSize >= 1024*1024*30 ->
+					P#dp{wal_from = do_checkpoint(P)};
+				_ ->
+					P
+			end;
+		false ->
+			P
+	end.
+
 do_checkpoint(P) ->
 	% Only do one check point at a time.
 	case catch register(checkpointer,self()) of
@@ -1093,6 +1149,47 @@ parse_opts(P,[]) ->
 % 
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+check_locks(P,[H|T],L) when is_tuple(H#lck.time) ->
+	case timer:now_diff(os:timestamp(),H#lck.time) > 3000000 of
+		true ->
+			?ERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,H#lck.node,H#lck.ref]),
+			check_locks(P,T,L);
+		false ->
+			check_locks(P,T,[H|L])
+	end;
+check_locks(P,[H|T],L) ->
+	check_locks(P,T,[H|L]);
+check_locks(_,[],L) ->
+	L.
+
+retry_copy(#dp{copylater = undefined} = P) ->
+	P;
+retry_copy(P) ->
+	{LastTry,Copy} = P#dp.copylater,
+	case timer:now_diff(os:timestamp(),LastTry) > 1000000*3 of
+		true ->
+			case Copy of
+				{move,Node} ->
+					NewActor = P#dp.actorname,
+					IsMove = true,
+					Msg = {move,actordb_conf:node_name()};
+				{split,MFA,Node,OldActor,NewActor} ->
+					IsMove = {split,MFA},
+					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor}
+			end,
+			Ref = make_ref(),
+			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+														{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
+				ok ->
+					{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},undefined,P),
+					NP1#dp{copylater = undefined};
+				_ ->
+					erlang:send_after(3000,self(),retry_copy),
+					P#dp{copylater = {os:timestamp(),Msg}}
+			end;
+		false ->
+			P
+	end.
 
 % Initialize call on node that is source of copy
 dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
@@ -1151,6 +1248,7 @@ dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 	Size = filelib:file_size([P#dp.dbpath,"-wal"]),
 	case Size =< Data of
 		true when P#dp.transactionid == undefined ->
+			erlang:send_after(1000,self(),check_locks),
 			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},
 				P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 		true ->

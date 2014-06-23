@@ -51,7 +51,7 @@
 -record(lck,{ref,pid,ismove,node,time,actorname}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0, 
-			activity, timerref = {undefined,0}, 
+			activity, resend_ae_timer, %timerref = {undefined,0}, 
 			activity_now,schemanum,schemavers,flags = 0, netchanges = 0, %base_schemavers = 0
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]

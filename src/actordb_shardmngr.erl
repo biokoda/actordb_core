@@ -333,9 +333,10 @@ deser_prop(P) ->
 	?P2R(P).
 
 handle_cast(schema_changed,P) ->
+	?AINF("Schema changed"),
 	handle_info({actordb,sharedstate_change},P#dp{haveschema = true});
 handle_cast({shard_started,Pid,Shard,Type},P) ->
-	?ADBG("shard_started"),
+	?ADBG("shard_started ~p",[Shard]),
 	case lists:keymember(Pid,1,P#dp.localshardpids) of
 		false ->
 			erlang:monitor(process,Pid),
@@ -415,7 +416,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
 					self() ! readshards,
 					{noreply,P#dp{allshards = GlobalShards,getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local, 
 									dirty = false}};
-				_ ->
+				_G->
 					{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
 					{noreply,P#dp{getstatepid = NPid, shardsbeingtaken = P#dp.shardsbeingtaken++Local}}
 			end;
@@ -439,11 +440,13 @@ handle_info({'DOWN',_Monitor,_,PID,Result},P) ->
 % 			{noreply,P}
 % 	end;
 handle_info({actordb,sharedstate_change},P) ->
-	?ADBG("GLobal statechange ~p",[bkdcore:node_name()]),
-	case bkdcore:nodelist() /= [] andalso actordb_sharedstate:is_ok() andalso P#dp.haveschema of
+	HaveNodes = bkdcore:nodelist() /= [],
+	case HaveNodes andalso actordb_sharedstate:is_ok() andalso P#dp.haveschema of
 		false ->
+			?ADBG("Global statechange conditions failed ~p",[{HaveNodes,actordb_sharedstate:is_ok(),P#dp.haveschema}]),
 			{noreply,P};
 		_ ->
+			?ADBG("GLobal statechange ~p ~p",[bkdcore:node_name(),P#dp.getstatepid]),
 			case P#dp.getstatepid of
 				undefined ->
 					{Pid,_} =  spawn_monitor(fun() -> async_getstate() end),

@@ -702,7 +702,8 @@ slave_name(N) ->
 fullname(N) ->
 	butil:toatom(slave_name(N)++"@127.0.0.1").
 
-wait_tree(_,X) when X < 0 ->
+wait_tree(Nd,X) when X < 0 ->
+	?debugFmt("Timeout waiting for shard for ~p",[Nd]),
 	exit(timeout);
 wait_tree(Nd,N) ->
 	case rpc:call(Nd,actordb_shardtree,all,[]) of
