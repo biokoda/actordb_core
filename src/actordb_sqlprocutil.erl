@@ -25,7 +25,7 @@ append_wal(P,Header,Bin) ->
 	end.
 
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
-	P;
+	doqueue(P);
 reply_maybe(P) ->
 	reply_maybe(P,1,P#dp.follower_indexes).
 reply_maybe(P,N,[H|T]) ->
@@ -100,8 +100,8 @@ reply_maybe(P,N,[]) ->
 			end,
 			?DBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
 			reply(From,Res),
-			NP = do_cb(P#dp{callfrom = undefined, callres = undefined, 
-									schemavers = NewVers,activity = make_ref()}),
+			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, 
+									schemavers = NewVers,activity = make_ref()})),
 			case Msg of
 				undefined ->
 					checkpoint(NP);
@@ -121,7 +121,7 @@ reply_maybe(P,N,[]) ->
 		true ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
 			reply(P#dp.callfrom,P#dp.callres),
-			checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined}));
+			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined})));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
 				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
@@ -190,13 +190,13 @@ reopen_db(#dp{mors = master} = P) ->
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
 			garbage_collect(),
-			init_opendb(P);
+			doqueue(init_opendb(P));
 		_ ->
 			case P#dp.wal_from == {0,0} of
 				true ->
-					P#dp{wal_from = wal_from([P#dp.dbpath,"-wal"])};
+					doqueue(P#dp{wal_from = wal_from([P#dp.dbpath,"-wal"])});
 				false ->
-					P
+					doqueue(P)
 			end
 	end;
 reopen_db(P) ->
@@ -210,9 +210,9 @@ reopen_db(P) ->
 				{ok,_WalSize} ->
 					ok
 			end,
-			P#dp{db = F};
+			doqueue(P#dp{db = F});
 		_ ->
-			P
+			doqueue(P)
 	end.
 
 init_opendb(P) ->
@@ -449,6 +449,52 @@ rewind_wal(P) ->
 
 save_term(P) ->
 	ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum}),
+	P.
+
+
+doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transactionid == undefined, P#dp.locked == [] ->
+	case queue:is_empty(P#dp.callqueue) of
+		true ->
+			% ?INF("Queue empty"),
+			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
+				{ok,NS} ->
+					P#dp{cbstate = NS};
+				_ ->
+					P
+			end;
+		false ->
+			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
+			{From,Msg} = Call,
+			case actordb_sqlproc:handle_call(Msg,From,P#dp{callqueue = CQ}) of
+				{reply,Res,NP} ->
+					reply(From,Res),
+					doqueue(NP);
+				{stop,_,NP} ->
+					self() ! stop,
+					NP;
+				% If call returns noreply, it will continue processing later.
+				{noreply,NP} ->
+					% We may have just inserted the same call back in the queue. If we did, it
+					%  is placed in the wrong position. It should be in rear not front. So that
+					%  we continue with this call next time we try to execute queue.
+					% If we were to leave it as is, process might execute calls in a different order
+					%  than it received them.
+					case queue:is_empty(NP#dp.callqueue) of
+						false ->
+							{{value,Call1},CQ1} = queue:out(NP#dp.callqueue),
+							case Call1 == Call of
+								true ->
+									NP#dp{callqueue = queue:in(Call,CQ1)};
+								false ->
+									NP
+							end;
+						_ ->
+							NP
+					end
+			end
+	end;
+doqueue(P) ->
+	% ?INF("Queue notyet ~p",[{P#dp.callres,P#dp.verified,P#dp.transactionid,P#dp.locked}]),
 	P.
 
 
@@ -1159,8 +1205,8 @@ check_locks(P,[H|T],L) when is_tuple(H#lck.time) ->
 	end;
 check_locks(P,[H|T],L) ->
 	check_locks(P,T,[H|L]);
-check_locks(_,[],L) ->
-	L.
+check_locks(P,[],L) ->
+	doqueue(P#dp{locked = L}).
 
 retry_copy(#dp{copylater = undefined} = P) ->
 	P;

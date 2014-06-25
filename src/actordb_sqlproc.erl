@@ -384,7 +384,7 @@ commit_call(Doit,Id,From,P) ->
 						_ ->
 							actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
 					end,
-					{reply,ok,doqueue(P#dp{transactionid = undefined, transactioninfo = undefined,
+					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined, transactioninfo = undefined,
 									transactioncheckref = undefined,activity = make_ref()})};
 				false ->
 					% Transaction failed.
@@ -462,10 +462,11 @@ state_rw_call(What,From,P) ->
 							ok
 					end,
 					actordb_local:actor_mors(slave,LeaderNode),
-					state_rw_call(What,From,doqueue(actordb_sqlprocutil:reopen_db(P#dp{masternode = LeaderNode, 
+					state_rw_call(What,From,actordb_sqlprocutil:reopen_db(
+															P#dp{masternode = LeaderNode, 
 															masternodedist = bkdcore:dist_name(LeaderNode), 
 															callfrom = undefined, callres = undefined, 
-															verified = true, activity = make_ref()})));
+															verified = true, activity = make_ref()}));
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
 					?ERR("AE start, stepping down as leader ~p ~p",
@@ -478,12 +479,12 @@ state_rw_call(What,From,P) ->
 					end,
 					actordb_local:actor_mors(slave,LeaderNode),
 					state_rw_call(What,From,
-									doqueue(actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(
+									actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(
 												P#dp{mors = slave, verified = true, 
 													voted_for = undefined,callfrom = undefined, callres = undefined,
 													masternode = LeaderNode,activity = make_ref(),
 													masternodedist = bkdcore:dist_name(LeaderNode),
-													current_term = Term}))));
+													current_term = Term})));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
 					?ERR("AE start attempt failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 								[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
@@ -501,7 +502,7 @@ state_rw_call(What,From,P) ->
 					{noreply,NP#dp{activity = make_ref()}};
 				_ when Term > P#dp.current_term ->
 					?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",[AEType,{Term,P#dp.current_term}]),
-					state_rw_call(What,From,doqueue(actordb_sqlprocutil:save_term(
+					state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
 												 masternode = LeaderNode,verified = true,activity = make_ref(),
 												 masternodedist = bkdcore:dist_name(LeaderNode)})));
@@ -565,15 +566,15 @@ state_rw_call(What,From,P) ->
 							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw)),
 							?DBG("AE response for node ~p, followers=~p",
 									[Node,[{F#flw.node,F#flw.match_index,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
-							{noreply,doqueue(NP)};
+							{noreply,NP};
 						% What we thought was follower is ahead of us and we need to step down
 						false when P#dp.current_term < CurrentTerm ->
 							?DBG("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
-							{reply,ok,doqueue(actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
-								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []})))};
+							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
+								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
 						false when NFlw#flw.match_index == P#dp.evnum ->
 							% Follower is up to date. He replied false. Maybe our term was too old.
-							{reply,ok,doqueue(actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw)))};
+							{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw))};
 						false ->
 							% If we are copying entire db to that node already, do nothing.
 							case [C || C <- P#dp.dbcopy_to, C#cpto.node == Node, C#cpto.actorname == P#dp.actorname] of
@@ -812,10 +813,10 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 					?DBG("Write result ~p",[Res]),
 					case ok of
 						_ when P#dp.follower_indexes == [] ->
-							{noreply,doqueue(actordb_sqlprocutil:reply_maybe(
+							{noreply,actordb_sqlprocutil:reply_maybe(
 										P#dp{callfrom = From, callres = Res,evnum = EvNum, flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 												netchanges = actordb_local:net_changes(),
-												schemavers = NewVers,evterm = P#dp.current_term},1,[]))};
+												schemavers = NewVers,evterm = P#dp.current_term},1,[])};
 						_ ->
 							% reply on appendentries response or later if nodes are behind.
 							{noreply, ae_timer(P#dp{callfrom = From, callres = Res, flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
@@ -868,10 +869,10 @@ write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?DBG("Transaction ok"),
-					{noreply, doqueue(actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId, 
+					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId, 
 								evterm = P#dp.current_term,
 								transactioncheckref = CheckRef,
-								transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[]))};
+								transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[])};
 				_Err ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					erlang:demonitor(CheckRef),
@@ -968,7 +969,7 @@ handle_cast(_Msg,P) ->
 
 
 handle_info(doqueue, P) ->
-	{noreply,doqueue(P)};
+	{noreply,actordb_sqlprocutil:doqueue(P)};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
 handle_info(ae_timer,P) ->
@@ -1017,7 +1018,7 @@ handle_info(check_locks,P) ->
 			{noreply,P};
 		_ ->
 			erlang:send_after(1000,self(),check_locks),
-			{noreply,actordb_sqlprocutil:check_locks(P,P#dp.locked,[])}
+			{noreply, actordb_sqlprocutil:check_locks(P,P#dp.locked,[])}
 	end;
 handle_info(start_copy,P) ->
 	?DBG("Start copy ~p",[P#dp.copyfrom]),
@@ -1059,51 +1060,6 @@ handle_info(Msg,#dp{mors = master, verified = true} = P) ->
 handle_info(_Msg,P) ->
 	?DBG("sqlproc ~p unhandled info ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
-
-doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transactionid == undefined, P#dp.locked == [] ->
-	case queue:is_empty(P#dp.callqueue) of
-		true ->
-			% ?INF("Queue empty"),
-			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
-				{ok,NS} ->
-					P#dp{cbstate = NS};
-				_ ->
-					P
-			end;
-		false ->
-			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
-			{From,Msg} = Call,
-			case handle_call(Msg,From,P#dp{callqueue = CQ}) of
-				{reply,Res,NP} ->
-					reply(From,Res),
-					doqueue(NP);
-				{stop,_,NP} ->
-					self() ! stop,
-					NP;
-				% If call returns noreply, it will continue processing later.
-				{noreply,NP} ->
-					% We may have just inserted the same call back in the queue. If we did, it
-					%  is placed in the wrong position. It should be in rear not front. So that
-					%  we continue with this call next time we try to execute queue.
-					% If we were to leave it as is, process might execute calls in a different order
-					%  than it received them.
-					case queue:is_empty(NP#dp.callqueue) of
-						false ->
-							{{value,Call1},CQ1} = queue:out(NP#dp.callqueue),
-							case Call1 == Call of
-								true ->
-									NP#dp{callqueue = queue:in(Call,CQ1)};
-								false ->
-									NP
-							end;
-						_ ->
-							NP
-					end
-			end
-	end;
-doqueue(P) ->
-	% ?INF("Queue notyet ~p",[{P#dp.callres,P#dp.verified,P#dp.transactionid,P#dp.locked}]),
-	P.
 
 % check_inactivity(NTimer,#dp{mors = master} = P) ->
 % 	case P#dp.mors of
@@ -1214,8 +1170,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
-													locked = lists:delete(ae,P1#dp.locked),
-													verified = true}),
+													locked = lists:delete(ae,P1#dp.locked)}),
 			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
 			?DBG("Elected leader term=~p, nodes_synec=~p",[P1#dp.current_term,AllSynced]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),ReplType),
@@ -1251,14 +1206,15 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			%  - If empty db or schema not up to date create/update it.
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
-			{NP,Sql,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{copyreset = CopyReset, cbstate = CbState},
+			{NP,Sql,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset, 
+																			cbstate = CbState},
 																		Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
 				undefined ->
 					% If nothing to store and all nodes synced, send an empty AE.
 					case iolist_size(Sql) of
 						0 when AllSynced, NewFollowers == [] ->
-							{noreply,doqueue(NP#dp{follower_indexes = NewFollowers})};
+							{noreply,actordb_sqlprocutil:doqueue(NP#dp{follower_indexes = NewFollowers})};
 						0 when AllSynced ->
 							?DBG("Nodes synced, running empty AE."),
 							NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],

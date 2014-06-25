@@ -133,7 +133,7 @@ basic_write(Txt) ->
 		?debugFmt("~p Write ac~p",[ltime(),N]),
 		R = exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; insert into tab values (",
 									(butil:tobin(butil:flatnow()))/binary,",'",Txt/binary,"',1);">>),
-		% ?debugFmt("~p",[R]),
+		?debugFmt("~p",[R]),
 		?assertMatch({ok,_},R)
 	end
 	 || N <- lists:seq(1,numactors())].
@@ -694,7 +694,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->
