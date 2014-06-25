@@ -93,8 +93,10 @@ call(Name,Flags,Msg,Start,IsRedirect) ->
 	end.
 call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	% If call returns redirect, this is slave node not master node.
+	test_mon_calls(Name,Msg),
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
+			test_mon_stop(),
 			case lists:member(Node,bkdcore:cluster_nodes()) of
 				true ->
 					case IsRedirect of
@@ -124,8 +126,10 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 			?ADBG("died normal"),
 			call(Name,Flags,Msg,Start);
 		{'EXIT',{nocreate,_}} ->
+			test_mon_stop(),
 			{error,nocreate};
 		Res ->
+			test_mon_stop(),
 			Res
 	end.
 startactor(Name,Start,Flags) ->
@@ -137,6 +141,21 @@ startactor(Name,Start,Flags) ->
 		_ ->
 			apply(Start,start,[Name,Flags])
 	end.
+
+test_mon_calls(Who,Msg) ->
+	Ref = make_ref(),
+	put(ref,Ref),
+	put(refpid,spawn(fun() -> test_mon_proc(Who,Msg,Ref) end)).
+test_mon_proc(Who,Msg,Ref) ->
+	receive
+		Ref ->
+			ok
+		after 1000 ->
+			?AERR("Still waiting on ~p, for ~p",[Who,Msg]),
+			test_mon_proc(Who,Msg,Ref)
+	end.
+test_mon_stop() ->
+	butil:safesend(get(refpid), get(ref)).
 
 
 call_slave(Cb,Actor,Type,Msg) ->
@@ -482,10 +501,10 @@ state_rw_call(What,From,P) ->
 					{noreply,NP#dp{activity = make_ref()}};
 				_ when Term > P#dp.current_term ->
 					?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",[AEType,{Term,P#dp.current_term}]),
-					state_rw_call(What,From,actordb_sqlprocutil:save_term(
+					state_rw_call(What,From,doqueue(actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
 												 masternode = LeaderNode,verified = true,activity = make_ref(),
-												 masternodedist = bkdcore:dist_name(LeaderNode)}));
+												 masternodedist = bkdcore:dist_name(LeaderNode)})));
 				_ when AEType == empty ->
 					?DBG("AE start, ok for empty"),
 					reply(From,ok),
@@ -849,10 +868,10 @@ write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?DBG("Transaction ok"),
-					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId, 
+					{noreply, doqueue(actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId, 
 								evterm = P#dp.current_term,
 								transactioncheckref = CheckRef,
-								transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[])};
+								transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[]))};
 				_Err ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					erlang:demonitor(CheckRef),
@@ -1083,7 +1102,7 @@ doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transact
 			end
 	end;
 doqueue(P) ->
-	% ?INF("Queue notyet ~p",[{P#dp.callfrom,P#dp.verified,P#dp.transactionid}]),
+	% ?INF("Queue notyet ~p",[{P#dp.callres,P#dp.verified,P#dp.transactionid,P#dp.locked}]),
 	P.
 
 % check_inactivity(NTimer,#dp{mors = master} = P) ->
@@ -1238,6 +1257,8 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 				undefined ->
 					% If nothing to store and all nodes synced, send an empty AE.
 					case iolist_size(Sql) of
+						0 when AllSynced, NewFollowers == [] ->
+							{noreply,doqueue(NP#dp{follower_indexes = NewFollowers})};
 						0 when AllSynced ->
 							?DBG("Nodes synced, running empty AE."),
 							NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],

@@ -359,7 +359,7 @@ cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 % We are redirecting calls (so we know who master is and state is established).
 % But master_ping needs to be handled. It tells us if state has changed.
 cb_redirected_call(S,MovedTo,{master_ping,MasterNode,Evnum,State},_MovedOrSlave) ->
-	?ADBG("received ping"),
+	?ADBG("received ping ~p",[S#st.name]),
 	Now = os:timestamp(),
 	case S#st.evnum < Evnum of
 		true ->
@@ -509,7 +509,7 @@ cb_info(ping_timer,#st{} = S)  ->
 			Pos = S#st.nodepos
 	end,
 	{noreply,check_timer(S#st{time_since_ping = Now, nodepos = Pos})};
-cb_info(_Msg,S) ->
+cb_info(_Msg,_S) ->
 	% ?AERR("Invalid info msg ~p ~p",[_Msg,S]),
 	noreply.
 cb_init(#st{name = ?STATE_NM_LOCAL} = S,_EvNum) ->

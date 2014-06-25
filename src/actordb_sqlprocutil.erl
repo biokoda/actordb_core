@@ -168,7 +168,7 @@ resend_ae(P,N,[F|T],L) ->
 							resend_ae(P,N,T,[F|L])
 					end;
 				false ->
-					?DBG("Have not waited long enough ~p ~p ~p",[Age,F#flw.wait_for_response_since, ets:tab2list(reftimes)]),
+					?DBG("Have not waited long enough ~p",[Age]),
 					% Increment counter to keep timer running.
 					resend_ae(P,N+1,T,[F|L])
 			end

@@ -388,14 +388,12 @@ handle_info(readshards,P) ->
 						_ when P#dp.getstatepid /= undefined ->
 							{noreply,P};
 						_ ->
-							{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
-							{noreply,P#dp{getstatepid = NPid}}
+							{noreply,getstate(P)}
 					end;
 				false when P#dp.getstatepid /= undefined ->
 					{noreply,P};
 				false ->
-					{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
-					{noreply,P#dp{getstatepid = NPid}}
+					{noreply,getstate(P)}
 			end
 	end;
 	% set_shard_border(Shard,Type,Limit,NewNode) ->
@@ -417,12 +415,10 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
 					{noreply,P#dp{allshards = GlobalShards,getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local, 
 									dirty = false}};
 				_G->
-					{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
-					{noreply,P#dp{getstatepid = NPid, shardsbeingtaken = P#dp.shardsbeingtaken++Local}}
+					{noreply,getstate(P#dp{shardsbeingtaken = P#dp.shardsbeingtaken++Local})}
 			end;
-		_ ->
-			{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
-			{noreply,P#dp{getstatepid = NPid}}
+		_X ->
+			{noreply,getstate(P)}
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Result},P) ->
 	?ADBG("Shard dead ~p ~p~n",[PID,Result]),
@@ -449,8 +445,7 @@ handle_info({actordb,sharedstate_change},P) ->
 			?ADBG("GLobal statechange ~p ~p",[bkdcore:node_name(),P#dp.getstatepid]),
 			case P#dp.getstatepid of
 				undefined ->
-					{Pid,_} =  spawn_monitor(fun() -> async_getstate() end),
-					{noreply,P#dp{getstatepid = Pid}};
+					{noreply,getstate(P)};
 				_ ->
 					{noreply,P}
 			end
@@ -487,6 +482,14 @@ init([]) ->
 	end),
 	{ok,#dp{}}.
 
+getstate(P) ->
+	case P#dp.getstatepid of
+		undefined ->
+			{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
+			P#dp{getstatepid = NPid};
+		_ ->
+			P
+	end.
 
 async_getstate() ->
 	Global = actordb_sharedstate:read_global(shards),
