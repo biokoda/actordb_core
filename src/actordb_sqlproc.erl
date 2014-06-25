@@ -93,10 +93,10 @@ call(Name,Flags,Msg,Start,IsRedirect) ->
 	end.
 call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	% If call returns redirect, this is slave node not master node.
-	test_mon_calls(Name,Msg),
+	% test_mon_calls(Name,Msg),
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
-			test_mon_stop(),
+			% test_mon_stop(),
 			case lists:member(Node,bkdcore:cluster_nodes()) of
 				true ->
 					case IsRedirect of
@@ -126,10 +126,10 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 			?ADBG("died normal"),
 			call(Name,Flags,Msg,Start);
 		{'EXIT',{nocreate,_}} ->
-			test_mon_stop(),
+			% test_mon_stop(),
 			{error,nocreate};
 		Res ->
-			test_mon_stop(),
+			% test_mon_stop(),
 			Res
 	end.
 startactor(Name,Start,Flags) ->
@@ -142,20 +142,20 @@ startactor(Name,Start,Flags) ->
 			apply(Start,start,[Name,Flags])
 	end.
 
-test_mon_calls(Who,Msg) ->
-	Ref = make_ref(),
-	put(ref,Ref),
-	put(refpid,spawn(fun() -> test_mon_proc(Who,Msg,Ref) end)).
-test_mon_proc(Who,Msg,Ref) ->
-	receive
-		Ref ->
-			ok
-		after 1000 ->
-			?AERR("Still waiting on ~p, for ~p",[Who,Msg]),
-			test_mon_proc(Who,Msg,Ref)
-	end.
-test_mon_stop() ->
-	butil:safesend(get(refpid), get(ref)).
+% test_mon_calls(Who,Msg) ->
+% 	Ref = make_ref(),
+% 	put(ref,Ref),
+% 	put(refpid,spawn(fun() -> test_mon_proc(Who,Msg,Ref) end)).
+% test_mon_proc(Who,Msg,Ref) ->
+% 	receive
+% 		Ref ->
+% 			ok
+% 		after 1000 ->
+% 			?AERR("Still waiting on ~p, for ~p",[Who,Msg]),
+% 			test_mon_proc(Who,Msg,Ref)
+% 	end.
+% test_mon_stop() ->
+% 	butil:safesend(get(refpid), get(ref)).
 
 
 call_slave(Cb,Actor,Type,Msg) ->
