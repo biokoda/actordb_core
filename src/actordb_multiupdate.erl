@@ -326,7 +326,7 @@ do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
 				{StBin,Varlist} ->
 					case Actors of
 						$* ->
-							?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
+							% ?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
 							move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,actordb_shardtree:all());
 						_ ->
 							case Actors of
