@@ -363,9 +363,9 @@ commit_call(Doit,Id,From,P) ->
 					{stop,normal,P#dp{db = undefined}};
 				true when P#dp.follower_indexes == [] ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
-					{reply,ok,P#dp{transactionid = undefined,transactioncheckref = undefined,
+					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined,transactioncheckref = undefined,
 							 transactioninfo = undefined, activity = make_ref(),
-							 evnum = EvNum, evterm = P#dp.current_term}};
+							 evnum = EvNum, evterm = P#dp.current_term})};
 				true ->
 					% We can safely release savepoint.
 					% This will send the remaining WAL pages to followers that have commit flag set.
