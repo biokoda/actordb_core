@@ -800,7 +800,12 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 				undefined ->
 					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
 					NP = P#dp{schemavers = SchemaVers},
-					Flags = P#dp.flags bor ?FLAG_SEND_DB,
+					case P#dp.follower_indexes of
+						[] ->
+							Flags = P#dp.flags;
+						_ ->
+							Flags = P#dp.flags bor ?FLAG_SEND_DB
+					end,
 					% Set on firt write and not changed after. This is used to prevent a case of an actor
 					% getting deleted, but later created new. A server that was offline during delete missed
 					% the delete call and relies on actordb_events.
