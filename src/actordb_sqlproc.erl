@@ -801,7 +801,7 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
 					 <<"$RELEASE SAVEPOINT 'adb';">>
 					 ],
-			case P#dp.flags bor ?FLAG_SEND_DB > 0 of
+			case P#dp.flags band ?FLAG_SEND_DB > 0 of
 				true ->
 					VarHeader = actordb_sqlprocutil:create_var_header_with_db(P);
 				_ ->
