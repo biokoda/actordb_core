@@ -83,7 +83,7 @@
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
   verified = false,
   % PID of election process if in progress, time of last seen election otherwise.
-  election = {0,0,0},
+  election,
   % Path to sqlite file.
   dbpath,
   % Which nodes current process is sending dbfile to.

@@ -131,7 +131,7 @@ type_schema(Type,Version) ->
 createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout) ->
 	createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,bkdcore:node_name()).
 createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Name) ->
-	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},
+	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},{cfgtime,os:timestamp()},
 								   {journal_mode,Journal},{sync,Sync},{query_timeout,QueryTimeout},{node_name,Name}]).
 
 change_journal(Journal,Sync) ->

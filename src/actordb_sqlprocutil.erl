@@ -448,7 +448,7 @@ rewind_wal(P) ->
 	end.
 
 save_term(P) ->
-	ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum}),
+	ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm}),
 	P.
 
 
@@ -659,6 +659,10 @@ do_cb(P) ->
 			P
 	end.
 
+election_timer(undefined) ->
+	erlang:send_after(200+random:uniform(200),self(),doelection);
+election_timer(T) ->
+	T.
 
 actor_start(P) ->
 	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,?PAGESIZE*?DEF_CACHE_PAGES).
@@ -671,11 +675,11 @@ start_verify(P,JustStarted) ->
 		%  not attempt to become candidate for now.
 		_ when P#dp.mors == slave, JustStarted ->
 			P;
-		_ when is_pid(P#dp.election) ->
+		_ when is_pid(P#dp.election); is_reference(P#dp.election) ->
 			P;
 		_ ->
-			case JustStarted == force orelse timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
-				true ->
+			% case JustStarted == force orelse timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
+			% 	true ->
 					CurrentTerm = P#dp.current_term+1,
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum}),
 					NP = reopen_db(P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name(), 
@@ -683,11 +687,11 @@ start_verify(P,JustStarted) ->
 					{Verifypid,_} = spawn_monitor(fun() -> 
 									start_election(NP)
 										end),
-					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
-				false ->
-					?DBG("Election just done, ignoring call."),
-					P
-			end
+					NP#dp{election = Verifypid, verified = false, activity = make_ref()}
+			% 	false ->
+			% 		?DBG("Election just done, ignoring call."),
+			% 		P
+			% end
 	end.
 follower_nodes(L) ->
 	[F#flw.node || F <- L].
@@ -707,7 +711,7 @@ start_election(P) ->
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,{P#dp.evnum,P#dp.evterm},true,P#dp.follower_indexes,1) of
 		{outofdate,Node,_NewerTerm} ->
-			send_doelection(Node,P),
+			% send_doelection(Node,P),
 			start_election_done(P,follower);
 		{NumVotes,Followers,AllSynced} when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
@@ -719,20 +723,20 @@ start_election(P) ->
 				false ->
 					% Majority is possible.
 					% This election failed. Check if any of the nodes said they will try to get elected.
-					case [true || {_What,_Node,_HisLatestTerm,true} <- Results] of
-						% If none, sort nodes by name. Pick the one after me and tell him to try to get elected.
-						% If he fails, he will pick the node after him. One must succeed because majority is online.
-						[] ->
-							SortedNodes = lists:sort([actordb_conf:node_name()|[Nd || {_What,Nd,_HisLatestTerm,_} <- Results]]),
-							case butil:lists_split_at(actordb_conf:node_name(),SortedNodes) of
-								{_,[Next|_]} ->
-									send_doelection(Next,P);
-								{[Next|_],_} ->
-									send_doelection(Next,P)
-							end;
-						_ ->
-							ok
-					end,
+					% case [true || {_What,_Node,_HisLatestTerm,true} <- Results] of
+					% 	% If none, sort nodes by name. Pick the one after me and tell him to try to get elected.
+					% 	% If he fails, he will pick the node after him. One must succeed because majority is online.
+					% 	[] ->
+					% 		SortedNodes = lists:sort([actordb_conf:node_name()|[Nd || {_What,Nd,_HisLatestTerm,_} <- Results]]),
+					% 		case butil:lists_split_at(actordb_conf:node_name(),SortedNodes) of
+					% 			{_,[Next|_]} ->
+					% 				send_doelection(Next,P);
+					% 			{[Next|_],_} ->
+					% 				send_doelection(Next,P)
+					% 		end;
+					% 	_ ->
+					% 		ok
+					% end,
 					start_election_done(P,follower)
 			end
 	end.
@@ -1017,6 +1021,7 @@ do_checkpoint(P) ->
 			case P#dp.mors of
 				master ->
 					actordb_sqlite:checkpoint(P#dp.db),
+					save_term(P),
 					unregister(checkpointer),
 					[bkdcore_rpc:cast(F#flw.node,
 								{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}]})
@@ -1025,6 +1030,7 @@ do_checkpoint(P) ->
 					{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 					actordb_sqlite:checkpoint(Db),
 					unregister(checkpointer),
+					save_term(P),
 					actordb_sqlite:stop(Db)
 			end,
 			{0,0};
@@ -1360,7 +1366,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 										Flw when is_tuple(Flw) ->
 											CQ = queue:in_r({CallFrom,{write,{undefined,<<>>,undefined}}},P#dp.callqueue),
 											{reply,ok,reply_maybe(store_follower(NP#dp{callqueue = CQ},
-														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.current_term, 
+														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm, 
 																	next_index = P#dp.evnum+1}))};
 										_ ->
 											{reply,ok,NP}

@@ -694,7 +694,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->
@@ -807,6 +807,7 @@ l(N) ->
 		
 		% cprof:start(),
 		Start = now(),
+		random:seed(os:timestamp()),
 		{ok,Db,_Schema,_} = actordb_sqlite:init(":memory:",off),
 		l1(N,Db),
 		% actordb_sqlite:stop(Db),
@@ -818,7 +819,9 @@ l(N) ->
 l1(0,_) ->
 	ok;
 l1(N,X) ->
-	butil:ds_val(twoseconds,reftimes),
+	% random:uniform(200),
+	% actordb_util:hash(<<"asdf">>),
+	% butil:ds_val(twoseconds,reftimes),
 	% os:timestamp(),
 	% esqlite3:noop(X),
 	% actordb_sqlparse:parse_statements(X),

@@ -259,6 +259,7 @@ handle_call(Msg,From,P) ->
 		_ when P#dp.mors == slave ->
 			case P#dp.masternode of
 				undefined ->
+					?DBG("Queing msg no master yet ~p",[Msg]),
 					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), 
 									flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}};
 				_ ->
@@ -297,6 +298,7 @@ handle_call(Msg,From,P) ->
 		{write,{_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
 		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
+			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 		{write,Msg1} ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
@@ -560,6 +562,7 @@ state_rw_call(What,From,P) ->
 					case Success of
 						% An earlier response.
 						_ when P#dp.mors == slave ->
+							?ERR("Received AE response after stepping down"),
 							{reply,ok,P};
 						true ->
 							reply(From,ok),
@@ -611,7 +614,6 @@ state_rw_call(What,From,P) ->
 		{request_vote,Candidate,NewTerm,LastEvnum,LastTerm} ->
 			?DBG("Request vote for=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
 					[Candidate,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
-			Now = os:timestamp(),
 			Uptodate = 
 				case ok of
 					_ when P#dp.evterm < LastTerm ->
@@ -628,7 +630,7 @@ state_rw_call(What,From,P) ->
 			case ok of
 				% Candidates term is lower than current_term, ignore.
 				_ when NewTerm < P#dp.current_term ->
-					DoElection = P#dp.mors == master,
+					DoElection = (P#dp.mors == master andalso P#dp.verified == true),
 					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
 					NP = P;
 				% We've already seen this term, only vote yes if we have not voted
@@ -638,14 +640,15 @@ state_rw_call(What,From,P) ->
 						true when Uptodate ->
 							DoElection = false,
 							reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
-							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,election = Now,
+							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
+																election = actordb_sqlprocutil:election_timer(P#dp.election),
 																masternode = undefined, masternodedist = undefined});
 						true ->
-							DoElection = P#dp.mors == master,
+							DoElection = (P#dp.mors == master andalso P#dp.verified == true),
 							reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm});
 						false ->
-							DoElection = P#dp.mors == master,
+							DoElection =(P#dp.mors == master andalso P#dp.verified == true),
 							reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
 							NP = P
 					end;
@@ -653,12 +656,13 @@ state_rw_call(What,From,P) ->
 				_ when Uptodate ->
 					DoElection = false,
 					reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
-					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,election = Now,
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
+																election = actordb_sqlprocutil:election_timer(P#dp.election),
 																masternode = undefined, masternodedist = undefined});
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
 				_ ->
-					DoElection = P#dp.mors == master,
+					DoElection = (P#dp.mors == master andalso P#dp.verified == true),
 					reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm})
 			end,
@@ -679,7 +683,7 @@ state_rw_call(What,From,P) ->
 		doelection ->
 			?DBG("Doelection hint ~p",[{P#dp.verified,P#dp.election}]),
 			reply(From,ok),
-			case is_pid(P#dp.election) of
+			case is_pid(P#dp.election) orelse is_reference(P#dp.election) of
 				false ->
 					{noreply,actordb_sqlprocutil:start_verify(P,false)};
 				_ ->
@@ -973,15 +977,51 @@ handle_info(doqueue, P) ->
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
 handle_info(ae_timer,P) ->
-	case actordb_sqlprocutil:resend_ae(P,0,P#dp.follower_indexes,[]) of
-		{0,_} ->
-			?DBG("AE timer stop"),
-			{noreply,P#dp{resend_ae_timer = undefined}};
-		{_,NF} ->
-			?DBG("AE timer continue"),
-			T = erlang:send_after(1000,self(),ae_timer),
-			{noreply,P#dp{follower_indexes = NF, resend_ae_timer = T}}
+	case P#dp.mors == master andalso P#dp.verified == true of
+		true ->
+			case actordb_sqlprocutil:resend_ae(P,0,P#dp.follower_indexes,[]) of
+				{0,_} ->
+					?DBG("AE timer stop"),
+					{noreply,P#dp{resend_ae_timer = undefined}};
+				{_,NF} ->
+					?DBG("AE timer continue"),
+					T = erlang:send_after(1000,self(),ae_timer),
+					{noreply,P#dp{follower_indexes = NF, resend_ae_timer = T}}
+			end;
+		false ->
+			{noreply, P}
 	end;
+handle_info(doelection,P) ->
+	case ok of
+		_ when is_pid(P#dp.election); P#dp.masternode /= undefined ->
+			{noreply,P};
+		_ ->
+			?DBG("Election timeout"),
+			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+	end;
+handle_info(retry_copy,P) ->
+	case P#dp.mors == master andalso P#dp.verified == true of
+		true ->
+			{noreply,actordb_sqlprocutil:retry_copy(P)};
+		_ ->
+			{noreply, P}
+	end;
+handle_info(check_locks,P) ->
+	case P#dp.locked of
+		[] ->
+			{noreply,P};
+		_ ->
+			erlang:send_after(1000,self(),check_locks),
+			{noreply, actordb_sqlprocutil:check_locks(P,P#dp.locked,[])}
+	end;
+handle_info(do_checkpoint,P) ->
+	case P#dp.locked of
+		[ae] ->
+			erlang:send_after(100,self(),do_checkpoint);
+		_ ->
+			actordb_sqlprocutil:do_checkpoint(P)
+	end,
+	{noreply,P};
 % handle_info({inactivity_timer,N},P) ->
 % 	handle_info({check_inactivity,N},P#dp{timerref = {undefined,N}});
 % handle_info({check_inactivity,N}, P) ->
@@ -1002,24 +1042,6 @@ handle_info(print_info,P) ->
 	handle_cast(print_info,P);
 handle_info(commit_transaction,P) ->
 	down_info(0,12345,done,P#dp{transactioncheckref = 12345});
-handle_info(do_checkpoint,P) ->
-	case P#dp.locked of
-		[ae] ->
-			erlang:send_after(100,self(),do_checkpoint);
-		_ ->
-			actordb_sqlprocutil:do_checkpoint(P)
-	end,
-	{noreply,P};
-handle_info(retry_copy,P) ->
-	{noreply,actordb_sqlprocutil:retry_copy(P)};
-handle_info(check_locks,P) ->
-	case P#dp.locked of
-		[] ->
-			{noreply,P};
-		_ ->
-			erlang:send_after(1000,self(),check_locks),
-			{noreply, actordb_sqlprocutil:check_locks(P,P#dp.locked,[])}
-	end;
 handle_info(start_copy,P) ->
 	?DBG("Start copy ~p",[P#dp.copyfrom]),
 	case P#dp.copyfrom of
@@ -1050,7 +1072,7 @@ handle_info(start_copy,P) ->
 handle_info(start_copy_done,P) ->
 	{ok,NP} = init(P,copy_done),
 	{noreply,NP};
-handle_info(Msg,#dp{mors = master, verified = true} = P) ->
+handle_info(Msg,#dp{verified = true} = P) ->
 	case apply(P#dp.cbmod,cb_info,[Msg,P#dp.cbstate]) of
 		{noreply,S} ->
 			{noreply,P#dp{cbstate = S}};
@@ -1168,7 +1190,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{stop,nocreate,P1};
 		{leader,NewFollowers,AllSynced} ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
-			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = os:timestamp(), 
+			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined, 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													locked = lists:delete(ae,P1#dp.locked)}),
 			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
@@ -1230,7 +1252,8 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 															P#dp.callqueue)}}
 			end;
 		follower ->
-			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = os:timestamp(), masternode = undefined, mors = slave})}
+			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = actordb_sqlprocutil:election_timer(P1#dp.election), 
+															masternode = undefined, mors = slave})}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 	?DBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
@@ -1312,6 +1335,7 @@ down_info(PID,_Ref,Reason,P) ->
 			% wait_copy not in list add it (2nd stage of lock)
 			WithoutCopy1 =  [#lck{ref = C#cpto.ref, ismove = C#cpto.ismove,node = C#cpto.node,time = os:timestamp(),
 									actorname = C#cpto.actorname}|WithoutCopy],
+			erlang:send_after(1000,self(),check_locks),
 			NP = P#dp{dbcopy_to = NewCopyto, 
 						locked = WithoutCopy1,
 						activity = make_ref()},
@@ -1343,6 +1367,8 @@ init(#dp{} = P,_Why) ->
 % started actor is blocking waiting for init to finish.
 init([_|_] = Opts) ->
 	% put(opt,Opts),
+	% Random needs to be unique per-node, not per-actor. 
+	random:seed(actordb_conf:cfgtime()),
 	case actordb_sqlprocutil:parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), 
 									schemanum = catch actordb_schema:num()}),Opts) of
 		{registered,Pid} ->
@@ -1373,11 +1399,11 @@ init([_|_] = Opts) ->
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
 			case butil:readtermfile([P#dp.dbpath,"-term"]) of
-				{VotedFor,VotedForTerm,VoteEvnum} ->
+				{VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
 					ok;
 				_ ->
 					VotedFor = undefined,
-					VoteEvnum = VotedForTerm = 0
+					VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
 			end,
 			case ok of
 				_ when P#dp.mors == slave ->
@@ -1391,22 +1417,25 @@ init([_|_] = Opts) ->
 										file:read(F,24),
 									file:close(F),
 									?DBG("Actor start slave, with {Evnum,Evterm}=~p",[{Evnum,Evterm}]),
-									{ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, 
+									{ok,P#dp{current_term = VotedCurrentTerm, voted_for = VotedFor, 
+												election = actordb_sqlprocutil:election_timer(undefined),
 												evnum = Evnum, evterm = Evterm}};
 								{ok,_} ->
 									file:close(F),
-									{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedForTerm,
-													voted_for = VotedFor, evnum = VoteEvnum, evterm = VotedForTerm})}
+									{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
+													election = actordb_sqlprocutil:election_timer(undefined),
+													voted_for = VotedFor, evnum = VoteEvnum, evterm = VoteEvTerm})}
 							end;
 						{error,enoent} ->
-							% {ok,P#dp{current_term = VotedForTerm, voted_for = VotedFor, evnum = VoteEvum}}
-							{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedForTerm,
-										voted_for = VotedFor, evnum = VoteEvnum,evterm = VotedForTerm})}
+							% {ok,P#dp{current_term = VotedCurrentTerm, voted_for = VotedFor, evnum = VoteEvum}}
+							{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
+										election = actordb_sqlprocutil:election_timer(undefined),
+										voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})}
 					end;
 				_ when MovedToNode == undefined; RightCluster ->
 					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(
-								P#dp{current_term = VotedForTerm,voted_for = VotedFor, evnum = VoteEvnum,
-										evterm = VotedForTerm}),true)};
+								P#dp{current_term = VotedCurrentTerm,voted_for = VotedFor, evnum = VoteEvnum,
+										evterm = VoteEvTerm}),true)};
 				_ ->
 					?DBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode}}
