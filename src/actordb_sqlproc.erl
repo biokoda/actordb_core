@@ -668,13 +668,13 @@ state_rw_call(What,From,P) ->
 			end,
 			% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
 			% If the other node is actually more up to date, vote was yes and we do not do election.
-			case DoElection of
-				true ->
-					?DBG("Start new election to sync nodes"),
-					{noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP),false)};
-				false ->
-					{noreply,NP#dp{activity = make_ref()}}
-			end;
+			% case DoElection of
+			% 	true ->
+			% 		?DBG("Start new election to sync nodes"),
+			% 		{noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP),false)};
+			% 	false ->
+					{noreply,NP#dp{activity = make_ref()}};
+			% end;
 		{set_dbfile,Bin} ->
 			ok = file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
 			{reply,ok,P#dp{activity = make_ref()}};
@@ -1194,7 +1194,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													locked = lists:delete(ae,P1#dp.locked)}),
 			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
-			?DBG("Elected leader term=~p, nodes_synec=~p",[P1#dp.current_term,AllSynced]),
+			?DBG("Elected leader term=~p, nodes_synced=~p",[P1#dp.current_term,AllSynced]),
 			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),ReplType),
 
 			case P#dp.schemavers of
