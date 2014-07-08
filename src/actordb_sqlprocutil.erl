@@ -176,6 +176,8 @@ resend_ae(P,N,[F|T],L) ->
 resend_ae(_,N,[],L) ->
 	{N,L}.
 
+send_empty_ae(P,<<_/binary>> = Nm) ->
+	send_empty_ae(P,lists:keyfind(Nm,#flw.node,P#dp.follower_indexes));
 send_empty_ae(P,F) ->
 	?DBG("sending empty ae to ~p",[F#flw.node]),
 	bkdcore_rpc:cast(F#flw.node,
@@ -366,10 +368,6 @@ continue_maybe(P,F) ->
 				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 							F#flw.match_index,F#flw.match_term,recover,F#flw.call_count+1}}]}),
 			case StartRes of
-				false ->
-					% to be continued in appendentries_response
-					file:close(F#flw.file),
-					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref(), call_count = F#flw.call_count+1});
 				ok ->
 					% Send wal
 					case send_wal(P,F) of
@@ -378,7 +376,11 @@ continue_maybe(P,F) ->
 						_ ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
 							store_follower(P,F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1})
-					end
+					end;
+				% to be continued in appendentries_response
+				_ ->
+					file:close(F#flw.file),
+					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref(), call_count = F#flw.call_count+1})
 			end;
 		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
@@ -441,6 +443,7 @@ rewind_wal(P) ->
 					rewind_wal(P)
 			end;
 		{error,_} ->
+			?DBG("Resetting to zero"),
 			file:close(P#dp.db),
 			file:delete([P#dp.dbpath,"-wal"]),
 			% rewind to 0, causing a complete restore from another node
@@ -660,7 +663,9 @@ do_cb(P) ->
 	end.
 
 election_timer(undefined) ->
-	erlang:send_after(200+random:uniform(200),self(),doelection);
+	% erlang:send_after(200+random:uniform(200),self(),doelection);
+	% High election timeout. This is because it is only a last resort. 
+	erlang:send_after(500+random:uniform(600),self(),doelection);
 election_timer(T) ->
 	T.
 
@@ -710,9 +715,9 @@ start_election(P) ->
 
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,{P#dp.evnum,P#dp.evterm},true,P#dp.follower_indexes,1) of
-		{outofdate,Node,_NewerTerm} ->
-			% send_doelection(Node,P),
-			start_election_done(P,follower);
+		% {outofdate,_Node,_NewerTerm} ->
+		% 	% send_doelection(Node,P),
+		% 	start_election_done(P,follower);
 		{NumVotes,Followers,AllSynced} when is_integer(NumVotes) ->
 			case NumVotes*2 > ClusterSize of
 				true ->
@@ -761,7 +766,7 @@ start_election_done(P,Signal) ->
 send_doelection(Node,P) ->
 	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
 	bkdcore_rpc:call(Node,{actordb_sqlproc,call_slave,DoElectionMsg}).
-count_votes([{What,Node,HisLatestTerm,{Num,Term} = NodeNumTerm}|T],NumTerm,AllSynced,Followers,N) ->
+count_votes([{What,Node,_HisLatestTerm,{Num,Term} = NodeNumTerm}|T],NumTerm,AllSynced,Followers,N) ->
 	F = lists:keyfind(Node,#flw.node,Followers),
 	NF = F#flw{match_index = Num, next_index = Num+1, match_term = Term},
 	case What of
@@ -769,9 +774,9 @@ count_votes([{What,Node,HisLatestTerm,{Num,Term} = NodeNumTerm}|T],NumTerm,AllSy
 			count_votes(T,NumTerm,true,lists:keystore(Node,#flw.node,Followers,NF),N+1);
 		true ->
 			count_votes(T,NodeNumTerm,false,Followers,N+1);
-		outofdate ->
-			{outofdate,Node,HisLatestTerm};
-		% already voted or something crashed
+		% outofdate ->
+		% 	count_votes(T,NodeNumTerm,false,Followers,N);
+		% 	{outofdate,Node,HisLatestTerm};
 		_ ->
 			count_votes(T,NumTerm,false,Followers,N)
 	end;
@@ -1401,7 +1406,7 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 			Param = [{bin,<<>>},{status,done},{origin,original},{evnum,Evnum},{evterm,Evterm}],
 			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));
 		{_Walname,Walsize,_,_} when Offset > Walsize ->
-			?ERR("Offset larger than walsize ~p ~p",[{ActorTo,P#dp.actortype},Offset,Walsize]),
+			?ERR("Offset larger than walsize ~p ~p ~p ~p",[ActorTo,P#dp.actortype,Offset,Walsize]),
 			exit(copyfail);
 		{Walname,Walsize,Evnum,Evterm} ->
 			Readnum = min(1024*1024,Walsize-Offset),
@@ -1573,7 +1578,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 	end.
 
 callback_unlock(P) ->
-	?DBG("Callback unlock ~p",[P#dp.copyfrom]),
+	?DBG("Callback unlock, copyfrom=~p",[P#dp.copyfrom]),
 	case P#dp.copyfrom of
 		{move,Node} ->
 			ActorName = P#dp.actorname;

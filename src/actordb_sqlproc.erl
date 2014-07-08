@@ -334,7 +334,7 @@ handle_call(Msg,From,P) ->
 		stop ->
 			{stop, shutdown, stopped, P};
 		Msg ->
-			?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
+			% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
 			case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
 				{write,Sql,NS} ->
 					write_call({undefined,Sql,undefined},From,P#dp{cbstate = NS});
@@ -490,9 +490,10 @@ state_rw_call(What,From,P) ->
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
 					?ERR("AE start attempt failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 								[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
-					case P#dp.evnum > PrevEvnum andalso PrevEvnum > 0 of
+					% case P#dp.evnum > PrevEvnum andalso  of
+					case ok of
 						% Node is conflicted, delete last entry
-						true when AEType /= empty, AEType /= head ->
+						_ when PrevEvnum > 0, AEType == recover ->
 							NP = actordb_sqlprocutil:rewind_wal(P);
 						% If false this node is behind. If empty this is just check call.
 						% Wait for leader to send an earlier event.
@@ -664,17 +665,33 @@ state_rw_call(What,From,P) ->
 				_ ->
 					DoElection = (P#dp.mors == master andalso P#dp.verified == true),
 					reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
+					case ok of
+						_ when element(1,P#dp.db) == connection ->
+							ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
+							ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,NewTerm}),ReplType);
+						_ ->
+							ok
+					end,
 					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm})
 			end,
 			% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
 			% If the other node is actually more up to date, vote was yes and we do not do election.
-			% case DoElection of
-			% 	true ->
-			% 		?DBG("Start new election to sync nodes"),
-			% 		{noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP),false)};
-			% 	false ->
-					{noreply,NP#dp{activity = make_ref()}};
-			% end;
+			case DoElection of
+				true ->
+					?DBG("Start new election to sync nodes"),
+					{noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP),false)};
+					% case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
+					% 	false ->
+					% 		NP1 = actordb_sqlprocutil:set_followers(true,NP),
+					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP1,Candidate);
+					% 	Flw ->
+					% 		NP1 = NP,
+					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP,Flw)
+					% end,
+					% {noreply, actordb_sqlprocutil:store_follower(NP1,NFlw)};
+				false ->
+					{noreply,NP#dp{activity = make_ref()}}
+			end;
 		{set_dbfile,Bin} ->
 			ok = file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
 			{reply,ok,P#dp{activity = make_ref()}};
@@ -981,7 +998,7 @@ handle_info(ae_timer,P) ->
 		true ->
 			case actordb_sqlprocutil:resend_ae(P,0,P#dp.follower_indexes,[]) of
 				{0,_} ->
-					?DBG("AE timer stop"),
+					?DBG("AE timer stop, evnum=~p, evterm=~p followers=~p",[P#dp.evnum,P#dp.evterm,P#dp.follower_indexes]),
 					{noreply,P#dp{resend_ae_timer = undefined}};
 				{_,NF} ->
 					?DBG("AE timer continue"),
@@ -1286,7 +1303,7 @@ down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 			{noreply,P#dp{transactioncheckref = undefined}}
 	end;
 down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
-	?DBG("copyproc died ~p ~p ~p",[Reason,P#dp.mors,P#dp.copyfrom]),
+	?DBG("copyproc died ~p my_status=~p copyfrom=~p",[Reason,P#dp.mors,P#dp.copyfrom]),
 	case Reason of
 		unlock -> %when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
 			case actordb_sqlprocutil:callback_unlock(P) of
@@ -1361,6 +1378,14 @@ init(#dp{} = P,_Why) ->
 	actordb_sqlite:stop(P#dp.db),
 	% cancel_timer(P),
 	Flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION) band (bnot ?FLAG_STARTLOCK),
+	case ok of
+		_ when is_reference(P#dp.election) ->
+			erlang:cancel_timer(P#dp.election);
+		_ when is_pid(P#dp.election) ->
+			exit(P#dp.election,reinit);
+		_ ->
+		 	ok
+	end,
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,Flags},
 		  {state,P#dp.cbstate},{slave,P#dp.mors == slave},{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 % Never call other processes from init. It may cause deadlocks. Whoever
