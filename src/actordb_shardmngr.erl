@@ -450,6 +450,12 @@ handle_info({actordb,sharedstate_change},P) ->
 					{noreply,P}
 			end
 	end;
+handle_info({fprof,Opts},P) ->
+	?AINF("Fprof trace: ~p",[fprof:trace(Opts)]),
+	{noreply,P};
+handle_info(eprof,P) ->
+	?AINF("eprof ~p",[eprof:start_profiling([self()])]),
+	{noreply,P};
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->

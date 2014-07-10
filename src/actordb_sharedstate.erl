@@ -36,13 +36,14 @@ start(Name,Type1,State,Opt) ->
 	case distreg:whereis({Name,Type}) of
 		undefined ->
 			actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},create,
-							  {state,State}|Opt]);
+							  {state,State},no_election_timeout|Opt]);
 		Pid ->
 			{ok,Pid}
 	end.
 
 start_wait(Name,Type) ->
-	start(Name,Type,#st{name = Name,type = Type, waiting = true},[{slave,false},create,lock,{lockinfo,wait}]).
+	start(Name,Type,#st{name = Name,type = Type, waiting = true},[{slave,false},create,
+			no_election_timeout,lock,{lockinfo,wait}]).
 
 read_global(Key) ->
 	case ets:info(?GLOBALETS,size) of
@@ -55,7 +56,8 @@ read_cluster(Key) ->
 	read(?STATE_NM_LOCAL,Key).
 
 write_global_on(Node,K,V) ->
-	case actordb_sqlproc:write({?STATE_NM_GLOBAL,?STATE_TYPE},[create],{{?MODULE,cb_write,[Node,[{K,V}]]},undefined,undefined},?MODULE) of
+	case actordb_sqlproc:write({?STATE_NM_GLOBAL,?STATE_TYPE},[create],
+					{{?MODULE,cb_write,[Node,[{K,V}]]},undefined,undefined},?MODULE) of
 		{ok,_} ->
 			ok;
 		ok ->

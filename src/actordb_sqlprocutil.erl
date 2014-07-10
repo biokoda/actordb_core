@@ -709,9 +709,11 @@ start_election(P) ->
 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
 	Nodes = follower_nodes(P#dp.follower_indexes),
 	?DBG("Election, multicall to ~p",[Nodes]),
+	Start = os:timestamp(),
 	{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}]]}),
-	?DBG("Election, results ~p failed ~p, contacted ~p",[Results,_GetFailed,Nodes]),
+	Stop = os:timestamp(),
+	?DBG("Election took=~p, results ~p failed ~p, contacted ~p",[timer:now_diff(Stop,Start),Results,_GetFailed,Nodes]),
 
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,{P#dp.evnum,P#dp.evterm},true,P#dp.follower_indexes,1) of
@@ -1181,6 +1183,8 @@ parse_opts(P,[H|T]) ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOHIBERNATE},T);
 		wait_election ->
 			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_WAIT_ELECTION},T);
+		no_election_timeout ->
+			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NO_ELECTION_TIMEOUT},T);
 		nostart ->
 			{stop,nostart};
 		_ ->

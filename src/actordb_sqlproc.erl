@@ -240,7 +240,7 @@ print_info(Pid) ->
 
 
 
-handle_call(Msg,_,#dp{movedtonode = <<_/binary>>} = P) ->
+handle_call(Msg,_,P) when is_binary(P#dp.movedtonode) ->
 	?DBG("REDIRECT BECAUSE MOVED TO NODE ~p ~p",[P#dp.movedtonode,Msg]),
 	case apply(P#dp.cbmod,cb_redirected_call,[P#dp.cbstate,P#dp.movedtonode,Msg,moved]) of
 		{reply,What,NS,Red} ->
@@ -261,6 +261,7 @@ handle_call(Msg,From,P) ->
 				undefined ->
 					?DBG("Queing msg no master yet ~p",[Msg]),
 					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), 
+									election = actordb_sqlprocutil:election_timer(P#dp.election),
 									flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}};
 				_ ->
 					case apply(P#dp.cbmod,cb_redirected_call,[P#dp.cbstate,P#dp.masternode,Msg,slave]) of
@@ -575,7 +576,10 @@ state_rw_call(What,From,P) ->
 						false when P#dp.current_term < CurrentTerm ->
 							?DBG("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
-								P#dp{mors = slave,current_term = CurrentTerm,voted_for = undefined, follower_indexes = []}))};
+								P#dp{mors = slave,current_term = CurrentTerm,
+									election = actordb_sqlprocutil:election_timer(P#dp.election),
+									masternode = undefined, masternodedist = undefined,
+									voted_for = undefined, follower_indexes = []}))};
 						false when NFlw#flw.match_index == P#dp.evnum ->
 							% Follower is up to date. He replied false. Maybe our term was too old.
 							{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw))};
@@ -1009,8 +1013,10 @@ handle_info(ae_timer,P) ->
 			{noreply, P}
 	end;
 handle_info(doelection,P) ->
+	Empty = queue:is_empty(P#dp.callqueue),
 	case ok of
-		_ when is_pid(P#dp.election); P#dp.masternode /= undefined ->
+		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined; 
+					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
 			{noreply,P};
 		_ ->
 			?DBG("Election timeout"),
@@ -1443,18 +1449,18 @@ init([_|_] = Opts) ->
 									file:close(F),
 									?DBG("Actor start slave, with {Evnum,Evterm}=~p",[{Evnum,Evterm}]),
 									{ok,P#dp{current_term = VotedCurrentTerm, voted_for = VotedFor, 
-												election = actordb_sqlprocutil:election_timer(undefined),
+												% election = actordb_sqlprocutil:election_timer(undefined),
 												evnum = Evnum, evterm = Evterm}};
 								{ok,_} ->
 									file:close(F),
 									{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
-													election = actordb_sqlprocutil:election_timer(undefined),
+													% election = actordb_sqlprocutil:election_timer(undefined),
 													voted_for = VotedFor, evnum = VoteEvnum, evterm = VoteEvTerm})}
 							end;
 						{error,enoent} ->
 							% {ok,P#dp{current_term = VotedCurrentTerm, voted_for = VotedFor, evnum = VoteEvum}}
 							{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
-										election = actordb_sqlprocutil:election_timer(undefined),
+										% election = actordb_sqlprocutil:election_timer(undefined),
 										voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})}
 					end;
 				_ when MovedToNode == undefined; RightCluster ->

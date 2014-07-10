@@ -368,19 +368,32 @@ cluster_start() ->
 
 	ok.
 cluster_stop(_) ->
+	% A = rpc:call('slave1@127.0.0.1',fprof,trace,[stop]),
+	% B = rpc:call('slave1@127.0.0.1',fprof,profile,[{file,?TESTPTH++"slave1.trace"}]),
+	% C = rpc:call('slave1@127.0.0.1',fprof,analyse,[[{dest,?TESTPTH++"slave1.txt"}]]),
 	stop_slaves([1,2,3]),
 	ok.
 test_cluster(_) ->
 	[
 	  {timeout,20,fun basic_write/0},
 	  fun recoveractor/0,
-	  fun basic_read/0,
-	  fun kv_readwrite/0,
-	  fun basic_write/0,
-	  fun multiupdate_write/0,
-	  fun multiupdate_read/0,
-	  fun copyactor/0,
-	  fun() -> test_print_end([1,2,3]) end].
+	  fun basic_read/0
+	  % fun kv_readwrite/0,
+	  % fun basic_write/0,
+	  % fun multiupdate_write/0,
+	  % fun multiupdate_read/0,
+	  % fun copyactor/0,
+	  % fun() -> test_print_end([1,2,3]) end
+	 
+	 %  {timeout,20,fun() -> timer:sleep(6000),
+	 %  			?debugFmt("SLEEP DONE",[]),
+	 %  			A = rpc:call('slave1@127.0.0.1',eprof,log,[?TESTPTH++"slave1.eprof.txt"]),
+	 %  			B = rpc:call('slave1@127.0.0.1',eprof,stop_profiling,[]),
+		% 	C = rpc:call('slave1@127.0.0.1',eprof,analyze,[]),
+		% 	?debugFmt("Eprof ~p ~p ~p",[A,B, C]),
+		% 	ok end},
+		% fun() -> timer:sleep(1000),ok end
+			].
 
 
 missingn_start() ->
@@ -655,9 +668,19 @@ basic_init() ->
 	filelib:ensure_dir(?TESTPTH++slave_name(1)++"/etc/"),
 	filelib:ensure_dir(?TESTPTH++"etc/").
 
+start_trace(_Opts) ->
+	% actordb_shardmngr ! {fprof,Opts}.
+	% actordb_shardmngr ! eprof.
+	% {ok,P} = eprof:start(),
+	% eprof:start_profiling([actordb_shardmngr]).
+	ok.
+
+
 start_slaves(L) ->
 	[start_slave(S) || S <- L],
 	timer:sleep(3000),
+	rpc:call('slave1@127.0.0.1',?MODULE,start_trace,[[start,{file,?TESTPTH++"slave1.trace"}]]),
+	% rpc:call('slave1@127.0.0.1',eprof,start,[]),
 	case rpc:call('slave1@127.0.0.1',actordb_shardtree,all,[]) of
 		{badrpc,_Err} ->
 			Init = rpc:call('slave1@127.0.0.1',actordb_cmd,cmd,[init,commit,?TESTPTH++slave_name(1)++"/etc"]);
@@ -828,6 +851,7 @@ l1(N,X) ->
 	% base64:encode(X),
 	% butil:hex(X),
 	% os:timestamp(),
+	file:open(["/Users/sergej/Desktop/","-wal"],[read,binary,raw]),
 	l1(N-1,X).
 
 
@@ -977,7 +1001,6 @@ filltkv(N,B) when N > 0 ->
 	filltkv(N-1,B);
 filltkv(0,_) ->
 	ok.
-
 
 
 
