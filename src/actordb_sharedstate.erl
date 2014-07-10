@@ -95,6 +95,12 @@ subscribe_changes(Mod) ->
 		{ok,L} ->
 			ok
 	end,
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			ok;
+		_ ->
+			butil:safesend(Mod,{actordb,sharedstate_change})
+	end,
 	application:set_env(actordb,sharedstate_notify,[Mod|L]).
 
 whois_global_master() ->
