@@ -175,12 +175,12 @@ recoveractor() ->
 	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-wal"]),
 	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-shm"]),
 	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-term"]),
-	file:delete([?TESTPTH,"/slave2/actors/ac1.type1"]),
-	file:delete([?TESTPTH,"/slave2/actors/ac1.type1-wal"]),
-	file:delete([?TESTPTH,"/slave2/actors/ac1.type1-shm"]),
-	file:delete([?TESTPTH,"/slave2/actors/ac1.type1-term"]),
+	% file:delete([?TESTPTH,"/slave2/actors/ac1.type1"]),
+	% file:delete([?TESTPTH,"/slave2/actors/ac1.type1-wal"]),
+	% file:delete([?TESTPTH,"/slave2/actors/ac1.type1-shm"]),
+	% file:delete([?TESTPTH,"/slave2/actors/ac1.type1-term"]),
 	Res = exec(<<"actor type1(ac1) create; select * from tab;">>),
-	?debugFmt("After deleting data from 2 nodes ~p",[Res]),
+	?debugFmt("After deleting data from 1 node ~p",[Res]),
 	?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
 			Res).
 

@@ -69,7 +69,7 @@ close(Db) ->
 stop(undefined) ->
 	ok;
 stop(Db) when element(1,Db) == connection ->
-	% esqlite3:close(Db);
+	esqlite3:close(Db),
 	ok;
 stop(Db) when element(1,Db) == file_descriptor ->
 	file:close(Db).

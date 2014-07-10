@@ -363,6 +363,7 @@ commit_call(Doit,Id,From,P) ->
 				true when Sql == <<"delete">> ->
 					actordb_sqlprocutil:delete_actor(P),
 					reply(From,ok),
+					?DBG("Commit delete"),
 					{stop,normal,P#dp{db = undefined}};
 				true when P#dp.follower_indexes == [] ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
@@ -813,10 +814,12 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 		delete ->
 			actordb_sqlprocutil:delete_actor(P),
 			reply(From,ok),
+			?DBG("Write delete"),
 			{stop,normal,P#dp{db = undefined}};
 		{moved,MovedTo} ->
 			actordb_sqlprocutil:delete_actor(P#dp{movedtonode = MovedTo}),
 			reply(From,ok),
+			?DBG("Write moved"),
 			{stop,normal,P#dp{db = undefined}};
 		_ ->
 			ComplSql = 
@@ -1057,6 +1060,7 @@ handle_info(do_checkpoint,P) ->
 % handle_info(check_inactivity, P) ->
 % 	handle_info({check_inactivity,10},P);
 handle_info(stop,P) ->
+	?DBG("Received stop msg"),
 	handle_info({stop,normal},P);
 handle_info({stop,Reason},P) ->
 	?DBG("Actor stop with reason ~p",[Reason]),
@@ -1317,9 +1321,11 @@ down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 					{ok,NP} = init(P,copyproc_done),
 					{noreply,NP};
 				Err ->
+					?DBG("Unable to unlock"),
 					{stop,Err,P}
 			end;
 		ok when P#dp.mors == slave ->
+			?DBG("Stopping because slave"),
 			{stop,normal,P};
 		nomajority ->
 			{stop,{error,nomajority},P};
