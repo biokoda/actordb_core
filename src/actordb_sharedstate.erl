@@ -492,7 +492,7 @@ cb_info(ping_timer,#st{} = S)  ->
 			Msg = {master_ping,actordb_conf:node_name(),S#st.evnum,ets:tab2list(?GLOBALETS)},
 			case S#st.am_i_master of
 				true ->
-					?ADBG("Pinging nodes amimaster=~p, nodes=~p",[S#st.am_i_master,S#st.master_group]),
+					% ?ADBG("Pinging nodes amimaster=~p, nodes=~p",[S#st.am_i_master,S#st.master_group]),
 					Pos = S#st.nodepos,
 					[bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
 								[?MODULE,S#st.name,S#st.type,Msg]}) || Nd <- S#st.master_group, Nd /= actordb_conf:node_name()];

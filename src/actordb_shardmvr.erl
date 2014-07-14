@@ -127,7 +127,7 @@ handle_cast(_, P) ->
 can_start() ->
 	case catch actordb_shardtree:local() of
 		{'EXIT',_} ->
-			?ADBG("Do not have shardtree"),
+			% ?ADBG("Do not have shardtree"),
 			ok;
 		_X ->
 			case catch actordb_schema:types() of
@@ -169,7 +169,7 @@ handle_info(can_start,P) ->
 		true ->
 			ok;
 		false ->
-			?ADBG("Checking canstart"),
+			% ?ADBG("Checking canstart"),
 			spawn(fun() -> can_start() end),
 			erlang:send_after(300,self(),can_start)
 	end,
