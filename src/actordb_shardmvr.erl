@@ -188,7 +188,7 @@ handle_info(check_steal,P) ->
 	erlang:send_after(60000,self(),check_steal),
 	case P#dp.init of
 		true ->
-			?ADBG("Check steal ~p",[P#dp.shardstoget]),
+			% ?ADBG("Check steal ~p",[P#dp.shardstoget]),
 			{noreply,start_shards(P)};
 		false ->
 			{noreply,P}
