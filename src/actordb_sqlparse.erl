@@ -415,7 +415,8 @@ count_param(<<"}}",_/binary>>,N) ->
 count_param(<<C,Rem/binary>>,N) when C >= $a, C =< z; 
 									 C >= $A, C =< $Z; 
 									 C >= $0, C =< $9;
-									 C == $.; C == $=; C == $(; C == $); C == $_ ->
+									 C == $.; C == $=; C == $(; 
+									 C == $); C == $_; C == $- ->
 	count_param(Rem,N+1);
 count_param(<<>>,_) ->
 	undefined;
@@ -430,7 +431,7 @@ get_name(Bin) ->
 count_name(<<C,Rem/binary>>,N) when C >= $a, C =< z; 
 									 C >= $A, C =< $Z; 
 									 C >= $0, C =< $9;
-									 C == $.; C == $_ ->
+									 C == $.; C == $_; C == $- ->
 	count_name(Rem,N+1);
 count_name(<<>>,N) ->
 	N;
