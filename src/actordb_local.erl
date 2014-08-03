@@ -99,7 +99,7 @@ pick_mupdate() ->
 						butil:ds_val(all,multiupdaters)) of
 		false ->
 			% They are all busy. Pick one at random and queue the request on it.
-			actordb:hash_pick([self(),os:timestamp()],butil:ds_val(all,multiupdaters));
+			actordb:hash_pick(term_to_binary([self(),make_ref(),1234]),butil:ds_val(all,multiupdaters));
 		Id ->
 			Id
 	end.
