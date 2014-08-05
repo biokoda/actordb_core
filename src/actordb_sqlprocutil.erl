@@ -135,7 +135,7 @@ create_var_header(P) ->
 create_var_header_with_db(P) ->
 	case filelib:file_size(P#dp.dbpath) of
 		?PAGESIZE ->
-			{ok,Dbfile} = file:read_file(P#dp.dbpath),
+			{ok,Dbfile} = prim_file:read_file(P#dp.dbpath),
 			{Compressed,CompressedSize} = esqlite3:lz4_compress(Dbfile),
 			<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
 			term_to_binary({P#dp.current_term,actordb_conf:node_name(),
