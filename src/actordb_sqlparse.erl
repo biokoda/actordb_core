@@ -571,6 +571,10 @@ split_foru(<<C,Bin/binary>>,Word,Var,Col) ->
 
 rem_spaces(<<" ",X/binary>>) ->
 	rem_spaces(X);
+rem_spaces(<<"\n",X/binary>>) ->
+	rem_spaces(X);
+rem_spaces(<<"\r",X/binary>>) ->
+	rem_spaces(X);
 rem_spaces(X) ->
 	X.
 
