@@ -1116,7 +1116,7 @@ has_schema_updated(P,Sql) ->
 				{NewVers,SchemaUpdate} ->
 					?DBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
 					{NewVers,iolist_to_binary([SchemaUpdate,
-						<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,"' WHERE id=",?SCHEMA_VERS/binary,";">>,Sql])}
+						<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,"' WHERE id=",?SCHEMA_VERS/binary,";">>])}
 			end
 	end.
 

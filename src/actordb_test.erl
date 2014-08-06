@@ -971,10 +971,14 @@ tsingle(N) ->
 			Sql = tsingle([],N),
 			Start = now(),
 			% actordb_sqlite:exec(Db,["SAVEPOINT 'aa';",Sql,"RELEASE SAVEPOINT 'aa';"]),
-			actordb_sqlite:exec(Db,["SAVEPOINT 'aa';",Sql,"RELEASE SAVEPOINT 'aa';"]),
-			Out = actordb_sqlite:exec(Db,<<"SELECT count(*) from t_file;">>),
+			% actordb_sqlite:exec(Db,["SAVEPOINT 'aa';",Sql,"RELEASE SAVEPOINT 'aa';"]),
+			actordb_sqlite:exec(Db,<<"SAVEPOINT 'aa';">>),
+			Out1 = esqlite3:bind_insert(<<"INSERT INTO tab1 values(?1,?2);">>,Sql,Db),
+			actordb_sqlite:exec(Db,<<"RELEASE SAVEPOINT 'aa';">>),
+			io:format("insert ~p~n",[Out1]),
+			Out = actordb_sqlite:exec(Db,<<"SELECT count(*) from tab1;">>),
 			io:format("Time ~p~nrows ~p~nWalsize ~p~nSqlsize ~p~n",
-				[timer:now_diff(now(),Start),Out,filelib:file_size("tt-wal"),iolist_size(Sql)])
+				[timer:now_diff(now(),Start),Out,filelib:file_size("tt-wal"),1]) %iolist_size(Sql)
 		end),
 	receive
 		{'DOWN',_Monitor,_,_PID,normal} ->
@@ -996,7 +1000,8 @@ tsingle(Db,N) ->
 	Txt = <<"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">>,
-	Sql = [<<"insert into tab1 values (">>,butil:tobin(N),$,,$',Txt,$',<<");">>],
+	% Sql = [<<"insert into tab1 values (">>,butil:tobin(N),$,,$',Txt,$',<<");">>],
+	Sql = [N,Txt],
 	tsingle([Sql|Db],N-1).
 
 test_wal() ->
