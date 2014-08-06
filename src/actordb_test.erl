@@ -913,25 +913,68 @@ run(D,P,W,N) ->
 
 tsingle(N) ->
 	spawn_monitor(fun() -> 
-			Start = now(),
+			
 			file:delete("tt"),
-			{ok,Db,Schema,_} = actordb_sqlite:init("tt",wal),
+			file:delete("tt-wal"),
+			file:delete("tt-shm"),
+			{ok,Db,_,_} = actordb_sqlite:init("tt",wal),
 			Pragmas = actordb_sqlite:exec(Db,<<"PRAGMA cache_size;PRAGMA mmap_size;PRAGMA page_size;",
 								"PRAGMA synchronous=0;PRAGMA locking_mode;">>),
 			io:format("PRagmas ~p~n",[Pragmas]),
-			case Schema of
-				[_|_] ->
-					ok;
-				[] ->
-					% actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>)
-					XX = actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id TEXT PRIMARY KEY, txt TEXT);">>),
-					io:format("~p~n",[XX])
-			end,
-			
-			
-			io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
-			tsingle(Db,N),
-			io:format("Time ~p~n",[timer:now_diff(now(),Start)])
+			% actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>)
+			Schema = <<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>,
+			_Schema1 = 
+			"CREATE TABLE t_dir (
+			  id INTEGER NOT NULL,
+			  v INTEGER DEFAULT 1,
+			  eid INTEGER NOT NULL,
+			  parent INTEGER,
+			  name TEXT NOT NULL,
+			  tdiff INTEGER,
+			  tdel INTEGER,
+			  mtime INTEGER NOT NULL,
+			  pub INTEGER,
+			  root INTEGER NOT NULL,
+			  def INTEGER NOT NULL,
+			  subs TEXT,
+			  children INTEGER DEFAULT 0,
+			  fav INTEGER,
+			  shared INTEGER,
+			  size INTEGER,
+			  misc TEXT,
+			  created TIMESTAMP DEFAULT (strftime('%s', 'now')),
+			  CONSTRAINT pk_dir PRIMARY KEY(id) FOREIGN KEY (parent) REFERENCES t_dir(id) ON UPDATE CASCADE);"++
+			"CREATE TABLE t_file (
+			  id INTEGER NOT NULL,
+			  v INTEGER NULL DEFAULT 1,
+			  eid INTEGER NOT NULL,
+			  parent INTEGER NOT NULL,
+			  name TEXT NULL,
+			  tdiff INTEGER NULL,
+			  tdel INTEGER NULL,
+			  pub INTEGER NULL,
+			  size INTEGER NOT NULL,
+			  mtime INTEGER NOT NULL,
+			  crc INTEGER,
+			  crch INTEGER,
+			  sha TEXT NULL,
+			  rev INTEGER NULL,
+			  fav INTEGER NULL,
+			  shared INTEGER,
+			  misc TEXT,
+			  ext TEXT NOT NULL,
+			  created TIMESTAMP DEFAULT (strftime('%s', 'now')),
+			  CONSTRAINT pk_file PRIMARY KEY(id) FOREIGN KEY (parent) REFERENCES t_dir(id) ON UPDATE CASCADE);"++
+			"INSERT OR REPLACE INTO t_dir (id,v,eid,parent,name,tdiff,tdel,mtime,pub,root,def,subs,children,fav,shared,size,misc) VALUES ( 1015,1,2,1015,'otp_src_17.1',0,0,0,0,0,0,'',0,0,0,0,'836c0000000168026400056d74696d656802680362000007de6108610468036107611b61206a');",
+			_Create = actordb_sqlite:exec(Db,Schema),
+
+			Sql = tsingle([],N),
+			Start = now(),
+			% actordb_sqlite:exec(Db,["SAVEPOINT 'aa';",Sql,"RELEASE SAVEPOINT 'aa';"]),
+			actordb_sqlite:exec(Db,["SAVEPOINT 'aa';",Sql,"RELEASE SAVEPOINT 'aa';"]),
+			Out = actordb_sqlite:exec(Db,<<"SELECT count(*) from t_file;">>),
+			io:format("Time ~p~nrows ~p~nWalsize ~p~nSqlsize ~p~n",
+				[timer:now_diff(now(),Start),Out,filelib:file_size("tt-wal"),iolist_size(Sql)])
 		end),
 	receive
 		{'DOWN',_Monitor,_,_PID,normal} ->
@@ -939,17 +982,22 @@ tsingle(N) ->
 		{'DOWN',_Monitor,_,_PID,Reason} ->
 			Reason
 		after 1000 ->
-			timeout
+			timeout_wait_finish_tsingle
 	end.
-tsingle(_,0) ->
-	ok;
+tsingle(Db,0) ->
+	Db;
 tsingle(Db,N) ->
-	actordb_sqlite:exec(Db,<<"SAVEPOINT 'adb';",
-						"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'HAHAHAFR');",
-						"RELEASE SAVEPOINT 'adb';"
-						>>),
-	io:format("wal pages ~p~n",[actordb_sqlite:wal_pages(Db)]),
-	tsingle(Db,N-1).
+	% Sql = 
+	% <<
+	% "INSERT INTO t_file (id,v,eid,parent,name,tdiff,tdel,pub,size,mtime,crc,crch,sha,rev,fav,shared,misc,ext) VALUES ( ",
+	% 	(butil:tobin(N))/binary,
+	% 	",1,3,1015,'AUTHORS',0,0,0,601,63570777057,0,0,'',0,0,0,'836a','');">>,
+	
+	Txt = <<"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">>,
+	Sql = [<<"insert into tab1 values (">>,butil:tobin(N),$,,$',Txt,$',<<");">>],
+	tsingle([Sql|Db],N-1).
 
 test_wal() ->
 	{PID,_} = spawn_monitor(fun() -> wal_test1() end),
