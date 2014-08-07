@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -module(actordb_sqlite).
--export([init/1,init/2,init/3,exec/2,exec/3,exec/5,set_pragmas/2,set_pragmas/3,okornot/1,
+-export([init/1,init/2,init/3,exec/2,exec/3,exec/5,exec/6,set_pragmas/2,set_pragmas/3,okornot/1,
 		 stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1,wal_pages/1]). 
 -include("actordb.hrl").
 
@@ -100,6 +100,10 @@ exec(Db,Sql,Evnum,Evterm,VarHeader) ->
 	actordb_local:report_write(),
 	Res =  esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
 	exec_res(Res,Sql).
+exec(Db,Sql,Records,Evnum,Evterm,VarHeader) ->
+	actordb_local:report_write(),
+	Res =  esqlite3:exec_script(Sql,Records,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
+	exec_res(Res,Sql).
 
 exec_res(Res,Sql) ->
 	case Res of
@@ -133,7 +137,7 @@ okornot(Res) ->
 		{ok,_} ->
 			ok;
 		{sql_error,Err,_Sql} ->
-			?ADBG("Sql failed ~p",[_Sql]),
+			?ADBG("Sql failed ~p ~p",[Err,_Sql]),
 			{sql_error,Err,_Sql};
 		{sql_error,Err} ->
 			{sql_error,Err,<<>>}

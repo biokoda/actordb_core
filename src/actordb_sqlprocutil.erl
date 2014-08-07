@@ -795,7 +795,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 			case Callfrom1 of
 				undefined when QueueEmpty == false ->
 					case queue:out_r(P#dp.callqueue) of
-						{{value,{Callfrom,{write,{undefined,CallWrite,undefined}}}},CQ} ->
+						{{value,{Callfrom,#write{sql = CallWrite, records = []}}},CQ} ->
 							ok;
 						_ ->
 							CallWrite = <<>>,
@@ -1352,7 +1352,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 								{ok,Sql,NS} ->
 									ok
 							end,
-							WriteMsg = {undefined,[Sql,<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],undefined},
+							WriteMsg = #write{sql = [Sql,<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"]},
 							case ok of
 								_ when WithoutLock == [], DbCopyTo == [] ->
 									actordb_sqlproc:write_call(WriteMsg,CallFrom,P#dp{locked = WithoutLock, 
@@ -1360,7 +1360,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 												cbstate = NS});
 								_ ->
 									?DBG("Queing write call"),
-									CQ = queue:in_r({CallFrom,{write,WriteMsg}},P#dp.callqueue),
+									CQ = queue:in_r({CallFrom,WriteMsg},P#dp.callqueue),
 									{noreply,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
 							end;
 						_ ->
@@ -1373,7 +1373,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 										% 	{reply,ok,start_verify(reply_maybe(store_follower(NP,
 										% 				Flw#flw{match_index = P#dp.evnum, next_index = P#dp.evnum+1})),force)};
 										Flw when is_tuple(Flw) ->
-											CQ = queue:in_r({CallFrom,{write,{undefined,<<>>,undefined}}},P#dp.callqueue),
+											CQ = queue:in_r({CallFrom,#write{sql = <<>>}},P#dp.callqueue),
 											{reply,ok,reply_maybe(store_follower(NP#dp{callqueue = CQ},
 														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm, 
 																	next_index = P#dp.evnum+1}))};

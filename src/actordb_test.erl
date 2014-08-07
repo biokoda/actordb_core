@@ -32,9 +32,9 @@ all_test_() ->
 	[
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
-		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
+		{setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
 		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
-		{setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
+		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
@@ -970,13 +970,14 @@ tsingle(N) ->
 
 			Sql = tsingle([],N),
 			Start = now(),
-			% actordb_sqlite:exec(Db,["SAVEPOINT 'aa';",Sql,"RELEASE SAVEPOINT 'aa';"]),
-			% actordb_sqlite:exec(Db,["SAVEPOINT 'aa';",Sql,"RELEASE SAVEPOINT 'aa';"]),
-			actordb_sqlite:exec(Db,<<"SAVEPOINT 'aa';">>),
-			Out1 = esqlite3:bind_insert(<<"INSERT INTO tab1 values(?1,?2);">>,Sql,Db),
-			actordb_sqlite:exec(Db,<<"RELEASE SAVEPOINT 'aa';">>),
-			io:format("insert ~p~n",[Out1]),
-			Out = actordb_sqlite:exec(Db,<<"SELECT count(*) from tab1;">>),
+			% actordb_sqlite:exec(Db,<<"SAVEPOINT 'aa';">>),
+			%% Out1 = esqlite3:bind_insert(<<"INSERT INTO tab1 values(?1,?2);">>,Sql,Db),
+			% Out1 = esqlite3:exec_script(<<"_insert;">>,Sql,Db),
+			% actordb_sqlite:exec(Db,<<"RELEASE SAVEPOINT 'aa';">>),
+			% io:format("insert ~p~n",[Out1]),
+			% Out = actordb_sqlite:exec(Db,<<"SELECT count(*) from tab1;">>),
+			actordb:exec(<<"actor type1(tt) create;_insert;">>,Sql),
+			Out = actordb:exec(<<"actor type1(tt);select count(*) from tab1;">>),
 			io:format("Time ~p~nrows ~p~nWalsize ~p~nSqlsize ~p~n",
 				[timer:now_diff(now(),Start),Out,filelib:file_size("tt-wal"),1]) %iolist_size(Sql)
 		end),
@@ -1001,7 +1002,7 @@ tsingle(Db,N) ->
 			"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">>,
 	% Sql = [<<"insert into tab1 values (">>,butil:tobin(N),$,,$',Txt,$',<<");">>],
-	Sql = [N,Txt],
+	Sql = {tab1,N,Txt},
 	tsingle([Sql|Db],N-1).
 
 test_wal() ->

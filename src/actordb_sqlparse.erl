@@ -12,6 +12,8 @@ is_write([<<_/binary>> = Bin|_]) ->
 	is_write(Bin);
 is_write({Bin,_}) ->
 	is_write(Bin);
+is_write(<<$$,Bin/binary>>) ->
+	is_write(Bin);
 is_write(Bin) ->
 	case Bin of
 		<<"select ",_/binary>> ->
@@ -49,6 +51,8 @@ is_write(Bin) ->
 		<<"Create ",_/binary>> ->
 			true;
 		<<"create ",_/binary>> ->
+			true;
+		<<"_insert",_/binary>> ->
 			true;
 		<<"pragma ",Rem/binary>> ->
 			{pragma,Rem};
@@ -289,6 +293,9 @@ split_statements(<<>>) ->
 	[];
 split_statements(Bin1) ->
 	case Bin1 of
+		<<"_insert ",Rem/binary>> ->
+			StatementBin = <<"_insert",(rem_spaces(Rem))/binary>>,
+			GlobalVar = undefined;
 		<<"{{",WithGlobal/binary>> ->
 			Len = count_param(WithGlobal,0),
 			case WithGlobal of

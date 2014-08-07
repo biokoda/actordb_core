@@ -41,7 +41,7 @@ read(Name,Flags,[{copy,CopyFrom}],Start) ->
 			end
 	end;
 read(Name,Flags,[delete],Start) ->
-	call(Name,Flags,{write,{undefined,delete,{0,0,<<>>}}},Start);
+	call(Name,Flags,#write{sql = delete,transaction = {0,0,<<>>}},Start);
 read(Name,Flags,Sql,Start) ->
 	call(Name,Flags,{read,Sql},Start).
 
@@ -56,21 +56,23 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 				abort ->
 					call(Name,Flags,{commit,false,TransactionId},Start);
 				[delete] ->
-					call(Name,Flags,{write,{MFA,delete,TransactionId}},Start);
+					call(Name,Flags,#write{mfa = MFA,sql = delete, transaction = TransactionId},Start);
 				_ ->
-					call(Name,Flags,{write,{MFA,iolist_to_binary(Sql),TransactionId}},Start)
+					call(Name,Flags,#write{mfa = MFA,sql = iolist_to_binary(Sql), transaction = TransactionId},Start)
 			end;
 		_ when Sql == undefined ->
-			call(Name,Flags,{write,{MFA,undefined,undefined}},Start);
+			call(Name,Flags,#write{mfa = MFA},Start);
 		_ ->
-			call(Name,[wait_election|Flags],{write,{MFA,iolist_to_binary(Sql),undefined}},Start)
+			call(Name,[wait_election|Flags],#write{mfa = MFA, sql = iolist_to_binary(Sql)},Start)
 	end;
 write(Name,Flags,[delete],Start) ->
 	% Delete actor calls are placed in a fake multi-actor transaction. 
 	% This way if the intent to delete is written, then actor will actually delete itself.
-	call(Name,Flags,{write,{undefined,delete,{0,0,<<>>}}},Start);
+	call(Name,Flags,#write{sql = delete,transaction = {0,0,<<>>}},Start);
+write(Name,Flags,{Sql,Records},Start) ->
+	call(Name,[wait_election|Flags],#write{sql = iolist_to_binary(Sql), records = Records},Start);
 write(Name,Flags,Sql,Start) ->
-	call(Name,[wait_election|Flags],{write,{undefined,iolist_to_binary(Sql),undefined}},Start).
+	call(Name,[wait_election|Flags],#write{sql = iolist_to_binary(Sql)},Start).
 
 
 call(Name,Flags,Msg,Start) ->
@@ -291,17 +293,17 @@ handle_call(Msg,From,P) ->
 							{ok,NP} = init(P,cb_reinit),
 							{noreply,NP};
 						{reinit,Sql,NS} ->
-							{ok,NP} = init(P#dp{callqueue = queue:in_r({From,{write,{undefined,Sql,undefined}}},P#dp.callqueue),
+							{ok,NP} = init(P#dp{callqueue = queue:in_r({From,#write{sql = Sql}},P#dp.callqueue),
 												cbstate = NS},cb_reinit),
 							{noreply,NP}
 					end
 			end;
-		{write,{_,_,TransactionId} = Msg1} when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
+		#write{transaction = TransactionId} = Msg1 when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
 		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
 			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
-		{write,Msg1} ->
+		#write{} = Msg1 ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
 		{read,Msg1} ->
 			read_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
@@ -312,7 +314,7 @@ handle_call(Msg,From,P) ->
 			% When write done, reply to caller and start with move process (in ..util:reply_maybe.
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
 						(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,CbState})))/binary,"');">>,
-			write_call({undefined,Sql,undefined},{exec,From,{move,Node}},check_timer(actordb_sqlprocutil:set_followers(true,P)));
+			write_call(#write{sql = Sql},{exec,From,{move,Node}},check_timer(actordb_sqlprocutil:set_followers(true,P)));
 		{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
 			% Similar to above. Both have just insert and not insert and replace because
 			%  we can only do one move/split at a time. It makes no sense to do both at the same time.
@@ -321,7 +323,7 @@ handle_call(Msg,From,P) ->
 						(base64:encode(term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,CbState})))/binary,"');">>,
 			% Split is called when shards are moving around (nodes were added). If different number of nodes in cluster, we need
 			%  to have an updated list of nodes.
-			write_call({undefined,Sql,undefined},{exec,From,{split,MFA,Node,OldActor,NewActor}},
+			write_call(#write{sql = Sql},{exec,From,{split,MFA,Node,OldActor,NewActor}},
 				check_timer(actordb_sqlprocutil:set_followers(true,P)));
 		{copy,{Node,OldActor,NewActor}} ->
 			Ref = make_ref(),
@@ -338,7 +340,7 @@ handle_call(Msg,From,P) ->
 			% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
 			case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
 				{write,Sql,NS} ->
-					write_call({undefined,Sql,undefined},From,P#dp{cbstate = NS});
+					write_call(#write{sql = Sql},From,P#dp{cbstate = NS});
 				{reply,Resp,S} ->
 					{reply,Resp,P#dp{cbstate = S}};
 				{reply,Resp} ->
@@ -405,7 +407,7 @@ commit_call(Doit,Id,From,P) ->
 					end,
 					NewSql = <<"DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary," AND updater=",
 										(butil:tobin(Updaterid))/binary,";">>,
-					write_call({undefined,NewSql,undefined},From,P#dp{callfrom = undefined,
+					write_call(#write{sql = NewSql},From,P#dp{callfrom = undefined,
 										transactionid = undefined,transactioninfo = undefined,transactioncheckref = undefined})
 			end;
 		_ ->
@@ -751,17 +753,17 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 								{write,Write} ->
 									case Write of
 										_ when is_binary(Write); is_list(Write) ->
-											write_call({undefined,iolist_to_binary(Write),undefined},From,P);
+											write_call(#write{sql = iolist_to_binary(Write)},From,P);
 										{_,_,_} ->
-											write_call({Write,undefined,undefined},From,P)
+											write_call(#write{mfa = Write},From,P)
 									end;
 								{write,Write,NS} ->
 									case Write of
 										_ when is_binary(Write); is_list(Write) ->
-											write_call({undefined,iolist_to_binary(Write),undefined},
+											write_call(#write{sql = iolist_to_binary(Write)},
 													   From,P#dp{cbstate = NS});
 										{_,_,_} ->
-											write_call({Write,undefined,undefined},From,P#dp{cbstate = NS})
+											write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
 									end;
 								{reply,What,NS} ->
 									{reply,What,P#dp{cbstate = NS}};
@@ -775,40 +777,39 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 		% Schema has changed. Execute write on schema update.
 		% Place this read in callqueue for later execution.
 		{NewVers,Sql1} ->
-			write_call1(Sql1,undefined,undefined,NewVers, P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)})
+			write_call1(#write{sql = Sql1},undefined,NewVers, P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)})
 	end;
 read_call(_Msg,_From,P) ->
 	?DBG("redirect read ~p",[P#dp.masternode]),
 	actordb_sqlprocutil:redirect_master(P).
 
 
-write_call({MFA,Sql,Transaction},From,P) ->
+write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P) ->
 	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
-			write_call1(Sql1,undefined,undefined,NewVers, P#dp{callqueue = queue:in({From,{write,{MFA,Sql,Transaction}}},
-							P#dp.callqueue)});
+			write_call1(#write{sql = Sql1},undefined,NewVers, P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)});
 		ok when MFA == undefined ->
-			write_call1(Sql,Transaction,From,P#dp.schemavers,P);
+			write_call1(Msg,From,P#dp.schemavers,P);
 		_ ->
 			{Mod,Func,Args} = MFA,
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
 				{reply,What,OutSql,NS} ->
 					reply(From,What),
-					write_call1(OutSql,Transaction,undefined,P#dp.schemavers,P#dp{cbstate = NS});
+					write_call1(#write{sql = OutSql, transaction = Transaction},undefined,P#dp.schemavers,P#dp{cbstate = NS});
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
 					{reply,What,P};
 				{OutSql,State} ->
-					write_call1(OutSql,Transaction,From,P#dp.schemavers,P#dp{cbstate = State});
+					write_call1(#write{sql = OutSql,transaction = Transaction},From,P#dp.schemavers,P#dp{cbstate = State});
 				OutSql ->
-					write_call1(OutSql,Transaction,From,P#dp.schemavers,P)
+					write_call1(#write{sql = OutSql,transaction = Transaction},From,P#dp.schemavers,P)
 			end
 	end.
 % Not a multiactor transaction write
-write_call1(Sql,undefined,From,NewVers,P) ->
+write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	case Sql of
 		delete ->
@@ -835,7 +836,12 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 				_ ->
 					VarHeader = actordb_sqlprocutil:create_var_header(P)
 			end,
-			Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader),
+			case W#write.records of
+				[_|_] ->
+					Res = actordb_sqlite:exec(P#dp.db,ComplSql,W#write.records,P#dp.current_term,EvNum,VarHeader);
+				_ ->
+					Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader)
+			end,
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?DBG("Write result ~p",[Res]),
@@ -858,7 +864,7 @@ write_call1(Sql,undefined,From,NewVers,P) ->
 					{noreply,P}
 			end
 	end;
-write_call1(Sql1,{Tid,Updaterid,Node} = TransactionId,From,NewVers,P) ->
+write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId},From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",
 				[TransactionId,P#dp.transactionid,Sql1]),
@@ -1271,11 +1277,11 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 						_ ->
 							?DBG("Running post election write on nodes ~p",[P#dp.follower_indexes]),
 							% it must always return noreply
-							write_call({undefined,Sql,NP#dp.transactionid},Callfrom, NP)
+							write_call(#write{sql = Sql, transaction = NP#dp.transactionid},Callfrom, NP)
 					end;
 				_ ->
 					?DBG("Delaying election write callres=~p, followers=~p",[P#dp.callres,P#dp.follower_indexes]),
-					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,{write,{undefined,Sql,NP#dp.transactionid}}},
+					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,#write{sql = Sql,transaction = NP#dp.transactionid}},
 															P#dp.callqueue)}}
 			end;
 		follower ->
