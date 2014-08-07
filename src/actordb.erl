@@ -186,7 +186,9 @@ exec1(St) ->
 	end.
 exec(Sql,[_|_] = Records) ->
 	{[{{Type,[Actor],Flags},true,Statements}],_} = actordb_sqlparse:parse_statements(Sql),
-	direct_call(Actor,Type,Flags,true,{Statements,Records},true).
+	direct_call(Actor,Type,Flags,true,{Statements,Records},true);
+exec(Sql,[]) ->
+	exec(Sql).
 
 % direct_call({Actor,Type},IsWrite,Statements) ->
 % 	direct_call(Actor,Type,IsWrite,Statements,true);
