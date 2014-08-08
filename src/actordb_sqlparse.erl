@@ -52,7 +52,11 @@ is_write(Bin) ->
 			true;
 		<<"create ",_/binary>> ->
 			true;
-		<<"_insert",_/binary>> ->
+		<<"_insert ",_/binary>> ->
+			true;
+		<<"_INSERT ",_/binary>> ->
+			true;
+		<<"_Insert ",_/binary>> ->
 			true;
 		<<"pragma ",Rem/binary>> ->
 			{pragma,Rem};
@@ -79,7 +83,14 @@ is_write(Bin) ->
 											(E == $e orelse E == $E) andalso
 											(R == $r orelse R == $R) andalso
 											(T == $t orelse T == $T) ->
-			true;	
+			true;
+		<<"_",I,N,S,E,R,T," ",_/binary>> when (I == $i orelse I == $I) andalso 
+											(N == $n orelse N == $N) andalso
+											(S == $s orelse S == $S) andalso
+											(E == $e orelse E == $E) andalso
+											(R == $r orelse R == $R) andalso
+											(T == $t orelse T == $T) ->
+			true;
 		<<U,P,D,A,T,E," ",_/binary>> when (U == $u orelse U == $U) andalso 
 											(P == $p orelse P == $P) andalso
 											(D == $d orelse D == $D) andalso
@@ -293,9 +304,6 @@ split_statements(<<>>) ->
 	[];
 split_statements(Bin1) ->
 	case Bin1 of
-		<<"_insert ",Rem/binary>> ->
-			StatementBin = <<"_insert",(rem_spaces(Rem))/binary>>,
-			GlobalVar = undefined;
 		<<"{{",WithGlobal/binary>> ->
 			Len = count_param(WithGlobal,0),
 			case WithGlobal of
