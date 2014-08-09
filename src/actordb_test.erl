@@ -831,8 +831,8 @@ l(N) ->
 		% cprof:start(),
 		Start = now(),
 		random:seed(os:timestamp()),
-		{ok,Db,_Schema,_} = actordb_sqlite:init(":memory:",off),
-		l1(N,Db),
+		% {ok,Db,_Schema,_} = actordb_sqlite:init(":memory:",off),
+		l1(N,ok),
 		% actordb_sqlite:stop(Db),
 		% cprof:pause(),
 		io:format("Diff ~p~n",[timer:now_diff(now(),Start)])
@@ -851,7 +851,7 @@ l1(N,X) ->
 	% base64:encode(X),
 	% butil:hex(X),
 	% os:timestamp(),
-	file:open(["/Users/sergej/Desktop/","-wal"],[read,binary,raw]),
+	% file:open(["/Users/sergej/Desktop/","-wal"],[read,binary,raw]),
 	l1(N-1,X).
 
 
@@ -922,7 +922,8 @@ tsingle(N) ->
 								"PRAGMA synchronous=0;PRAGMA locking_mode;">>),
 			io:format("PRagmas ~p~n",[Pragmas]),
 			% actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>)
-			Schema = <<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>,
+			Schema = <<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);",
+						"CREATE TABLE tab2 (id INTEGER PRIMARY KEY, val INTEGER);">>,
 			_Schema1 = 
 			"CREATE TABLE t_dir (
 			  id INTEGER NOT NULL,
@@ -975,9 +976,11 @@ tsingle(N) ->
 			% Out1 = esqlite3:exec_script(<<"_insert into tab1 values (?1,?2);">>,Sql,Db),
 			% actordb_sqlite:exec(Db,<<"RELEASE SAVEPOINT 'aa';">>),
 			% Out = actordb_sqlite:exec(Db,<<"SELECT count(*) from tab1;">>),
-			Out1 = actordb:exec(<<"actor type1(tt) create;_insert or ignore into tab1 values (?1,?2);">>,[Sql]),
+			Out1 = actordb:exec(<<"actor type1(tt) create;",
+				"_insert or replace into tab1 values (?1,?2);",
+				"_insert or replace into tabx values (?1,?2);">>,[Sql,Sql]),
 			io:format("insert ~p~n",[Out1]),
-			Out = actordb:exec(<<"actor type1(tt);select count(*) from tab1;">>),
+			Out = actordb:exec(<<"actor type1(tt);select count(*) from tab1;select count(*) from tabx;">>),
 			io:format("Time ~p~nrows ~p~nWalsize ~p~nSqlsize ~p~n",
 				[timer:now_diff(now(),Start),Out,filelib:file_size("tt-wal"),1]) %iolist_size(Sql)
 		end),
