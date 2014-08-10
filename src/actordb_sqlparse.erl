@@ -610,13 +610,13 @@ rem_spaces(X) ->
 % For with statements, we need to move past the entire with
 % to find out if we are dealing with a read (select) or write (delete, update, insert).
 % First find "as", then find the last ) after the first one.
-find_as(<<" AS ",Rem/binary>>) ->
+find_as(<<C1,"AS",C2,Rem/binary>>) when (C1 == $\s orelse C1 == $\n) andalso (C2 == $\s orelse C2 == $\n) ->
 	move_to_para(Rem);
-find_as(<<" as ",Rem/binary>>) ->
+find_as(<<C1,"as",C2,Rem/binary>>)  when (C1 == $\s orelse C1 == $\n) andalso (C2 == $\s orelse C2 == $\n) ->
 	move_to_para(Rem);
-find_as(<<" As ",Rem/binary>>) ->
+find_as(<<C1,"As",C2,Rem/binary>>)  when (C1 == $\s orelse C1 == $\n) andalso (C2 == $\s orelse C2 == $\n) ->
 	move_to_para(Rem);
-find_as(<<" aS ",Rem/binary>>) ->
+find_as(<<C1,"aS",C2,Rem/binary>>)  when (C1 == $\s orelse C1 == $\n) andalso (C2 == $\s orelse C2 == $\n) ->
 	move_to_para(Rem);
 find_as(<<_,Rem/binary>>) ->
 	find_as(Rem).
@@ -627,7 +627,7 @@ move_to_para(<<_,Rem/binary>>) ->
 	move_to_para(Rem).
 
 move_to_endpara(Rem,0,false) ->
-	is_write(rem_spaces(Rem));
+	find_comma_or_char(Rem);
 move_to_endpara(<<"(",Rem/binary>>,N,false) ->
 	move_to_endpara(Rem,N+1,false);
 move_to_endpara(<<")",Rem/binary>>,N,false) ->
@@ -638,4 +638,12 @@ move_to_endpara(<<"`",Rem/binary>>,N,IsString) ->
 	move_to_endpara(Rem,N,not IsString);
 move_to_endpara(<<_,Rem/binary>>,N,IsString) ->
 	move_to_endpara(Rem,N,IsString).
+
+find_comma_or_char(<<",",Rem/binary>>) ->
+	find_as(Rem);
+find_comma_or_char(<<C,Rem/binary>>) when (C >= $a andalso C =< $z) orelse
+										  (C >= $A andalso C =< $Z) ->
+	is_write(<<C,Rem/binary>>);
+find_comma_or_char(<<_,Rem/binary>>) ->
+	find_comma_or_char(Rem).
 
