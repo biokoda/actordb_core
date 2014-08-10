@@ -627,7 +627,6 @@ move_to_para(<<_,Rem/binary>>) ->
 	move_to_para(Rem).
 
 move_to_endpara(Rem,0,false) ->
-	io:format("ENDREM ~p~n",[Rem]),
 	is_write(rem_spaces(Rem));
 move_to_endpara(<<"(",Rem/binary>>,N,false) ->
 	move_to_endpara(Rem,N+1,false);
