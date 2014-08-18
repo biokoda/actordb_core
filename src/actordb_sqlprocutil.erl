@@ -665,7 +665,9 @@ do_cb(P) ->
 election_timer(undefined) ->
 	% erlang:send_after(200+random:uniform(200),self(),doelection);
 	% High election timeout. This is because it is only a last resort. 
-	erlang:send_after(500+random:uniform(600),self(),doelection);
+	T = 500+random:uniform(600),
+	?ADBG("Relection try in ~p",[T]),
+	erlang:send_after(T,self(),doelection);
 election_timer(T) ->
 	T.
 
@@ -687,8 +689,9 @@ start_verify(P,JustStarted) ->
 			% 	true ->
 					CurrentTerm = P#dp.current_term+1,
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum}),
-					NP = reopen_db(P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name(), 
-											mors = master, verified = false}),
+					NP = set_followers(P#dp.schemavers /= undefined,
+									reopen_db(P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name(), 
+											mors = master, verified = false})),
 					{Verifypid,_} = spawn_monitor(fun() -> 
 									start_election(NP)
 										end),
@@ -782,6 +785,9 @@ count_votes([{What,Node,_HisLatestTerm,{Num,Term} = NodeNumTerm}|T],NumTerm,AllS
 		_ ->
 			count_votes(T,NumTerm,false,Followers,N)
 	end;
+count_votes([Err|_T],_NumTerm,_AllSynced,_Followers,_N) ->
+	% count_votes(T,NumTerm,false,Followers,N);
+	exit({failed,Err});
 count_votes([],_,AllSynced,F,N) ->
 	{N,F,AllSynced}.
 
@@ -1320,7 +1326,7 @@ dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 		true ->
 			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
 		false ->
-			?DBG("wal_size ~p",[{From1,Data}]), 
+			?DBG("wal_size from=~p, insize=~p, filesize=~p",[From1,Data,Size]), 
 			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},P}
 	end;
 dbcopy_call({checksplit,Data},_,P) ->

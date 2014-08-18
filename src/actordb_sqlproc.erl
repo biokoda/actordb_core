@@ -620,8 +620,8 @@ state_rw_call(What,From,P) ->
 					end
 			end;
 		{request_vote,Candidate,NewTerm,LastEvnum,LastTerm} ->
-			?DBG("Request vote for=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
-					[Candidate,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
+			?DBG("Request vote for=~p, mors=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
+					[Candidate,P#dp.mors,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
 			Uptodate = 
 				case ok of
 					_ when P#dp.evterm < LastTerm ->
@@ -679,23 +679,25 @@ state_rw_call(What,From,P) ->
 						_ ->
 							ok
 					end,
-					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm})
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,
+						election = actordb_sqlprocutil:election_timer(P#dp.election)})
 			end,
 			% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
 			% If the other node is actually more up to date, vote was yes and we do not do election.
+			?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
+					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
 			case DoElection of
 				true ->
-					?DBG("Start new election to sync nodes"),
-					{noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP),false)};
-					% case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
-					% 	false ->
-					% 		NP1 = actordb_sqlprocutil:set_followers(true,NP),
-					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP1,Candidate);
-					% 	Flw ->
-					% 		NP1 = NP,
-					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP,Flw)
-					% end,
-					% {noreply, actordb_sqlprocutil:store_follower(NP1,NFlw)};
+					% {noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP),false)};
+					case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
+						false ->
+							NP1 = actordb_sqlprocutil:set_followers(true,NP),
+							NFlw = actordb_sqlprocutil:send_empty_ae(NP1,Candidate);
+						Flw ->
+							NP1 = NP,
+							NFlw = actordb_sqlprocutil:send_empty_ae(NP,Flw)
+					end,
+					{noreply, actordb_sqlprocutil:store_follower(NP1,NFlw)};
 				false ->
 					{noreply,NP#dp{activity = make_ref()}}
 			end;
@@ -732,7 +734,7 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 			case P#dp.netchanges == actordb_local:net_changes() of
 				false ->
 					?DBG("Running re-election before read"),
-					{noreply,actordb_sqlprocutil:start_verify(#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)},false)};
+					{noreply,actordb_sqlprocutil:start_verify(P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)},false)};
 				true ->
 					case Msg of	
 						{Mod,Func,Args} ->
@@ -1026,7 +1028,15 @@ handle_info(doelection,P) ->
 	case ok of
 		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined; 
 					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
-			{noreply,P};
+			case P#dp.masternode /= undefined andalso P#dp.masternode /= bkdcore:node_name() andalso 
+					bkdcore_rpc:is_connected(P#dp.masternode) of
+				true ->
+					?DBG("Election ignore, master=~p",[P#dp.masternode]),
+					{noreply,P};
+				false ->
+					?DBG("Election timeout"),
+					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+			end;
 		_ ->
 			?DBG("Election timeout"),
 			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
@@ -1215,6 +1225,10 @@ handle_info(_Msg,P) ->
 
 down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 	case Reason of
+		{failed,Err} ->
+			P = P1,
+			?ERR("Election failed, retrying later ~p",[Err]),
+			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
 		% We are leader, evnum == 0, which means no other node has any data.
 		% If create flag not set stop.
 		{leader,_,_} when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
@@ -1269,11 +1283,13 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 					% If nothing to store and all nodes synced, send an empty AE.
 					case iolist_size(Sql) of
 						0 when AllSynced, NewFollowers == [] ->
-							{noreply,actordb_sqlprocutil:doqueue(NP#dp{follower_indexes = NewFollowers})};
+							{noreply,actordb_sqlprocutil:doqueue(NP#dp{follower_indexes = NewFollowers,
+														netchanges = actordb_local:net_changes()})};
 						0 when AllSynced ->
 							?DBG("Nodes synced, running empty AE."),
 							NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
-							{noreply,ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1})};
+							{noreply,ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
+														netchanges = actordb_local:net_changes()})};
 						_ ->
 							?DBG("Running post election write on nodes ~p",[P#dp.follower_indexes]),
 							% it must always return noreply
