@@ -1281,17 +1281,18 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			case P#dp.callres of
 				undefined ->
 					% If nothing to store and all nodes synced, send an empty AE.
-					case iolist_size(Sql) of
-						0 when AllSynced, NewFollowers == [] ->
+					case is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
+						true when AllSynced, NewFollowers == [] ->
 							{noreply,actordb_sqlprocutil:doqueue(NP#dp{follower_indexes = NewFollowers,
 														netchanges = actordb_local:net_changes()})};
-						0 when AllSynced ->
+						true when AllSynced ->
 							?DBG("Nodes synced, running empty AE."),
 							NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
 							{noreply,ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
 														netchanges = actordb_local:net_changes()})};
 						_ ->
-							?DBG("Running post election write on nodes ~p",[P#dp.follower_indexes]),
+							?DBG("Running post election write on nodes ~p, withdb ~p",
+									[P#dp.follower_indexes,NP#dp.flags band ?FLAG_SEND_DB > 0]),
 							% it must always return noreply
 							write_call(#write{sql = Sql, transaction = NP#dp.transactionid},Callfrom, NP)
 					end;
@@ -1338,7 +1339,7 @@ down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 	?DBG("copyproc died ~p my_status=~p copyfrom=~p",[Reason,P#dp.mors,P#dp.copyfrom]),
 	case Reason of
 		unlock -> %when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
-			case actordb_sqlprocutil:callback_unlock(P) of
+			case catch actordb_sqlprocutil:callback_unlock(P) of
 				ok ->
 					{ok,NP} = init(P,copyproc_done),
 					{noreply,NP};

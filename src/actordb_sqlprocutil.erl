@@ -408,7 +408,8 @@ send_wal(P,#flw{file = File} = F) ->
 					{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
 					<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
 					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,F#flw.call_count+1}},[nostart]]}),
+								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,F#flw.call_count+1}},
+								[nostart]]}),
 					case WalRes of
 						ok when Commit == 0 ->
 							send_wal(P,F);
@@ -801,7 +802,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 			case Callfrom1 of
 				undefined when QueueEmpty == false ->
 					case queue:out_r(P#dp.callqueue) of
-						{{value,{Callfrom,#write{sql = CallWrite, records = []}}},CQ} ->
+						{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite, records = []}}},CQ} ->
 							ok;
 						_ ->
 							CallWrite = <<>>,
@@ -812,7 +813,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 					CallWrite = <<>>,
 					CQ = P#dp.callqueue
 			end,
-			?DBG("Adding write to post election sql ~p",[CallWrite]),
+			?DBG("Adding write to post election sql ~p, schemavers=~p",[CallWrite,P#dp.schemavers]),
 			case P#dp.schemavers of
 				undefined ->
 					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
@@ -1312,7 +1313,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 			actordb_sqlite:stop(P#dp.db),
 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
 
-			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid}}
+			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
 	end;
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
