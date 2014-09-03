@@ -7,30 +7,35 @@
 -define(DELIMITER,"~n-------------------------~n~p~n-------------------------~n").
 -include("actordb.hrl").
 
+getschema(Etc) ->
+	case application:get_env(actordb,schema) of
+		undefined ->
+			[Schema] = yamerl_constr:file(Etc++"/schema.yaml"),
+			Schema;
+		{ok,Mod} ->
+			apply(Mod,schema,[])
+	end.
+
 cmd(init,parse,Etc) ->
 	try case readnodes(Etc++"/nodes.yaml") of
 		{Nodes,Groups} ->
-			case catch yamerl_constr:file(Etc++"/schema.yaml") of
-				[Schema] ->
-					NewCfg = parse_schema(Schema),
-					case catch compare_schema([],NewCfg) of
-						{ok,L} ->
-							case bkdcore:nodelist() of
-								[] ->
-									[_|_] = compare_groups(nodes_to_names(Nodes),
-													bkdcore_changecheck:parse_yaml_groups(Groups),
-													compare_nodes(Nodes,[])),
-									ok;
-								_ ->
-									{error,"ActorDB already initialized."}
-							end;
-						{error,Err} ->
-							{error,Err};
-						Err ->
-							{error,Err}
+			Schema = getschema(Etc),
+			NewCfg = parse_schema(Schema),
+			case catch compare_schema([],NewCfg) of
+				{ok,L} ->
+					case bkdcore:nodelist() of
+						[] ->
+							[_|_] = compare_groups(nodes_to_names(Nodes),
+											bkdcore_changecheck:parse_yaml_groups(Groups),
+											compare_nodes(Nodes,[])),
+							ok;
+						_ ->
+							{error,"ActorDB already initialized."}
 					end;
-				X ->
-					throw(io_lib:fwrite("Error parsing schema.yaml~n~p",[X]))
+				{error,Err} ->
+					{error,Err};
+				Err ->
+					{error,Err}
 			end;
 		X ->
 			throw(io_lib:fwrite("Error parsing nodes.yaml: ~p",[X]))
@@ -47,12 +52,12 @@ cmd(init,parse,Etc) ->
 		_:{badmatch,{error,enoent}} ->
 			{error,io_lib:fwrite("File(s) missing: ~n~p~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml",Etc++"/schema.yaml"])};
 		_:Err1 ->
-			{error,io_lib:fwrite("Error parsing configs ~p~n",[Err1])}
+			{error,io_lib:fwrite("Error parsing nodes.yaml or schema.yaml ~p~n",[Err1])}
 	end;
 cmd(init,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
 		Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
-		[Schema] = yamerl_constr:file(Etc++"/schema.yaml"),
+		Schema = getschema(Etc),
 		ok = actordb_sharedstate:init_state(Nodes,Groups,[{'schema.yaml',Schema}]) of
 		ok ->
 			"ok"
@@ -100,8 +105,8 @@ cmd(updatenodes,commit,Etc) ->
 cmd(updateschema,parse,Etc) ->
 	case catch actordb_schema:types() of
 		Types when is_list(Types) ->
-			try yamerl_constr:file(Etc++"/schema.yaml") of
-				[Schema] ->
+			try getschema(Etc) of
+				Schema ->
 					NewCfg = parse_schema(Schema),
 					case catch compare_schema(Types,NewCfg) of
 						{ok,L} ->
@@ -121,7 +126,7 @@ cmd(updateschema,parse,Etc) ->
 			{error,io_lib:fwrite("No existing schema, run init?",[])}
 	end;
 cmd(updateschema,commit,Etc) ->
-	try [Schema] = yamerl_constr:file(Etc++"/schema.yaml"),
+	try Schema = getschema(Etc),
 		actordb_sharedstate:write_global([{'schema.yaml',Schema}]) of
 		ok ->
 			"done";
