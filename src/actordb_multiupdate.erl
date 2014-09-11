@@ -250,6 +250,7 @@ schema(1) ->
 % It also stores every node where an actor lives: [{{node,Nodename},true},...]
 
 multiread(L) ->
+	ExistingPD = get(),
 	erase(),
 	put(nchanges,0),
 	case catch do_multiupdate(undefined,L) of
@@ -257,10 +258,12 @@ multiread(L) ->
 			case get({<<"RESULT">>,cols}) of
 				undefined ->
 					?ADBG("Nothing in result? ~p",[get()]),
+					[put(K,V) || {K,V} <- ExistingPD],
 					ok;
 				Cols ->
 					Rows = read_mr_rows(get({<<"RESULT">>,nrows})-1,[]),
 					erase(),
+					[put(K,V) || {K,V} <- ExistingPD],
 					{ok,[{columns,Cols},{rows,Rows}]}
 			end;
 		Err ->
