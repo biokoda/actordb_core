@@ -184,6 +184,8 @@ exec1(St) ->
 		[[{columns,_},_]|_] ->
 			St
 	end.
+exec([_|_] = Sql, Records) ->
+	exec(butil:tobin(Sql),Records);
 exec(Sql,[_|_] = Records) ->
 	{[{{Type,[Actor],Flags},true,Statements}],_} = actordb_sqlparse:parse_statements(Sql),
 	direct_call(Actor,Type,Flags,true,{Statements,Records},true);
