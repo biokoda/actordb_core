@@ -85,10 +85,10 @@ start_ready() ->
 	end.
 
 prestart() ->
-	application:start(lager),
-	application:ensure_started(sasl),
-	application:ensure_started(os_mon),
-	application:ensure_started(yamerl),
+	application:ensure_all_started(lager),
+	application:ensure_all_started(sasl),
+	application:ensure_all_started(os_mon),
+	application:ensure_all_started(yamerl),
 	application:set_env(bkdcore,usesharedstate,false),
 	case catch actordb_conf:paths() of
 		[_|_] ->
