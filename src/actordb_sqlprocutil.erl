@@ -36,8 +36,8 @@ reply_maybe(P,N,[H|T]) ->
 			reply_maybe(P,N,T)
 	end;
 reply_maybe(P,N,[]) ->
-	% case N*2 > (length(P#dp.follower_indexes)+1) of
-	case N == length(P#dp.follower_indexes)+1 of
+	case N*2 > (length(P#dp.follower_indexes)+1) of
+	% case N == length(P#dp.follower_indexes)+1 of
 		% If transaction active or copy/move actor, we can continue operation now because it has been safely replicated.
 		true when P#dp.transactioninfo /= undefined; element(1,P#dp.callfrom) == exec ->
 			% Now it's time to execute second stage of transaction.
