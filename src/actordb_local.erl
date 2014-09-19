@@ -409,7 +409,7 @@ store_raft_connection([Nd|T],Tuple) ->
 					Type = 2
 			end,
 			?AINF("Starting raft connection to ~p",[{Nd,IP,Port}]),
-			case esqlite3:tcp_connect_async(IP,Port,[bkdcore:rpccookie(Nd),"tunnelactordb_util"],Pos-1,Type) of
+			case esqlite3:tcp_connect_async(IP,Port,[bkdcore:rpccookie(Nd),"tunnel,",actordb_conf:node_name(),",actordb_util"],Pos-1,Type) of
 				Ref when is_reference(Ref) ->
 					store_raft_connection(T,setelement(Pos,Tuple,Nd));
 				_ ->

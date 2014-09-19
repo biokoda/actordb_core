@@ -46,48 +46,67 @@ wait_for_startup(Type,Who,N) ->
 			end
 	end.
 
-tunnel_bin(<<>>) ->
-	ok;
-tunnel_bin(<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
+tunnel_bin(Pid,<<>>) ->
+	Pid;
+tunnel_bin(Pid,<<LenBin:16/unsigned,Bin:LenBin/binary>>) ->
+	{Mod,Param} = binary_to_term(Bin),
+	apply(Mod,tunnel_callback,Param),
+	Pid;
+tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
              LenVarPrefix:16/unsigned,VarPrefix:LenVarPrefix/binary,
              LenHeader,Header:LenHeader/binary,
              LenPage:16,Page:LenPage/binary>>) ->
 	{Cb,Actor,Type,Term} = binary_to_term(FixedPrefix),
 	case VarPrefix of
 		<<>> ->
-			ok;
+			PidOut = Pid;
 		_ ->
-			case binary_to_term(VarPrefix) of
-				{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
-					ok;
-				{Term,Leader,PrevEvnum,PrevTerm,CallCount,DbFile} ->
-					ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
-								{state_rw,{set_dbfile,DbFile}});
-				Invalid ->
-					CallCount = Leader = PrevEvnum = PrevTerm = undefined,
-					?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
-					exit(error)
-			end,
-			case lists:keyfind(actordb_conf:node_name(),1,CallCount) of
-				{_Me,Count} ->
-					ok;
-				_ ->
-					Count = 1
-			end,
-			put(count,Count),
-			Res = actordb_sqlproc:call_slave(Cb,Actor,Type,
-					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head,Count}}),
-			put(proceed,Res)
+			% Kill off old pid if still alive or if it exists at all
+			butil:safesend(Pid, stop),
+			PidOut = spawn(fun() -> 
+				case binary_to_term(VarPrefix) of
+					{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
+						ok;
+					{Term,Leader,PrevEvnum,PrevTerm,CallCount,DbFile} ->
+						ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
+									{state_rw,{set_dbfile,DbFile}});
+					Invalid ->
+						CallCount = Leader = PrevEvnum = PrevTerm = undefined,
+						?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
+						exit(error)
+				end,
+				case lists:keyfind(actordb_conf:node_name(),1,CallCount) of
+					{_Me,Count} ->
+						ok;
+					_ ->
+						Count = 1
+				end,
+				case actordb_sqlproc:call_slave(Cb,Actor,Type,
+						{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head,Count}}) of
+					ok ->
+						do_ae_stream(Count);
+					_ ->
+						% Die off if we should not continue
+						ok
+				end
+			end)
 	end,
-	% When header arrives, we check parameters if all ok.
-	% If not, ignore wal pages untill next header.
-	case get(proceed) of
-		ok ->
-			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,get(count)}},[nostart]);
-		_ ->
+	PidOut ! {call_slave,Cb,Actor,Type,Term,Header,Page},
+	PidOut;
+tunnel_bin(Pid,Bin) ->
+	?AERR("Tunnel invalid data ~p",[Bin]),
+	Pid.
+
+do_ae_stream(Count) ->
+	receive
+		{call_slave,Cb,Actor,Type,Term,Header,Page} ->
+			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,Count}},[nostart]),
+			do_ae_stream(Count);
+		stop ->
 			ok
-	end,
-	ok.
+	after 30000 ->
+		ok
+	end.
 
 shard_path(Name) ->
 	[drive(Name), "/shards/"].
@@ -136,7 +155,8 @@ createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Name) ->
 
 change_journal(Journal,Sync) ->
 	bkdcore:mkmodule(actordb_conf,[{db_path,actordb_conf:db_path()},{paths,actordb_conf:paths()},{node_name,bkdcore:node_name()},
-								   {level_size,actordb_conf:level_size()},{journal_mode,Journal},{sync,butil:tobin(Sync)},{query_timeout,actordb_conf:query_timeout()}]).
+								   {level_size,actordb_conf:level_size()},{journal_mode,Journal},
+								   {sync,butil:tobin(Sync)},{query_timeout,actordb_conf:query_timeout()}]).
 
 % Out of schema.cfg create module with functions:
 % types() -> [actortype1,actortype2,...]

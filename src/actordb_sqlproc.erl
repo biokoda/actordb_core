@@ -555,9 +555,9 @@ state_rw_call(What,From,P) ->
 				false ->
 					?DBG("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
-				_ when Follower#flw.call_count > CallCount ->
-					?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisEvNum=~p,cur_call_count=~p, received_count=~p",
-							[Node,Success,AEType,Follower#flw.match_index,Follower#flw.call_count, CallCount]),
+				_ when Follower#flw.call_count > CallCount; P#dp.verified == false ->
+					?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisEvNum=~p,cur_call_count=~p, received_count=~p, verified=~p",
+							[Node,Success,AEType,Follower#flw.match_index,Follower#flw.call_count, CallCount,P#dp.verified]),
 					{reply,ok,P};
 				_ ->
 					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p",
@@ -846,7 +846,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 			end,
 			case actordb_sqlite:okornot(Res) of
 				ok ->
-					?DBG("Write result ~p",[Res]),
+					?DBG("Write result ~p, repl_status ~p",[Res,esqlite3:replicate_status(P#dp.db)]),
 					case ok of
 						_ when P#dp.follower_indexes == [] ->
 							{noreply,actordb_sqlprocutil:reply_maybe(
@@ -1028,13 +1028,14 @@ handle_info(doelection,P) ->
 	case ok of
 		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined; 
 					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
-			case P#dp.masternode /= undefined andalso P#dp.masternode /= bkdcore:node_name() andalso 
+			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso 
 					bkdcore_rpc:is_connected(P#dp.masternode) of
 				true ->
 					?DBG("Election ignore, master=~p",[P#dp.masternode]),
 					{noreply,P};
 				false ->
-					?DBG("Election timeout"),
+					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
+						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
 					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
 			end;
 		_ ->

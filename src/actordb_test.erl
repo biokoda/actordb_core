@@ -125,6 +125,7 @@ test_single(_) ->
 ltime() ->
 	element(2,lager_util:localtime_ms()).
 
+
 basic_write() ->
 	basic_write(<<"SOME TEXT">>).
 basic_write(Txt) ->
@@ -373,17 +374,54 @@ cluster_stop(_) ->
 	% C = rpc:call('slave1@127.0.0.1',fprof,analyse,[[{dest,?TESTPTH++"slave1.txt"}]]),
 	stop_slaves([1,2,3]),
 	ok.
+
+% For every slave
+% Call slave which sends a tunnel call to all others. Check that it receives back messages from all.
+dotunnels() ->
+	S = ['slave1@127.0.0.1','slave2@127.0.0.1','slave3@127.0.0.1'],
+	[begin
+		?debugFmt("Calling ~p",[Nd]),
+		rpc:call(Nd,?MODULE,call_tunnels,[]) 
+	end || Nd <- S],
+	ok.
+
+call_tunnels() ->
+	?debugFmt("Call tunnels on ~p",[node()]),
+	Term = term_to_binary({?MODULE,[node(),self()]}),
+	NSent = esqlite3:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
+	?debugFmt("Get respones ~p",[NSent]),
+	% Presumed 2 threads and 2 nodes
+	ok = get_responses(2*2).
+
+get_responses(0) ->
+	?debugFmt("received all responses",[]),
+	ok;
+get_responses(N) ->
+	receive
+		{callback,Nd} ->
+			?debugFmt("On node ~p, calback from Nd ~p, rem ~p",[node(),Nd,N-1]),
+			get_responses(N-1)
+	end.
+
+tunnel_callback(Nd,Pid) ->
+	rpc:call(Nd,erlang,send,[Pid,{callback,node()}]).
+
+
 test_cluster(_) ->
 	[
+		% fun() -> timer:sleep(2000), ok end,
+		% fun dotunnels/0
 	  {timeout,20,fun basic_write/0},
 	  fun recoveractor/0,
 	  fun basic_read/0
-	  % fun kv_readwrite/0,
-	  % fun basic_write/0,
-	  % fun multiupdate_write/0,
-	  % fun multiupdate_read/0,
-	  % fun copyactor/0
-	  % fun() -> test_print_end([1,2,3]) end
+
+
+	 %  fun kv_readwrite/0,
+	 %  fun basic_write/0,
+	 %  fun multiupdate_write/0,
+	 %  fun multiupdate_read/0,
+	 %  fun copyactor/0
+	 %  fun() -> test_print_end([1,2,3]) end
 	 
 	 %  {timeout,20,fun() -> timer:sleep(6000),
 	 %  			?debugFmt("SLEEP DONE",[]),
