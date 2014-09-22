@@ -195,8 +195,10 @@ kvread(ShardName,Actor,Type,Sql) ->
 kvwrite(Shard,{A,1},Type,S) ->
 	kvwrite(Shard,A,Type,S);
 kvwrite(Shard,Actor,Type,[delete]) ->
+	?ADBG("kvwrite delete ~p.~p",[Actor,Type]),
 	ok = actordb_shard:del_actor(Shard,Actor,Type);
 kvwrite(Shard,Actor,Type,{_Transaction,[delete]}) ->
+	?ADBG("kvwrite delete transactions ~p.~p",[Actor,Type]),
 	ok = actordb_shard:del_actor(Shard,Actor,Type);
 kvwrite(ShardName,Actor,Type,Sql) ->
 	?ADBG("kvwrite ~p",[{ShardName,Actor,Sql}]),

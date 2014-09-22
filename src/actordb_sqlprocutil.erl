@@ -706,7 +706,7 @@ start_verify(P,JustStarted) ->
 							Verifypid ! is_monitored;
 						_ when is_binary(Result) ->
 							Verifypid = self(),
-							self() ! {'DOWN',make_ref(),process,self(),{leader,Me,P#dp.follower_indexes,false}}
+							self() ! {'DOWN',make_ref(),process,self(),{leader,P#dp.follower_indexes,false}}
 					end,
 					% {Verifypid,_} = spawn_monitor(fun() -> 
 					% 				start_election(NP)
