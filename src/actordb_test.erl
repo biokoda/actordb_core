@@ -413,14 +413,12 @@ test_cluster(_) ->
 		% fun dotunnels/0
 	  {timeout,20,fun basic_write/0},
 	  fun recoveractor/0,
-	  fun basic_read/0
-
-
-	 %  fun kv_readwrite/0,
-	 %  fun basic_write/0,
-	 %  fun multiupdate_write/0,
-	 %  fun multiupdate_read/0,
-	 %  fun copyactor/0
+	  fun basic_read/0,
+	  fun kv_readwrite/0,
+	  fun basic_write/0,
+	  fun multiupdate_write/0,
+	  fun multiupdate_read/0,
+	  fun copyactor/0
 	 %  fun() -> test_print_end([1,2,3]) end
 	 
 	 %  {timeout,20,fun() -> timer:sleep(6000),

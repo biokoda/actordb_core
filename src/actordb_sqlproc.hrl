@@ -4,6 +4,8 @@
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 
+-record(election,{actor, type, candidate, wait, term, evnum, evterm, flags, followers = [], cbmod}).
+
 % since sqlproc gets called so much, logging from here often makes it more difficult to find a bug.
 % -define(NOLOG,1).
 -define(EVNUM,<<"1">>).

@@ -12,8 +12,6 @@
 -define(CLUSTEREVENTS_TYPE,'__clusterevents__').
 -define(STATE_TYPE,'__state__').
 
--record(election,{actor, type, candidate, wait, term, evnum, evterm, flags, followers = [], cbmod}).
-
 -define(STATE_NM_LOCAL,<<"local">>).
 -define(STATE_NM_GLOBAL,<<"global">>).
 
