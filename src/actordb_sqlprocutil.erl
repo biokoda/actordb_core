@@ -687,111 +687,124 @@ start_verify(P,JustStarted) ->
 		_ when is_pid(P#dp.election); is_reference(P#dp.election) ->
 			P;
 		_ ->
-			% case JustStarted == force orelse timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
-			% 	true ->
-					CurrentTerm = P#dp.current_term+1,
+			CurrentTerm = P#dp.current_term+1,
+			Me = actordb_conf:node_name(),
+			E = #election{actor = P#dp.actorname, type = P#dp.actortype, candidate = Me,
+						wait = P#dp.flags band ?FLAG_WAIT_ELECTION > 0, term = CurrentTerm,evnum = P#dp.evnum,
+						evterm = P#dp.evterm, flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
+						followers = P#dp.follower_indexes, cbmod = P#dp.cbmod},
+			case actordb_election:whois_leader(E) of
+				Result when is_pid(Result); Result == Me ->
 					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum}),
 					NP = set_followers(P#dp.schemavers /= undefined,
-									reopen_db(P#dp{current_term = CurrentTerm, voted_for = actordb_conf:node_name(), 
-											mors = master, verified = false})),
-					{Verifypid,_} = spawn_monitor(fun() -> 
-									start_election(NP)
-										end),
-					NP#dp{election = Verifypid, verified = false, activity = make_ref()}
-			% 	false ->
-			% 		?DBG("Election just done, ignoring call."),
-			% 		P
-			% end
+							reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me, 
+									mors = master, verified = false})),
+					case ok of
+						_ when is_pid(Result) ->
+							Verifypid = Result,
+							erlang:monitor(process,Verifypid),
+							Verifypid ! is_monitored;
+						_ when is_binary(Result) ->
+							Verifypid = self(),
+							self() ! {'DOWN',make_ref(),process,self(),{leader,Me,P#dp.follower_indexes,false}}
+					end,
+					% {Verifypid,_} = spawn_monitor(fun() -> 
+					% 				start_election(NP)
+					% 					end),
+					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
+				_ ->
+					P#dp{election = election_timer(P#dp.election)}
+			end
 	end.
 follower_nodes(L) ->
 	[F#flw.node || F <- L].
 % Call RequestVote RPC on cluster nodes. 
 % This should be called in an async process and current_term and voted_for should have
 %  been set for this election (incremented current_term, voted_for = Me)
-start_election(P) ->
-	ClusterSize = length(P#dp.follower_indexes) + 1,
-	Me = actordb_conf:node_name(),
-	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
-	Nodes = follower_nodes(P#dp.follower_indexes),
-	?DBG("Election, multicall to ~p",[Nodes]),
-	Start = os:timestamp(),
-	{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
-			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}]]}),
-	Stop = os:timestamp(),
-	?DBG("Election took=~p, results ~p failed ~p, contacted ~p",[timer:now_diff(Stop,Start),Results,_GetFailed,Nodes]),
+% start_election(P) ->
+% 	ClusterSize = length(P#dp.follower_indexes) + 1,
+% 	Me = actordb_conf:node_name(),
+% 	Msg = {state_rw,{request_vote,Me,P#dp.current_term,P#dp.evnum,P#dp.evterm}},
+% 	Nodes = follower_nodes(P#dp.follower_indexes),
+% 	?DBG("Election, multicall to ~p",[Nodes]),
+% 	Start = os:timestamp(),
+% 	{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
+% 			[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}]]}),
+% 	Stop = os:timestamp(),
+% 	?DBG("Election took=~p, results ~p failed ~p, contacted ~p",[timer:now_diff(Stop,Start),Results,_GetFailed,Nodes]),
 
-	% Sum votes. Start with 1 (we vote for ourselves)
-	case count_votes(Results,{P#dp.evnum,P#dp.evterm},true,P#dp.follower_indexes,1) of
-		% {outofdate,_Node,_NewerTerm} ->
-		% 	% send_doelection(Node,P),
-		% 	start_election_done(P,follower);
-		{NumVotes,Followers,AllSynced} when is_integer(NumVotes) ->
-			case NumVotes*2 > ClusterSize of
-				true ->
-					start_election_done(P,{leader,Followers,AllSynced});
-				false when (length(Results)+1)*2 =< ClusterSize ->
-					% Majority isn't possible anyway.
-					start_election_done(P,follower);
-				false ->
-					% Majority is possible.
-					% This election failed. Check if any of the nodes said they will try to get elected.
-					% case [true || {_What,_Node,_HisLatestTerm,true} <- Results] of
-					% 	% If none, sort nodes by name. Pick the one after me and tell him to try to get elected.
-					% 	% If he fails, he will pick the node after him. One must succeed because majority is online.
-					% 	[] ->
-					% 		SortedNodes = lists:sort([actordb_conf:node_name()|[Nd || {_What,Nd,_HisLatestTerm,_} <- Results]]),
-					% 		case butil:lists_split_at(actordb_conf:node_name(),SortedNodes) of
-					% 			{_,[Next|_]} ->
-					% 				send_doelection(Next,P);
-					% 			{[Next|_],_} ->
-					% 				send_doelection(Next,P)
-					% 		end;
-					% 	_ ->
-					% 		ok
-					% end,
-					start_election_done(P,follower)
-			end
-	end.
-start_election_done(P,X) when is_tuple(X) ->
-	?DBG("Exiting with signal ~p",[X]),
-	case P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
-		true ->
-			receive
-				exit ->
-					exit(X)
-				after 300 ->
-					?ERR("Wait election write waited too long."),
-					exit(X)
-			end;
-		false ->
-			exit(X)
-	end;
-start_election_done(P,Signal) ->
-	?DBG("Exiting with signal ~p",[Signal]),
-	exit(Signal).
+% 	% Sum votes. Start with 1 (we vote for ourselves)
+% 	case count_votes(Results,{P#dp.evnum,P#dp.evterm},true,P#dp.follower_indexes,1) of
+% 		% {outofdate,_Node,_NewerTerm} ->
+% 		% 	% send_doelection(Node,P),
+% 		% 	start_election_done(P,follower);
+% 		{NumVotes,Followers,AllSynced} when is_integer(NumVotes) ->
+% 			case NumVotes*2 > ClusterSize of
+% 				true ->
+% 					start_election_done(P,{leader,Followers,AllSynced});
+% 				false when (length(Results)+1)*2 =< ClusterSize ->
+% 					% Majority isn't possible anyway.
+% 					start_election_done(P,follower);
+% 				false ->
+% 					% Majority is possible.
+% 					% This election failed. Check if any of the nodes said they will try to get elected.
+% 					% case [true || {_What,_Node,_HisLatestTerm,true} <- Results] of
+% 					% 	% If none, sort nodes by name. Pick the one after me and tell him to try to get elected.
+% 					% 	% If he fails, he will pick the node after him. One must succeed because majority is online.
+% 					% 	[] ->
+% 					% 		SortedNodes = lists:sort([actordb_conf:node_name()|[Nd || {_What,Nd,_HisLatestTerm,_} <- Results]]),
+% 					% 		case butil:lists_split_at(actordb_conf:node_name(),SortedNodes) of
+% 					% 			{_,[Next|_]} ->
+% 					% 				send_doelection(Next,P);
+% 					% 			{[Next|_],_} ->
+% 					% 				send_doelection(Next,P)
+% 					% 		end;
+% 					% 	_ ->
+% 					% 		ok
+% 					% end,
+% 					start_election_done(P,follower)
+% 			end
+% 	end.
+% start_election_done(P,X) when is_tuple(X) ->
+% 	?DBG("Exiting with signal ~p",[X]),
+% 	case P#dp.flags band ?FLAG_WAIT_ELECTION > 0 of
+% 		true ->
+% 			receive
+% 				exit ->
+% 					exit(X)
+% 				after 300 ->
+% 					?ERR("Wait election write waited too long."),
+% 					exit(X)
+% 			end;
+% 		false ->
+% 			exit(X)
+% 	end;
+% start_election_done(P,Signal) ->
+% 	?DBG("Exiting with signal ~p",[Signal]),
+% 	exit(Signal).
 
-send_doelection(Node,P) ->
-	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
-	bkdcore_rpc:call(Node,{actordb_sqlproc,call_slave,DoElectionMsg}).
-count_votes([{What,Node,_HisLatestTerm,{Num,Term} = NodeNumTerm}|T],NumTerm,AllSynced,Followers,N) ->
-	F = lists:keyfind(Node,#flw.node,Followers),
-	NF = F#flw{match_index = Num, next_index = Num+1, match_term = Term},
-	case What of
-		true when AllSynced, NodeNumTerm == NumTerm ->
-			count_votes(T,NumTerm,true,lists:keystore(Node,#flw.node,Followers,NF),N+1);
-		true ->
-			count_votes(T,NodeNumTerm,false,Followers,N+1);
-		% outofdate ->
-		% 	count_votes(T,NodeNumTerm,false,Followers,N);
-		% 	{outofdate,Node,HisLatestTerm};
-		_ ->
-			count_votes(T,NumTerm,false,Followers,N)
-	end;
-count_votes([Err|_T],_NumTerm,_AllSynced,_Followers,_N) ->
-	% count_votes(T,NumTerm,false,Followers,N);
-	exit({failed,Err});
-count_votes([],_,AllSynced,F,N) ->
-	{N,F,AllSynced}.
+% send_doelection(Node,P) ->
+% 	DoElectionMsg = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,doelection}],
+% 	bkdcore_rpc:call(Node,{actordb_sqlproc,call_slave,DoElectionMsg}).
+% count_votes([{What,Node,_HisLatestTerm,{Num,Term} = NodeNumTerm}|T],NumTerm,AllSynced,Followers,N) ->
+% 	F = lists:keyfind(Node,#flw.node,Followers),
+% 	NF = F#flw{match_index = Num, next_index = Num+1, match_term = Term},
+% 	case What of
+% 		true when AllSynced, NodeNumTerm == NumTerm ->
+% 			count_votes(T,NumTerm,true,lists:keystore(Node,#flw.node,Followers,NF),N+1);
+% 		true ->
+% 			count_votes(T,NodeNumTerm,false,Followers,N+1);
+% 		% outofdate ->
+% 		% 	count_votes(T,NodeNumTerm,false,Followers,N);
+% 		% 	{outofdate,Node,HisLatestTerm};
+% 		_ ->
+% 			count_votes(T,NumTerm,false,Followers,N)
+% 	end;
+% count_votes([Err|_T],_NumTerm,_AllSynced,_Followers,_N) ->
+% 	% count_votes(T,NumTerm,false,Followers,N);
+% 	exit({failed,Err});
+% count_votes([],_,AllSynced,F,N) ->
+% 	{N,F,AllSynced}.
 
 
 post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->

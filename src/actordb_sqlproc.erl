@@ -688,16 +688,17 @@ state_rw_call(What,From,P) ->
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
 			case DoElection of
 				true ->
+					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}};
 					% {noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP),false)};
-					case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
-						false ->
-							NP1 = actordb_sqlprocutil:set_followers(true,NP),
-							NFlw = actordb_sqlprocutil:send_empty_ae(NP1,Candidate);
-						Flw ->
-							NP1 = NP,
-							NFlw = actordb_sqlprocutil:send_empty_ae(NP,Flw)
-					end,
-					{noreply, actordb_sqlprocutil:store_follower(NP1,NFlw)};
+					% case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
+					% 	false ->
+					% 		NP1 = actordb_sqlprocutil:set_followers(true,NP),
+					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP1,Candidate);
+					% 	Flw ->
+					% 		NP1 = NP,
+					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP,Flw)
+					% end,
+					% {noreply, actordb_sqlprocutil:store_follower(NP1,NFlw)};
 				false ->
 					{noreply,NP#dp{activity = make_ref()}}
 			end;
@@ -1226,6 +1227,8 @@ handle_info(_Msg,P) ->
 
 down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 	case Reason of
+		noproc ->
+			{noreply, P1#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
 		{failed,Err} ->
 			P = P1,
 			?ERR("Election failed, retrying later ~p",[Err]),
