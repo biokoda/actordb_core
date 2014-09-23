@@ -33,8 +33,8 @@ all_test_() ->
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
 		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
-		{setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
-		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
+		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
+		{setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
@@ -307,14 +307,16 @@ kv_readwrite() ->
 						  {<<"id2">>,_,3,<<"id2">>},
 						  {<<"id1">>,_,2,<<"id1">>}]}]},
 			 exec(ReadSome)),
+	?debugFmt("delete 3 and 2",[]),
 	% the right way
 	?assertMatch(ok,exec(["actor counters(id3,id2);DELETE FROM actors WHERE id='{{curactor}}';"])),
+	?debugFmt("read remain",[]),
 	?assertMatch({ok,[{columns,_},
 					  {rows,[{<<"id1">>,_,2,<<"id1">>}]}]},
 			 exec(ReadSome)),
 	?assertMatch({ok,[{columns,_},{rows,_}]},All),
 
-
+	?debugFmt("multiple tables",[]),
 	% Multiple tables test
 	[?assertMatch({ok,_},exec(["actor filesystem(id",butil:tolist(N),");",
 		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");",
@@ -414,7 +416,7 @@ test_cluster(_) ->
 	  {timeout,20,fun basic_write/0},
 	  fun recoveractor/0,
 	  fun basic_read/0,
-	  fun kv_readwrite/0,
+	  {timeout,10,fun kv_readwrite/0},
 	  fun basic_write/0,
 	  fun multiupdate_write/0,
 	  fun multiupdate_read/0,
