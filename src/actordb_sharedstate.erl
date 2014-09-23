@@ -78,6 +78,7 @@ write_cluster(Key,Val) ->
 init_state(Nodes,Groups,{_,_,_} = Configs) ->
 	init_state(Nodes,Groups,[Configs]);
 init_state(Nodes,Groups,Configs) ->
+	?ADBG("Init state ~p",[Nodes]),
 	case actordb_sqlproc:call({?STATE_NM_GLOBAL,?STATE_TYPE},[],{init_state,Nodes,Groups,Configs},?MODULE) of
 		ok ->
 			ok;

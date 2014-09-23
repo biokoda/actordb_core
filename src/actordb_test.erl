@@ -32,9 +32,9 @@ all_test_() ->
 	[
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
-		{setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
+		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
 		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
-		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
+		{setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
@@ -700,6 +700,9 @@ basic_init() ->
 		_ ->
 			ok
 	end,
+	% Election uses global. If global running on this node instead of one of the slaves
+	% nothing will work.
+	actordb_election:stop(),
 	butil:deldir(?TESTPTH),
 	filelib:ensure_dir(?TESTPTH++slave_name(1)++"/etc/"),
 	filelib:ensure_dir(?TESTPTH++"etc/").
@@ -833,6 +836,11 @@ schema() ->
 		" - CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, size INTEGER)",
 		" - CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, fileid TEXT, uid INTEGER, FOREIGN KEY (fileid) REFERENCES actors(id) ON DELETE CASCADE)"
 	],"\n").
+
+
+
+
+
 
 
 
