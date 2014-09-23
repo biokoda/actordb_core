@@ -96,13 +96,21 @@ init(_) ->
 	{ok,#ep{ets = ets:new(elactors,[set,private])}}.
 
 
+get_followers(E) ->
+	receive
+		{set_followers,L} ->
+			E#election{followers = L}
+	after 2000 ->
+		exit(timeout)
+	end.
+
 doelection(E1) ->
-	E = E1#e.info,
+	E = get_followers(E1#e.info),
 	ClusterSize = length(E#election.followers) + 1,
 	Me = E#election.candidate,
 	Msg = {state_rw,{request_vote,Me,E#election.term,E#election.evnum,E#election.evterm}},
 	Nodes = actordb_sqlprocutil:follower_nodes(E#election.followers),
-	?ADBG("Election, multicall to ~p",[Nodes]),
+	?ADBG("Election for ~p.~p, multicall to ~p",[E#election.actor,E#election.type, Nodes]),
 	Start = os:timestamp(),
 	{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
 			[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]]}),
@@ -124,22 +132,17 @@ doelection(E1) ->
 	end.
 start_election_done(E,X) when is_tuple(X) ->
 	?ADBG("Exiting with signal ~p",[X]),
-	receive
-		is_monitored ->
-			case E#election.wait of
-				true ->
-					receive
-						exit ->
-							exit(X)
-						after 300 ->
-							?AERR("Wait election write waited too long."),
-							exit(X)
-					end;
-				false ->
+	case E#election.wait of
+		true ->
+			receive
+				exit ->
 					exit(X)
-			end
-	after 2000 ->
-		exit(timeout)
+				after 300 ->
+					?AERR("Wait election write waited too long."),
+					exit(X)
+			end;
+		false ->
+			exit(X)
 	end;
 start_election_done(_P,Signal) ->
 	?ADBG("Exiting with signal ~p",[Signal]),

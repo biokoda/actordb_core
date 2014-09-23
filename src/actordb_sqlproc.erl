@@ -688,8 +688,17 @@ state_rw_call(What,From,P) ->
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
 			case DoElection of
 				true ->
-					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}};
-					% {noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP),false)};
+					% {noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}};
+					case is_reference(NP#dp.election) of
+						true ->
+							EE = undefined,
+							erlang:cancel_timer(NP#dp.election);
+						false when NP#dp.election == undefined ->
+							EE = undefined;
+						_ ->
+							EE = NP#dp.election
+					end,
+					{noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP#dp{election = EE}),false)};
 					% case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
 					% 	false ->
 					% 		NP1 = actordb_sqlprocutil:set_followers(true,NP),

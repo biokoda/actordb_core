@@ -703,7 +703,7 @@ start_verify(P,JustStarted) ->
 						_ when is_pid(Result) ->
 							Verifypid = Result,
 							erlang:monitor(process,Verifypid),
-							Verifypid ! is_monitored;
+							Verifypid ! {set_followers,NP#dp.follower_indexes};
 						_ when is_binary(Result) ->
 							Verifypid = self(),
 							self() ! {'DOWN',make_ref(),process,self(),{leader,P#dp.follower_indexes,false}}
@@ -712,7 +712,8 @@ start_verify(P,JustStarted) ->
 					% 				start_election(NP)
 					% 					end),
 					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
-				_ ->
+				Whois ->
+					?DBG("Election try result ~p",[Whois]),
 					P#dp{election = election_timer(P#dp.election)}
 			end
 	end.
