@@ -1053,6 +1053,7 @@ handle_info(doelection,P) ->
 			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
 	end;
 handle_info(retry_copy,P) ->
+	?DBG("Retry copy"),
 	case P#dp.mors == master andalso P#dp.verified == true of
 		true ->
 			{noreply,actordb_sqlprocutil:retry_copy(P)};
@@ -1112,10 +1113,13 @@ handle_info(start_copy,P) ->
 	spawn(fun() ->
 		case actordb:rpc(Node,OldActor,{?MODULE,call,[{OldActor,P#dp.actortype},[],Msg,P#dp.cbmod,onlylocal]}) of
 			ok ->
+				?DBG("Ok response for startcopy msg"),
 				ok;
 			{ok,_} ->
+				?DBG("Ok response for startcopy msg"),
 				ok;
 			{redirect,_} ->
+				?DBG("Received redirect, presume job is done"),
 				Home ! start_copy_done;
 			Err ->
 				?ERR("Unable to start copy from ~p, ~p",[P#dp.copyfrom,Err]),
@@ -1124,6 +1128,7 @@ handle_info(start_copy,P) ->
 	end),
 	{noreply,P};
 handle_info(start_copy_done,P) ->
+	
 	{ok,NP} = init(P,copy_done),
 	{noreply,NP};
 handle_info(Msg,#dp{verified = true} = P) ->

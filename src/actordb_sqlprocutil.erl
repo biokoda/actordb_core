@@ -1362,7 +1362,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 			WithoutLock = lists:keydelete(Data,#lck.ref,P#dp.locked),
 			case LC#lck.ismove of
 				true ->
-					actordb_sqlproc:write_call({undefined,{moved,LC#lck.node},undefined},CallFrom,
+					actordb_sqlproc:write_call(#write{sql = {moved,LC#lck.node}},CallFrom,
 										P#dp{locked = WithoutLock,dbcopy_to = DbCopyTo});
 				_ ->
 					self() ! doqueue,
