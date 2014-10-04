@@ -9,7 +9,7 @@
 -define(NUM_ACTORS,100).
 
 numactors() ->
-	case node() == 'testnd@127.0.0.1' of
+	case node() == 'testnd@127.0.0.1' orelse element(1,os:type()) == win32 of
 		true ->
 			?NUM_ACTORS;
 		false ->
@@ -677,7 +677,7 @@ test_failednodes(_) ->
 exec(Bin) ->
 	% if testnd then we are running a unit test
 	% if not we are running tests manually on live nodes
-	case node() == 'testnd@127.0.0.1' of
+	case node() == 'testnd@127.0.0.1' orelse element(1,os:type()) == win32 of
 		true ->
 			S = ['slave1@127.0.0.1','slave2@127.0.0.1','slave3@127.0.0.1'],
 			rpc:call(findnd(S),actordb,exec,[butil:tobin(Bin)]);
