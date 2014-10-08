@@ -457,17 +457,14 @@ get_name(Bin) ->
 	Count = count_name(rem_spaces(Bin),0),
 	<<Name:Count/binary,_/binary>> = Bin,
 	Name.
-count_name(<<C,Rem/binary>>,N) when C >= $a, C =< z; 
-									 C >= $A, C =< $Z; 
-									 C >= $0, C =< $9;
-									 C == $.; C == $_; C == $- ->
-	count_name(Rem,N+1);
 count_name(<<>>,N) ->
 	N;
 count_name(<<" ">>,N) ->
 	N;
 count_name(<<";",_/binary>>,N) ->
-	N.
+	N;
+count_name(<<C,Rem/binary>>,N) when C /= $', C > 32, C /= $`, C /= $" ->
+	count_name(Rem,N+1).
 
 count_string(<<"''",Rem/binary>>,N) ->
 	count_string(Rem,N+2);

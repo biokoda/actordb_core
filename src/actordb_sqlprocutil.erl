@@ -1218,7 +1218,8 @@ parse_opts(P,[]) ->
 		ok ->
 			DbPath = lists:flatten(apply(P#dp.cbmod,cb_path,
 									[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
-									butil:tolist(P#dp.actorname)++"."++butil:tolist(P#dp.actortype),
+									butil:encode_percent(butil:tolist(P#dp.actorname))++"."++
+									butil:encode_percent(butil:tolist(P#dp.actortype)),
 			P#dp{dbpath = DbPath,activity_now = actor_start(P), netchanges = actordb_local:net_changes()};
 		name_exists ->
 			{registered,distreg:whereis(Name)}

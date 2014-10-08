@@ -32,13 +32,13 @@ all_test_() ->
 	[
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
-		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
+		{setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
 		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
 		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
 		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
-		{setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
+		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
 		% {setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
 	].
 
@@ -596,7 +596,7 @@ test_clusteradd(_) ->
 	 {timeout,10,fun() -> basic_write(butil:tobin(?LINE)) end},
 	 {timeout,10,fun basic_read/0},
 	 {timeout,10,fun kv_readwrite/0},
-	 {timeout,40,fun test_add_cluster/0},
+	 {timeout,60,fun test_add_cluster/0},
 	  {timeout,10,fun() -> basic_write(butil:tobin(?LINE)) end},
 	  {timeout,10,fun basic_read/0},
 	  {timeout,10,fun multiupdate_write/0},

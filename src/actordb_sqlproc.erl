@@ -1128,7 +1128,6 @@ handle_info(start_copy,P) ->
 	end),
 	{noreply,P};
 handle_info(start_copy_done,P) ->
-	
 	{ok,NP} = init(P,copy_done),
 	{noreply,NP};
 handle_info(Msg,#dp{verified = true} = P) ->
