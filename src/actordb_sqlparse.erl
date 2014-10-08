@@ -369,6 +369,16 @@ find_ending(Bin,Offset1,Prev,IsIolist) ->
 						_ ->
 							{[$;,SkippingBin|Prev],Rem}
 					end;
+				<<SkippingBin:Offset/binary,"{{hash(",Rem/binary>> ->
+					case count_hash(Rem,0) of
+						undefined ->
+							find_ending(Bin,Offset+7,Prev,IsIolist);
+						Paramlen ->
+							<<Hashid1:Paramlen/binary,"}}",After/binary>> = Rem,
+							HSize = byte_size(Hashid1)-1,
+							<<Hashid:HSize/binary,")">> = Hashid1,
+							find_ending(After,0,[butil:tobin(actordb_util:hash(Hashid)),SkippingBin|Prev],false)
+					end;
 				<<SkippingBin:Offset/binary,"{{",Rem/binary>> ->
 					case count_param(Rem,0) of
 						undefined ->
@@ -376,10 +386,6 @@ find_ending(Bin,Offset1,Prev,IsIolist) ->
 						Paramlen ->
 							<<Param:Paramlen/binary,"}}",After/binary>> = Rem,
 							case Param of
-								<<"hash(",Hashid1/binary>> ->
-									HSize = byte_size(Hashid1)-1,
-									<<Hashid:HSize/binary,")">> = Hashid1,
-									find_ending(After,0,[butil:tobin(actordb_util:hash(Hashid)),SkippingBin|Prev],false);
 								<<"curactor">> ->
 									find_ending(After,0,[curactor,SkippingBin|Prev],false);
 								<<"uniqid">> ->
@@ -439,6 +445,13 @@ split_param(<<>>,Word,Words) ->
 			invalid
 	end.
 
+count_hash(<<"}}",_/binary>>,N) ->
+	N;
+count_hash(<<_,R/binary>>,N) ->
+	count_hash(R,N+1);
+count_hash(<<>>,_) ->
+	undefined.
+
 count_param(<<"}}",_/binary>>,N) ->
 	N;
 count_param(<<C,Rem/binary>>,N) when C >= $a, C =< z; 
@@ -463,7 +476,7 @@ count_name(<<" ">>,N) ->
 	N;
 count_name(<<";",_/binary>>,N) ->
 	N;
-count_name(<<C,Rem/binary>>,N) when C /= $', C > 32, C /= $`, C /= $" ->
+count_name(<<C,Rem/binary>>,N) when C /= $', C > 32, C /= $`, C /= $", C /= $(, C /= $) ->
 	count_name(Rem,N+1).
 
 count_string(<<"''",Rem/binary>>,N) ->
