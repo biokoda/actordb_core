@@ -183,6 +183,7 @@ set_global_state(MasterNode,State) ->
 	end,
 	% If any cfg changed, call setcfg for it.
 	[begin
+		Cfg = butil:toatom(Cfg1),
 		NewVal = butil:ds_val(Cfg,State),
 		case butil:ds_val(Cfg,?GLOBALETS) of
 			OldVal when NewVal /= undefined, OldVal /= NewVal ->
@@ -191,7 +192,7 @@ set_global_state(MasterNode,State) ->
 			_ ->
 				ok
 		end
-	end || Cfg <- cfgnames()],
+	end || Cfg1 <- cfgnames()],
 	% If nodes/groups changed inform changecheck.
 	[NewNodes,NewGroups] = butil:ds_vals([nodes,groups],State),
 	case ok of
