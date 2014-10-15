@@ -302,7 +302,7 @@ handle_call(Msg,From,P) ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
 		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
 			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
-			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
+			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref()}};
 		#write{} = Msg1 ->
 			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
 		{read,Msg1} ->
@@ -984,21 +984,16 @@ update_followers(_Evnum,L) ->
 
 
 
-handle_cast({diepls,Reason},P) ->
-	{noreply,P};
-	% ?DBG("diepls ~p ~p",[P#dp.mors,Reason]),
-	% case Reason of
-	% 	nomaster when P#dp.mors == slave ->
-	% 		{stop,normal,P};
-	% 	_ ->
-	% 		case handle_info(check_inactivity,P) of
-	% 			{noreply,_,hibernate} ->
-	% 				?DBG("req die ~p ~p ~p",[P#dp.actorname,P#dp.actortype,Reason]),
-	% 				{stop,normal,P};
-	% 			R ->
-	% 				R
-	% 		end
-	% end;
+handle_cast({diepls,_Reason},P) ->
+	Empty = queue:is_empty(P#dp.callqueue),
+	Age = actordb_local:min_ref_age(P#dp.activity),
+	CanDie = apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]),
+	case ok of
+		_ when Age > 2000, P#dp.verified, Empty, CanDie /= never ->
+			{stop,normal,P};
+		_ ->
+			{noreply,P}
+	end;
 handle_cast(print_info,P) ->
 	?AINF("~p~n",[?R2P(P)]),
 	{noreply,P};
@@ -1140,101 +1135,6 @@ handle_info(Msg,#dp{verified = true} = P) ->
 handle_info(_Msg,P) ->
 	?DBG("sqlproc ~p unhandled info ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
-
-% check_inactivity(NTimer,#dp{mors = master} = P) ->
-% 	case P#dp.mors of
-% 		master ->
-% 			% If we have been waiting for response for an unreasonable amount of time (600ms),
-% 			%  call appendentries_start on node. If received node will call back appendentries_response.
-% 			{NResponsesWaiting,Followers} = resend(P,0,P#dp.follower_indexes,[]);
-% 		_ ->
-% 			NResponsesWaiting = 0,
-% 			Followers = P#dp.follower_indexes
-% 	end,
-% 	check_inactivity(NTimer,P#dp{follower_indexes = Followers},NResponsesWaiting);
-% check_inactivity(NTimer,P) ->
-% 	check_inactivity(NTimer,P,0).
-
-% check_inactivity(_NTimer,P,NResponsesWaiting) ->
-% 	% ?INF("check inactivity"),
-% 	Empty = queue:is_empty(P#dp.callqueue),
-% 	Age = actordb_local:min_ref_age(P#dp.activity),
-% 	case P of
-% 		#dp{callfrom = undefined, verified = true, transactionid = undefined,dbcopyref = undefined,
-% 			 dbcopy_to = [], locked = [], copyproc = undefined, copylater = undefined} when Empty, Age >= 1000, NResponsesWaiting == 0 ->
-		
-% 			case P#dp.movedtonode of
-% 				undefined ->
-% 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
-% 						true ->
-% 							?DBG("Die because temporary ~p ~p master ~p",[P#dp.actorname,P#dp.actortype,P#dp.masternode]),
-% 							{stop,normal,P};
-% 						never ->
-% 							{noreply,check_timer(P)};
-% 						false ->
-% 							case P#dp.timerref of
-% 								{undefined,_} ->
-% 									Timer = P#dp.timerref;
-% 								{TimerRef,_} ->
-% 									erlang:cancel_timer(TimerRef),
-% 									Timer = {undefined,element(2,P#dp.timerref)}
-% 							end,
-% 							{noreply,P#dp{timerref = Timer},hibernate}
-% 					end;
-% 				_ when Age >= 5000 ->
-% 					case apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]) of
-% 						never ->
-% 							{noreply,check_timer(P)};
-% 						_ ->
-% 							{stop,normal,P}
-% 					end;
-% 				_ ->
-% 					Now = actordb_local:actor_activity(P#dp.activity_now),
-% 					{noreply,check_timer(P#dp{activity_now = Now})}
-% 			end;
-		% _ when Empty == false, P#dp.verified == false, NTimer > 1, is_tuple(P#dp.election) ->
-		% 	case timer:now_diff(os:timestamp(),P#dp.election) > 500000 of
-		% 		true ->
-		% 			?INF("Restarting election due to timeout"),
-		% 			{noreply, check_timer(actordb_sqlprocutil:start_verify(P,false))};
-		% 		false ->
-		% 			{noreply, check_timer(P)}
-		% 	end;
-		% _ ->
-		% 	Now = actordb_local:actor_activity(P#dp.activity_now),
-			% case P#dp.mors of
-			% 	master when P#dp.db /= undefined ->
-			% 		{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
-			% 		DbSize = NPages*(?PAGESIZE+40),
-			% 		case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
-			% 			true ->
-			% 				NotSynced = lists:foldl(fun(F,Count) ->
-			% 					case F#flw.match_index /= P#dp.evnum of
-			% 						true ->
-			% 							Count+1;
-			% 						false ->
-			% 							Count
-			% 					end 
-			% 				end,0,P#dp.follower_indexes),
-			% 				case NotSynced of
-			% 					0 ->
-			% 						WalFrom = actordb_sqlprocutil:do_checkpoint(P);
-			% 					% If nodes arent synced, tolerate 30MB of wal size.
-			% 					_ when DbSize >= 1024*1024*30 ->
-			% 						WalFrom = actordb_sqlprocutil:do_checkpoint(P);
-			% 					_ ->
-			% 						WalFrom = P#dp.wal_from
-			% 				end;
-			% 			false ->
-			% 				WalFrom = P#dp.wal_from
-			% 		end;
-			% 	_ ->
-			% 		WalFrom = P#dp.wal_from
-			% end,
-			% {noreply,check_timer(retry_copy(P#dp{activity_now = Now, %wal_from = WalFrom,
-			% 									locked = abandon_locks(P,P#dp.locked,[])}))}
-	% 		{noreply,check_timer(P#dp{activity_now = Now})}
-	% end.
 
 
 
