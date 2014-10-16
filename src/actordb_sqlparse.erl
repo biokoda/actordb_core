@@ -354,7 +354,7 @@ find_ending(Bin,Offset1,Prev,IsIolist) ->
 				[] ->
 					byte_size(Bin);
 				_ when IsIolist ->
-					{iolist_to_binary([Bin|Prev]),<<>>};
+					{iolist_to_binary(lists:reverse([Bin|Prev])),<<>>};
 				_ ->
 					{[Bin|Prev],<<>>}
 			end;

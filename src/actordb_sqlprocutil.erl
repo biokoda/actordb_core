@@ -817,8 +817,8 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 			case Callfrom1 of
 				undefined when QueueEmpty == false ->
 					case queue:out_r(P#dp.callqueue) of
-						{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite, records = []}}},CQ} ->
-							ok;
+						{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite1, records = []}}},CQ} ->
+							CallWrite = semicolon(CallWrite1);
 						_ ->
 							CallWrite = <<>>,
 							CQ = P#dp.callqueue,
