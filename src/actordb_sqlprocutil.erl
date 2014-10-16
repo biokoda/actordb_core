@@ -5,6 +5,11 @@
 -compile(export_all).
 -include_lib("actordb_sqlproc.hrl").
 
+static_sqls() ->
+	[<<"SAVEPOINT 'adb';">>,
+	 <<"UPDATE __adb SET val='' WHERE id=">>,?EVNUM,";",
+	 <<>>].
+
 reply(undefined,_Msg) ->
 	ok;
 reply(From,Msg) ->

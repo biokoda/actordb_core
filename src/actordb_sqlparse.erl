@@ -321,13 +321,20 @@ split_statements(Bin1) ->
 		<<"{{",WithGlobal/binary>> ->
 			Len = count_param(WithGlobal,0),
 			case WithGlobal of
-				<<GlobalVar1:Len/binary,"}}",SB/binary>> when SB == <<>>; SB == <<";">> ->
-					StatementBin = <<>>,
-					GlobalVar = split_param(GlobalVar1,<<>>,[]);
+				<<GlobalVar1:Len/binary,"}}",SB/binary>> ->
+					case rem_spaces(SB) of
+						<<";",_/binary>> ->
+							StatementBin = <<>>,
+							GlobalVar = split_param(GlobalVar1,<<>>,[]);
+						<<>> ->
+							StatementBin = <<>>,
+							GlobalVar = split_param(GlobalVar1,<<>>,[]);
+						_ ->
+							GlobalVar = GlobalVar1,
+							StatementBin = SB
+					end;
 				<<"result}}",StatementBin/binary>> ->
-					GlobalVar = <<"RESULT">>;
-				<<GlobalVar:Len/binary,"}}",StatementBin/binary>> ->
-					ok
+					GlobalVar = <<"RESULT">>
 			end;
 		StatementBin ->
 			GlobalVar = undefined
@@ -403,6 +410,7 @@ find_ending(Bin,Offset1,Prev,IsIolist) ->
 										{A1,C1,A2,C2} ->
 											find_ending(After,0,[{A1,C1,A2,C2},SkippingBin|Prev],false);
 										_X ->
+											io:format("WHAT ~p~n",[_X]),
 											find_ending(Bin,Offset+2,Prev,IsIolist)
 									end
 							end
