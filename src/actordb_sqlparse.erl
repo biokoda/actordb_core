@@ -410,7 +410,6 @@ find_ending(Bin,Offset1,Prev,IsIolist) ->
 										{A1,C1,A2,C2} ->
 											find_ending(After,0,[{A1,C1,A2,C2},SkippingBin|Prev],false);
 										_X ->
-											io:format("WHAT ~p~n",[_X]),
 											find_ending(Bin,Offset+2,Prev,IsIolist)
 									end
 							end
