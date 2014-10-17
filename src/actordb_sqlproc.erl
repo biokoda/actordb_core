@@ -686,9 +686,9 @@ state_rw_call(What,From,P) ->
 			% If the other node is actually more up to date, vote was yes and we do not do election.
 			?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
-			case DoElection of
-				true ->
-					% {noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}};
+			% case P#dp.verified == true andalso P#dp.mors == master of
+			% 	true ->
+					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}};
 					% case is_reference(NP#dp.election) of
 					% 	true ->
 					% 		EE = undefined,
@@ -699,18 +699,18 @@ state_rw_call(What,From,P) ->
 					% 		EE = NP#dp.election
 					% end,
 					% {noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP#dp{election = EE}),false)};
-					case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
-						false ->
-							NP1 = actordb_sqlprocutil:set_followers(true,NP),
-							NFlw = actordb_sqlprocutil:send_empty_ae(NP1,Candidate);
-						Flw ->
-							NP1 = NP,
-							NFlw = actordb_sqlprocutil:send_empty_ae(NP,Flw)
-					end,
-					{noreply, actordb_sqlprocutil:store_follower(NP1,NFlw)};
-				false ->
-					{noreply,NP#dp{activity = make_ref()}}
-			end;
+					% case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
+					% 	false ->
+					% 		NP1 = actordb_sqlprocutil:set_followers(true,NP),
+					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP1,Candidate);
+					% 	Flw ->
+					% 		NP1 = NP,
+					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP,Flw)
+					% end,
+					% {noreply, actordb_sqlprocutil:store_follower(NP1,NFlw)};
+			% 	false ->
+			% 		{noreply,NP#dp{activity = make_ref()}}
+			% end;
 		{set_dbfile,Bin} ->
 			ok = file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
 			{reply,ok,P#dp{activity = make_ref()}};

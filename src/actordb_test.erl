@@ -37,9 +37,9 @@ all_test_() ->
 		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
-		{setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
+		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
 		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
-		% {setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
+		{setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
 	].
 
 test_parsing() ->
@@ -638,12 +638,12 @@ test_failednodes(_) ->
 	 	?debugFmt("Taking down node 2",[]),
 	 	stop_slaves([2]),ok 
 	 end,
-	 {timeout,20,fun basic_write/0},
-	 {timeout,20,fun() -> 
+	 {timeout,60,fun basic_write/0},
+	 {timeout,60,fun() -> 
 	 	?debugFmt("Starting back node 2",[]),
 	 	start_slaves([2]), ok 
 	 end},
-	 {timeout,20,fun basic_write/0},
+	 {timeout,60,fun basic_write/0},
 	 fun() -> 
 	 	?debugFmt("Taking down node 2 and node 3",[]),
 	 	stop_slaves([2,3]),ok 
