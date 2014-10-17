@@ -252,7 +252,6 @@ init_opendb(P) ->
 			?DBG("Opening HAVE schema",[]),
 			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db,
 					<<"SELECT * FROM __adb;">>,read),
-			?DBG("Rows ~p",[Rows]),
 			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),

@@ -331,7 +331,6 @@ cb_reg_actor(P,ActorName) ->
 	?ADBG("cb_reg_actor ~p ~p ~p ~p ~p",[P#state.name,P#state.type,ActorName,P#state.stealingnow,P#state.stealingfrom]),
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
 	NM = ActorName,
-	% Sql = [<<"INSERT OR REPLACE INTO actors VALUES (">>,NM,$,,(butil:tobin(Hash)), <<");">>],
 	Sql = <<"#s05;">>,
 	Recs = [[[NM,butil:tobin(Hash)]]],
 	case is_integer(P#state.nextshard) of

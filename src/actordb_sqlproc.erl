@@ -842,10 +842,10 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 			{stop,normal,P#dp{db = undefined}};
 		_ ->
 			ComplSql = 
-					[<<"#s00;">>,
-					 actordb_sqlprocutil:semicolon(Sql),
-					 <<"#s02;">>,
-					 <<"#s01;">>
+					[<<"#s00;">>, % savepoint
+					 actordb_sqlprocutil:semicolon(Sql), 
+					 <<"#s02;">>, % __adb insert
+					 <<"#s01;">> % release savepoint
 					 ],
 			Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 			case P#dp.flags band ?FLAG_SEND_DB > 0 of
@@ -905,11 +905,9 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 							ComplSql = <<"delete">>;
 						_ ->
 							ComplSql = 
-								[<<"#s00;">>, %<<"$SAVEPOINT 'adb';">>,
+								[<<"#s00;">>,
 								 actordb_sqlprocutil:semicolon(Sql1),
 								 <<"#s02;">>
-								 % <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-								 % <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
 								 ],
 							Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,write)
@@ -949,9 +947,6 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 			end,
 			ComplSql = 
 					[<<"#s00;">>,
-					 % TransactionInfo,
-					 % <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-					 % <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
 					 <<"#s02;">>,
 					 <<"#s03;">>,
 					 <<"#s01;">>
