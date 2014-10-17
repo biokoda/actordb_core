@@ -72,7 +72,7 @@ sqlname(P) ->
 	{P#dp.name,?MULTIUPDATE_TYPE}.
 
 handle_call({transaction_state,Id},_From,P) ->
-	case actordb_actor:read(sqlname(P),[create],<<"SELECT * FROM transactions WHERE id=",(butil:tobin(Id))/binary,";">>) of
+	case actordb_actor:read(sqlname(P),[create],{<<"#s06;">>,[[[butil:toint(Id)]]]}) of
 		{ok,[{columns,_},{rows,[{_,Commited}]}]} ->
 			{reply,{ok,Commited},P};
 		{ok,[_,{rows,[]}]} ->
@@ -84,7 +84,7 @@ handle_call({transaction_state,Id},_From,P) ->
 handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
 
-	case actordb_actor:write(sqlname(P),[create],<<"INSERT INTO transactions (commited) VALUES (0);">>) of
+	case actordb_actor:write(sqlname(P),[create],<<"#r07;">>) of
 		{ok,{changes,Num,_}} ->
 			ok;
 		{ok,{rowid,Num}} ->
@@ -104,8 +104,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				%  if transaction is set to commited or not. If commited is set and they have not commited, they will execute their sql
 				%  which they have saved locally.
 				ok = actordb_sqlite:okornot(
-						actordb_actor:write(sqlname(P),[create],<<"UPDATE transactions SET commited=1 WHERE id=",(butil:tobin(Num))/binary,
-														" AND (commited=0 OR commited=1);">>)),
+						actordb_actor:write(sqlname(P),[create],{<<"#s08;">>,[[[Num]]]})),
 				% Inform all actors that they should commit.
 				% case S of
 				% 	[{_,_,[delete]}|_] ->

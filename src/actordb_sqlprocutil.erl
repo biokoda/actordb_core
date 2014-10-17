@@ -6,9 +6,27 @@
 -include_lib("actordb_sqlproc.hrl").
 
 static_sqls() ->
-	[<<"SAVEPOINT 'adb';">>,
-	 <<"UPDATE __adb SET val='' WHERE id=">>,?EVNUM,";",
-	 <<>>].
+	% Prepared statements which will be referenced by their index in the tuple.
+	% Used for common queries and they only get parsed once per actor.
+	{
+	% #s00;
+	"SAVEPOINT 'adb';",
+	% #s01;
+	"RELEASE SAVEPOINT 'adb';",
+	% #s02;
+	"INSERT OR REPLACE INTO __adb (id,val) VALUES (?1,?2);",
+	% #s03;
+	"INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,?1,?2,?3,?4,?5);",
+	% #s04;
+	"DELETE FROM __transactions WHERE tid=?1 AND updater=?2;",
+	% #s05;
+	"INSERT OR REPLACE INTO actors VALUES (?1,?2);",
+	% #s06;
+	"SELECT * FROM transactions WHERE id=?1;",
+	% #r07; -> r means it returns result
+	"INSERT INTO transactions (commited) VALUES (0);",
+	% #s08;
+	"UPDATE transactions SET commited=1 WHERE id=?1 AND (commited=0 OR commited=1);"}.
 
 reply(undefined,_Msg) ->
 	ok;
@@ -66,13 +84,16 @@ reply_maybe(P,N,[]) ->
 							% Execute transaction sql and at the same time delete transaction sql from table.
 							% No release savepoint yet. That comes in transaction confirm.
 							ComplSql = 
-									[<<"$SAVEPOINT 'adb';">>,
+									[%<<"$SAVEPOINT 'adb';">>,
+									<<"#s00;">>,
 									 NewSql,
-									 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
-									 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
+									 % <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
+									 % <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
+									 <<"#s02;">>
 									 ],
 							VarHeader = create_var_header(P),
-							Res1 = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.evterm,EvNumNew,VarHeader),
+							Records = [[[?EVNUMI,butil:tobin(EvNumNew)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+							Res1 = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.evterm,EvNumNew,VarHeader),
 							Res = {actordb_conf:node_name(),Res1},
 							case actordb_sqlite:okornot(Res1) of
 								Something when Something /= ok, P#dp.transactionid /= undefined ->
@@ -231,6 +252,7 @@ init_opendb(P) ->
 			?DBG("Opening HAVE schema",[]),
 			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db,
 					<<"SELECT * FROM __adb;">>,read),
+			?DBG("Rows ~p",[Rows]),
 			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),

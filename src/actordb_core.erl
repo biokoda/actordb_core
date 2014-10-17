@@ -165,7 +165,7 @@ prestart() ->
 				false ->
 					NProcs = length(actordb_conf:paths())
 			end,
-			esqlite3:init(NProcs),
+			esqlite3:init({NProcs,actordb_sqlprocutil:static_sqls()}),
 			emurmur3:init()
 	end.
 

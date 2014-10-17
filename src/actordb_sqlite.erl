@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -module(actordb_sqlite).
--export([init/1,init/2,init/3,exec/2,exec/3,exec/5,exec/6,set_pragmas/2,set_pragmas/3,okornot/1,
+-export([init/1,init/2,init/3,exec/2,exec/3,exec/4,exec/5,exec/6,set_pragmas/2,set_pragmas/3,okornot/1,
 		 stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1,wal_pages/1]). 
 -include("actordb.hrl").
 
@@ -92,7 +92,16 @@ exec(Db,S,read) ->
 	exec(Db,S);
 exec(Db,S,write) ->
 	actordb_local:report_write(),
-	exec(Db,S).
+	exec(Db,S);
+exec(Db,Sql,Records) ->
+	Res = esqlite3:exec_script(Sql,Records,Db,actordb_conf:query_timeout()),
+	exec_res(Res,Sql).
+exec(Db,S,Records,read) ->
+	actordb_local:report_write(),
+	exec(Db,S,Records);
+exec(Db,S,Records,write) ->
+	actordb_local:report_write(),
+	exec(Db,S,Records).
 exec(Db,Sql) ->
 	Res = esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout()),
 	exec_res(Res,Sql).
@@ -100,10 +109,13 @@ exec(Db,Sql,Evnum,Evterm,VarHeader) ->
 	actordb_local:report_write(),
 	Res =  esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
 	exec_res(Res,Sql).
+exec(Db,Sql,[],Evnum,Evterm,VarHeader) ->
+	exec(Db,Sql,Evnum,Evterm,VarHeader);
 exec(Db,Sql,Records,Evnum,Evterm,VarHeader) ->
 	actordb_local:report_write(),
 	Res =  esqlite3:exec_script(Sql,Records,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
 	exec_res(Res,Sql).
+
 
 exec_res(Res,Sql) ->
 	case Res of

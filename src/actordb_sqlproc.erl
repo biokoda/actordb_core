@@ -368,7 +368,7 @@ commit_call(Doit,Id,From,P) ->
 					?DBG("Commit delete"),
 					{stop,normal,P#dp{db = undefined}};
 				true when P#dp.follower_indexes == [] ->
-					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>)),
+					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>)),
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined,transactioncheckref = undefined,
 							 transactioninfo = undefined, activity = make_ref(),
 							 evnum = EvNum, evterm = P#dp.current_term})};
@@ -377,7 +377,7 @@ commit_call(Doit,Id,From,P) ->
 					% This will send the remaining WAL pages to followers that have commit flag set.
 					% Followers will then rpc back appendentries_response.
 					% We can also set #dp.evnum now.
-					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"RELEASE SAVEPOINT 'adb';">>,
+					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>,
 												P#dp.evterm,EvNum,<<>>)),
 					{noreply,ae_timer(P#dp{callfrom = From, activity = make_ref(),
 								  callres = ok,evnum = EvNum,
@@ -782,6 +782,8 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 								{reply,What} ->
 									{reply,What,P}
 							end;
+						{Sql,Recs} ->
+							{reply,actordb_sqlite:exec(P#dp.db,Sql,Recs,read),P};
 						Sql ->
 							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
 					end
@@ -814,8 +816,12 @@ write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P)
 					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
 					{reply,What,P};
+				{exec,OutSql,Recs} ->
+					write_call1(#write{sql = OutSql,transaction = Transaction, records = Recs},From,P#dp.schemavers,P);
 				{OutSql,State} ->
 					write_call1(#write{sql = OutSql,transaction = Transaction},From,P#dp.schemavers,P#dp{cbstate = State});
+				{OutSql,Recs,State} ->
+					write_call1(#write{sql = OutSql,transaction = Transaction, records = Recs},From,P#dp.schemavers,P#dp{cbstate = State});
 				OutSql ->
 					write_call1(#write{sql = OutSql,transaction = Transaction},From,P#dp.schemavers,P)
 			end
@@ -836,24 +842,19 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 			{stop,normal,P#dp{db = undefined}};
 		_ ->
 			ComplSql = 
-					[<<"$SAVEPOINT 'adb';">>,
+					[<<"#s00;">>,
 					 actordb_sqlprocutil:semicolon(Sql),
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
-					 <<"$RELEASE SAVEPOINT 'adb';">>
+					 <<"#s02;">>,
+					 <<"#s01;">>
 					 ],
+			Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 			case P#dp.flags band ?FLAG_SEND_DB > 0 of
 				true ->
 					VarHeader = actordb_sqlprocutil:create_var_header_with_db(P);
 				_ ->
 					VarHeader = actordb_sqlprocutil:create_var_header(P)
 			end,
-			case W#write.records of
-				[_|_] ->
-					Res = actordb_sqlite:exec(P#dp.db,ComplSql,W#write.records,P#dp.current_term,EvNum,VarHeader);
-				_ ->
-					Res = actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader)
-			end,
+			Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?DBG("Write result ~p, repl_status ~p",[Res,esqlite3:replicate_status(P#dp.db)]),
@@ -876,7 +877,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 					{noreply,P}
 			end
 	end;
-write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId},From,NewVers,P) ->
+write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId} = W,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",
 				[TransactionId,P#dp.transactionid,Sql1]),
@@ -904,12 +905,14 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 							ComplSql = <<"delete">>;
 						_ ->
 							ComplSql = 
-								[<<"$SAVEPOINT 'adb';">>,
+								[<<"#s00;">>, %<<"$SAVEPOINT 'adb';">>,
 								 actordb_sqlprocutil:semicolon(Sql1),
-								 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-								 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
+								 <<"#s02;">>
+								 % <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+								 % <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
 								 ],
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
+							Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+							Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,write)
 					end
 			end,
 			case actordb_sqlite:okornot(Res) of
@@ -933,41 +936,30 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
 					{OldSql,_EvNum,_} = P#dp.transactioninfo,
 					% Combine prev sql with new one.
-					Sql = iolist_to_binary([OldSql,Sql1]),
-					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions ",
-										 "(id,tid,updater,node,schemavers,sql) VALUES (1,">>,
-											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
-								 				(butil:tobin(NewVers)),",",
-								 				"'",(base64:encode(Sql)),"');"];
+					Sql = iolist_to_binary([OldSql,Sql1]);
 				TransactionId ->
-					Sql = <<"delete">>,
-					% First store transaction info. Then run actual sql of transaction.
-					TransactionInfo = [<<"$INSERT OR REPLACE INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
-											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
-											(butil:tobin(NewVers)),",",
-								 				"'",(base64:encode(Sql)),"');"];
+					Sql = <<"delete">>;
 				_ ->
 					case Sql1 of
 						delete ->
 							Sql = <<"delete">>;
 						_ ->
 							Sql = iolist_to_binary(Sql1)
-					end,
-					% First store transaction info. Then run actual sql of transaction.
-					TransactionInfo = [<<"$INSERT INTO __transactions (id,tid,updater,node,schemavers,sql) VALUES (1,">>,
-											(butil:tobin(Tid)),",",(butil:tobin(Updaterid)),",'",Node,"',",
-											(butil:tobin(NewVers)),",",
-								 				"'",(base64:encode(Sql)),"');"]
+					end
 			end,
 			ComplSql = 
-					[<<"$SAVEPOINT 'adb';">>,
-					 TransactionInfo,
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
-					 <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
-					 <<"$RELEASE SAVEPOINT 'adb';">>
+					[<<"#s00;">>,
+					 % TransactionInfo,
+					 % <<"$UPDATE __adb SET val='">>,butil:tobin(EvNum),<<"' WHERE id=">>,?EVNUM,";",
+					 % <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";",
+					 <<"#s02;">>,
+					 <<"#s03;">>,
+					 <<"#s01;">>
 					 ],
+			TransRecs = [[[butil:tobin(Tid),butil:tobin(Updaterid),Node,butil:tobin(NewVers),base64:encode(Sql)]]],
+			Records = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]|TransRecs],
 			VarHeader = actordb_sqlprocutil:create_var_header(P),
-			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,P#dp.current_term,EvNum,VarHeader)),
+			ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader)),
 			{noreply,ae_timer(P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
 						  transactioninfo = {Sql,EvNum+1,NewVers},
 						  follower_indexes = update_followers(EvNum,P#dp.follower_indexes),

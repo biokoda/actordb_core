@@ -321,7 +321,7 @@ whereis(ShardName,Type1) ->
 	end.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
-%																Callbacks
+%											Callbacks
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 
@@ -330,8 +330,10 @@ whereis(ShardName,Type1) ->
 cb_reg_actor(P,ActorName) ->
 	?ADBG("cb_reg_actor ~p ~p ~p ~p ~p",[P#state.name,P#state.type,ActorName,P#state.stealingnow,P#state.stealingfrom]),
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
-	NM = at(P#state.idtype,ActorName),
-	Sql = [<<"INSERT OR REPLACE INTO actors VALUES (">>,NM,$,,(butil:tobin(Hash)), <<");">>],
+	NM = ActorName,
+	% Sql = [<<"INSERT OR REPLACE INTO actors VALUES (">>,NM,$,,(butil:tobin(Hash)), <<");">>],
+	Sql = <<"#s05;">>,
+	Recs = [[[NM,butil:tobin(Hash)]]],
 	case is_integer(P#state.nextshard) of
 		true when P#state.nextshard =< Hash, is_binary(P#state.nextshardnode) ->
 			{reply,{redirect_shard,P#state.nextshardnode,P#state.nextshard},Sql,P};
@@ -339,14 +341,14 @@ cb_reg_actor(P,ActorName) ->
 			% Is this regular actor registration or are we moving actors from another node.
 			case P#state.stealingnow == ActorName of
 				false ->
-					Sql;
+					{exec,Sql,Recs};
 				% Moving actors. Actor has just been copied over successfully.
 				true ->
 					Me = self(),
 					% First actor needs to be stored in db, then shard can move on to the next actor.
 					spawn(fun() -> gen_server:call(Me,{move_to_next,ActorName}) end),
 					erlang:demonitor(P#state.stealingnowmon),
-					{Sql,P#state{stealingnow = undefined, stealingnowpid = undefined}}
+					{Sql,Recs,P#state{stealingnow = undefined, stealingnowpid = undefined}}
 			end
 	end.
 
