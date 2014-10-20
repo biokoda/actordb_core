@@ -297,7 +297,7 @@ do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
 					case findpos(1,Column,Columns) of
 						N when is_integer(N) ->
 							NRows = get({Gvar,nrows}),
-							do_foreach(P,Type,Flags,N,Gvar,BlockVar,IsWrite,Statements,NRows-1),
+							do_foreach(P,Type,Flags,N,Gvar,BlockVar,IsWrite,Statements,{0,NRows}),
 							do_multiupdate(P,T);
 						_ ->
 							?AERR("global var column not found ~p ~p",[Column,Columns]),
@@ -455,9 +455,9 @@ move_over_shard_actors(Nd,Type,Flags,Shard,Actors,CountNow,CountAll,P,IsWrite,St
 % 
 % 			TYPE 2 - looping over a list with for
 % 
-do_foreach(P,_,_,_,_,_,_,_,N) when N < 0 ->
+do_foreach(P,_,_,_,_,_,_,_,{N,N}) ->
 	P;
-do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,N) ->
+do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N,Max}) ->
 	case get({Gvar,N}) of
 		undefined ->
 			?ADBG("do_foreach no gvar for ~p",[N]),
@@ -468,7 +468,7 @@ do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,N) ->
 			?ADBG("do_foreach ~p ~p",[N,Ac]),
 			{StBin,Varlist} = statements_to_binary(Ac,Statements,<<>>,[]),
 			do_actor(P,true,Type,Flags,Ac,IsWrite,StBin,Varlist),
-			do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,N-1)
+			do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N+1,Max})
 	end.
 	
 
@@ -566,18 +566,18 @@ store_vars(IsMulti,Actor,[Varname|T],[Resh|ResRem]) ->
 	store_vars(IsMulti,Actor,T,ResRem);
 % Add column to another variable.
 store_vars(IsMulti,Actor,[{A1,C1,A2,C2}|T],[]) ->
-	?ADBG("Adding columns ~p",[{A1,C1,A2,C2}]),
-	Val = get_pd_column(A2,C2),
 	case get({A1,cols}) of
 		{foreach,Gvar,GVarIndex} ->
 			ColumnKey = {Gvar,cols},
 			RowKey = {Gvar,GVarIndex},
 			Columns = get(ColumnKey);
 		Columns ->
+			GVarIndex = 0,
 			RowKey = {A1,0},
 			ColumnKey = {A1,cols}
 	end,
-	?ADBG("getpos cols ~p",[findpos(1,C1,Columns)]),
+	Val = get_pd_column(A2,C2,GVarIndex),
+	?ADBG("Adding columns ~p, val ~p",[{A1,C1,A2,C2},Val]),
 	case findpos(1,C1,Columns) of
 		false ->
 			Index = tuple_size(Columns) + 1,
@@ -685,6 +685,8 @@ statements_to_binary(_CurActor,[],O,Varlist) ->
 	{O,lists:reverse(Varlist)}.
 
 get_pd_column(Var,Column) ->
+	get_pd_column(Var,Column,0).
+get_pd_column(Var,Column,GIndex) ->
 	case get({Var,cols}) of
 		undefined ->
 			undefined;
@@ -700,7 +702,7 @@ get_pd_column(Var,Column) ->
 				false ->
 					undefined;
 				Index ->
-					element(Index,get({Var,0}))
+					element(Index,get({Var,GIndex}))
 			end
 	end.
 
