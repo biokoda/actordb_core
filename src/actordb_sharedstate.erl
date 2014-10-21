@@ -201,7 +201,8 @@ set_global_state(MasterNode,State) ->
 			case (NewNodes /= OldNodes orelse NewGroups /= OldGroups) of
 			   	true ->
 			   		bkdcore_changecheck:set_nodes_groups(NewNodes,NewGroups),
-			   		spawn(fun() -> start(?STATE_NM_LOCAL,?STATE_TYPE) end);
+			   		actordb_election:connect_all(),
+			   		spawn(fun() ->timer:sleep(100), start(?STATE_NM_LOCAL,?STATE_TYPE) end);
 			   	false ->
 			   		ok
 			end;

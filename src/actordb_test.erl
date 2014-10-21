@@ -919,7 +919,7 @@ runt1(Concurrency,PerWorker,S) ->
 	[spawn_monitor(fun() -> {A,B,C} = now(),
 							random:seed(A,B,C), 
 							run(binary:copy(<<"a">>,1024*S),actordb:start_bp(),N,PerWorker),
-							io:format("Done with ~p",[N])
+							io:format("Done with ~p ~p~n",[N,timer:now_diff(now(),{A,B,C})])
 					end)
 			 || N <- lists:seq(1,Concurrency)],
 	wait_t_response(Concurrency),

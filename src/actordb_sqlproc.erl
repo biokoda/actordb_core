@@ -1207,7 +1207,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 															P#dp.callqueue)}}
 			end;
 		follower ->
-			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = actordb_sqlprocutil:election_timer(P1#dp.election), 
+			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = actordb_sqlprocutil:election_timer(undefined), 
 															masternode = undefined, mors = slave})}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->

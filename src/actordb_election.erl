@@ -1,7 +1,7 @@
 -module(actordb_election).
 -behaviour(gen_server).
 -export([start/0,stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
--export([whois_leader/1]).
+-export([whois_leader/1,connect_all/0]).
 -include_lib("actordb_sqlproc.hrl").
 
 % This is a global registered process. It executes elections on behalf of sqlproc.
@@ -19,6 +19,9 @@ pid() ->
 		Pid ->
 			Pid
 	end.
+
+connect_all() ->
+	gen_server:cast(pid(),do_connect).
 
 % Returns: pid | nodename | later
 % If later set a random timer and call again
@@ -68,6 +71,9 @@ handle_call(print_info,_,P) ->
 handle_call(stop, _, P) ->
 	{stop, shutdown, stopped, P}.
 
+handle_cast(do_connect,P) ->
+	[spawn(fun() -> net_adm:ping(bkdcore:dist_name(Nd)) end) || Nd <- bkdcore:cluster_nodes()],
+	{noreply,P};
 handle_cast(_, P) ->
 	{noreply, P}.
 
@@ -81,6 +87,9 @@ handle_info({'DOWN',_Monitor,_,PID,Reason},P) ->
 		_ ->
 			{noreply,P}
 	end;
+handle_info(timeout,P) ->
+	erlang:send_after(1000,self(),timeout),
+	handle_cast(do_connect,P);
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
@@ -93,6 +102,7 @@ terminate(_, _) ->
 code_change(_, P, _) ->
 	{ok, P}.
 init(_) ->
+	erlang:send_after(1000,self(),timeout),
 	{ok,#ep{ets = ets:new(elactors,[set,private])}}.
 
 
