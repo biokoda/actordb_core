@@ -836,7 +836,8 @@ schema() ->
 		" type: kv",
 		" schema:",
 		" - CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, size INTEGER)",
-		" - CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, fileid TEXT, uid INTEGER, FOREIGN KEY (fileid) REFERENCES actors(id) ON DELETE CASCADE)"
+		" - CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, fileid TEXT, uid INTEGER, "++
+			"FOREIGN KEY (fileid) REFERENCES actors(id) ON DELETE CASCADE)"
 	],"\n").
 
 
@@ -917,7 +918,8 @@ runt1(Concurrency,PerWorker,S) ->
 	Start = now(),
 	[spawn_monitor(fun() -> {A,B,C} = now(),
 							random:seed(A,B,C), 
-							run(binary:copy(<<"a">>,1024*S),actordb:start_bp(),N,PerWorker) 
+							run(binary:copy(<<"a">>,1024*S),actordb:start_bp(),N,PerWorker),
+							io:format("Done with ~p",[N])
 					end)
 			 || N <- lists:seq(1,Concurrency)],
 	wait_t_response(Concurrency),
@@ -1012,7 +1014,9 @@ tsingle(N) ->
 			  ext TEXT NOT NULL,
 			  created TIMESTAMP DEFAULT (strftime('%s', 'now')),
 			  CONSTRAINT pk_file PRIMARY KEY(id) FOREIGN KEY (parent) REFERENCES t_dir(id) ON UPDATE CASCADE);"++
-			"INSERT OR REPLACE INTO t_dir (id,v,eid,parent,name,tdiff,tdel,mtime,pub,root,def,subs,children,fav,shared,size,misc) VALUES ( 1015,1,2,1015,'otp_src_17.1',0,0,0,0,0,0,'',0,0,0,0,'836c0000000168026400056d74696d656802680362000007de6108610468036107611b61206a');",
+			"INSERT OR REPLACE INTO t_dir (id,v,eid,parent,name,tdiff,tdel,mtime,pub,root,def,subs,children,fav,shared,size,misc) "++
+			"VALUES ( 1015,1,2,1015,'otp_src_17.1',0,0,0,0,0,0,'',0,0,0,0,"++
+				"'836c0000000168026400056d74696d656802680362000007de6108610468036107611b61206a');",
 			_Create = actordb_sqlite:exec(Db,Schema),
 
 			Sql = tsingle([],N),
@@ -1100,7 +1104,8 @@ wlcut(Db,PgSize,N) ->
 filltkv(N) ->
 	filltkv(N,binary:copy(<<"a">>,1024*1024)).
 filltkv(N,B) when N > 0 ->
-	actordb:exec(["ACTOR textkv(",butil:tobin(N),");","INSERT OR IGNORE INTO actors VALUES ('",butil:tobin(N),"',","{{hash(",butil:tobin(N),")}},'",B,"')"]),
+	actordb:exec(["ACTOR textkv(",butil:tobin(N),");","INSERT OR IGNORE INTO actors VALUES ('",
+					butil:tobin(N),"',","{{hash(",butil:tobin(N),")}},'",B,"')"]),
 	filltkv(N-1,B);
 filltkv(0,_) ->
 	ok.

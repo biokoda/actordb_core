@@ -179,11 +179,12 @@ follower_call_counts(P) ->
 resend_ae(P,N,[F|T],L) ->
 	case F#flw.wait_for_response_since of
 		undefined ->
+			?DBG("Not waiting for response"),
 			resend_ae(P,N,T,[F|L]);
 		_ ->
-			Age = actordb_local:min_ref_age(F#flw.wait_for_response_since),
-			case Age > 600 of
-				true ->
+			% Age = actordb_local:min_ref_age(F#flw.wait_for_response_since),
+			% case Age > 100 of
+			% 	true ->
 					case bkdcore_rpc:is_connected(F#flw.node) of
 						true ->
 							?DBG("Resending appendentries ~p",[F#flw.node]),
@@ -193,12 +194,12 @@ resend_ae(P,N,[F|T],L) ->
 						false ->
 							?DBG("Not connected to ~p",[F#flw.node]),
 							resend_ae(P,N,T,[F|L])
-					end;
-				false ->
-					?DBG("Have not waited long enough ~p",[Age]),
-					% Increment counter to keep timer running.
-					resend_ae(P,N+1,T,[F|L])
-			end
+					end
+			% 	false ->
+			% 		?DBG("Have not waited long enough ~p",[Age]),
+			% 		% Increment counter to keep timer running.
+			% 		resend_ae(P,N+1,T,[F|L])
+			% end
 	end;
 resend_ae(_,N,[],L) ->
 	{N,L}.
@@ -651,9 +652,11 @@ base_schema(SchemaVers,Type,MovedTo) ->
 			Moved = [];
 		_ ->
 			Moved = [{?MOVEDTO,MovedTo}]
+			% Moved = [[?MOVEDTO,MovedTo]]
 	end,
 	DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
 		[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
+	% DefVals = [[[?SCHEMA_VERSI,SchemaVers],[?ATYPEI,Type],[?EVNUMI,0],[?EVTERMI,0]|Moved]]],
 	[<<"$CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
 	 "$CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,

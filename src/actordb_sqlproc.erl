@@ -251,9 +251,9 @@ handle_call(Msg,_,P) when is_binary(P#dp.movedtonode) ->
 			{reply,{redirect,P#dp.movedtonode},P#dp{activity = make_ref()}}
 	end;
 handle_call({dbcopy,Msg},CallFrom,P) ->
-	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,check_timer(P));
+	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,P);
 handle_call({state_rw,What},From,P) ->
-	state_rw_call(What,From,check_timer(P#dp{activity = make_ref()}));
+	state_rw_call(What,From,P#dp{activity = make_ref()});
 handle_call({commit,Doit,Id},From, P) ->
 	commit_call(Doit,Id,From,P);
 handle_call(Msg,From,P) ->
@@ -284,9 +284,9 @@ handle_call(Msg,From,P) ->
 							
 							{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 						{moved,Moved} ->
-							{noreply,check_timer(P#dp{movedtonode = Moved})};
+							{noreply,P#dp{movedtonode = Moved}};
 						{moved,Moved,NS} ->
-							{noreply,check_timer(P#dp{movedtonode = Moved, cbstate = NS})};
+							{noreply,P#dp{movedtonode = Moved, cbstate = NS}};
 						{reply,What} ->
 							{reply,What,P};
 						reinit ->
@@ -299,14 +299,14 @@ handle_call(Msg,From,P) ->
 					end
 			end;
 		#write{transaction = TransactionId} = Msg1 when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
-			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
+			write_call(Msg1,From,P#dp{activity = make_ref()});
 		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
 			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref()}};
 		#write{} = Msg1 ->
-			write_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
+			write_call(Msg1,From,P#dp{activity = make_ref()});
 		{read,Msg1} ->
-			read_call(Msg1,From,check_timer(P#dp{activity = make_ref()}));
+			read_call(Msg1,From,P#dp{activity = make_ref()});
 		{move,NewShard,Node,CopyReset,CbState} ->
 			% Call to move this actor to another cluster. 
 			% First store the intent to move with all needed data. This way even if a node chrashes, the actor will attempt to move
@@ -314,7 +314,7 @@ handle_call(Msg,From,P) ->
 			% When write done, reply to caller and start with move process (in ..util:reply_maybe.
 			Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
 						(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,CbState})))/binary,"');">>,
-			write_call(#write{sql = Sql},{exec,From,{move,Node}},check_timer(actordb_sqlprocutil:set_followers(true,P)));
+			write_call(#write{sql = Sql},{exec,From,{move,Node}},actordb_sqlprocutil:set_followers(true,P));
 		{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
 			% Similar to above. Both have just insert and not insert and replace because
 			%  we can only do one move/split at a time. It makes no sense to do both at the same time.
@@ -324,13 +324,13 @@ handle_call(Msg,From,P) ->
 			% Split is called when shards are moving around (nodes were added). If different number of nodes in cluster, we need
 			%  to have an updated list of nodes.
 			write_call(#write{sql = Sql},{exec,From,{split,MFA,Node,OldActor,NewActor}},
-				check_timer(actordb_sqlprocutil:set_followers(true,P)));
+				actordb_sqlprocutil:set_followers(true,P));
 		{copy,{Node,OldActor,NewActor}} ->
 			Ref = make_ref(),
 			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
 							{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
 				ok ->
-					actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,check_timer(P));
+					actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P);
 				Err ->
 					{reply, Err,P}
 			end;
@@ -1000,7 +1000,9 @@ handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
-handle_info(ae_timer,P) ->
+handle_info({ae_timer,Evnum},P) when Evnum < P#dp.evnum ->
+	{noreply,ae_timer(P#dp{resend_ae_timer = undefined})};
+handle_info({ae_timer,_Evnum},P) ->
 	case P#dp.mors == master andalso P#dp.verified == true of
 		true ->
 			case actordb_sqlprocutil:resend_ae(P,0,P#dp.follower_indexes,[]) of
@@ -1009,8 +1011,7 @@ handle_info(ae_timer,P) ->
 					{noreply,P#dp{resend_ae_timer = undefined}};
 				{_,NF} ->
 					?DBG("AE timer continue"),
-					T = erlang:send_after(1000,self(),ae_timer),
-					{noreply,P#dp{follower_indexes = NF, resend_ae_timer = T}}
+					{noreply,ae_timer(P#dp{follower_indexes = NF, resend_ae_timer = undefined})}
 			end;
 		false ->
 			{noreply, P}
@@ -1315,7 +1316,6 @@ init(#dp{} = P,_Why) ->
 	% ?DBG("Reinit because ~p, ~p, ~p",[_Why,?R2P(P),get()]),
 	?DBG("Reinit because ~p",[_Why]),
 	actordb_sqlite:stop(P#dp.db),
-	% cancel_timer(P),
 	Flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION) band (bnot ?FLAG_STARTLOCK),
 	case ok of
 		_ when is_reference(P#dp.election) ->
@@ -1333,8 +1333,8 @@ init([_|_] = Opts) ->
 	% put(opt,Opts),
 	% Random needs to be unique per-node, not per-actor. 
 	random:seed(actordb_conf:cfgtime()),
-	case actordb_sqlprocutil:parse_opts(check_timer(#dp{mors = master, callqueue = queue:new(), 
-									schemanum = catch actordb_schema:num()}),Opts) of
+	case actordb_sqlprocutil:parse_opts(#dp{mors = master, callqueue = queue:new(), 
+									schemanum = catch actordb_schema:num()},Opts) of
 		{registered,Pid} ->
 			explain({registered,Pid},Opts),
 			{stop,normal};
@@ -1353,7 +1353,6 @@ init([_|_] = Opts) ->
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
 				{lockinfo,wait} ->
-					% {ok,cancel_timer(P)}
 					{ok,P}
 			end;
 		P when P#dp.copyfrom == undefined ->
@@ -1429,31 +1428,13 @@ reply(undefined,_Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
-% cancel_timer(P) ->
-% 	{Ref,_} = P#dp.timerref,
-% 	case Ref /= undefined of
-% 		true ->
-% 			erlang:cancel_timer(Ref),
-% 			P#dp{timerref = {undefined,0}};
-% 		false ->
-% 			P
-% 	end.
 
 ae_timer(P) ->
 	case P#dp.resend_ae_timer of
 		undefined ->
-			P#dp{resend_ae_timer = erlang:send_after(1000,self(),ae_timer)};
+			P#dp{resend_ae_timer = erlang:send_after(200,self(),{ae_timer,P#dp.evnum})};
 		_ ->
 			P
 	end.
 
-check_timer(P) ->
-	P.
-	% case P#dp.timerref of
-	% 	{undefined,N} ->
-	% 		Ref = erlang:send_after(1000,self(),{inactivity_timer,N+1}),
-	% 		P#dp{timerref = {Ref,N}};
-	% 	_ ->
-	% 		P
-	% end.
 
