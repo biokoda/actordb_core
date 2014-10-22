@@ -94,6 +94,12 @@ columns(Type,Table) ->
 			schema_not_loaded
 	end.
 
+% Prepared statements must be called with backpressure state.
+prepare_statement_bp(P,Sql) ->
+	{[{{Type,_,_},IsWrite,Statements}],_} = actordb_sqlparse:parse_statements(butil:tobin(Sql)),
+	{Type,IsWrite,Statements}.
+
+
 % Calls with backpressure.
 % Generally all calls to actordb should get executed with these functions.
 % Otherwise the node might get overloaded and crash.

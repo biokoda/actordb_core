@@ -6,7 +6,6 @@
 -compile(export_all).
 -include("actordb.hrl").
 -define(GLOBALETS,globalets).
-
 -define(MASTER_GROUP_SIZE,7).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 
@@ -17,6 +16,8 @@
 			master_group = [], waiting = false, 
 			current_write = [], evnum = 0, am_i_master = false, timer,
 			nodelist, nodepos = 0}).
+% Prepared statement
+-record(ps,{index = 0, iswrite, actor_type, v = 0, sql}).
 
 start({Name,Type}) ->
 	start(Name,Type).
@@ -74,6 +75,9 @@ write_cluster([_|_] = L) ->
 write_cluster(Key,Val) ->
 	write(?STATE_NM_LOCAL,[{Key,Val}]).
 
+save_prepared(Actor,IsWrite,Sql) ->
+	% -record(ps,{index = 0, iswrite, actor_type, v = 0, sql}).
+	#ps{iswrite = IsWrite, sql = Sql, actor_type = Actor}.
 
 init_state(Nodes,Groups,{_,_,_} = Configs) ->
 	init_state(Nodes,Groups,[Configs]);
