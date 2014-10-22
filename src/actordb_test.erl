@@ -258,6 +258,14 @@ multiupdate_read() ->
 			       {rows,[{101,<<"secondmsg">>,20,<<"user2">>},
 		  			      {100,<<"message">>,10,<<"user1">>}]}],
         ResForum),
+	{ok,ResSingle} = exec(["actor thread(1);",
+				"{{VAR}}SELECT * FROM thread LIMIT 1;"
+				"actor user({{VAR.user}});",
+				"{{RESULT}}SELECT * FROM userinfo WHERE id=1;"
+				]),
+	?assertMatch([{columns,{<<"id">>,<<"name">>}},
+			       {rows,[{1,<<"user1">>}]}],
+        ResSingle),
 	{ok,[{columns,_},{rows,Rows1}]} = exec(["actor type1(*);pragma list;"]),
 	Num = numactors()-6+3,
 	?assertEqual(Num,length(Rows1)),
@@ -1114,7 +1122,7 @@ filltkv(0,_) ->
 
 t(Path) ->
 	{ok,F} = file:open([Path,"-wal"],[read,binary,raw]),
-	{ok,WalSize} = file:position(F,eof),
+	{ok,_WalSize} = file:position(F,eof),
 	{ok,_} = file:position(F,{cur,-(4096+40)}),
 	{ok,<<A:32,B:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
 		file:read(F,24),
