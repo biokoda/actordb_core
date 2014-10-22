@@ -476,11 +476,16 @@ do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N,Max}) ->
 % 			TYPE 3 - regular query on single or list of actors
 % 
 do_block(P,IsMulti,Type,Flags,[Actor|T],IsWrite,Statements,Varlist) ->
-	do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements,Varlist),
+	case Actor of
+		{Var,Column} ->
+			Actor1 = get_pd_column(Var,Column);
+		_ ->
+			Actor1 = Actor
+	end,
+	do_actor(P,IsMulti,Type,Flags,Actor1,IsWrite,Statements,Varlist),
 	do_block(P,IsMulti,Type,Flags,T,IsWrite,Statements,Varlist);
 do_block(_,_,_,_,[],_,_,_) ->
 	ok.
-
 
 do_actor(_,_,_,_,_,_,<<>>,_) ->
 	ok;

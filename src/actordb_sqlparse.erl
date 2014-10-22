@@ -497,6 +497,14 @@ count_string(<<>>,N) ->
 
 is_actor({Bin,_}) ->
 	is_actor(Bin);
+% If actor name is from variable and there are no flags
+is_actor([H,{Var,Column},<<")",Flags/binary>>|_]) when is_binary(Flags) ->
+	case is_actor(H) of
+		undefined ->
+			undefined;
+		Actor ->
+			[Actor,{Var,Column},rem_spaces(Flags)]
+	end;
 is_actor(Bin) ->
 	case Bin of 
 		<<"actor ",Rem/binary>> ->
@@ -521,6 +529,9 @@ split_actor({_,_,_} = A) ->
 	A;
 split_actor({_,__,_,_} = A) ->
 	A;
+% Variable actor name
+split_actor([Type,{K,V},Flags]) ->
+	{<< <<Char:8>> || <<Char:8>> <= Type, Char /= $\s, Char /= $(>>, [{K,V}], check_flags(Flags,[])};
 split_actor(Bin) ->
 	case split_actor(Bin,<<>>,undefined,[]) of
 		{Type,[<<"*">>],Flags} ->
