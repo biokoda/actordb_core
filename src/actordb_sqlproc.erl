@@ -972,6 +972,7 @@ update_followers(_Evnum,L) ->
 
 
 handle_cast({diepls,_Reason},P) ->
+	?DBG("Received diepls ~p",[_Reason]),
 	Empty = queue:is_empty(P#dp.callqueue),
 	Age = actordb_local:min_ref_age(P#dp.activity),
 	CanDie = apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]),
@@ -1180,7 +1181,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			%  - If empty db or schema not up to date create/update it.
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
-			{NP,Sql,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset, 
+			{NP,Sql,Records,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset, 
 																			cbstate = CbState},
 																		Transaction,CopyFrom,[],undefined),
 			case P#dp.callres of
@@ -1199,11 +1200,11 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 							?DBG("Running post election write on nodes ~p, withdb ~p",
 									[P#dp.follower_indexes,NP#dp.flags band ?FLAG_SEND_DB > 0]),
 							% it must always return noreply
-							write_call(#write{sql = Sql, transaction = NP#dp.transactionid},Callfrom, NP)
+							write_call(#write{sql = Sql, transaction = NP#dp.transactionid, records = Records},Callfrom, NP)
 					end;
 				_ ->
 					?DBG("Delaying election write callres=~p, followers=~p",[P#dp.callres,P#dp.follower_indexes]),
-					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,#write{sql = Sql,transaction = NP#dp.transactionid}},
+					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,#write{sql = Sql,transaction = NP#dp.transactionid, records = Records}},
 															P#dp.callqueue)}}
 			end;
 		follower ->

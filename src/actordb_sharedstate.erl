@@ -370,7 +370,7 @@ cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 % We are redirecting calls (so we know who master is and state is established).
 % But master_ping needs to be handled. It tells us if state has changed.
 cb_redirected_call(S,MovedTo,{master_ping,MasterNode,Evnum,State},_MovedOrSlave) ->
-	?ADBG("received ping ~p",[S#st.name]),
+	% ?ADBG("received ping ~p",[S#st.name]),
 	Now = os:timestamp(),
 	case S#st.evnum < Evnum of
 		true ->
@@ -505,7 +505,7 @@ cb_info(ping_timer,#st{} = S)  ->
 						true ->
 							[begin
 								Nd = element(((NdPos+S#st.nodepos) rem tuple_size(S#st.nodelist))+1,S#st.nodelist),
-								?ADBG("Pinging node=~p",[Nd]),
+								% ?ADBG("Pinging node=~p",[Nd]),
 								bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
 										[?MODULE,S#st.name,S#st.type,Msg]}) 
 							 end || NdPos <- lists:seq(0,2)];

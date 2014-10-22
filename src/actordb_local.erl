@@ -229,7 +229,7 @@ handle_call(ulimit,_,P) ->
 handle_call({subscribe_stat,Pid},_,P) ->
 	{reply,ok,P#dp{stat_readers = [Pid|P#dp.stat_readers]}};
 handle_call(print_info,_,P) ->
-	io:format("~p~n",[?R2P(P)]),
+	?AINF("~p~n",[?R2P(P)]),
 	{reply,ok,P};
 handle_call(stop, _, P) ->
 	{stop, shutdown, stopped, P}.
@@ -298,14 +298,16 @@ handle_info(check_mem,P) ->
 	erlang:send_after(5000,self(),check_mem),
 	spawn(fun() -> 
 			L = memsup:get_system_memory_data(),
-			[Free,Total] = butil:ds_vals([free_memory,system_total_memory],L),
+			[Free,Total,Cached] = butil:ds_vals([free_memory,system_total_memory,cached_memory],L),
 			NProc = ets:info(actoractivity,size),
 			case is_integer(Total) andalso 
 				 is_integer(Free) andalso 
+				 is_integer(Cached) andalso
 				 Total > 0 andalso 
-				 (Free / Total) < 0.2 andalso
+				 ((Free+Cached) / Total) < 0.2 andalso
 				 NProc > 100 of
 				true ->
+					?AINF("Killing actors, memratio=~p, actors=~p",[Free/Total, NProc]),
 					killactors(NProc*0.2,ets:last(actoractivity));
 				false ->
 					ok

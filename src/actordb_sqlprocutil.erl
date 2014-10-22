@@ -651,17 +651,18 @@ base_schema(SchemaVers,Type,MovedTo) ->
 		undefined ->
 			Moved = [];
 		_ ->
-			Moved = [{?MOVEDTO,MovedTo}]
-			% Moved = [[?MOVEDTO,MovedTo]]
+			% Moved = [{?MOVEDTO,MovedTo}]
+			Moved = [[?MOVEDTO,MovedTo]]
 	end,
-	DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
-		[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
-	% DefVals = [[[?SCHEMA_VERSI,SchemaVers],[?ATYPEI,Type],[?EVNUMI,0],[?EVTERMI,0]|Moved]]],
-	[<<"$CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
-	 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
-	 "$CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
-	 <<"$INSERT INTO __adb (id,val) VALUES ">>,
-	 	butil:iolist_join(DefVals,$,),$;].
+	% DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
+	% 	[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
+	DefVals = [[[?SCHEMA_VERSI,SchemaVers],[?ATYPEI,Type],[?EVNUMI,0],[?EVTERMI,0]|Moved]],
+	{[<<"$CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
+		 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
+		 "$CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
+		 "#s02;"],DefVals}.
+	 % <<"$INSERT INTO __adb (id,val) VALUES ">>,
+	 % 	butil:iolist_join(DefVals,$,),$;].
 
 do_cb(#dp{cbstate = undefined} = P) ->
 	case P#dp.movedtonode of
@@ -872,10 +873,14 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 					% getting deleted, but later created new. A server that was offline during delete missed
 					% the delete call and relies on actordb_events.
 					ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
-					Sql = [base_schema(SchemaVers,P#dp.actortype),
-								 Schema,CallWrite,
-							<<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>];
+					{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
+					Records = Records1++[[[?ANUMI,butil:tobin(ActorNum)]]],
+					Sql = [BS,Schema,CallWrite,
+							% <<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>
+							"#s02;"
+							];
 				_ ->
+					Records = [],
 					Flags = P#dp.flags,
 					case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
 						{_,[]} ->
@@ -888,9 +893,9 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 										<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
 					end
 			end,
-			{NP#dp{callqueue = CQ, flags = Flags},Sql,Callfrom};
+			{NP#dp{callqueue = CQ, flags = Flags},Sql,Records,Callfrom};
 		_ ->
-			{P,SqlIn,Callfrom1}
+			{P,SqlIn,[],Callfrom1}
 	end;
 post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,Sql,Callfrom) ->
 	case base64:decode(MSql1) of
@@ -906,7 +911,7 @@ post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,Sql,Callfrom
 	NP = P#dp{transactioninfo = ReplSql, 
 				transactionid = Transid, 
 				schemavers = SchemaVers},
-	{NP,Sql,Callfrom};
+	{NP,Sql,[],Callfrom};
 post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 	CleanupSql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],
 	case Copyfrom of
@@ -984,12 +989,12 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 		_ ->
 			Sql = [SqlIn,Sql1]
 	end,
-	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode, cbstate = NS},Sql,Callfrom};
+	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode, cbstate = NS},Sql,[],Callfrom};
 post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], Copyfrom /= undefined ->
 	% Combine sqls for transaction and copy.
 	case post_election_sql(P,Transaction,undefined,Sql,Callfrom) of
 		{NP1,delete,_} ->
-			{NP1,delete,Callfrom};
+			{NP1,delete,[],Callfrom};
 		{NP1,Sql1,_} ->
 			post_election_sql(NP1,[],Copyfrom,Sql1,Callfrom)
 	end.
@@ -1035,8 +1040,8 @@ delactorfile(P) ->
 			% Leave behind redirect marker.
 			% Create a file with "1" attached to end
 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath++"1",off),
-			ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,base_schema(0,P#dp.actortype,P#dp.movedtonode),
-								<<"COMMIT;">>],write)),
+			{Sql,Records} = base_schema(0,P#dp.actortype,P#dp.movedtonode),
+			ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,Sql,<<"COMMIT;">>],Records,write)),
 			actordb_sqlite:stop(Db),
 			% Rename into the actual dbfile (should be atomic op)
 			ok = file:rename(P#dp.dbpath++"1",P#dp.dbpath),
