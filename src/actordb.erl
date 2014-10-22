@@ -97,7 +97,7 @@ columns(Type,Table) ->
 % Prepared statements must be called with backpressure state.
 prepare_statement_bp(P,Sql) ->
 	{[{{Type,_,_},IsWrite,Statements}],_} = actordb_sqlparse:parse_statements(butil:tobin(Sql)),
-	{Type,IsWrite,Statements}.
+	{actordb_util:typeatom(Type),IsWrite,Statements}.
 
 
 % Calls with backpressure.

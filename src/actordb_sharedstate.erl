@@ -16,8 +16,9 @@
 			master_group = [], waiting = false, 
 			current_write = [], evnum = 0, am_i_master = false, timer,
 			nodelist, nodepos = 0}).
-% Prepared statement
--record(ps,{index = 0, iswrite, actor_type, v = 0, sql}).
+% Prepared statement. We need version so that an individual actor can detect when 
+%  an old statement has been deleted and another one has taken its place.
+-record(ps,{iswrite, actor_type, version = 0, sql}).
 
 start({Name,Type}) ->
 	start(Name,Type).
@@ -76,8 +77,15 @@ write_cluster(Key,Val) ->
 	write(?STATE_NM_LOCAL,[{Key,Val}]).
 
 save_prepared(Actor,IsWrite,Sql) ->
-	% -record(ps,{index = 0, iswrite, actor_type, v = 0, sql}).
-	#ps{iswrite = IsWrite, sql = Sql, actor_type = Actor}.
+	Read = {read_sql(prepstatements),{?MODULE,cb_update_prepared,[Actor,IsWrite,Sql]}},
+	case actordb_sqlproc:read({?STATE_NM_GLOBAL,?STATE_TYPE},[create],Read,?MODULE) of
+		{ok,_} ->
+			ok;
+		ok ->
+			ok;
+		Err ->
+			Err
+	end.
 
 init_state(Nodes,Groups,{_,_,_} = Configs) ->
 	init_state(Nodes,Groups,[Configs]);
@@ -268,6 +276,44 @@ create_nodelist() ->
 % 							Callbacks
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+% Prepared statements are stored for all types in a single value:
+% [{ActorType,{#ps{},#ps{},#ps{},...}}]     
+% Tuple is increased in size with new prepared statements. Max size is 100.
+cb_update_prepared(_P,Result,ActorType,IsWrite,PrepSql) ->
+	NewPS = #ps{iswrite = IsWrite, sql = PrepSql, actor_type = ActorType},
+	case Result of
+		{ok,[{columns,_},{rows,[]}]} ->
+			PrepOut = [{ActorType,{NewPS}}];
+		{ok,[{columns,_},{rows,[{_,Val}]}]} ->
+			AllPreps = binary_to_term(base64:decode(Val)),
+			case butil:ds_val(ActorType,AllPreps) of
+				undefined ->
+					PrepOut = [{ActorType,{NewPS}}|AllPreps];
+				ExistingPrepTuple ->
+					case find_free_prep_el(1,ExistingPrepTuple) of
+						undefined when tuple_size(ExistingPrepTuple) < 100 ->
+							% Add NewPS to end of tuple
+							ExistingList = lists:seq(fun(Prep,N) -> {N,Prep} end,1,tuple_to_list(ExistingPrepTuple)),
+							NewList = [{tuple_size(ExistingPrepTuple)+1,NewPS}|ExistingList],
+							NewPrepTuple = erlang:make_tuple(tuple_size(ExistingPrepTuple)+1,#ps{},NewList);
+						Position ->
+							OldPS = element(Position,ExistingPrepTuple),
+							NewPrepTuple = setelement(Position,ExistingPrepTuple,NewPS#ps{version = OldPS#ps.version+1})
+					end,
+					PrepOut = lists:keystore(ActorType,1,AllPreps,{ActorType,NewPrepTuple})
+			end
+	end,
+	{write,write_sql(prepstatements,PrepOut)}.
+
+find_free_prep_el(N,PT) when N =< tuple_size(PT) ->
+	case element(N,PT) of
+		#ps{sql = undefined} ->
+			N;
+		_ ->
+			find_free_prep_el(N+1,PT)
+	end;
+find_free_prep_el(_,_) ->
+	undefined.
 
 cb_write(#st{name = ?STATE_NM_GLOBAL} = S,Master,L) ->
 	Me = actordb_conf:node_name(),
