@@ -363,10 +363,10 @@ handle_info({nodedown, Nd},P) ->
 			{noreply,P};
 		Nm ->
 			% Some node has gone down, kill all slaves on this node.
-			% spawn(fun() -> 
-			% 	L = ets:match(actorsalive, #actor{masternode=Nm, pid = '$1', _='_'}),
-			% 	[actordb_sqlproc:diepls(Pid,nomaster) || [Pid] <- L]
-			% end),
+			spawn(fun() -> 
+				L = ets:match(actorsalive, #actor{masternode=Nm, pid = '$1', _='_'}),
+				[actordb_sqlproc:diepls(Pid,nomaster) || [Pid] <- L]
+			end),
 			{noreply,P}
 	end;
 handle_info({nodeup,_},P)  ->
@@ -498,8 +498,10 @@ init(_) ->
 			Proclimit = 100;
 		_ when Ulimit =< 1024 ->
 			Proclimit = 600;
+		% when Ulimit =< 5000 ->
+		% 	ProcLimit = erlang:round(Ulimit*0.8);
 		_ ->
-			Proclimit = Ulimit - 2000
+			Proclimit = erlang:round(Ulimit*0.8) %Ulimit - 2000
 	end,
 	case ok of
 		_ when Memlimit1 =< ?GB ->
