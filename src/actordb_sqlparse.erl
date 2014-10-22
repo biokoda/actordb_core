@@ -323,29 +323,38 @@ split_statements(Bin1) ->
 			case WithGlobal of
 				<<GlobalVar1:Len/binary,"}}",SB/binary>> ->
 					case rem_spaces(SB) of
-						<<";",_/binary>> ->
+						<<";",HaveNext/binary>> ->
 							StatementBin = <<>>,
 							GlobalVar = split_param(GlobalVar1,<<>>,[]);
 						<<>> ->
+							HaveNext = undefined,
 							StatementBin = <<>>,
 							GlobalVar = split_param(GlobalVar1,<<>>,[]);
 						_ ->
+							HaveNext = undefined,
 							GlobalVar = GlobalVar1,
 							StatementBin = SB
 					end;
 				<<"result}}",StatementBin/binary>> ->
+					HaveNext = undefined,
 					GlobalVar = <<"RESULT">>
 			end;
 		StatementBin ->
+			HaveNext = undefined,
 			GlobalVar = undefined
 	end,
-	case find_ending(rem_spaces(StatementBin),0,[],true) of
-		BytesToEnd when is_integer(BytesToEnd) ->
-			<<Statement:BytesToEnd/binary,Next/binary>> = rem_spaces(StatementBin);
-		{<<_/binary>> = Statement,Next} ->
-			ok;
-		{Statement1,Next} ->
-			Statement = lists:reverse(Statement1)
+	case HaveNext of
+		undefined ->
+			case find_ending(rem_spaces(StatementBin),0,[],true) of
+				BytesToEnd when is_integer(BytesToEnd) ->
+					<<Statement:BytesToEnd/binary,Next/binary>> = rem_spaces(StatementBin);
+				{<<_/binary>> = Statement,Next} ->
+					ok;
+				{Statement1,Next} ->
+					Statement = lists:reverse(Statement1)
+			end;
+		Next ->
+			Statement = StatementBin
 	end,
 	case GlobalVar of
 		undefined ->
@@ -392,6 +401,7 @@ find_ending(Bin,Offset1,Prev,IsIolist) ->
 							find_ending(Bin,Offset+2,Prev,IsIolist);
 						Paramlen ->
 							<<Param:Paramlen/binary,"}}",After/binary>> = Rem,
+							io:format("SPIT ~p~n",[Param]),
 							case Param of
 								<<"curactor">> ->
 									find_ending(After,0,[curactor,SkippingBin|Prev],false);

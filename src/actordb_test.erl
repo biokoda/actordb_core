@@ -249,14 +249,15 @@ multiupdate_read() ->
 	?debugFmt("multiupdate read thread and user",[]),
 	% Add username column to result
 	{ok,ResForum} = exec(["actor thread(1);",
-				"{{RESULT}}SELECT * FROM thread;"
+				"{{RESULT}}SELECT * FROM thread;",
 				"actor user(for X.user in RESULT);",
 				"{{A}}SELECT * FROM userinfo WHERE id=1;",
-				"{{X.username=A.name}}"
+				"{{X.username=A.name}};",
+				"{{X.username1=A.name}};"
 				]),
-	?assertMatch([{columns,{<<"id">>,<<"msg">>,<<"user">>,<<"username">>}},
-			       {rows,[{101,<<"secondmsg">>,20,<<"user2">>},
-		  			      {100,<<"message">>,10,<<"user1">>}]}],
+	?assertMatch([{columns,{<<"id">>,<<"msg">>,<<"user">>,<<"username">>,<<"username1">>}},
+			       {rows,[{101,<<"secondmsg">>,20,<<"user2">>,<<"user2">>},
+		  			      {100,<<"message">>,10,<<"user1">>,<<"user1">>}]}],
         ResForum),
 	{ok,ResSingle} = exec(["actor thread(1);",
 				"{{VAR}}SELECT * FROM thread LIMIT 1;"
