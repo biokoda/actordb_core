@@ -777,6 +777,15 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 										{_,_,_} ->
 											write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
 									end;
+								{reply_write,Reply,Write,NS} ->
+									case Write of
+										_ when is_binary(Write); is_list(Write) ->
+											write_call(#write{sql = iolist_to_binary(Write)},
+													   undefined,P#dp{cbstate = NS});
+										{_,_,_} ->
+											write_call(#write{mfa = Write},undefined,P#dp{cbstate = NS})
+									end,
+									{reply,Reply,P};
 								{reply,What,NS} ->
 									{reply,What,P#dp{cbstate = NS}};
 								{reply,What} ->

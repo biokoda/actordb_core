@@ -76,15 +76,38 @@ write_cluster([_|_] = L) ->
 write_cluster(Key,Val) ->
 	write(?STATE_NM_LOCAL,[{Key,Val}]).
 
-save_prepared(Actor,IsWrite,Sql) ->
-	Read = {read_sql(prepstatements),{?MODULE,cb_update_prepared,[Actor,IsWrite,Sql]}},
-	case actordb_sqlproc:read({?STATE_NM_GLOBAL,?STATE_TYPE},[create],Read,?MODULE) of
-		{ok,_} ->
-			ok;
-		ok ->
-			ok;
-		Err ->
-			Err
+save_prepared(Actor,IsWrite,Sql1) ->
+	Sql = butil:tobin(Sql1),
+	All = butil:ds_val(prepstatements,?GLOBALETS),
+	case All of
+		undefined ->
+			Doit = true;
+		_ ->
+			case find_prep_actor(Actor,1,All) of
+				undefined ->
+					Doit = true;
+				{ActorPos,ExistingPrepTuple} ->
+					case find_matching_prepsql(1,Sql,ExistingPrepTuple) of
+						undefined ->
+							Doit = true;
+						Pos ->
+							Doit = prepared_name(ActorPos,element(Pos,ExistingPrepTuple),Pos)
+					end
+			end
+	end,
+	case Doit of
+		true ->
+			Read = {read_sql(prepstatements),{?MODULE,cb_update_prepared,[Actor,IsWrite,Sql]}},
+			case actordb_sqlproc:read({?STATE_NM_GLOBAL,?STATE_TYPE},[create],Read,?MODULE) of
+				{ok,_} ->
+					ok;
+				ok ->
+					ok;
+				Err ->
+					Err
+			end;
+		_ ->
+			Doit
 	end.
 
 init_state(Nodes,Groups,{_,_,_} = Configs) ->
@@ -193,6 +216,20 @@ set_global_state(MasterNode,State) ->
 		_ ->
 			ok
 	end,
+	case butil:ds_val(prepstatements,State) of
+		undefined ->
+			ok;
+		NewPrepTuples ->
+			case butil:ds_val(prepstatements,?GLOBALETS) of
+				NewPrepTuples ->
+					ok;
+				_ ->
+					ListProp = tuple_to_list(NewPrepTuples),
+					Vers = list_to_tuple([list_to_tuple([PS#ps.version || PS <- tuple_to_list(PT)]) || {_Type,PT} <- ListProp]),
+					Sqls = list_to_tuple([list_to_tuple([PS#ps.sql || PS <- tuple_to_list(PT)]) || {_Type,PT} <- ListProp]),
+					esqlite3:store_prepared_table(Vers,Sqls)
+			end
+	end,
 	% If any cfg changed, call setcfg for it.
 	[begin
 		Cfg = butil:toatom(Cfg1),
@@ -276,34 +313,88 @@ create_nodelist() ->
 % 							Callbacks
 % 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% Prepared statements are stored for all types in a single value:
-% [{ActorType,{#ps{},#ps{},#ps{},...}}]     
+% Prepared statements are stored for all types in a single value.
+% We do not use property lists but property tuples. Actor type position is important and needs to be fixed,
+% because it gets passed on to esqlite driver.
+% {
+%  {ActorType,{#ps{},#ps{},#ps{},...}},
+%  {ActorType1,{#ps{},#ps{},..}}
+% }
 % Tuple is increased in size with new prepared statements. Max size is 100.
-cb_update_prepared(_P,Result,ActorType,IsWrite,PrepSql) ->
+cb_update_prepared(S,Result,ActorType,IsWrite,PrepSql) ->
 	NewPS = #ps{iswrite = IsWrite, sql = PrepSql, actor_type = ActorType},
 	case Result of
 		{ok,[{columns,_},{rows,[]}]} ->
-			PrepOut = [{ActorType,{NewPS}}];
+			PrepOut = {{ActorType,{NewPS}}},
+			prepared_reply(S,NewPS,1,1,PrepOut);
 		{ok,[{columns,_},{rows,[{_,Val}]}]} ->
 			AllPreps = binary_to_term(base64:decode(Val)),
-			case butil:ds_val(ActorType,AllPreps) of
+			case find_prep_actor(ActorType,1,AllPreps) of
+				undefined when tuple_size(AllPreps) < 100 ->
+					PrepOut = append_tuple({ActorType,{NewPS}},AllPreps),
+					prepared_reply(S,NewPS,1,tuple_size(PrepOut),PrepOut);
 				undefined ->
-					PrepOut = [{ActorType,{NewPS}}|AllPreps];
-				ExistingPrepTuple ->
-					case find_free_prep_el(1,ExistingPrepTuple) of
-						undefined when tuple_size(ExistingPrepTuple) < 100 ->
-							% Add NewPS to end of tuple
-							ExistingList = lists:seq(fun(Prep,N) -> {N,Prep} end,1,tuple_to_list(ExistingPrepTuple)),
-							NewList = [{tuple_size(ExistingPrepTuple)+1,NewPS}|ExistingList],
-							NewPrepTuple = erlang:make_tuple(tuple_size(ExistingPrepTuple)+1,#ps{},NewList);
-						Position ->
-							OldPS = element(Position,ExistingPrepTuple),
-							NewPrepTuple = setelement(Position,ExistingPrepTuple,NewPS#ps{version = OldPS#ps.version+1})
-					end,
-					PrepOut = lists:keystore(ActorType,1,AllPreps,{ActorType,NewPrepTuple})
+					{reply,max_types};
+				{ActorPos,ExistingPrepTuple} ->
+					case find_matching_prepsql(1,PrepSql,ExistingPrepTuple) of
+						undefined ->
+							case find_free_prep_el(1,ExistingPrepTuple) of
+								undefined when tuple_size(ExistingPrepTuple) < 100 ->
+									% Add NewPS to end of tuple
+									NewPrepTuple = append_tuple(NewPS,ExistingPrepTuple),
+									PrepOut = setelement(ActorPos,AllPreps,{ActorType,NewPrepTuple}),
+									prepared_reply(S,NewPS,tuple_size(NewPrepTuple),ActorPos,PrepOut);
+								undefined ->
+									{reply,max_prepared};
+								N ->
+									OldPS = element(N,ExistingPrepTuple),
+									NewPrepTuple = setelement(N,ExistingPrepTuple,NewPS#ps{version = OldPS#ps.version+1}),
+									PrepOut = setelement(ActorPos,AllPreps,{ActorType,NewPrepTuple}),
+									prepared_reply(S,NewPS,N,ActorPos,PrepOut)
+							end;
+						N ->
+							OldPS = element(N,ExistingPrepTuple),
+							{reply,prepared_name(ActorPos,OldPS,N)}
+					end
 			end
-	end,
-	{write,write_sql(prepstatements,PrepOut)}.
+	end.
+append_tuple(Val,Tuple) ->
+	{_,ExistingList} = lists:foldl(fun(Prep,{N,List}) -> {N+1,[{N+1,Prep}|List]} end,{0,[]},tuple_to_list(Tuple)),
+	N = tuple_size(Tuple)+1,
+	NewList = [{N,Val}|lists:reverse(ExistingList)],
+	erlang:make_tuple(N,#ps{},NewList).
+
+prepared_name(ActorTypeIndex,PS,N) ->
+	Index = butil:tobin([string:right(butil:tolist(ActorTypeIndex-1),2,$0),string:right(butil:tolist(N-1),2,$0)]),
+	case PS#ps.iswrite of
+		true ->
+			<<"#w",Index/binary,";">>;
+		false ->
+			<<"#r",Index/binary,";">>
+	end.
+prepared_reply(S,PS,N,ActorTypeIndex,PrepOut) ->
+	{reply_write,prepared_name(ActorTypeIndex,PS,N),write_sql(prepstatements,PrepOut),S#st{current_write = [{prepstatements,PrepOut}]}}.
+
+find_prep_actor(Actor,N,Prep) when N =< tuple_size(Prep) ->
+	case element(N,Prep) of
+		{Actor,Tuple} ->
+			{N,Tuple};
+		_ ->
+			find_prep_actor(Actor,N+1,Prep)
+	end;
+find_prep_actor(_,_,_) ->
+	undefined.
+
+
+find_matching_prepsql(N,Sql,T) when N =< tuple_size(T) ->
+	case element(N,T) of
+		#ps{sql = Sql} ->
+			N;
+		_ ->
+			find_matching_prepsql(N+1,Sql,T)
+	end;
+find_matching_prepsql(_,_,_) ->
+	undefined.
 
 find_free_prep_el(N,PT) when N =< tuple_size(PT) ->
 	case element(N,PT) of
@@ -314,6 +405,7 @@ find_free_prep_el(N,PT) when N =< tuple_size(PT) ->
 	end;
 find_free_prep_el(_,_) ->
 	undefined.
+
 
 cb_write(#st{name = ?STATE_NM_GLOBAL} = S,Master,L) ->
 	Me = actordb_conf:node_name(),

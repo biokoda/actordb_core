@@ -23,7 +23,7 @@ static_sqls() ->
 	"INSERT OR REPLACE INTO actors VALUES (?1,?2);",
 	% #s06;
 	"SELECT * FROM transactions WHERE id=?1;",
-	% #r07; -> r means it returns result
+	% #d07; -> d means it returns result
 	"INSERT INTO transactions (commited) VALUES (0);",
 	% #s08;
 	"UPDATE transactions SET commited=1 WHERE id=?1 AND (commited=0 OR commited=1);"}.

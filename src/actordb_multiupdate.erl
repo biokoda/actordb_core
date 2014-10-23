@@ -84,7 +84,7 @@ handle_call({transaction_state,Id},_From,P) ->
 handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
 
-	case actordb_actor:write(sqlname(P),[create],<<"#r07;">>) of
+	case actordb_actor:write(sqlname(P),[create],<<"#d07;">>) of
 		{ok,{changes,Num,_}} ->
 			ok;
 		{ok,{rowid,Num}} ->
