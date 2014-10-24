@@ -80,6 +80,18 @@ is_write(Bin) ->
 			{with,Rem};
 		<<"WITH ",Rem/binary>> ->
 			{with,Rem};
+		<<"PREPARE ",Rem/binary>> ->
+			{prepare, Rem};
+		<<"Prepare ",Rem/binary>> ->
+			{prepare, Rem};	
+		<<"prepare ",Rem/binary>> ->
+			{prepare, Rem};	
+		<<"Execute ",Rem/binary>> ->
+			{execute,Rem};
+		<<"execute ",Rem/binary>> ->
+			{execute,Rem};
+		<<"EXECUTE ",Rem/binary>> ->
+			{execute,Rem};
 		% If you write sql like a moron then you get to these slow parts.
 		<<C,R,E,A,T,E," ",_/binary>> when (C == $c orelse C == $C) andalso 
 											(R == $r orelse R == $R) andalso
@@ -136,6 +148,17 @@ is_write(Bin) ->
 										(T == $t orelse T == $T) andalso
 										(H == $h orelse H == $H) ->
 			{with,Rem};
+		<<P,R,E,P,A,R,E," ",Rem/binary>> when (P == $p orelse P == $P) andalso
+										(R == $r orelse R == $R) andalso
+										(E == $e orelse E == $E) andalso
+										(A == $a orelse A == $A) ->
+			{prepare,Rem};
+		<<E,X,E,C,U,T,E," ",Rem/binary>> when (E == $e orelse E == $E) andalso
+										(X == $x orelse X == $X) andalso
+										(C == $c orelse C == $C) andalso
+										(U == $u orelse U == $U) andalso
+										(T == $t orelse T == $T) ->
+			{prepare,Rem};
 		_ ->
 			false
 	end.
@@ -154,11 +177,13 @@ is_write(Bin) ->
 % 2. all actors of some type 
 % 3. actors as a result of a query preceing current block
 parse_statements(Bin) ->
+	parse_statements(undefined,Bin).
+parse_statements(BP,Bin) ->
 	L = split_statements(rem_spaces(Bin)),
-	parse_statements(L,[],undefined,[],false,false).
-parse_statements([<<>>|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
-	parse_statements(T,L,CurUse,CurStatements,IsWrite,GIsWrite);
-parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
+	parse_statements(BP,L,[],undefined,[],false,false).
+parse_statements(BP,[<<>>|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
+	parse_statements(BP,T,L,CurUse,CurStatements,IsWrite,GIsWrite);
+parse_statements(BP,[H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 	case is_actor(H) of
 		undefined ->
 			case is_write(H) of
@@ -169,7 +194,7 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 						_ ->
 							case parse_pragma(PragmaRem) of
 								delete ->
-									parse_statements(T,L,CurUse,[delete],true, true);
+									parse_statements(BP,T,L,CurUse,[delete],true, true);
 								exists ->
 									case split_actor(CurUse) of
 										{Type,Actors,Flags} ->
@@ -177,11 +202,11 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 										{Type,Global,Col,Var,Flags} ->
 											NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
 									end,
-									parse_statements(T,L,NewUse,[exists],IsWrite, GIsWrite);
+									parse_statements(BP,T,L,NewUse,[exists],IsWrite, GIsWrite);
 								{copy,Name} ->
 									{Type,[Actor],Flags} = split_actor(CurUse),
 									{_,_,Node} = actordb_shardmngr:find_global_shard(Name),
-									parse_statements(T,L,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
+									parse_statements(BP,T,L,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
 								Pragma when Pragma == list; Pragma == count ->
 									case split_actor(CurUse) of
 										{Type,_Actors,_Flags} ->
@@ -189,33 +214,44 @@ parse_statements([H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 										{Type,_Global,_Col,_Var,_Flags} ->
 											ok
 									end,
-									parse_statements(T,L,{Type,$*,[]},[Pragma],false,false)
+									parse_statements(BP,T,L,{Type,$*,[]},[Pragma],false,false)
 							end
 					end;
 				{show,ShowRem} ->
 					case parse_show(ShowRem) of
 						tables when CurUse /= undefined ->
 							ST = <<"select name from sqlite_master where type='table';">>,
-							parse_statements(T,L,CurUse,[ST|CurStatements],true, true);
+							parse_statements(BP,T,L,CurUse,[ST|CurStatements],true, true);
 						_ ->
-							parse_statements(T,L,CurUse,[H|CurStatements],IsWrite,GIsWrite)
+							parse_statements(BP,T,L,CurUse,[H|CurStatements],IsWrite,GIsWrite)
 					end;
+				{prepare,PrepRem} ->
+					{Name,ActorType,Types,Sql} = parse_prepare(rem_spaces(PrepRem)),
+					IsWriteH = is_write(Sql),
+					Id = actordb_sharedstate:save_prepared(ActorType,IsWriteH,Sql),
+					<<_/binary>> = Id,
+					actordb_backpressure:save(BP,{prepared,Name},{ActorType,Id,Types}),
+					parse_statements(BP,T,L,CurUse,CurStatements,IsWrite, GIsWrite);
+				{execute,ExecRem} ->
+					{Name,Vals} = parse_execute(rem_spaces(ExecRem)),
+					?AINF("Parsed execute ~p ~p",[Name,Vals]),
+					parse_statements(BP,T,L,CurUse,CurStatements,IsWrite, GIsWrite);
 				{with,WithRem} ->
 					IsWriteH = find_as(WithRem),
-					parse_statements(T,L,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH);
+					parse_statements(BP,T,L,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH);
 				% ignore ->
 				% 	parse_statements(T,L,CurUse,CurStatements,IsWrite,GIsWrite);
 				IsWriteH ->
-					parse_statements(T,L,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH)
+					parse_statements(BP,T,L,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH)
 			end;
 		% Started first block
 		Use when CurUse == undefined, CurStatements == [] ->
-			parse_statements(T,L,Use,[],IsWrite,GIsWrite);
+			parse_statements(BP,T,L,Use,[],IsWrite,GIsWrite);
 		% New block and there was a block before this one. Finish up that and start new.
 		Use when CurUse /= undefined ->
-			parse_statements(T,[{split_actor(CurUse),IsWrite,lists:reverse(CurStatements)}|L],Use,[],false,GIsWrite)
+			parse_statements(BP,T,[{split_actor(CurUse),IsWrite,lists:reverse(CurStatements)}|L],Use,[],false,GIsWrite)
 	end;
-parse_statements([],_L,undefined,CurStatements,_,_) ->
+parse_statements(_BP,[],_L,undefined,CurStatements,_,_) ->
 	Lines = [string:to_lower(butil:tolist(N)) || N <- lists:reverse(CurStatements), is_binary(N) orelse is_list(N)],
 	case meta_call(Lines,[]) of
 		[] ->
@@ -223,7 +259,7 @@ parse_statements([],_L,undefined,CurStatements,_,_) ->
 		R ->
 			R
 	end;
-parse_statements([],L,Use,S,IsWrite,GIsWrite) ->
+parse_statements(_BP,[],L,Use,S,IsWrite,GIsWrite) ->
 	{lists:reverse([{split_actor(Use),IsWrite,lists:reverse(S)}|L]),GIsWrite}.
 
 meta_call(["show schema;"|T],Out) ->
@@ -236,6 +272,92 @@ meta_call([_|T],O) ->
 	meta_call(T,O);
 meta_call([],O) ->
 	O.
+
+parse_execute(Vals) ->
+	NameSize = count_exec_name(Vals,0),
+	<<Name:NameSize/binary,Typesrem/binary>> = Vals,
+	<<"(",Typesrem1/binary>> = rem_spaces(Typesrem),
+	Params = execute_params(rem_spaces(Typesrem1)),
+	{Name,Params}.
+
+execute_params(Bin) ->
+	case count_exec_param(Bin,0,0) of
+		{Count,Skip} ->
+			<<Val:Count/binary,_:Skip/binary,Rem/binary>> = Bin,
+			[Val|execute_params(rem_spaces(Rem))];
+		done ->
+			[]
+	end.
+
+count_exec_param(<<")",_/binary>>,0,0) ->
+	done;
+count_exec_param(<<")",_/binary>>,N,NSkip) ->
+	{N,NSkip};
+count_exec_param(<<" ",Rem/binary>>,N,NSkip) ->
+	count_exec_param(Rem,N,NSkip+1);
+count_exec_param(<<",",_/binary>>,N,NSkip) ->
+	{N,NSkip+1};
+count_exec_param(<<_,B/binary>>,N,NS) ->
+	count_exec_param(B,N+1,NS).
+
+
+count_exec_name(<<"(",_/binary>>,N) ->
+	N;
+count_exec_name(<<" ",_/binary>>,N) ->
+	N;
+count_exec_name(<<_,Rem/binary>>,N) ->
+	count_exec_name(Rem,N+1).
+
+
+parse_prepare(Sql) ->
+	NameSize = count_name(Sql,0),
+	<<Name:NameSize/binary,Typesrem/binary>> = Sql,
+	<<"(",Typesrem1/binary>> = rem_spaces(Typesrem),
+	{Params,RemFor} = prepare_params(Typesrem1,<<>>,[]),
+	<<_,_,_," ",Remtype1/binary>> = rem_spaces(RemFor),
+	Remtype = rem_spaces(Remtype1),
+	Type = get_name(Remtype),
+	Typesize = byte_size(Type),
+	<<Type:Typesize/binary,RemAs/binary>> = Remtype,
+	<<_,_,SqlOut/binary>> = rem_spaces(RemAs),
+	{Name,Type,Params,rem_spaces(SqlOut)}.
+
+prepare_params(<<",",Rem/binary>>,Word,L) ->
+	prepare_params(Rem,<<>>,[type_to_atom(Word)|L]);
+prepare_params(<<" ",Rem/binary>>,Word,L) ->
+	prepare_params(Rem,Word,L);
+prepare_params(<<")",Rem/binary>>,Word,L) ->
+	{lists:reverse([type_to_atom(Word)|L]),Rem};
+prepare_params(<<C,Rem/binary>>,Word,L) ->
+	prepare_params(Rem,<<Word/binary,C>>,L).
+
+type_to_atom(Type) ->
+	case Type of
+		<<"INT">> ->
+			int;
+		<<"int">> ->
+			int;
+		<<"Int">> ->
+			int;
+		<<"real">> ->
+			real;
+		<<"REAL">> ->
+			real;
+		<<"Real">> ->
+			real;
+		<<"text">> ->
+			text;
+		<<"Text">> ->
+			text;
+		<<"TEST">> ->
+			text;
+		<<"BLOB">> ->
+			blob;
+		<<"Blob">> ->
+			blob;
+		<<"blob">> ->
+			blob
+	end.
 
 parse_show(Bin) ->
 	case rem_spaces(Bin) of
@@ -507,7 +629,7 @@ get_name(Bin) ->
 	Name.
 count_name(<<>>,N) ->
 	N;
-count_name(<<" ">>,N) ->
+count_name(<<" ",_/binary>>,N) ->
 	N;
 count_name(<<";",_/binary>>,N) ->
 	N;

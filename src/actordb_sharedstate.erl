@@ -76,14 +76,15 @@ write_cluster([_|_] = L) ->
 write_cluster(Key,Val) ->
 	write(?STATE_NM_LOCAL,[{Key,Val}]).
 
-save_prepared(Actor,IsWrite,Sql1) ->
+save_prepared(ActorType1,IsWrite,Sql1) ->
+	ActorType = actordb_util:typeatom(ActorType1),
 	Sql = butil:tobin(Sql1),
 	All = butil:ds_val(prepstatements,?GLOBALETS),
 	case All of
 		undefined ->
 			Doit = true;
 		_ ->
-			case find_prep_actor(Actor,1,All) of
+			case find_prep_actor(ActorType,1,All) of
 				undefined ->
 					Doit = true;
 				{ActorPos,ExistingPrepTuple} ->
@@ -97,7 +98,7 @@ save_prepared(Actor,IsWrite,Sql1) ->
 	end,
 	case Doit of
 		true ->
-			Read = {read_sql(prepstatements),{?MODULE,cb_update_prepared,[Actor,IsWrite,Sql]}},
+			Read = {read_sql(prepstatements),{?MODULE,cb_update_prepared,[ActorType,IsWrite,Sql]}},
 			case actordb_sqlproc:read({?STATE_NM_GLOBAL,?STATE_TYPE},[create],Read,?MODULE) of
 				{ok,_} ->
 					ok;

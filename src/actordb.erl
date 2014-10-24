@@ -187,14 +187,19 @@ exec1(St) ->
 			actordb_multiupdate:multiread(Multiblock);
 		undefined ->
 			[];
+		[] ->
+			[];
 		[[{columns,_},_]|_] ->
 			St
 	end.
 exec([_|_] = Sql, Records) ->
 	exec(butil:tobin(Sql),Records);
+% This is for direct exec calls if you use actordb as an embedded db.
+% Prepared statements must be actual DB generated IDs of the form #[w|r]XXX; and single actor calls.
+% You can get prepared statement IDs by calling actordb_sharedstate:save_prepared/3.
 exec(Sql,[_|_] = Records) ->
-	{[{{Type,[Actor],Flags},true,Statements}],_} = actordb_sqlparse:parse_statements(Sql),
-	direct_call(Actor,Type,Flags,true,{Statements,Records},true);
+	{[{{Type,[Actor],Flags},IsWrite,Statements}],_} = actordb_sqlparse:parse_statements(Sql),
+	direct_call(Actor,Type,Flags,IsWrite,{Statements,Records},true);
 exec(Sql,[]) ->
 	exec(Sql).
 

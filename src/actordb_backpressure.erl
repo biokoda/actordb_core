@@ -1,13 +1,13 @@
 % This Source Code Form is subject to the terms of the Mozilla Public
 % License, v. 2.0. If a copy of the MPL was not distributed with this
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
-
 -module(actordb_backpressure).
 -behaviour(gen_server).
 -export([start/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 -export([start_caller/0,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
-				 inc_callcount/0,inc_callcount/1,dec_callcount/0,dec_callcount/1,call_count/0,call_size/0,
-				 inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2]).
+			inc_callcount/0,inc_callcount/1,dec_callcount/0,dec_callcount/1,call_count/0,call_size/0,
+			inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2,
+			save/3]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
 
@@ -25,6 +25,10 @@ stop_caller(P) ->
 	dec_callsize(Size),
 	ets:delete(Tid),
 	ok.
+
+% Store data inside connection ets (for instance prepared statement info)
+save(#caller{ets = Ets},K,V) ->
+	butil:ds_add(K,V,Ets).
 
 % High watermark. If more than 2000 calls are waiting for result or
 %  more than 32MB of queries is waiting to be processed
