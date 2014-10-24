@@ -7,7 +7,7 @@
 -export([start_caller/0,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
 			inc_callcount/0,inc_callcount/1,dec_callcount/0,dec_callcount/1,call_count/0,call_size/0,
 			inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2,
-			save/3]).
+			save/3,getval/2]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
 
@@ -29,6 +29,8 @@ stop_caller(P) ->
 % Store data inside connection ets (for instance prepared statement info)
 save(#caller{ets = Ets},K,V) ->
 	butil:ds_add(K,V,Ets).
+getval(#caller{ets = Ets},K) ->
+	butil:ds_val(K,Ets).
 
 % High watermark. If more than 2000 calls are waiting for result or
 %  more than 32MB of queries is waiting to be processed

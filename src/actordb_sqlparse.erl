@@ -233,8 +233,10 @@ parse_statements(BP,[H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 					actordb_backpressure:save(BP,{prepared,Name},{ActorType,Id,Types}),
 					parse_statements(BP,T,L,CurUse,CurStatements,IsWrite, GIsWrite);
 				{execute,ExecRem} ->
-					{Name,Vals} = parse_execute(rem_spaces(ExecRem)),
-					?AINF("Parsed execute ~p ~p",[Name,Vals]),
+					{Name,Vals1} = parse_execute(rem_spaces(ExecRem)),
+					{ActorType,SqlId,Types} = actordb_backpressure:getval(BP,{prepared,Name}),
+					Vals = execute_convert_types(Vals1,Types),
+					% ?AINF("Parsed execute ~p ~p ~p",[Name,SqlId,Vals]),
 					parse_statements(BP,T,L,CurUse,CurStatements,IsWrite, GIsWrite);
 				{with,WithRem} ->
 					IsWriteH = find_as(WithRem),
@@ -280,8 +282,34 @@ parse_execute(Vals) ->
 	Params = execute_params(rem_spaces(Typesrem1)),
 	{Name,Params}.
 
+execute_convert_types([Val|T],[Type|TT]) ->
+	case Type of
+		text ->
+			[Val|execute_convert_types(T,TT)];
+		real ->
+			[butil:tofloat(Val)|execute_convert_types(T,TT)];
+		int ->
+			[butil:toint(Val)|execute_convert_types(T,TT)];
+		blob ->
+			[{blob,Val}|execute_convert_types(T,TT)]
+	end;
+execute_convert_types([],[]) ->
+	[];
+execute_convert_types(_,_) ->
+	throw(invalid_parameter_count).
+
 execute_params(Bin) ->
 	case count_exec_param(Bin,0,0) of
+		{string,Rem} ->
+			Count = count_string(Rem,0),
+			<<Str:Count/binary,"'",Rem1/binary>> = Rem,
+			case count_exec_param(Rem1,0,0) of
+				done ->
+					[Str];
+				{_,Skip} ->
+					<<_:Skip/binary,Rem2/binary>> = Rem1,
+					[Str|execute_params(Rem2)]
+			end;
 		{Count,Skip} ->
 			<<Val:Count/binary,_:Skip/binary,Rem/binary>> = Bin,
 			[Val|execute_params(rem_spaces(Rem))];
@@ -297,9 +325,10 @@ count_exec_param(<<" ",Rem/binary>>,N,NSkip) ->
 	count_exec_param(Rem,N,NSkip+1);
 count_exec_param(<<",",_/binary>>,N,NSkip) ->
 	{N,NSkip+1};
+count_exec_param(<<"'",Rem/binary>>,_N,_NSkip) ->
+	{string,Rem};
 count_exec_param(<<_,B/binary>>,N,NS) ->
 	count_exec_param(B,N+1,NS).
-
 
 count_exec_name(<<"(",_/binary>>,N) ->
 	N;
