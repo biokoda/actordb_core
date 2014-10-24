@@ -866,7 +866,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
 			case actordb_sqlite:okornot(Res) of
 				ok ->
-					?DBG("Write result ~p, repl_status ~p",[Res,esqlite3:replicate_status(P#dp.db)]),
+					?DBG("Write result ~p",[Res]),
 					case ok of
 						_ when P#dp.follower_indexes == [] ->
 							{noreply,actordb_sqlprocutil:reply_maybe(

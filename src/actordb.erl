@@ -94,10 +94,10 @@ columns(Type,Table) ->
 			schema_not_loaded
 	end.
 
-% Prepared statements must be called with backpressure state.
-prepare_statement_bp(P,Sql) ->
+
+prepare_statement(Sql) ->
 	{[{{Type,_,_},IsWrite,Statements}],_} = actordb_sqlparse:parse_statements(butil:tobin(Sql)),
-	{actordb_util:typeatom(Type),IsWrite,Statements}.
+	actordb_sharedstate:save_prepared(actordb_util:typeatom(Type),IsWrite,Statements).
 
 
 % Calls with backpressure.

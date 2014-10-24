@@ -16,6 +16,10 @@ is_write(<<$$,Bin/binary>>) ->
 	is_write(Bin);
 is_write(Bin) ->
 	case Bin of
+		<<"#w",_/binary>> ->
+			true;
+		<<"#r",_/binary>> ->
+			false;
 		<<"select ",_/binary>> ->
 			false;
 		<<"SELECT ",_/binary>> ->
@@ -347,7 +351,21 @@ split_statements(Bin1) ->
 		undefined ->
 			case find_ending(rem_spaces(StatementBin),0,[],true) of
 				BytesToEnd when is_integer(BytesToEnd) ->
-					<<Statement:BytesToEnd/binary,Next/binary>> = rem_spaces(StatementBin);
+					case rem_spaces(StatementBin) of
+						% prepared statements must not have spaces between # and ; (like "#wXXXX;")
+						<<"#",ReadWrite,A1,A2,A3,A4,";",Next/binary>> when ReadWrite == $w; ReadWrite == $r ->
+							Statement = <<"#",ReadWrite,A1,A2,A3,A4,";">>;
+						<<"#",ReadWrite,A1,A2,A3,A4,Next1/binary>> when ReadWrite == $w; ReadWrite == $r ->
+							Statement = <<"#",ReadWrite,A1,A2,A3,A4,";">>,
+							case rem_spaces(Next1) of
+								<<";",Next/binary>> ->
+									ok;
+								<<>> = Next ->
+									ok
+							end;
+						<<Statement:BytesToEnd/binary,Next/binary>> ->
+							ok
+					end;
 				{<<_/binary>> = Statement,Next} ->
 					ok;
 				{Statement1,Next} ->
