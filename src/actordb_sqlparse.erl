@@ -180,10 +180,10 @@ parse_statements(Bin) ->
 	parse_statements(undefined,Bin).
 parse_statements(BP,Bin) ->
 	L = split_statements(rem_spaces(Bin)),
-	parse_statements(BP,L,[],undefined,[],false,false).
-parse_statements(BP,[<<>>|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
-	parse_statements(BP,T,L,CurUse,CurStatements,IsWrite,GIsWrite);
-parse_statements(BP,[H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
+	parse_statements(BP,L,[],[],undefined,[],false,false).
+parse_statements(BP,[<<>>|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) ->
+	parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite);
+parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) ->
 	case is_actor(H) of
 		undefined ->
 			case is_write(H) of
@@ -194,7 +194,7 @@ parse_statements(BP,[H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 						_ ->
 							case parse_pragma(PragmaRem) of
 								delete ->
-									parse_statements(BP,T,L,CurUse,[delete],true, true);
+									parse_statements(BP,T,L,PreparedRows,CurUse,[delete],true, true);
 								exists ->
 									case split_actor(CurUse) of
 										{Type,Actors,Flags} ->
@@ -202,11 +202,11 @@ parse_statements(BP,[H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 										{Type,Global,Col,Var,Flags} ->
 											NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
 									end,
-									parse_statements(BP,T,L,NewUse,[exists],IsWrite, GIsWrite);
+									parse_statements(BP,T,L,PreparedRows,NewUse,[exists],IsWrite, GIsWrite);
 								{copy,Name} ->
 									{Type,[Actor],Flags} = split_actor(CurUse),
 									{_,_,Node} = actordb_shardmngr:find_global_shard(Name),
-									parse_statements(BP,T,L,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
+									parse_statements(BP,T,L,PreparedRows,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
 								Pragma when Pragma == list; Pragma == count ->
 									case split_actor(CurUse) of
 										{Type,_Actors,_Flags} ->
@@ -214,16 +214,16 @@ parse_statements(BP,[H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 										{Type,_Global,_Col,_Var,_Flags} ->
 											ok
 									end,
-									parse_statements(BP,T,L,{Type,$*,[]},[Pragma],false,false)
+									parse_statements(BP,T,L,PreparedRows,{Type,$*,[]},[Pragma],false,false)
 							end
 					end;
 				{show,ShowRem} ->
 					case parse_show(ShowRem) of
 						tables when CurUse /= undefined ->
 							ST = <<"select name from sqlite_master where type='table';">>,
-							parse_statements(BP,T,L,CurUse,[ST|CurStatements],true, true);
+							parse_statements(BP,T,L,PreparedRows,CurUse,[ST|CurStatements],true, true);
 						_ ->
-							parse_statements(BP,T,L,CurUse,[H|CurStatements],IsWrite,GIsWrite)
+							parse_statements(BP,T,L,PreparedRows,CurUse,[H|CurStatements],IsWrite,GIsWrite)
 					end;
 				{prepare,PrepRem} ->
 					{Name,ActorType,Types,Sql} = parse_prepare(rem_spaces(PrepRem)),
@@ -231,29 +231,37 @@ parse_statements(BP,[H|T],L,CurUse,CurStatements,IsWrite,GIsWrite) ->
 					Id = actordb_sharedstate:save_prepared(ActorType,IsWriteH,Sql),
 					<<_/binary>> = Id,
 					actordb_backpressure:save(BP,{prepared,Name},{ActorType,Id,Types}),
-					parse_statements(BP,T,L,CurUse,CurStatements,IsWrite, GIsWrite);
+					parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite, GIsWrite);
 				{execute,ExecRem} ->
 					{Name,Vals1} = parse_execute(rem_spaces(ExecRem)),
-					{ActorType,SqlId,Types} = actordb_backpressure:getval(BP,{prepared,Name}),
+					{_ActorType,SqlId,Types} = actordb_backpressure:getval(BP,{prepared,Name}),
 					Vals = execute_convert_types(Vals1,Types),
-					% ?AINF("Parsed execute ~p ~p ~p",[Name,SqlId,Vals]),
-					parse_statements(BP,T,L,CurUse,CurStatements,IsWrite, GIsWrite);
+					% Move forward and gather all the executes with same name.
+					{Rows1,Tail} = execute_rows(Name,Types,T,[]),
+					Rows = [Vals|Rows1],
+					parse_statements(BP,Tail,L,[Rows|PreparedRows],CurUse,[SqlId|CurStatements],IsWrite, GIsWrite);
 				{with,WithRem} ->
 					IsWriteH = find_as(WithRem),
-					parse_statements(BP,T,L,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH);
+					parse_statements(BP,T,L,PreparedRows,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH);
 				% ignore ->
 				% 	parse_statements(T,L,CurUse,CurStatements,IsWrite,GIsWrite);
 				IsWriteH ->
-					parse_statements(BP,T,L,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH)
+					parse_statements(BP,T,L,PreparedRows,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH)
 			end;
 		% Started first block
 		Use when CurUse == undefined, CurStatements == [] ->
-			parse_statements(BP,T,L,Use,[],IsWrite,GIsWrite);
+			parse_statements(BP,T,L,PreparedRows,Use,[],IsWrite,GIsWrite);
 		% New block and there was a block before this one. Finish up that and start new.
 		Use when CurUse /= undefined ->
-			parse_statements(BP,T,[{split_actor(CurUse),IsWrite,lists:reverse(CurStatements)}|L],Use,[],false,GIsWrite)
+			case PreparedRows of
+				[] ->
+					Actor = {split_actor(CurUse),IsWrite,lists:reverse(CurStatements)};
+				_ ->
+					Actor = {split_actor(CurUse),IsWrite,{lists:reverse(CurStatements),lists:reverse(PreparedRows)}}
+			end,
+			parse_statements(BP,T,[Actor|L],[],Use,[],false,GIsWrite)
 	end;
-parse_statements(_BP,[],_L,undefined,CurStatements,_,_) ->
+parse_statements(_BP,[],_L,_Prepared,undefined,CurStatements,_,_) ->
 	Lines = [string:to_lower(butil:tolist(N)) || N <- lists:reverse(CurStatements), is_binary(N) orelse is_list(N)],
 	case meta_call(Lines,[]) of
 		[] ->
@@ -261,8 +269,14 @@ parse_statements(_BP,[],_L,undefined,CurStatements,_,_) ->
 		R ->
 			R
 	end;
-parse_statements(_BP,[],L,Use,S,IsWrite,GIsWrite) ->
-	{lists:reverse([{split_actor(Use),IsWrite,lists:reverse(S)}|L]),GIsWrite}.
+parse_statements(_BP,[],L,Prepared,Use,S,IsWrite,GIsWrite) ->
+	case Prepared of
+		[] ->
+			Actor = {split_actor(Use),IsWrite,lists:reverse(S)};
+		_ ->
+			Actor = {split_actor(Use),IsWrite,{lists:reverse(S),lists:reverse(Prepared)}}
+	end,
+	{lists:reverse([Actor|L]),GIsWrite}.
 
 meta_call(["show schema;"|T],Out) ->
 	All = [begin
@@ -274,6 +288,22 @@ meta_call([_|T],O) ->
 	meta_call(T,O);
 meta_call([],O) ->
 	O.
+
+execute_rows(Name,Types,[H|T],Out) ->
+	case is_write(H) of
+		{execute,ExecRem} ->
+			case parse_execute(rem_spaces(ExecRem)) of
+				{Name,Vals1} ->
+					Vals = execute_convert_types(Vals1,Types),
+					execute_rows(Name,Types,T,[Vals|Out]);
+				_ ->
+					{lists:reverse(Out),[H|T]}
+			end;
+		_ ->
+			{lists:reverse(Out),[H|T]}
+	end;
+execute_rows(_,_,[],Out) ->
+	{lists:reverse(Out),[]}.
 
 parse_execute(Vals) ->
 	NameSize = count_exec_name(Vals,0),

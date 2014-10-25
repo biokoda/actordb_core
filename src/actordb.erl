@@ -4,7 +4,7 @@
 
 -module(actordb).
 % API
--export([exec/1,types/0,tables/1,columns/2]).
+-export([exec/1,types/0,tables/1,columns/2,prepare_statement/1]).
 % API backpressure
 -export([exec_bp/2,check_bp/0,sleep_bp/1,stop_bp/1]).
 % start/stop
@@ -32,6 +32,7 @@ stop() ->
 	actordb_core:stop().
 stop_complete() ->
 	actordb_core:stop_complete().
+
 
 types() ->
 	case catch actordb_schema:types() of
@@ -94,7 +95,12 @@ columns(Type,Table) ->
 			schema_not_loaded
 	end.
 
-
+% Create prepared statement from a full sql query: "actor user(*); insert into tab values (?1,?2);"
+% Returns ID (of the form #[r|w]XXXX) that can be used as a marker inside exec. 
+% Prepared statement parameters are a list of statements, containing list of rows, containing list of columns.
+% Examples:
+% Inserting 2 rows: actordb:exec("actor user(1);#w0102;",[[[1,'text1'],[2,'text2']]]).
+% Inserting with 2 statements: actordb:exec("actor user(1);#w0102;#w0100;",[[[1,'text1'],[2,'text2']],[['asdf'],['defg']]]).
 prepare_statement(Sql) ->
 	{[{{Type,_,_},IsWrite,Statements}],_} = actordb_sqlparse:parse_statements(butil:tobin(Sql)),
 	actordb_sharedstate:save_prepared(actordb_util:typeatom(Type),IsWrite,Statements).
@@ -195,18 +201,15 @@ exec1(St) ->
 exec([_|_] = Sql, Records) ->
 	exec(butil:tobin(Sql),Records);
 % This is for direct exec calls if you use actordb as an embedded db.
-% Prepared statements must be actual DB generated IDs of the form #[w|r]XXX; and single actor calls.
-% You can get prepared statement IDs by calling actordb_sharedstate:save_prepared/3.
+% Prepared statements must be actual DB generated IDs of the form #[w|r]XXXX; and single actor calls.
+% You can get prepared statement IDs by calling actordb:prepare_statement/1.
 exec(Sql,[_|_] = Records) ->
 	{[{{Type,[Actor],Flags},IsWrite,Statements}],_} = actordb_sqlparse:parse_statements(Sql),
 	direct_call(Actor,Type,Flags,IsWrite,{Statements,Records},true);
 exec(Sql,[]) ->
 	exec(Sql).
 
-% direct_call({Actor,Type},IsWrite,Statements) ->
-% 	direct_call(Actor,Type,IsWrite,Statements,true);
-% direct_call(Actor,IsWrite,Statements) ->
-% 	direct_call(Actor,undefined,IsWrite,Statements,true).
+
 direct_call(undefined,_,_,_,_,_) ->
 	[];
 direct_call(Actor,Type1,Flags,IsWrite,Statements,DoRpc) ->
