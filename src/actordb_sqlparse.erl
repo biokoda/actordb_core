@@ -340,6 +340,16 @@ execute_params(Bin) ->
 					<<_:Skip/binary,Rem2/binary>> = Rem1,
 					[Str|execute_params(Rem2)]
 			end;
+		% {var,Count} ->
+		% 	<<"{{",Param:Count/binary,"}}",Rem/binary>> = Bin,
+		% 	Params = split_param(Param,<<>>,[]),
+		% 	case count_exec_param(Rem,0,0) of
+		% 		done ->
+		% 			[{var,Params}];
+		% 		{_,Skip} ->
+		% 			<<_:Skip/binary,Rem2/binary>> = Rem,
+		% 			[{var,Params}|execute_params(Rem2)]
+		% 	end;
 		{Count,Skip} ->
 			<<Val:Count/binary,_:Skip/binary,Rem/binary>> = Bin,
 			[Val|execute_params(rem_spaces(Rem))];
@@ -357,6 +367,8 @@ count_exec_param(<<",",_/binary>>,N,NSkip) ->
 	{N,NSkip+1};
 count_exec_param(<<"'",Rem/binary>>,_N,_NSkip) ->
 	{string,Rem};
+% count_exec_param(<<"{{",Rem/binary>>,_N,_NSkip) ->
+% 	{var,count_param(Rem,0)};
 count_exec_param(<<_,B/binary>>,N,NS) ->
 	count_exec_param(B,N+1,NS).
 
@@ -600,7 +612,6 @@ find_ending(Bin,Offset1,Prev,IsIolist) ->
 							find_ending(Bin,Offset+2,Prev,IsIolist);
 						Paramlen ->
 							<<Param:Paramlen/binary,"}}",After/binary>> = Rem,
-							io:format("SPIT ~p~n",[Param]),
 							case Param of
 								<<"curactor">> ->
 									find_ending(After,0,[curactor,SkippingBin|Prev],false);

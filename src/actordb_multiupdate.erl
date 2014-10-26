@@ -616,17 +616,22 @@ store_rows(_IsMulti,_Actor,Varname,N,[]) ->
 	put({Varname,nrows},N),
 	ok.
 
-% Takes a block of sql statements and creates a single binary, filling in any {{..}} variables. 
+% Takes a block of sql statements and creates an iolist, filling in any {{..}} variables. 
 % Also returns a list of result variables ({{Var}}SELECT * ....)
 % Statement with no result variables or statement variables. 
+statements_to_binary(CurActor,{Statements,PrepParams},<<>>,VarList) ->
+	{StatementOut,VarlistOut} = statements_to_binary(CurActor,Statements,[],VarList),
+	{{StatementOut,PrepParams},VarlistOut};
+statements_to_binary(CurActor,L,<<>>,VarList) ->
+	statements_to_binary(CurActor,L,[],VarList);
 statements_to_binary(CurActor,[<<_/binary>> = B|T],Out,VarList) ->
-	statements_to_binary(CurActor,T,<<Out/binary,"$",B/binary>>,VarList);
+	statements_to_binary(CurActor,T,[[$$,B]|Out],VarList);
 % Not an sql statement but a variable assignment (changing result)
 statements_to_binary(CurActor,[{{A1,C1,A2,C2},<<>>}|T],Out,VarList) ->
 	statements_to_binary(CurActor,T,Out,[{A1,C1,A2,C2}|VarList]);
 % Result var but no statement variables
 statements_to_binary(CurActor,[{ResultVar,<<_/binary>> = B}|T],Out,VarList) ->
-	statements_to_binary(CurActor,T,<<Out/binary,B/binary>>,[ResultVar|VarList]);
+	statements_to_binary(CurActor,T,[B|Out],[ResultVar|VarList]);
 statements_to_binary(_,[X],_,_) when is_atom(X) ->
 	{[X],[]};
 statements_to_binary(CurActor,[H|T],Out,Varlist) ->
@@ -681,13 +686,13 @@ statements_to_binary(CurActor,[H|T],Out,Varlist) ->
 			case ResultVar of
 				undefined ->
 					% If statement has no result var, add $ to beginning so result of statement is not returned on success.
-					statements_to_binary(CurActor,T,<<Out/binary,"$",Bin/binary>>,Varlist);
+					statements_to_binary(CurActor,T,[[$$,Bin]|Out],Varlist);
 				_ ->
-					statements_to_binary(CurActor,T,<<Out/binary,Bin/binary>>,[ResultVar|Varlist])
+					statements_to_binary(CurActor,T,[Bin|Out],[ResultVar|Varlist])
 			end
 	end;
 statements_to_binary(_CurActor,[],O,Varlist) ->
-	{O,lists:reverse(Varlist)}.
+	{lists:reverse(O),lists:reverse(Varlist)}.
 
 get_pd_column(Var,Column) ->
 	get_pd_column(Var,Column,0).
