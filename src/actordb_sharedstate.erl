@@ -76,6 +76,24 @@ write_cluster([_|_] = L) ->
 write_cluster(Key,Val) ->
 	write(?STATE_NM_LOCAL,[{Key,Val}]).
 
+delete_prepared(<<"#",_,TI:2/binary,SI:2/binary,";">>) ->
+	TypeIndex = butil:toint(TI)+1,
+	SqlIndex = butil:toint(SI)+1,
+	All = butil:ds_val(prepstatements,?GLOBALETS),
+	case get_prepared(TypeIndex,SqlIndex,All) of
+		P when P#ps.sql /= undefined ->
+			Read = {read_sql(prepstatements),{?MODULE,cb_delete_prepared,[TypeIndex,SqlIndex]}},
+			case actordb_sqlproc:read({?STATE_NM_GLOBAL,?STATE_TYPE},[create],Read,?MODULE) of
+				{ok,_} ->
+					ok;
+				ok ->
+					ok;
+				Err ->
+					Err
+			end;
+		_ ->
+			ok
+	end.
 save_prepared(ActorType1,IsWrite,Sql1) ->
 	ActorType = actordb_util:typeatom(ActorType1),
 	Sql = butil:tobin(Sql1),
@@ -228,6 +246,7 @@ set_global_state(MasterNode,State) ->
 					ListProp = tuple_to_list(NewPrepTuples),
 					Vers = list_to_tuple([list_to_tuple([PS#ps.version || PS <- tuple_to_list(PT)]) || {_Type,PT} <- ListProp]),
 					Sqls = list_to_tuple([list_to_tuple([PS#ps.sql || PS <- tuple_to_list(PT)]) || {_Type,PT} <- ListProp]),
+					% ?AINF("Setting new prepstatements table ~p~n~p",[Vers,Sqls]),
 					esqlite3:store_prepared_table(Vers,Sqls)
 			end
 	end,
@@ -359,12 +378,41 @@ cb_update_prepared(S,Result,ActorType,IsWrite,PrepSql) ->
 					end
 			end
 	end.
+cb_delete_prepared(S,Result,TypeIndex,SqlIndex) ->
+	case Result of
+		{ok,[{columns,_},{rows,[]}]} ->
+			{reply,ok};
+		{ok,[{columns,_},{rows,[{_,Val}]}]} ->
+			AllPreps = binary_to_term(base64:decode(Val)),
+			case get_prepared(TypeIndex,SqlIndex,AllPreps) of
+				P when P#ps.sql /= undefined ->
+					{Name,Sqls1} = element(TypeIndex,AllPreps),
+					Sqls = setelement(SqlIndex,Sqls1,P#ps{sql = undefined, version = P#ps.version+1}),
+					NewPreps = setelement(TypeIndex,AllPreps,{Name,Sqls}),
+					{reply_write,ok,write_sql(prepstatements,NewPreps),S#st{current_write = [{prepstatements,NewPreps}]}};
+				_ ->
+					{reply,ok}
+			end
+	end.
+
 append_tuple(Val,Tuple) ->
 	{_,ExistingList} = lists:foldl(fun(Prep,{N,List}) -> {N+1,[{N+1,Prep}|List]} end,{0,[]},tuple_to_list(Tuple)),
 	N = tuple_size(Tuple)+1,
 	NewList = [{N,Val}|lists:reverse(ExistingList)],
 	erlang:make_tuple(N,#ps{},NewList).
-
+get_prepared(TypeIndex,SqlIndex,All) ->
+	case TypeIndex =< tuple_size(All) of
+		true ->
+			{_Name,Sqls} = element(TypeIndex,All),
+			case SqlIndex =< tuple_size(Sqls) of
+				true ->
+					element(SqlIndex,Sqls);
+				false ->
+					undefined
+			end;
+		_ ->
+			undefined
+	end.
 prepared_name(ActorTypeIndex,PS,N) ->
 	Index = butil:tobin([string:right(butil:tolist(ActorTypeIndex-1),2,$0),string:right(butil:tolist(N-1),2,$0)]),
 	case PS#ps.iswrite of

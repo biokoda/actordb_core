@@ -3,8 +3,8 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -module(actordb_sqlparse).
--compile(export_all).
--export([parse_statements/1]).
+% -compile(export_all).
+-export([parse_statements/1,parse_statements/2,split_statements/1]).
 -include("actordb.hrl").
 
 
@@ -226,12 +226,19 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 							parse_statements(BP,T,L,PreparedRows,CurUse,[H|CurStatements],IsWrite,GIsWrite)
 					end;
 				{prepare,PrepRem} ->
-					{Name,ActorType,Types,Sql} = parse_prepare(rem_spaces(PrepRem)),
-					IsWriteH = is_write(Sql),
-					Id = actordb_sharedstate:save_prepared(ActorType,IsWriteH,Sql),
-					<<_/binary>> = Id,
-					actordb_backpressure:save(BP,{prepared,Name},{ActorType,Id,Types}),
-					parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite, GIsWrite);
+					case parse_prepare(rem_spaces(PrepRem)) of
+						{delete,Name} ->
+							{_ActorType,SqlId,_Types} = actordb_backpressure:getval(BP,{prepared,Name}),
+							ok = actordb_sharedstate:delete_prepared(SqlId),
+							actordb_backpressure:delval(BP,{prepared,Name}),
+							parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite, GIsWrite);
+						{Name,ActorType,Types,Sql} ->
+							IsWriteH = is_write(Sql),
+							Id = actordb_sharedstate:save_prepared(ActorType,IsWriteH,Sql),
+							<<_/binary>> = Id,
+							actordb_backpressure:save(BP,{prepared,Name},{ActorType,Id,Types}),
+							parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite, GIsWrite)
+					end;
 				{execute,ExecRem} ->
 					{Name,Vals1} = parse_execute(rem_spaces(ExecRem)),
 					{_ActorType,SqlId,Types} = actordb_backpressure:getval(BP,{prepared,Name}),
@@ -381,17 +388,40 @@ count_exec_name(<<_,Rem/binary>>,N) ->
 
 
 parse_prepare(Sql) ->
-	NameSize = count_name(Sql,0),
-	<<Name:NameSize/binary,Typesrem/binary>> = Sql,
-	<<"(",Typesrem1/binary>> = rem_spaces(Typesrem),
-	{Params,RemFor} = prepare_params(Typesrem1,<<>>,[]),
-	<<_,_,_," ",Remtype1/binary>> = rem_spaces(RemFor),
-	Remtype = rem_spaces(Remtype1),
-	Type = get_name(Remtype),
-	Typesize = byte_size(Type),
-	<<Type:Typesize/binary,RemAs/binary>> = Remtype,
-	<<_,_,SqlOut/binary>> = rem_spaces(RemAs),
-	{Name,Type,Params,rem_spaces(SqlOut)}.
+	case Sql of 		
+		<<"Delete ",Delrem/binary>> ->
+			Del = true;
+		<<"DELETE ",Delrem/binary>> ->
+			Del = true;
+		<<"delete ",Delrem/binary>> ->
+			Del = true;
+		<<D,E,L,E,T,E," ",Delrem/binary>> when (D == $d orelse D == $D) andalso 
+											(E == $e orelse E == $E) andalso
+											(L == $l orelse L == $L) andalso
+											(T == $t orelse T == $T)  ->
+			Del = true;
+		_ ->
+			Delrem = <<>>,
+			Del = false
+	end,
+	case Del of
+		true ->
+			NameSize = count_name(rem_spaces(Delrem),0),
+			<<Name:NameSize/binary,_/binary>> = Delrem,
+			{delete,Name};
+		false ->
+			NameSize = count_name(Sql,0),
+			<<Name:NameSize/binary,Typesrem/binary>> = Sql,
+			<<"(",Typesrem1/binary>> = rem_spaces(Typesrem),
+			{Params,RemFor} = prepare_params(Typesrem1,<<>>,[]),
+			<<_,_,_," ",Remtype1/binary>> = rem_spaces(RemFor),
+			Remtype = rem_spaces(Remtype1),
+			Type = get_name(Remtype),
+			Typesize = byte_size(Type),
+			<<Type:Typesize/binary,RemAs/binary>> = Remtype,
+			<<_,_,SqlOut/binary>> = rem_spaces(RemAs),
+			{Name,Type,Params,rem_spaces(SqlOut)}
+	end.
 
 prepare_params(<<",",Rem/binary>>,Word,L) ->
 	prepare_params(Rem,<<>>,[type_to_atom(Word)|L]);

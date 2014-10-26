@@ -42,6 +42,11 @@ all_test_() ->
 		% {setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
 	].
 
+% BP = actordb_backpressure:start_caller().
+% actordb_sqlparse:parse_statements(BP,<<"prepare prep (int,text) FOR type1 AS insert into tab1 values(?1,?2);">>).
+% actordb_sqlparse:parse_statements(BP,<<"execute prep (1,'abcdefghijwtf''asdddf');">>).
+% actordb_sqlparse:parse_statements(BP,<<"prepare delete prep;">>).
+
 test_parsing() ->
 	?assertMatch({<<"type">>,$*,[]},
 					actordb_sqlparse:split_actor(<<"type(*);">>)),
