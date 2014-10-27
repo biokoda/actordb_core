@@ -1034,7 +1034,7 @@ handle_info(doelection,P) ->
 			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso 
 					bkdcore_rpc:is_connected(P#dp.masternode) of
 				true ->
-					?DBG("Election ignore, master=~p",[P#dp.masternode]),
+					?DBG("Election timeout, do nothing, master=~p",[P#dp.masternode]),
 					{noreply,P};
 				false ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
@@ -1256,7 +1256,7 @@ down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 		unlock -> %when P#dp.mors == master; is_binary(P#dp.copyfrom) ->
 			case catch actordb_sqlprocutil:callback_unlock(P) of
 				ok ->
-					{ok,NP} = init(P,copyproc_done),
+					{ok,NP} = init(P#dp{mors = master},copyproc_done),
 					{noreply,NP};
 				Err ->
 					?DBG("Unable to unlock"),
@@ -1442,7 +1442,7 @@ reply(From,Msg) ->
 ae_timer(P) ->
 	case P#dp.resend_ae_timer of
 		undefined ->
-			P#dp{resend_ae_timer = erlang:send_after(200,self(),{ae_timer,P#dp.evnum})};
+			P#dp{resend_ae_timer = erlang:send_after(600,self(),{ae_timer,P#dp.evnum})};
 		_ ->
 			P
 	end.

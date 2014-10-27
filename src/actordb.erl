@@ -129,7 +129,7 @@ exec_bp(P,[_|_] = Sql) ->
 	exec_bp(P,butil:tobin(Sql));
 exec_bp(P,Sql) ->
 	Size = byte_size(Sql),
-	Parsed = actordb_sqlparse:parse_statements(Sql),
+	Parsed = actordb_sqlparse:parse_statements(P,Sql),
 	exec_bp1(P,Size,Parsed).
 exec_bp1(_,Size,_) when Size > 1024*1024*16 ->
 	{error,sql_too_large};

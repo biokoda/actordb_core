@@ -5,6 +5,7 @@
 -module(actordb_sqlparse).
 % -compile(export_all).
 -export([parse_statements/1,parse_statements/2,split_statements/1]).
+-export([split_actor/1]).
 -include("actordb.hrl").
 
 

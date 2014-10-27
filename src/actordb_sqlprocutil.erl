@@ -179,7 +179,6 @@ follower_call_counts(P) ->
 resend_ae(P,N,[F|T],L) ->
 	case F#flw.wait_for_response_since of
 		undefined ->
-			?DBG("Not waiting for response"),
 			resend_ae(P,N,T,[F|L]);
 		_ ->
 			% Age = actordb_local:min_ref_age(F#flw.wait_for_response_since),
@@ -847,14 +846,16 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 			case Callfrom1 of
 				undefined when QueueEmpty == false ->
 					case queue:out_r(P#dp.callqueue) of
-						{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite1, records = []}}},CQ} ->
+						{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite1, records = CallRecords}}},CQ} ->
 							CallWrite = semicolon(CallWrite1);
 						_ ->
+							CallRecords = [],
 							CallWrite = <<>>,
 							CQ = P#dp.callqueue,
 							Callfrom = Callfrom1
 					end;
 				Callfrom ->
+					CallRecords = [],
 					CallWrite = <<>>,
 					CQ = P#dp.callqueue
 			end,
@@ -874,7 +875,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 					% the delete call and relies on actordb_events.
 					ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
 					{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
-					Records = Records1++[[[?ANUMI,butil:tobin(ActorNum)]]],
+					Records = Records1++CallRecords++[[[?ANUMI,butil:tobin(ActorNum)]]],
 					Sql = [BS,Schema,CallWrite,
 							% <<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>
 							"#s02;"
@@ -1363,7 +1364,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 			actordb_sqlite:stop(P#dp.db),
 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
 
-			{reply,ok,P#dp{db = undefined,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
+			{reply,ok,reopen_db(P#dp{db = undefined, mors = slave,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined})}
 	end;
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
