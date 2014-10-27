@@ -58,6 +58,7 @@ cmd(init,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
 		Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
 		Schema = getschema(Etc),
+		?AINF("Schema ~p",[Schema]),
 		ok = actordb_sharedstate:init_state(Nodes,Groups,[{'schema.yaml',Schema}]) of
 		ok ->
 			"ok"

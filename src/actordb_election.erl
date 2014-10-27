@@ -119,11 +119,18 @@ doelection(E1) ->
 	ClusterSize = length(E#election.followers) + 1,
 	Me = E#election.candidate,
 	Msg = {state_rw,{request_vote,Me,E#election.term,E#election.evnum,E#election.evterm}},
-	Nodes = actordb_sqlprocutil:follower_nodes(E#election.followers),
-	?ADBG("Election for ~p.~p, multicall to ~p",[E#election.actor,E#election.type, Nodes]),
+	?ADBG("Election for ~p.~p, multicall",[E#election.actor,E#election.type]),
 	Start = os:timestamp(),
-	{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
-			[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]]}),
+	case E#election.cbmod of
+		actordb_sharedstate ->
+			Nodes = actordb_sqlprocutil:follower_nodes(E#election.followers),
+			{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
+				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]]});
+		_ ->
+			Nodes = [F#flw.distname || F <- E#election.followers],
+			{Results,_GetFailed} = rpc:multicall(Nodes,actordb_sqlproc,call_slave,
+				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]])
+	end,
 	Stop = os:timestamp(),
 	?ADBG("Election took=~p, results ~p failed ~p, contacted ~p",[timer:now_diff(Stop,Start),Results,_GetFailed,Nodes]),
 

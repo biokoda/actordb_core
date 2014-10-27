@@ -49,7 +49,7 @@
 % records: for bulk inserts to single actor. List of rows (tuples). 
 %          First element of tuple is table name. Sql must contain _insert; statement.
 -record(write,{sql, mfa, transaction, records = []}).
--record(flw,{node, match_index = 0, match_term = 0, next_index = 0, 
+-record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0, 
               file, wait_for_response_since, call_count = 0}).
 
 -record(cpto,{node,pid,ref,ismove,actorname}).

@@ -275,7 +275,7 @@ set_followers(HaveSchema,P) ->
 			ok
 	end,
 	P#dp{cbstate = NS,follower_indexes = P#dp.follower_indexes ++ 
-			[#flw{node = Nd,match_index = 0,next_index = P#dp.evnum+1} || Nd <- NL, 
+			[#flw{node = Nd,distname = bkdcore:dist_name(Nd),match_index = 0,next_index = P#dp.evnum+1} || Nd <- NL, 
 					lists:keymember(Nd,#flw.node,P#dp.follower_indexes) == false]}.
 
 % Find first valid evnum,evterm in wal (from beginning)
@@ -418,6 +418,8 @@ continue_maybe(P,F) ->
 			store_follower(P,F#flw{file = undefined})
 	end.
 
+store_follower(P,#flw{distname = undefined} = F) ->
+	store_follower(P,F#flw{distname = bkdcore:dist_name(F#flw.node)});
 store_follower(P,NF) ->
 	P#dp{activity = make_ref(),follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
 
