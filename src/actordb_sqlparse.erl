@@ -242,11 +242,17 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 				{execute,ExecRem} ->
 					{Name,Vals1} = parse_execute(rem_spaces(ExecRem)),
 					{_ActorType,SqlId,Types} = actordb_backpressure:getval(BP,{prepared,Name}),
+					case SqlId of
+						<<"#r",_/binary>> ->
+							IsWriteH = false;
+						<<"#w",_/binary>> ->
+							IsWriteH = true
+					end,
 					Vals = execute_convert_types(Vals1,Types),
 					% Move forward and gather all the executes with same name.
 					{Rows1,Tail} = execute_rows(Name,Types,T,[]),
 					Rows = [Vals|Rows1],
-					parse_statements(BP,Tail,L,[Rows|PreparedRows],CurUse,[SqlId|CurStatements],IsWrite, GIsWrite);
+					parse_statements(BP,Tail,L,[Rows|PreparedRows],CurUse,[SqlId|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH);
 				{with,WithRem} ->
 					IsWriteH = find_as(WithRem),
 					parse_statements(BP,T,L,PreparedRows,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH);
