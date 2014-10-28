@@ -281,7 +281,6 @@ handle_call(Msg,From,P) ->
 				_ ->
 					case apply(P#dp.cbmod,cb_unverified_call,[P#dp.cbstate,Msg]) of
 						queue ->
-							
 							{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 						{moved,Moved} ->
 							{noreply,P#dp{movedtonode = Moved}};
@@ -830,7 +829,17 @@ write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P)
 				{reply,What} ->
 					{reply,What,P};
 				{exec,OutSql,Recs} ->
-					write_call1(#write{sql = OutSql,transaction = Transaction, records = Recs},From,P#dp.schemavers,P);
+					case Recs of
+						[SingleStatement] ->
+							% If this just runs a sql with prepared statement, check if there are any queued writes
+							%  that match same call and combine them.
+							% This is basically an optimization for actordb_shard:reg_actor
+							{NP,Fromlist,Rows} = combine_write(P,MFA,[From],SingleStatement),
+							?ADBG("Combining write ~p",[Rows]),
+							write_call1(#write{sql = OutSql,transaction = Transaction, records = [Rows]},Fromlist,P#dp.schemavers,NP);
+						_ ->
+							write_call1(#write{sql = OutSql,transaction = Transaction, records = Recs},From,P#dp.schemavers,P)
+					end;
 				{OutSql,State} ->
 					write_call1(#write{sql = OutSql,transaction = Transaction},From,P#dp.schemavers,P#dp{cbstate = State});
 				{OutSql,Recs,State} ->
@@ -839,6 +848,19 @@ write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P)
 					write_call1(#write{sql = OutSql,transaction = Transaction},From,P#dp.schemavers,P)
 			end
 	end.
+combine_write(P,{Mod,Func,_},Fromlist,Rows) ->
+	case queue:out_r(P#dp.callqueue) of
+		{{value,{From,#write{mfa = {Mod,Func,Args}}}},CQ} ->
+			case apply(Mod,Func,[P#dp.cbstate|Args]) of
+				{exec,_,[[Recs]]} ->
+					combine_write(P#dp{callqueue = CQ},{Mod,Func,Args},[From|Fromlist],[Recs|Rows]);
+				_BR ->
+					{P,Fromlist,Rows}
+			end;
+		_NOT ->
+			{P,Fromlist,Rows}
+	end.
+
 % Not a multiactor transaction write
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
@@ -1433,6 +1455,8 @@ explain(What,Opts) ->
 
 reply(undefined,_Msg) ->
 	ok;
+reply([_|_] = From,Msg) ->
+	[gen_server:reply(F,Msg) || F <- From];
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 

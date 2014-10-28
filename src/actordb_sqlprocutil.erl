@@ -30,6 +30,8 @@ static_sqls() ->
 
 reply(undefined,_Msg) ->
 	ok;
+reply([_|_] = From,Msg) ->
+	[gen_server:reply(F,Msg) || F <- From];
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
