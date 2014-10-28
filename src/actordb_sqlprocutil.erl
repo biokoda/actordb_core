@@ -173,7 +173,7 @@ create_var_header_with_db(P) ->
 	end.
 
 follower_call_counts(P) ->
-	[{F#flw.node,F#flw.call_count+1} || F <- P#dp.follower_indexes].
+	[{F#flw.node,{F#flw.match_index,F#flw.match_term}} || F <- P#dp.follower_indexes].
 
 
 resend_ae(P,N,[F|T],L) ->
@@ -181,24 +181,16 @@ resend_ae(P,N,[F|T],L) ->
 		undefined ->
 			resend_ae(P,N,T,[F|L]);
 		_ ->
-			% Age = actordb_local:min_ref_age(F#flw.wait_for_response_since),
-			% case Age > 100 of
-			% 	true ->
-					case bkdcore_rpc:is_connected(F#flw.node) of
-						true ->
-							?DBG("Resending appendentries ~p",[F#flw.node]),
-							resend_ae(P,N+1,T,[send_empty_ae(P,F)|L]);
-						% Do not count nodes that are gone. If those would be counted then actors
-						%  would never go to sleep.
-						false ->
-							?DBG("Not connected to ~p",[F#flw.node]),
-							resend_ae(P,N,T,[F|L])
-					end
-			% 	false ->
-			% 		?DBG("Have not waited long enough ~p",[Age]),
-			% 		% Increment counter to keep timer running.
-			% 		resend_ae(P,N+1,T,[F|L])
-			% end
+			case bkdcore_rpc:is_connected(F#flw.node) of
+				true ->
+					?DBG("Resending appendentries ~p",[F#flw.node]),
+					resend_ae(P,N+1,T,[send_empty_ae(P,F)|L]);
+				% Do not count nodes that are gone. If those would be counted then actors
+				%  would never go to sleep.
+				false ->
+					?DBG("Not connected to ~p",[F#flw.node]),
+					resend_ae(P,N,T,[F|L])
+			end
 	end;
 resend_ae(_,N,[],L) ->
 	{N,L}.
@@ -210,8 +202,8 @@ send_empty_ae(P,F) ->
 	bkdcore_rpc:cast(F#flw.node,
 			{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 			 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-			 F#flw.match_index,F#flw.match_term,empty,F#flw.call_count+1}}]}),
-	F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1}.
+			 F#flw.match_index,F#flw.match_term,empty,{F#flw.match_index,F#flw.match_term}}}]}),
+	F#flw{wait_for_response_since = make_ref()}.
 
 reopen_db(#dp{mors = master} = P) ->
 	case ok of
@@ -365,8 +357,9 @@ open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
 			open_wal_at(P,Index,F,Evnum,Evterm)
 	end.
 
-
-continue_maybe(P,F) ->
+continue_maybe(P,F,true) ->
+	store_follower(P,F);
+continue_maybe(P,F,SuccessHead) ->
 	% Check if follower behind
 	?DBG("Continue maybe ~p {MyEvnum,NextIndex}=~p havefile=~p",
 			[F#flw.node,{P#dp.evnum,F#flw.next_index},F#flw.file /= undefined]),
@@ -374,7 +367,7 @@ continue_maybe(P,F) ->
 		true when F#flw.file == undefined ->
 			case try_wal_recover(P,F) of
 				{true,NP,NF} ->
-					continue_maybe(NP,NF);
+					continue_maybe(NP,NF,SuccessHead);
 				{false,NP,_} ->
 					?DBG("sending entire db to ~p",[F#flw.node]),
 					Ref = make_ref(),
@@ -393,21 +386,21 @@ continue_maybe(P,F) ->
 			?DBG("Sending AE start on evnum=~p",[F#flw.next_index]),
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-							F#flw.match_index,F#flw.match_term,recover,F#flw.call_count+1}}]}),
+							F#flw.match_index,F#flw.match_term,recover,{F#flw.match_index,F#flw.match_term}}}]}),
 			case StartRes of
 				ok ->
 					% Send wal
 					case send_wal(P,F) of
 						wal_corruption ->
-							store_follower(P,F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1});
+							store_follower(P,F#flw{wait_for_response_since = make_ref()});
 						_ ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
-							store_follower(P,F#flw{wait_for_response_since = make_ref(), call_count = F#flw.call_count+1})
+							store_follower(P,F#flw{wait_for_response_since = make_ref()})
 					end;
 				% to be continued in appendentries_response
 				_ ->
 					file:close(F#flw.file),
-					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref(), call_count = F#flw.call_count+1})
+					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref()})
 			end;
 		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
@@ -437,7 +430,7 @@ send_wal(P,#flw{file = File} = F) ->
 					{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
 					<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
 					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,F#flw.call_count+1}},
+								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},
 								[nostart]]}),
 					case WalRes of
 						ok when Commit == 0 ->

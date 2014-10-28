@@ -549,15 +549,19 @@ state_rw_call(What,From,P) ->
 					{noreply,P}
 			end;
 		% Executed on leader.
-		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum,AEType,CallCount} ->
+		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum,AEType,{SentIndex,SentTerm}} ->
 			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
 			case Follower of
 				false ->
 					?DBG("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
-				_ when Follower#flw.call_count > CallCount; P#dp.verified == false ->
-					?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisEvNum=~p,cur_call_count=~p, received_count=~p, verified=~p",
-							[Node,Success,AEType,Follower#flw.match_index,Follower#flw.call_count, CallCount,P#dp.verified]),
+				_ when SentIndex /= Follower#flw.match_index; SentTerm /= Follower#flw.match_term; P#dp.verified == false ->
+					% We can get responses from AE calls which are out of date. This is why the other node always sends
+					%  back {SentIndex,SentTerm} which are the parameters for follower that we knew of when we sent data.
+					% If these two parameters match our current state, then response is valid.
+					?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisEvNum=~p,cur_match=~p, received_match=~p, verified=~p",
+							[Node,Success,AEType,Follower#flw.match_index,{Follower#flw.match_index,Follower#flw.match_term}, 
+							{SentIndex,SentTerm},P#dp.verified]),
 					{reply,ok,P};
 				_ ->
 					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p",
@@ -571,7 +575,7 @@ state_rw_call(What,From,P) ->
 							{reply,ok,P};
 						true ->
 							reply(From,ok),
-							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw)),
+							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw,AEType == head)),
 							?DBG("AE response for node ~p, followers=~p",
 									[Node,[{F#flw.node,F#flw.match_index,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
 							{noreply,NP};
@@ -614,7 +618,7 @@ state_rw_call(What,From,P) ->
 											?DBG("Recovering from wal, for node=~p, match_index=~p,myevnum=~p",
 													[NF#flw.node,NF#flw.match_index,P#dp.evnum]),
 											reply(From,ok),
-											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF)}
+											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,false)}
 									end
 							end
 					end
@@ -853,8 +857,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 			ComplSql = 
 					[<<"#s00;">>, % savepoint
 					 actordb_sqlprocutil:semicolon(Sql), 
-					 <<"#s02;">>, % __adb insert
-					 <<"#s01;">> % release savepoint
+					 <<"#s02;#s01;">> % __adb insert, release savepoint
 					 ],
 			Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 			case P#dp.flags band ?FLAG_SEND_DB > 0 of
@@ -954,12 +957,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 							Sql = iolist_to_binary(Sql1)
 					end
 			end,
-			ComplSql = 
-					[<<"#s00;">>,
-					 <<"#s02;">>,
-					 <<"#s03;">>,
-					 <<"#s01;">>
-					 ],
+			ComplSql = <<"#s00;#s02;#s03;#s01;">>,
 			TransRecs = [[[butil:tobin(Tid),butil:tobin(Updaterid),Node,butil:tobin(NewVers),base64:encode(Sql)]]],
 			Records = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]|TransRecs],
 			VarHeader = actordb_sqlprocutil:create_var_header(P),
@@ -974,7 +972,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 update_followers(_Evnum,L) ->
 	Ref = make_ref(),
 	[begin
-		F#flw{wait_for_response_since = Ref, call_count = F#flw.call_count+1}
+		F#flw{wait_for_response_since = Ref}
 	end || F <- L].
 
 

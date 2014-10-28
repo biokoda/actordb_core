@@ -335,7 +335,7 @@ cb_reg_actor(P,ActorName) ->
 	Recs = [[[NM,butil:tobin(Hash)]]],
 	case is_integer(P#state.nextshard) of
 		true when P#state.nextshard =< Hash, is_binary(P#state.nextshardnode) ->
-			{reply,{redirect_shard,P#state.nextshardnode,P#state.nextshard},Sql,P};
+			{reply,{redirect_shard,P#state.nextshardnode,P#state.nextshard},P};
 		_ ->
 			% Is this regular actor registration or are we moving actors from another node.
 			case P#state.stealingnow == ActorName of
