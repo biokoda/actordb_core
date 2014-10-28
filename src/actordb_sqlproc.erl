@@ -882,13 +882,17 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 					 <<"#s02;#s01;">> % __adb insert, release savepoint
 					 ],
 			Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+			% ?AINF("Doing write ~p ~p",[ComplSql,Records]),
 			case P#dp.flags band ?FLAG_SEND_DB > 0 of
 				true ->
 					VarHeader = actordb_sqlprocutil:create_var_header_with_db(P);
 				_ ->
 					VarHeader = actordb_sqlprocutil:create_var_header(P)
 			end,
+			% T1 = os:timestamp(),
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
+			% T2 = os:timestamp(),
+			% ?INF("Exec time ~p",[timer:now_diff(T2,T1)]),
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?DBG("Write result ~p",[Res]),
