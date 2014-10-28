@@ -61,35 +61,23 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 		<<>> ->
 			PidOut = Pid;
 		_ ->
-			% Kill off old pid if still alive or if it exists at all
-			butil:safesend(Pid, stop),
-			PidOut = spawn(fun() -> 
-				case binary_to_term(VarPrefix) of
-					{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
-						ok;
-					{Term,Leader,PrevEvnum,PrevTerm,CallCount,DbFile} ->
-						ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
-									{state_rw,{set_dbfile,DbFile}});
-					Invalid ->
-						CallCount = Leader = PrevEvnum = PrevTerm = undefined,
-						?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
-						exit(error)
-				end,
-				case lists:keyfind(actordb_conf:node_name(),1,CallCount) of
-					{_Me,Count} ->
-						ok;
-					_ ->
-						Count = 1
-				end,
-				case actordb_sqlproc:call_slave(Cb,Actor,Type,
-						{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head,Count}}) of
-					ok ->
-						do_ae_stream(Count);
-					_ ->
-						% Die off if we should not continue
-						ok
-				end
-			end)
+			case distreg:whereis({actor_ae_stream,Actor,Type}) of
+				undefined ->
+					PidOut = spawn(fun() -> 
+						ok = distreg:reg({actor_ae_stream,Actor,Type}),
+						case apply(Cb,cb_slave_pid,[Actor,Type,[]]) of
+							{ok,ActorPid} ->
+								ok;
+							ActorPid when is_pid(Pid) ->
+								ok
+						end,
+						erlang:monitor(process,ActorPid),
+						actor_ae_stream(ActorPid,undefined)
+					end);
+				PidOut ->
+					ok
+			end,
+			PidOut ! {start,Cb,Actor,Type,Term,VarPrefix}
 	end,
 	PidOut ! {call_slave,Cb,Actor,Type,Term,Header,Page},
 	PidOut;
@@ -97,16 +85,41 @@ tunnel_bin(Pid,Bin) ->
 	?AERR("Tunnel invalid data ~p",[Bin]),
 	Pid.
 
-do_ae_stream(Count) ->
+actor_ae_stream(ActorPid,Count) ->
 	receive
+		{start,Cb,Actor,Type,Term,VarPrefix} ->
+			case binary_to_term(VarPrefix) of
+				{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
+					ok;
+				{Term,Leader,PrevEvnum,PrevTerm,CallCount,DbFile} ->
+					ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
+								{state_rw,{set_dbfile,DbFile}});
+				Invalid ->
+					CallCount = Leader = PrevEvnum = PrevTerm = undefined,
+					?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
+					exit(error)
+			end,
+			{_Me,Count1} = lists:keyfind(actordb_conf:node_name(),1,CallCount),
+			case actordb_sqlproc:call_slave(Cb,Actor,Type,
+					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head,Count1}}) of
+				ok ->
+					actor_ae_stream(ActorPid,Count1);
+				_ ->
+					% Die off if we should not continue
+					ok
+			end;
+		{'DOWN',_,_,ActorPid,_} ->
+			ok;
 		{call_slave,Cb,Actor,Type,Term,Header,Page} ->
 			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,Count}},[nostart]),
-			do_ae_stream(Count);
+			actor_ae_stream(ActorPid,Count);
 		stop ->
 			ok
 	after 30000 ->
-		ok
+		distreg:unreg(self()),
+		erlang:send_after(3000,self(),stop)
 	end.
+
 
 shard_path(Name) ->
 	[drive(Name), "/shards/"].

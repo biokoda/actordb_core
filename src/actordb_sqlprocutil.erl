@@ -854,7 +854,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 					CallWrite = <<>>,
 					CQ = P#dp.callqueue
 			end,
-			?DBG("Adding write to post election sql ~p, schemavers=~p",[CallWrite,P#dp.schemavers]),
+			?DBG("Adding write to post election sql schemavers=~p",[P#dp.schemavers]),
 			case P#dp.schemavers of
 				undefined ->
 					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),

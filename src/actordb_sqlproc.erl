@@ -164,7 +164,7 @@ call_slave(Cb,Actor,Type,Msg) ->
 	call_slave(Cb,Actor,Type,Msg,[]).
 call_slave(Cb,Actor,Type,Msg,Flags) ->
 	actordb_util:wait_for_startup(Type,Actor,0),
-	case apply(Cb,cb_slave_pid,[Actor,Type,[{startreason,Msg}|Flags]]) of %
+	case apply(Cb,cb_slave_pid,[Actor,Type,[{startreason,Msg}|Flags]]) of
 		{ok,Pid} ->
 			ok;
 		Pid when is_pid(Pid) ->
@@ -812,7 +812,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P) ->
-	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
+	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,sql,Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -1365,7 +1365,7 @@ init([_|_] = Opts) ->
 			end;
 		P when P#dp.copyfrom == undefined ->
 			?DBG("Actor start, copy=~p, flags=~p, mors=~p startreason=~p",[P#dp.copyfrom,
-							P#dp.flags,P#dp.mors,butil:ds_val(startreason,Opts)]),
+							P#dp.flags,P#dp.mors,false]), %butil:ds_val(startreason,Opts)
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
