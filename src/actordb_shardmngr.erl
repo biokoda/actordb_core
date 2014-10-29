@@ -439,7 +439,7 @@ handle_info({actordb,sharedstate_change},P) ->
 	HaveNodes = bkdcore:nodelist() /= [],
 	case HaveNodes andalso actordb_sharedstate:is_ok() andalso P#dp.haveschema of
 		false ->
-			?ADBG("Global statechange conditions failed ~p",[{HaveNodes,actordb_sharedstate:is_ok(),P#dp.haveschema}]),
+			?ADBG("Global statechange conditions failed havenodes=~p, sharedok=~p, haveschema=~p",[HaveNodes,actordb_sharedstate:is_ok(),P#dp.haveschema]),
 			{noreply,P};
 		_ ->
 			?ADBG("GLobal statechange ~p ~p",[bkdcore:node_name(),P#dp.getstatepid]),

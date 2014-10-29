@@ -166,6 +166,7 @@ actor_mors(Mors,MasterNode) ->
 		false ->
 			case lists:member(DN,nodes()) of
 				false ->
+					?AERR("Not in nodes ~p ~p",[DN,nodes()]),
 					actordb_sqlproc:diepls(self(),not_in_nodes);
 				_ ->
 					ok
@@ -314,6 +315,8 @@ handle_info(check_mem,P) ->
 			end
 	 end),
 	{noreply,P};
+handle_info({raft_connections,L},P) ->
+	{noreply, P#dp{raft_connections = store_raft_connection(L,P#dp.raft_connections)}};
 handle_info({actordb,sharedstate_change},P1) ->
 	MG1 = actordb_sharedstate:read_global(master_group),
 	case lists:member(actordb_conf:node_name(),MG1) of
@@ -322,6 +325,7 @@ handle_info({actordb,sharedstate_change},P1) ->
 		false ->
 			MG = bkdcore:cluster_nodes()
 	end,
+	?AINF("Storing raft connections ~p ~p",[MG, bkdcore:cluster_nodes()]),
 	P = P1#dp{raft_connections = store_raft_connection(MG,P1#dp.raft_connections)},
 	case P#dp.mupdaters of
 		[] ->

@@ -537,7 +537,7 @@ state_rw_call(What,From,P) ->
 							?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p",
 									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
 							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref(),locked = []},
-							reply(From,ok),
+							reply(From,done),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
 							{noreply,NP}
 					end;
@@ -689,31 +689,7 @@ state_rw_call(What,From,P) ->
 			% If the other node is actually more up to date, vote was yes and we do not do election.
 			?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
-			% case P#dp.verified == true andalso P#dp.mors == master of
-			% 	true ->
-					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}};
-					% case is_reference(NP#dp.election) of
-					% 	true ->
-					% 		EE = undefined,
-					% 		erlang:cancel_timer(NP#dp.election);
-					% 	false when NP#dp.election == undefined ->
-					% 		EE = undefined;
-					% 	_ ->
-					% 		EE = NP#dp.election
-					% end,
-					% {noreply,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:set_followers(true,NP#dp{election = EE}),false)};
-					% case lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes) of
-					% 	false ->
-					% 		NP1 = actordb_sqlprocutil:set_followers(true,NP),
-					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP1,Candidate);
-					% 	Flw ->
-					% 		NP1 = NP,
-					% 		NFlw = actordb_sqlprocutil:send_empty_ae(NP,Flw)
-					% end,
-					% {noreply, actordb_sqlprocutil:store_follower(NP1,NFlw)};
-			% 	false ->
-			% 		{noreply,NP#dp{activity = make_ref()}}
-			% end;
+			{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}};
 		{set_dbfile,Bin} ->
 			ok = file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
 			{reply,ok,P#dp{activity = make_ref()}};
@@ -904,7 +880,13 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 												schemavers = NewVers,evterm = P#dp.current_term},1,[])};
 						_ ->
 							% reply on appendentries response or later if nodes are behind.
-							{noreply, ae_timer(P#dp{callfrom = From, callres = Res, flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+							case P#dp.callres of
+								undefined ->
+									Callres = Res;
+								Callres ->
+									ok
+							end,
+							{noreply, ae_timer(P#dp{callfrom = From, callres = Callres, flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 											follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
 											netchanges = actordb_local:net_changes(),
 										evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers})}
@@ -1034,25 +1016,45 @@ handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
-handle_info({ae_timer,Evnum},P) when Evnum < P#dp.evnum ->
-	{noreply,ae_timer(P#dp{resend_ae_timer = undefined})};
-handle_info({ae_timer,_Evnum},P) ->
-	case P#dp.mors == master andalso P#dp.verified == true of
-		true ->
-			case actordb_sqlprocutil:resend_ae(P,0,P#dp.follower_indexes,[]) of
-				{0,_} ->
-					?DBG("AE timer stop, evnum=~p, evterm=~p followers=~p",[P#dp.evnum,P#dp.evterm,P#dp.follower_indexes]),
-					{noreply,P#dp{resend_ae_timer = undefined}};
-				{_,NF} ->
-					?DBG("AE timer continue"),
-					{noreply,ae_timer(P#dp{follower_indexes = NF, resend_ae_timer = undefined})}
-			end;
-		false ->
-			{noreply, P}
-	end;
+% handle_info({ae_timer,Evnum},P) when Evnum < P#dp.evnum ->
+% 	{noreply,ae_timer(P#dp{resend_ae_timer = undefined})};
+% handle_info({ae_timer,_Evnum},P) ->
+% 	case P#dp.mors == master andalso P#dp.verified == true of
+% 		true ->
+% 			case actordb_sqlprocutil:resend_ae(P,0,P#dp.follower_indexes,[]) of
+% 				{0,_} ->
+% 					?DBG("AE timer stop, evnum=~p, evterm=~p followers=~p",[P#dp.evnum,P#dp.evterm,P#dp.follower_indexes]),
+% 					{noreply,P#dp{resend_ae_timer = undefined}};
+% 				{_,NF} ->
+% 					?DBG("AE timer continue"),
+% 					{noreply,ae_timer(P#dp{follower_indexes = NF, resend_ae_timer = undefined})}
+% 			end;
+% 		false ->
+% 			{noreply, P}
+% 	end;
 handle_info(doelection,P) ->
 	Empty = queue:is_empty(P#dp.callqueue),
 	case ok of
+		_ when P#dp.verified, P#dp.mors == master ->
+			case [F || F <- P#dp.follower_indexes, F#flw.wait_for_response_since /= undefined] of
+				[] ->
+					% All nodes synced, do nothing
+					{noreply,P#dp{election = undefined}};
+				[_|_] = Waiting ->
+					case [F || F <- Waiting, actordb_local:min_ref_age(F#flw.wait_for_response_since) >= 1000] of
+						[] ->
+							% all are waiting for less than a second
+							{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
+						[_|_] = WaitingOld ->
+							case [F || F <- WaitingOld, lists:member(F#flw.distname,nodes())] of
+								[] ->
+									% Some nodes are not synced but they are gone. Set timer with higher timeout
+									{noreply,P#dp{election = erlang:send_after(3000,self(),doelection)}};
+								[_|_] ->
+									{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+							end
+					end
+			end;
 		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined; 
 					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
 			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso 
@@ -1216,29 +1218,22 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
 			{NP,Sql,Records,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset, 
 																			cbstate = CbState},
-																		Transaction,CopyFrom,[],undefined),
-			case P#dp.callres of
-				undefined ->
-					% If nothing to store and all nodes synced, send an empty AE.
-					case is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
-						true when AllSynced, NewFollowers == [] ->
-							{noreply,actordb_sqlprocutil:doqueue(NP#dp{follower_indexes = NewFollowers,
-														netchanges = actordb_local:net_changes()})};
-						true when AllSynced ->
-							?DBG("Nodes synced, running empty AE."),
-							NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
-							{noreply,ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
-														netchanges = actordb_local:net_changes()})};
-						_ ->
-							?DBG("Running post election write on nodes ~p, withdb ~p",
-									[P#dp.follower_indexes,NP#dp.flags band ?FLAG_SEND_DB > 0]),
-							% it must always return noreply
-							write_call(#write{sql = Sql, transaction = NP#dp.transactionid, records = Records},Callfrom, NP)
-					end;
+																		Transaction,CopyFrom,[],P#dp.callfrom),
+			% If nothing to store and all nodes synced, send an empty AE.
+			case is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
+				true when AllSynced, NewFollowers == [] ->
+					{noreply,actordb_sqlprocutil:doqueue(NP#dp{follower_indexes = NewFollowers,
+												netchanges = actordb_local:net_changes()})};
+				true when AllSynced ->
+					?DBG("Nodes synced, running empty AE."),
+					NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
+					{noreply,ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
+												netchanges = actordb_local:net_changes()})};
 				_ ->
-					?DBG("Delaying election write callres=~p, followers=~p",[P#dp.callres,P#dp.follower_indexes]),
-					{noreply,NP#dp{callqueue = queue:in_r({Callfrom,#write{sql = Sql,transaction = NP#dp.transactionid, records = Records}},
-															P#dp.callqueue)}}
+					?DBG("Running post election write on nodes ~p, withdb ~p",
+							[P#dp.follower_indexes,NP#dp.flags band ?FLAG_SEND_DB > 0]),
+					% it must always return noreply
+					write_call(#write{sql = Sql, transaction = NP#dp.transactionid, records = Records},Callfrom, NP)
 			end;
 		follower ->
 			{noreply,actordb_sqlprocutil:reopen_db(P1#dp{election = actordb_sqlprocutil:election_timer(undefined), 
@@ -1466,11 +1461,12 @@ reply(From,Msg) ->
 
 
 ae_timer(P) ->
-	case P#dp.resend_ae_timer of
-		undefined ->
-			P#dp{resend_ae_timer = erlang:send_after(600,self(),{ae_timer,P#dp.evnum})};
-		_ ->
-			P
-	end.
+	P#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}.
+	% case P#dp.resend_ae_timer of
+	% 	undefined ->
+	% 		P#dp{resend_ae_timer = erlang:send_after(300,self(),{ae_timer,P#dp.evnum})};
+	% 	_ ->
+	% 		P
+	% end.
 
 

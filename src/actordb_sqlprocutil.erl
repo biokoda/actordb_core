@@ -178,24 +178,24 @@ follower_call_counts(P) ->
 	[{F#flw.node,{F#flw.match_index,F#flw.match_term}} || F <- P#dp.follower_indexes].
 
 
-resend_ae(P,N,[F|T],L) ->
-	case F#flw.wait_for_response_since of
-		undefined ->
-			resend_ae(P,N,T,[F|L]);
-		_ ->
-			case bkdcore_rpc:is_connected(F#flw.node) of
-				true ->
-					?DBG("Resending appendentries ~p",[F#flw.node]),
-					resend_ae(P,N+1,T,[send_empty_ae(P,F)|L]);
-				% Do not count nodes that are gone. If those would be counted then actors
-				%  would never go to sleep.
-				false ->
-					?DBG("Not connected to ~p",[F#flw.node]),
-					resend_ae(P,N,T,[F|L])
-			end
-	end;
-resend_ae(_,N,[],L) ->
-	{N,L}.
+% resend_ae(P,N,[F|T],L) ->
+% 	case F#flw.wait_for_response_since of
+% 		undefined ->
+% 			resend_ae(P,N,T,[F|L]);
+% 		_ ->
+% 			case bkdcore_rpc:is_connected(F#flw.node) of
+% 				true ->
+% 					?DBG("Resending appendentries ~p",[F#flw.node]),
+% 					resend_ae(P,N+1,T,[send_empty_ae(P,F)|L]);
+% 				% Do not count nodes that are gone. If those would be counted then actors
+% 				%  would never go to sleep.
+% 				false ->
+% 					?DBG("Not connected to ~p",[F#flw.node]),
+% 					resend_ae(P,N,T,[F|L])
+% 			end
+% 	end;
+% resend_ae(_,N,[],L) ->
+% 	{N,L}.
 
 send_empty_ae(P,<<_/binary>> = Nm) ->
 	send_empty_ae(P,lists:keyfind(Nm,#flw.node,P#dp.follower_indexes));
@@ -434,10 +434,10 @@ send_wal(P,#flw{file = File} = F) ->
 					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},
 								[nostart]]}),
-					case WalRes of
-						ok when Commit == 0 ->
+					case WalRes == ok orelse WalRes == done of
+						true when Commit == 0 ->
 							send_wal(P,F);
-						ok ->
+						true ->
 							ok;
 						_ ->
 							error
@@ -693,7 +693,7 @@ do_cb(P) ->
 election_timer(undefined) ->
 	% erlang:send_after(200+random:uniform(200),self(),doelection);
 	% High election timeout. This is because it is only a last resort. 
-	T = 500+random:uniform(300),
+	T = 600+random:uniform(300),
 	?ADBG("Relection try in ~p",[T]),
 	erlang:send_after(T,self(),doelection);
 election_timer(T) ->
@@ -738,8 +738,14 @@ start_verify(P,JustStarted) ->
 					% 				start_election(NP)
 					% 					end),
 					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
-				Whois ->
-					?DBG("Election try result ~p",[Whois]),
+				LeaderNode when is_binary(LeaderNode) ->
+					actordb_local:actor_mors(slave,LeaderNode),
+					doqueue(reopen_db(P#dp{masternode = LeaderNode, 
+								masternodedist = bkdcore:dist_name(LeaderNode), 
+								callfrom = undefined, callres = undefined, 
+								verified = true, activity = make_ref()}));
+				Err ->
+					?DBG("Election try result ~p",[Err]),
 					P#dp{election = election_timer(P#dp.election)}
 			end
 	end.
