@@ -180,7 +180,13 @@ set_init_state(Nodes,Groups,Configs) ->
 	[ok = bkdcore_changecheck:setcfg(butil:tolist(Key),Val) || {Key,Val} <- Configs],
 	bkdcore_changecheck:set_nodes_groups(Nodes,Groups),
 	actordb_election:connect_all(),
-	butil:safesend(actordb_local, {raft_connections,bkdcore:cluster_nodes()}).
+	MG = add_master_group([]),
+	case lists:member(bkdcore:node_name(),MG) of
+		true ->
+			butil:safesend(actordb_local, {raft_connections,lists:delete(actordb_conf:node_name(), MG)});
+		false ->
+			butil:safesend(actordb_local, {raft_connections,bkdcore:cluster_nodes()})
+	end.
 	
 
 cfgnames() ->
