@@ -99,7 +99,13 @@ actor_ae_stream(ActorPid,Count) ->
 					?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
 					exit(error)
 			end,
-			{_Me,Count1} = lists:keyfind(actordb_conf:node_name(),1,CallCount),
+			case lists:keyfind(actordb_conf:node_name(),1,CallCount) of
+				{_Me,Count1} ->
+					ok;
+				_ ->
+					% Special case when nodes are added at run time.
+					Count1 = {PrevEvnum,PrevTerm}
+			end,
 			case actordb_sqlproc:call_slave(Cb,Actor,Type,
 					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head,Count1}}) of
 				ok ->

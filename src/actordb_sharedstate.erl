@@ -274,7 +274,7 @@ set_global_state(MasterNode,State) ->
 			   		?AINF("Setting nodesgrps ~p ~p",[NewNodes,NewGroups]),
 			   		bkdcore_changecheck:set_nodes_groups(NewNodes,NewGroups),
 			   		actordb_election:connect_all(),
-			   		spawn(fun() ->timer:sleep(100), start(?STATE_NM_LOCAL,?STATE_TYPE) end);
+			   		spawn(fun() ->timer:sleep(100), start(?STATE_NM_LOCAL,?STATE_TYPE,[{slave,length(nodes()) > 0}]) end);
 			   	false ->
 			   		ok
 			end;
@@ -592,7 +592,7 @@ cb_unverified_call(#st{waiting = true, name = ?STATE_NM_GLOBAL} = S,{master_ping
 		false ->
 			{{moved,MasterNode},S#st{waiting = false, evnum = Evnum}};
 		true ->
-			reinit
+			{reinit_master,slave}
 	end;
 % Initialize state on first master.
 cb_unverified_call(S,{init_state,Nodes,Groups,Configs}) ->

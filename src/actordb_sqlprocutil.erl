@@ -21,7 +21,7 @@ static_sqls() ->
 	"DELETE FROM __transactions WHERE tid=?1 AND updater=?2;",
 	% #s05;
 	"INSERT OR REPLACE INTO actors VALUES (?1,?2);",
-	% #s06;
+	% #d06;
 	"SELECT * FROM transactions WHERE id=?1;",
 	% #d07; -> d means it returns result
 	"INSERT INTO transactions (commited) VALUES (0);",
@@ -213,13 +213,13 @@ reopen_db(#dp{mors = master} = P) ->
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
 			garbage_collect(),
-			doqueue(init_opendb(P));
+			init_opendb(P);
 		_ ->
 			case P#dp.wal_from == {0,0} of
 				true ->
-					doqueue(P#dp{wal_from = wal_from([P#dp.dbpath,"-wal"])});
+					P#dp{wal_from = wal_from([P#dp.dbpath,"-wal"])};
 				false ->
-					doqueue(P)
+					P
 			end
 	end;
 reopen_db(P) ->
@@ -233,9 +233,9 @@ reopen_db(P) ->
 				{ok,_WalSize} ->
 					ok
 			end,
-			doqueue(P#dp{db = F});
+			P#dp{db = F};
 		_ ->
-			doqueue(P)
+			P
 	end.
 
 init_opendb(P) ->
@@ -693,7 +693,7 @@ do_cb(P) ->
 election_timer(undefined) ->
 	% erlang:send_after(200+random:uniform(200),self(),doelection);
 	% High election timeout. This is because it is only a last resort. 
-	T = 600+random:uniform(300),
+	T = 300+random:uniform(300),
 	?ADBG("Relection try in ~p",[T]),
 	erlang:send_after(T,self(),doelection);
 election_timer(T) ->
@@ -713,6 +713,7 @@ start_verify(P,JustStarted) ->
 		_ when is_pid(P#dp.election); is_reference(P#dp.election) ->
 			P;
 		_ ->
+			?DBG("Trying to get elected"),
 			CurrentTerm = P#dp.current_term+1,
 			Me = actordb_conf:node_name(),
 			E = #election{actor = P#dp.actorname, type = P#dp.actortype, candidate = Me,
@@ -740,7 +741,7 @@ start_verify(P,JustStarted) ->
 					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
 				LeaderNode when is_binary(LeaderNode) ->
 					actordb_local:actor_mors(slave,LeaderNode),
-					doqueue(reopen_db(P#dp{masternode = LeaderNode, 
+					doqueue(reopen_db(P#dp{masternode = LeaderNode, election = undefined,
 								masternodedist = bkdcore:dist_name(LeaderNode), 
 								callfrom = undefined, callres = undefined, 
 								verified = true, activity = make_ref()}));
@@ -901,12 +902,12 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 		_ ->
 			{P,SqlIn,[],Callfrom1}
 	end;
-post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,Sql,Callfrom) ->
+post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfrom) ->
 	case base64:decode(MSql1) of
 		<<"delete">> ->
 			Sql = delete;
 		Sql1 ->
-			Sql = [Sql,Sql1]
+			Sql = [SqlIn,Sql1]
 	end,
 	% Put empty sql in transactioninfo. Since sqls get appended for existing transactions in write_call.
 	% This way sql does not get written twice to it.
@@ -1356,7 +1357,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 	end;
 % Initial call on node that is destination of copy
 dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
-	?DBG("start receive entire db",[]),
+	?DBG("start receive entire db ~p",[Copyfrom]),
 	% clean up any old sqlite handles.
 	garbage_collect(),
 	% If move, split or copy actor to a new actor this must be called on master.
@@ -1374,12 +1375,12 @@ dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
 	{FromPid,Ref} = From1,
 	Size = filelib:file_size([P#dp.dbpath,"-wal"]),
 	case Size =< Data of
-		true when P#dp.transactionid == undefined ->
+		true -> %when P#dp.transactionid == undefined ->
 			erlang:send_after(1000,self(),check_locks),
 			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},
 				P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
-		true ->
-			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
+		% true ->
+		% 	{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
 		false ->
 			?DBG("wal_size from=~p, insize=~p, filesize=~p",[From1,Data,Size]), 
 			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},P}
@@ -1465,7 +1466,8 @@ dbcopy(P,Home,ActorTo) ->
 	dbcopy(P,Home,ActorTo,F,0,db).
 dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 	still_alive(P,Home,ActorTo),
-	case gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}) of
+	WR = gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}),
+	case WR of
 		{_Walname,Offset,Evnum,Evterm} ->
 			?DBG("dbsend done ",[]),
 			Param = [{bin,<<>>},{status,done},{origin,original},{evnum,Evnum},{evterm,Evterm}],
@@ -1579,6 +1581,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 	receive
 		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
 			[Bin,Status,Origin,Evnum,Evterm] = butil:ds_vals([bin,status,origin,evnum,evterm],Param),
+			% ?DBG("copy_receive size=~p, origin=~p, status=~p",[byte_size(Bin),Origin,Status]),
 			case Origin of
 				original ->
 					Param1 = [{bin,Bin},{status,Status},{origin,master},	{evnum,Evnum},{evterm,Evterm}],

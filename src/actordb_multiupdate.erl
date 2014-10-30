@@ -72,7 +72,7 @@ sqlname(P) ->
 	{P#dp.name,?MULTIUPDATE_TYPE}.
 
 handle_call({transaction_state,Id},_From,P) ->
-	case actordb_actor:read(sqlname(P),[create],{<<"#s06;">>,[[[butil:toint(Id)]]]}) of
+	case actordb_actor:read(sqlname(P),[create],{<<"#d06;">>,[[[butil:toint(Id)]]]}) of
 		{ok,[{columns,_},{rows,[{_,Commited}]}]} ->
 			{reply,{ok,Commited},P};
 		{ok,[_,{rows,[]}]} ->

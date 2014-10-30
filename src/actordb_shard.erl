@@ -388,8 +388,10 @@ cb_do_cleanup(P,ReadResult) ->
 		% 	NP = P
 		{ok,[{columns,_},{rows,[{Count}]}]} ->
 			?AINF("Continue cleanup on ~p.~p, itemsleft=~p",[P#state.name,P#state.type,Count]),
-			Sql = [<<"DELETE FROM actors WHERE (hash < ">>,butil:tobin(P#state.name)," OR hash > ",butil:tobin(P#state.to),") AND ",
-					" abs(random() % ",butil:tobin(Count),") < 1000;"],
+			Sql = [<<"DELETE FROM actors WHERE (hash < ">>,butil:tobin(P#state.name)," OR hash > ",butil:tobin(P#state.to),") "
+					," AND abs(random() % ",butil:tobin(Count),") < 1000;"
+					% ,";"
+					],
 			NP = P
 	end,
 	{write,Sql,NP}.
@@ -580,7 +582,7 @@ cb_init(S,_Ev,{ok,[{columns,_},{rows,Rows}]}) ->
 	end.
 
 cb_idle(#state{cleanup_proc = undefined} = S) when S#state.cleanup_pre /= undefined; S#state.cleanup_after /= undefined ->
-	?ADBG("Idle continue cleanup ~p ~p",[{S#state.name,S#state.type},{S#state.cleanup_pre,S#state.cleanup_after}]),
+	?ADBG("Idle continue cleanup ~p.~p ~p",[S#state.name,S#state.type,{S#state.cleanup_pre,S#state.cleanup_after}]),
 	% S#state.cleanup_pre, S#state.cleanup_after
 	{Pid,_} = spawn_monitor(fun() ->  do_cleanup(S#state.name,S#state.type,S#state.name,S#state.to) end),
 	{ok,S#state{cleanup_proc = Pid}};
