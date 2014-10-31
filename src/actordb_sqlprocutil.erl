@@ -674,9 +674,9 @@ do_cb(P) ->
 election_timer(undefined) ->
 	% erlang:send_after(200+random:uniform(200),self(),doelection);
 	% High election timeout. This is because it is only a last resort. 
-	T = 700+random:uniform(300),
+	T = 300+random:uniform(300),
 	?ADBG("Relection try in ~p",[T]),
-	erlang:send_after(T,self(),doelection);
+	erlang:send_after(T,self(),{doelection,make_ref()});
 election_timer(T) ->
 	T.
 
@@ -693,7 +693,7 @@ check_for_resync(P, [F|L],Action) when F#flw.match_index == P#dp.evnum, F#flw.wa
 	check_for_resync(P,L,Action);
 check_for_resync(_,[],Action) ->
 	Action;
-check_for_resync(P,[F|L],Action) ->
+check_for_resync(P,[F|L],_Action) ->
 	IsAlive = lists:member(F#flw.distname,nodes()),
 	case F#flw.wait_for_response_since of
 		undefined ->

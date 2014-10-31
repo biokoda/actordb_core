@@ -699,7 +699,7 @@ state_rw_call(What,From,P) ->
 					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}}
 			end;
 		{set_dbfile,Bin} ->
-			ok = prim_file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
+			spawn(fun() -> ok = prim_file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)) end),
 			{reply,ok,P#dp{activity = make_ref()}};
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
@@ -1023,7 +1023,16 @@ handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
-handle_info(doelection,P) ->
+handle_info({doelection,TimerFrom},P) ->
+	case [F || F <- P#dp.follower_indexes, is_reference(F#flw.last_seen) andalso F#flw.last_seen > TimerFrom] of
+		[] ->
+			% Clear out msg queue first.
+			self() ! doelection1,
+			{noreply,P};
+		_ ->
+			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
+	end;
+handle_info(doelection1,P) ->
 	Empty = queue:is_empty(P#dp.callqueue),
 	?DBG("Election timeout, master=~p, verified=~p, followers=~p",[P#dp.masternode,P#dp.verified,P#dp.follower_indexes]),
 	case ok of
@@ -1041,33 +1050,6 @@ handle_info(doelection,P) ->
 				timer ->
 					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
 			end;
-			% case [F || F <- P#dp.follower_indexes, F#flw.match_index < P#dp.evnum andalso F#flw.wait_for_response_since == undefined] of
-			% 	[] ->
-			% 		case [F || F <- P#dp.follower_indexes, F#flw.wait_for_response_since /= undefined] of
-			% 			[] ->
-			% 				% All nodes synced, do nothing
-			% 				{noreply,P#dp{election = undefined}};
-			% 			[_|_] = Waiting ->
-			% 				case [F || F <- Waiting, actordb_local:min_ref_age(F#flw.wait_for_response_since) >= 1000] of
-			% 					[] ->
-			% 						% all are waiting for less than a second
-			% 						% Wait a bit more they may just be slow.
-			% 						{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
-			% 					[_|_] = WaitingOld ->
-			% 						case [F || F <- WaitingOld, lists:member(F#flw.distname,nodes())] of
-			% 							[] ->
-			% 								% Some nodes are not synced but they are gone. Set timer with higher timeout
-			% 								{noreply,P#dp{election = erlang:send_after(3000,self(),doelection)}};
-			% 							[_|_] ->
-			% 								{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
-			% 						end
-			% 				end
-			% 		end;
-			% 	[_|_] ->
-			% 		% Some nodes are unsynced and we are not waiting for their response.
-			% 		% We need to generate an election and thus a write to synchronize.
-			% 		{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
-			% end;
 		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined; 
 					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
 			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso 
