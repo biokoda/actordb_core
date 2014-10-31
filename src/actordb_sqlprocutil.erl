@@ -674,7 +674,7 @@ do_cb(P) ->
 election_timer(undefined) ->
 	% erlang:send_after(200+random:uniform(200),self(),doelection);
 	% High election timeout. This is because it is only a last resort. 
-	T = 300+random:uniform(300),
+	T = 700+random:uniform(300),
 	?ADBG("Relection try in ~p",[T]),
 	erlang:send_after(T,self(),doelection);
 election_timer(T) ->
