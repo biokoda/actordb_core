@@ -61,10 +61,19 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 		<<>> ->
 			PidOut = Pid;
 		_ ->
+			Home = self(),
+			Ref = make_ref(),
 			case distreg:whereis({actor_ae_stream,Actor,Type}) of
 				undefined ->
-					PidOut = spawn(fun() -> 
-						ok = distreg:reg({actor_ae_stream,Actor,Type}),
+					PidOut1 = spawn(fun() -> 
+						% ?ADBG("Started ae stream proc ~p.~p",[Actor,Type]),
+						case distreg:reg({actor_ae_stream,Actor,Type}) of
+							ok ->
+								Home ! {ok,Ref};
+							name_exists ->
+								Home ! {exists,Ref},
+								exit(normal)
+						end,
 						case apply(Cb,cb_slave_pid,[Actor,Type,[]]) of
 							{ok,ActorPid} ->
 								ok;
@@ -72,8 +81,15 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 								ok
 						end,
 						erlang:monitor(process,ActorPid),
+						% ?ADBG("Have pid for ae ~p.~p",[Actor,Type]),
 						actor_ae_stream(ActorPid,undefined)
-					end);
+					end),
+					receive
+						{ok,Ref} ->
+							PidOut = PidOut1;
+						{exists,Ref} ->
+							PidOut = distreg:whereis({actor_ae_stream,Actor,Type})
+					end;
 				PidOut ->
 					ok
 			end,
@@ -88,14 +104,14 @@ tunnel_bin(Pid,Bin) ->
 actor_ae_stream(ActorPid,Count) ->
 	receive
 		{start,Cb,Actor,Type,Term,VarPrefix} ->
+			% ?ADBG("AE stream proc start ~p.~p",[Actor,Type]),
 			case binary_to_term(VarPrefix) of
 				{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
-					ok;
+					DbFile = undefined;
 				{Term,Leader,PrevEvnum,PrevTerm,CallCount,DbFile} ->
-					ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
-								{state_rw,{set_dbfile,DbFile}});
+					ok;
 				Invalid ->
-					CallCount = Leader = PrevEvnum = PrevTerm = undefined,
+					DbFile = CallCount = Leader = PrevEvnum = PrevTerm = undefined,
 					?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
 					exit(error)
 			end,
@@ -106,12 +122,23 @@ actor_ae_stream(ActorPid,Count) ->
 					% Special case when nodes are added at run time.
 					Count1 = {PrevEvnum,PrevTerm}
 			end,
+			% ?ADBG("AE stream proc call ~p.~p",[Actor,Type]),
 			case actordb_sqlproc:call_slave(Cb,Actor,Type,
 					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head,Count1}}) of
 				ok ->
+					case is_binary(DbFile) of
+						true ->
+							ok = actordb_sqlproc:call_slave(Cb,Actor,Type,
+								{state_rw,{set_dbfile,DbFile}});
+						_ ->
+							ok
+					end,
+					% ?ADBG("AE stream proc ok! ~p.~p",[Actor,Type]),
 					actor_ae_stream(ActorPid,Count1);
 				_ ->
 					% Die off if we should not continue
+					% All subsequent WAL messages are thus discarded and process is restarted
+					%  on next ae start.
 					ok
 			end;
 		{'DOWN',_,_,ActorPid,_} ->

@@ -526,7 +526,7 @@ state_rw_call(What,From,P) ->
 		% sqlite wal, header tells you if done (it has db size in header)
 		{appendentries_wal,Term,Header,Body,AEType,CallCount} ->
 			case ok of
-				_ when Term == P#dp.current_term ->
+				_ when Term == P#dp.current_term; AEType == head ->
 					actordb_sqlprocutil:append_wal(P,Header,Body),
 					case Header of
 						% dbsize == 0, not last page
@@ -567,7 +567,7 @@ state_rw_call(What,From,P) ->
 					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p",
 							[Node,Success,AEType,Follower#flw.match_index,EvNum,MatchEvnum]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
-											wait_for_response_since = undefined}, 
+											wait_for_response_since = undefined, last_seen = make_ref()}, 
 					case Success of
 						% An earlier response.
 						_ when P#dp.mors == slave ->
@@ -699,7 +699,7 @@ state_rw_call(What,From,P) ->
 					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}}
 			end;
 		{set_dbfile,Bin} ->
-			ok = file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
+			ok = prim_file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)),
 			{reply,ok,P#dp{activity = make_ref()}};
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
@@ -795,7 +795,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P) ->
-	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
+	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,"Sql",Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -1019,58 +1019,55 @@ handle_cast(_Msg,P) ->
 	?INF("sqlproc ~p unhandled cast ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
 
-
 handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
-% handle_info({ae_timer,Evnum},P) when Evnum < P#dp.evnum ->
-% 	{noreply,ae_timer(P#dp{resend_ae_timer = undefined})};
-% handle_info({ae_timer,_Evnum},P) ->
-% 	case P#dp.mors == master andalso P#dp.verified == true of
-% 		true ->
-% 			case actordb_sqlprocutil:resend_ae(P,0,P#dp.follower_indexes,[]) of
-% 				{0,_} ->
-% 					?DBG("AE timer stop, evnum=~p, evterm=~p followers=~p",[P#dp.evnum,P#dp.evterm,P#dp.follower_indexes]),
-% 					{noreply,P#dp{resend_ae_timer = undefined}};
-% 				{_,NF} ->
-% 					?DBG("AE timer continue"),
-% 					{noreply,ae_timer(P#dp{follower_indexes = NF, resend_ae_timer = undefined})}
-% 			end;
-% 		false ->
-% 			{noreply, P}
-% 	end;
 handle_info(doelection,P) ->
 	Empty = queue:is_empty(P#dp.callqueue),
 	?DBG("Election timeout, master=~p, verified=~p, followers=~p",[P#dp.masternode,P#dp.verified,P#dp.follower_indexes]),
 	case ok of
 		_ when P#dp.verified, P#dp.mors == master, P#dp.dbcopy_to /= [] ->
+			% Do not run elections while db is being copied
 			{noreply,P#dp{election = undefined}};
 		_ when P#dp.verified, P#dp.mors == master ->
-			case [F || F <- P#dp.follower_indexes, F#flw.match_index < P#dp.evnum] of
-				[] ->
-					case [F || F <- P#dp.follower_indexes, F#flw.wait_for_response_since /= undefined] of
-						[] ->
-							% All nodes synced, do nothing
-							{noreply,P#dp{election = undefined}};
-						[_|_] = Waiting ->
-							case [F || F <- Waiting, actordb_local:min_ref_age(F#flw.wait_for_response_since) >= 1000] of
-								[] ->
-									% all are waiting for less than a second
-									{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
-								[_|_] = WaitingOld ->
-									case [F || F <- WaitingOld, lists:member(F#flw.distname,nodes())] of
-										[] ->
-											% Some nodes are not synced but they are gone. Set timer with higher timeout
-											{noreply,P#dp{election = erlang:send_after(3000,self(),doelection)}};
-										[_|_] ->
-											{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
-									end
-							end
-					end;
-				[_|_] ->
-					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+			case actordb_sqlprocutil:check_for_resync(P,P#dp.follower_indexes,synced) of
+				synced ->
+					{noreply,P#dp{election = undefined}};
+				resync ->
+					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)};
+				wait_longer ->
+					{noreply,P#dp{election = erlang:send_after(3000,self(),doelection)}};
+				timer ->
+					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
 			end;
+			% case [F || F <- P#dp.follower_indexes, F#flw.match_index < P#dp.evnum andalso F#flw.wait_for_response_since == undefined] of
+			% 	[] ->
+			% 		case [F || F <- P#dp.follower_indexes, F#flw.wait_for_response_since /= undefined] of
+			% 			[] ->
+			% 				% All nodes synced, do nothing
+			% 				{noreply,P#dp{election = undefined}};
+			% 			[_|_] = Waiting ->
+			% 				case [F || F <- Waiting, actordb_local:min_ref_age(F#flw.wait_for_response_since) >= 1000] of
+			% 					[] ->
+			% 						% all are waiting for less than a second
+			% 						% Wait a bit more they may just be slow.
+			% 						{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
+			% 					[_|_] = WaitingOld ->
+			% 						case [F || F <- WaitingOld, lists:member(F#flw.distname,nodes())] of
+			% 							[] ->
+			% 								% Some nodes are not synced but they are gone. Set timer with higher timeout
+			% 								{noreply,P#dp{election = erlang:send_after(3000,self(),doelection)}};
+			% 							[_|_] ->
+			% 								{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+			% 						end
+			% 				end
+			% 		end;
+			% 	[_|_] ->
+			% 		% Some nodes are unsynced and we are not waiting for their response.
+			% 		% We need to generate an election and thus a write to synchronize.
+			% 		{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+			% end;
 		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined; 
 					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
 			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso 

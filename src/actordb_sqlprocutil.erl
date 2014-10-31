@@ -178,25 +178,6 @@ follower_call_counts(P) ->
 	[{F#flw.node,{F#flw.match_index,F#flw.match_term}} || F <- P#dp.follower_indexes].
 
 
-% resend_ae(P,N,[F|T],L) ->
-% 	case F#flw.wait_for_response_since of
-% 		undefined ->
-% 			resend_ae(P,N,T,[F|L]);
-% 		_ ->
-% 			case bkdcore_rpc:is_connected(F#flw.node) of
-% 				true ->
-% 					?DBG("Resending appendentries ~p",[F#flw.node]),
-% 					resend_ae(P,N+1,T,[send_empty_ae(P,F)|L]);
-% 				% Do not count nodes that are gone. If those would be counted then actors
-% 				%  would never go to sleep.
-% 				false ->
-% 					?DBG("Not connected to ~p",[F#flw.node]),
-% 					resend_ae(P,N,T,[F|L])
-% 			end
-% 	end;
-% resend_ae(_,N,[],L) ->
-% 	{N,L}.
-
 send_empty_ae(P,<<_/binary>> = Nm) ->
 	send_empty_ae(P,lists:keyfind(Nm,#flw.node,P#dp.follower_indexes));
 send_empty_ae(P,F) ->
@@ -701,6 +682,42 @@ election_timer(T) ->
 
 actor_start(P) ->
 	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,?PAGESIZE*?DEF_CACHE_PAGES).
+
+
+% Returns:
+% synced -> do nothing, do not set timer again
+% resync -> run election immediately
+% wait_longer -> wait for 3s and run election
+% timer -> run normal timer again
+check_for_resync(P, [F|L],Action) when F#flw.match_index == P#dp.evnum, F#flw.wait_for_response_since == undefined ->
+	check_for_resync(P,L,Action);
+check_for_resync(_,[],Action) ->
+	Action;
+check_for_resync(P,[F|L],Action) ->
+	IsAlive = lists:member(F#flw.distname,nodes()),
+	case F#flw.wait_for_response_since of
+		undefined ->
+			Wait = 0;
+		_ ->
+			Wait = actordb_local:min_ref_age(F#flw.wait_for_response_since)
+	end,
+	case F#flw.last_seen of
+		undefined ->
+			LastSeen = 30000;
+		_ ->
+			LastSeen = actordb_local:min_ref_age(F#flw.last_seen)
+	end,
+	case ok of
+		_ when Wait > 1000, IsAlive ->
+			resync;
+		_ when LastSeen > 1000, F#flw.match_index /= P#dp.evnum, IsAlive ->
+			resync;
+		_ when IsAlive == false ->
+			check_for_resync(P,L,wait_longer);
+		_ ->
+			check_for_resync(P,L,timer)
+	end.
+
 
 start_verify(P,JustStarted) ->
 	case ok of
@@ -1371,7 +1388,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 			{reply,ok,reopen_db(P#dp{db = undefined, mors = slave,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined})}
 	end;
 % Read chunk of wal log.
-dbcopy_call({wal_read,From1,Data} = Msg,CallFrom,P) ->
+dbcopy_call({wal_read,From1,Data},_CallFrom,P) ->
 	{FromPid,Ref} = From1,
 	Size = filelib:file_size([P#dp.dbpath,"-wal"]),
 	case Size =< Data of
