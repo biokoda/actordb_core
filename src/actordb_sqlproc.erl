@@ -1023,14 +1023,23 @@ handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
-handle_info({doelection,TimerFrom},P) ->
-	case [F || F <- P#dp.follower_indexes, is_reference(F#flw.last_seen) andalso F#flw.last_seen > TimerFrom] of
-		[] ->
-			% Clear out msg queue first.
-			self() ! doelection1,
-			{noreply,P};
-		_ ->
-			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
+handle_info({doelection,LatencyBefore,TimerFrom},P) ->
+	LatencyNow = butil:ds_val(latency,latency),
+	% Delay if latency significantly increased since start of timer.
+	% But only if more than 100ms latency. Which should mean significant load or bad network which
+	%  from here means same thing. 
+	case LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100000 of
+		true ->
+			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
+		false ->
+			case [F || F <- P#dp.follower_indexes, is_reference(F#flw.last_seen) andalso F#flw.last_seen > TimerFrom] of
+				[] ->
+					% Clear out msg queue first.
+					self() ! doelection1,
+					{noreply,P};
+				_ ->
+					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
+			end
 	end;
 handle_info(doelection1,P) ->
 	Empty = queue:is_empty(P#dp.callqueue),

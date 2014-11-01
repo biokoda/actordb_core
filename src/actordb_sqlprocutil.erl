@@ -672,11 +672,11 @@ do_cb(P) ->
 	end.
 
 election_timer(undefined) ->
-	% erlang:send_after(200+random:uniform(200),self(),doelection);
-	% High election timeout. This is because it is only a last resort. 
-	T = 300+random:uniform(300),
-	?ADBG("Relection try in ~p",[T]),
-	erlang:send_after(T,self(),{doelection,make_ref()});
+	Latency = butil:ds_val(latency,latency),
+	Fixed = max(300,Latency),
+	T = Fixed+random:uniform(Fixed),
+	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
+	erlang:send_after(T,self(),{doelection,Latency,make_ref()});
 election_timer(T) ->
 	T.
 
