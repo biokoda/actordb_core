@@ -428,7 +428,7 @@ state_rw_call(What,From,P) ->
 		donothing ->
 			{reply,ok,P};
 		recovered ->
-			?DBG("No longer in recovery"),
+			?INF("No longer in recovery"),
 			{reply,ok,P#dp{inrecovery = false}};
 		% Executed on follower.
 		% AE is split into multiple calls (because wal is sent page by page as it is written)
@@ -519,7 +519,12 @@ state_rw_call(What,From,P) ->
 					{noreply,P#dp{verified = true,activity = make_ref()}};
 				% Ok, now it will start receiving wal pages
 				_ ->
-					?DBG("AE start ok from ~p",[LeaderNode]),
+					case AEType == recover of
+						true ->
+							?INF("AE start ok for recovery from ~p, evnum=~p",[LeaderNode,P#dp.evnum]);
+						false ->
+							?DBG("AE start ok from ~p",[LeaderNode])
+					end,
 					{reply,ok,P#dp{verified = true,activity = make_ref(), inrecovery = AEType == recover}}
 			end;
 		% Executed on follower.
@@ -1023,6 +1028,9 @@ handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
+handle_info(doelection,P) ->
+	self() ! doelection1,
+	{noreply,P};
 handle_info({doelection,LatencyBefore,TimerFrom},P) ->
 	LatencyNow = butil:ds_val(latency,latency),
 	% Delay if latency significantly increased since start of timer.
@@ -1049,7 +1057,9 @@ handle_info(doelection1,P) ->
 			% Do not run elections while db is being copied
 			{noreply,P#dp{election = undefined}};
 		_ when P#dp.verified, P#dp.mors == master ->
-			case actordb_sqlprocutil:check_for_resync(P,P#dp.follower_indexes,synced) of
+			RSY = actordb_sqlprocutil:check_for_resync(P,P#dp.follower_indexes,synced),
+			?DBG("Election timer action ~p",[RSY]),
+			case RSY of
 				synced ->
 					{noreply,P#dp{election = undefined}};
 				resync ->
@@ -1243,7 +1253,11 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			P = P1,
 			?DBG("Continue as follower"),
 			{noreply,actordb_sqlprocutil:reopen_db(P#dp{election = actordb_sqlprocutil:election_timer(undefined), 
-															masternode = undefined, mors = slave})}
+															masternode = undefined, mors = slave})};
+		_Err ->
+			P = P1,
+			?ERR("Election invalid result ~p",[_Err]),
+			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 	?DBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),

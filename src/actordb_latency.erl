@@ -31,7 +31,7 @@ handle_call(print_info,_,P) ->
 handle_call(stop, _, P) ->
 	{stop, shutdown, stopped, P}.
 
-handle_cast({return_call,Nd,Time},P) ->
+handle_cast({return_call,_Nd,Time},P) ->
 	Now = os:timestamp(),
 	Latency = timer:now_diff(Now,Time),
 
@@ -64,7 +64,7 @@ handle_cast({return_call,Nd,Time},P) ->
 		false ->
 			ok
 	end,
-	?ADBG("Latency nd=~p latency=~p max_in_interval=~p",[Nd,Latency,MaxInInterval]),
+	% ?ADBG("Latency nd=~p latency=~p max_in_interval=~p",[Nd,Latency,MaxInInterval]),
 	{noreply,P#dp{global_max = max(Latency,P#dp.global_max), 
 					interval = Interval1,
 					interval_max = max(P#dp.interval_max,MaxInInterval),

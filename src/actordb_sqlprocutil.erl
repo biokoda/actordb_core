@@ -314,7 +314,8 @@ try_wal_recover(P,F) ->
 			end;
 		% Too far behind. Send entire db.
 		false ->
-			?INF("Too far behind, can not recover from wal match=~p, wal_from=~p, evnum=~p",[F#flw.match_index,WalEvfrom,P#dp.evnum]),
+			?INF("Too far behind, can not recover from wal match=~p, wal_from=~p, evnum=~p, sending entire db to node.",
+					[F#flw.match_index,WalEvfrom,P#dp.evnum]),
 			Res = false,
 			NF = F
 	end,
@@ -678,7 +679,15 @@ election_timer(undefined) ->
 	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
 	erlang:send_after(T,self(),{doelection,Latency,make_ref()});
 election_timer(T) ->
-	T.
+	case is_reference(T) andalso erlang:read_timer(T) /= false of
+		true ->
+			T;
+		false when is_pid(T) ->
+			?ADBG("Election pid active"),
+			T;
+		_ ->
+			election_timer(undefined)
+	end.
 
 actor_start(P) ->
 	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,?PAGESIZE*?DEF_CACHE_PAGES).

@@ -966,6 +966,7 @@ run(D,P,W,N) ->
 		% 	   true,
 		% 	   {[<<"#w0000;">>],[[[butil:flatnow(),D]]]}}],
 		% 	 true},
+		% io:format("Running ~p~n",[{W,N}]),
 		 case actordb:exec_bp1(P,byte_size(D),Sql) of
 		 % case actordb:exec1(Sql) of
 		 	{sleep,_} ->
@@ -974,6 +975,7 @@ run(D,P,W,N) ->
 		 	_ ->
 		 		ok
 		 end,
+		 io:format("Done ~p~n",[{W,N}]),
 		% exec(<<"actor type1(ac",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary,");",
 		% 					"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>),
 		
