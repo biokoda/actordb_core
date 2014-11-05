@@ -7,6 +7,9 @@
 -export([store_term_info/6,read_term_info/2]).
 -include_lib("actordb.hrl").
 
+% Not used atm.
+% Maybe it would be better if it had public ETS and reads would always go to ETS?
+
 store_term_info(A,T,VF,CurTerm,EvNum,EvTerm) ->
 	gen_server:call(?MODULE,{write,A,T,VF,CurTerm,EvNum,EvTerm}).
 
@@ -44,8 +47,14 @@ handle_call({write,Actor,Type,VotedFor,CurTerm,EvNum,EvTerm},CallFrom,P) ->
 	% Do not write directly. Use timeout which will mean draining message queue.
 	% This way if many write calls they will get combined.
 	% Add CallFrom as first element of tuple, it will get ignored in write.
+	case P#dp.writes of
+		[_|_] ->
+			ok;
+		[] ->
+			self() ! timeout
+	end,
 	{noreply,P#dp{writes = [{CallFrom,butil:tobin(Actor),Type,VotedFor,CurTerm,EvNum,EvTerm}|P#dp.writes], 
-				write_count = P#dp.write_count + 1},0};
+				write_count = P#dp.write_count + 1}};
 handle_call({read,Actor,Type},_,P) ->
 	case actordb_sqlite:exec(P#dp.db,<<"#d10;">>,[[[butil:tobin(Actor),Type]]]) of
 		{ok,[{columns,_},{rows,[{_Actor,_Type,VotedFor,CurTerm,EvNum,EvTerm}]}]} ->

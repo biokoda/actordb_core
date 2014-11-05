@@ -975,7 +975,7 @@ run(D,P,W,N) ->
 		 	_ ->
 		 		ok
 		 end,
-		 io:format("Done ~p~n",[{W,N}]),
+		 % io:format("Done ~p~n",[{W,N}]),
 		% exec(<<"actor type1(ac",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary,");",
 		% 					"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>),
 		

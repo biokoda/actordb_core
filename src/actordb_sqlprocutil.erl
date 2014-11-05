@@ -26,11 +26,11 @@ static_sqls() ->
 	% #d07; -> d means it returns result
 	"INSERT INTO transactions (commited) VALUES (0);",
 	% #s08;
-	"UPDATE transactions SET commited=1 WHERE id=?1 AND (commited=0 OR commited=1);",
-	% #s09;
-	"INSERT OR REPLACE INTO terms VALUES (?1,?2,?3,?4,?5,?6);",
-	% #d10;
-	"SELECT * FROM terms WHERE actor=?1 AND type=?2;"
+	"UPDATE transactions SET commited=1 WHERE id=?1 AND (commited=0 OR commited=1);"
+	% % #s09;
+	% "INSERT OR REPLACE INTO terms VALUES (?1,?2,?3,?4,?5,?6);",
+	% % #d10;
+	% "SELECT * FROM terms WHERE actor=?1 AND type=?2;"
 	}.
 
 reply(undefined,_Msg) ->
@@ -463,8 +463,8 @@ rewind_wal(P) ->
 	end.
 
 save_term(P) ->
-	% ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm}),
-	ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
+	ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm}),
+	% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
 	P.
 
 
@@ -754,9 +754,9 @@ start_verify(P,JustStarted) ->
 						followers = P#dp.follower_indexes, cbmod = P#dp.cbmod},
 			case actordb_election:whois_leader(E) of
 				Result when is_pid(Result); Result == Me ->
-					% ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum}),
-					ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,actordb_conf:node_name(),
-						CurrentTerm,P#dp.evnum,P#dp.evterm),
+					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm}),
+					% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,actordb_conf:node_name(),
+						% CurrentTerm,P#dp.evnum,P#dp.evterm),
 					NP = set_followers(P#dp.schemavers /= undefined,
 							reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me, 
 									mors = master, verified = false})),
@@ -1647,9 +1647,9 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 					{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 					case is_integer(Evnum) of
 						true ->
-							% ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Evterm,Evnum});
-							ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
-								Evterm,Evnum,Evterm);
+							ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Evterm,Evnum,Evterm});
+							% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
+							% 	Evterm,Evnum,Evterm);
 						false ->
 							ok
 					end,
