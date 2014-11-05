@@ -26,11 +26,11 @@ static_sqls() ->
 	% #d07; -> d means it returns result
 	"INSERT INTO transactions (commited) VALUES (0);",
 	% #s08;
-	"UPDATE transactions SET commited=1 WHERE id=?1 AND (commited=0 OR commited=1);"
-	% % #s09;
-	% "INSERT OR REPLACE INTO terms VALUES (?1,?2,?3,?4,?5,?6);",
-	% % #d10;
-	% "SELECT * FROM terms WHERE actor=?1 AND type=?2;"
+	"UPDATE transactions SET commited=1 WHERE id=?1 AND (commited=0 OR commited=1);",
+	% #s09;
+	"INSERT OR REPLACE INTO terms VALUES (?1,?2,?3,?4,?5,?6);",
+	% #d10;
+	"SELECT * FROM terms WHERE actor=?1 AND type=?2;"
 	}.
 
 reply(undefined,_Msg) ->
