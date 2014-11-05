@@ -1413,8 +1413,9 @@ init([_|_] = Opts) ->
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
-			case butil:readtermfile([P#dp.dbpath,"-term"]) of
-				{VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
+			% case butil:readtermfile([P#dp.dbpath,"-term"]) of
+			case actordb_termstore:read_term_info(P#dp.actorname,P#dp.actortype) of
+				{ok, VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
 					ok;
 				_ ->
 					VotedFor = undefined,
