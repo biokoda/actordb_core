@@ -236,7 +236,7 @@ state_to_sql(Name) ->
 	end.
 
 set_global_state(MasterNode,State) ->
-	?AINF("Setting global state ~p",[State]),
+	?ADBG("Setting global state ~p",[State]),
 	case ets:info(?GLOBALETS,size) of
 		undefined ->
 			ets:new(?GLOBALETS, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]);
@@ -277,7 +277,6 @@ set_global_state(MasterNode,State) ->
 			[OldNodes,OldGroups] = butil:ds_vals([nodes,groups],?GLOBALETS),
 			case (NewNodes /= OldNodes orelse NewGroups /= OldGroups) of
 			   	true ->
-			   		?AINF("Setting nodesgrps ~p ~p",[NewNodes,NewGroups]),
 			   		bkdcore_changecheck:set_nodes_groups(NewNodes,NewGroups),
 			   		actordb_election:connect_all(),
 			   		spawn(fun() ->timer:sleep(100), start(?STATE_NM_LOCAL,?STATE_TYPE,[{slave,length(nodes()) > 0}]) end);
@@ -606,7 +605,6 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Configs}) ->
 		false ->
 			{reply,{error,already_started}};
 		true ->
-			?AINF("Unverified all setting init"),
 			set_init_state(Nodes,Groups,Configs),
 			[bkdcore_rpc:cast(Nd,{?MODULE,set_init_state_if_none,[Nodes,Groups,Configs]}) || 
 				Nd <- bkdcore:nodelist(), Nd /= actordb_conf:node_name()],
@@ -730,7 +728,7 @@ cb_init(#st{name = ?STATE_NM_GLOBAL} = _S,_EvNum) ->
 	{doread,<<"select * from state;">>}.
 cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	State = [{butil:toatom(Key),binary_to_term(base64:decode(Val))} || {Key,Val} <- State1],
-	?AINF("Init Setting global state ~p",[State]),
+	?ADBG("Init Setting global state ~p",[State]),
 	set_global_state(actordb_conf:node_name(),State),
 	{ok,S#st{evnum = Evnum, waiting = false}}.
 
