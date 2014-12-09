@@ -387,7 +387,7 @@ commit_call(Doit,Id,From,P) ->
 						<<"delete">> ->
 							ok;
 						_ ->
-							actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)
+							actordb_sqlite:rollback(P#dp.db)
 					end,
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined, transactioninfo = undefined,
 									transactioncheckref = undefined,activity = make_ref()})};
@@ -402,7 +402,8 @@ commit_call(Doit,Id,From,P) ->
 						<<"delete">> ->
 							ok;
 						_ ->
-							actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>,P#dp.evterm,P#dp.evnum,<<>>)
+							% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>,P#dp.evterm,P#dp.evnum,<<>>)
+							ok = actordb_sqlite:rollback(P#dp.db)
 					end,
 					NewSql = <<"DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary," AND updater=",
 										(butil:tobin(Updaterid))/binary,";">>,
@@ -905,7 +906,8 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 										evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers})}
 					end;
 				Resp ->
-					actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+					% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+					actordb_sqlite:rollback(P#dp.db),
 					reply(From,Resp),
 					{noreply,P}
 			end
@@ -954,7 +956,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 								transactioncheckref = CheckRef,
 								transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[])};
 				_Err ->
-					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
+					ok = actordb_sqlite:rollback(P#dp.db),
 					erlang:demonitor(CheckRef),
 					?DBG("Transaction not ok ~p",[_Err]),
 					{reply,Res,P#dp{activity = make_ref(), transactionid = undefined, evterm = P#dp.current_term}}
@@ -964,7 +966,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 			case P#dp.transactionid of
 				TransactionId when Sql1 /= delete ->
 					% Rollback prev version of sql.
-					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>)),
+					ok = actordb_sqlite:rollback(P#dp.db),
 					{OldSql,_EvNum,_} = P#dp.transactioninfo,
 					% Combine prev sql with new one.
 					Sql = iolist_to_binary([OldSql,Sql1]);

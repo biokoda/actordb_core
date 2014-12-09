@@ -120,6 +120,7 @@ prestart() ->
 							end,
 							application:set_env(actordb_core,num_transaction_managers,NumMngrs),
 							Statep = butil:expand_path(butil:tolist(Main)),
+							filelib:ensure_dir(Statep),
 							?AINF("State path ~p, ~p",[Main,Statep]),
 							% No etc folder. config files are provided manually.
 							BkdcoreParam = butil:ds_val(bkdcore,L),
@@ -135,7 +136,18 @@ prestart() ->
 								_ ->
 									application:set_env(bkdcore,statepath,Statep)
 							end,
-							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Name);
+							case filelib:wildcard(Main++"/*.wal") of
+								[] ->
+									case filelib:wildcard(Main++"/shards/*-wal") of
+										[] ->
+											Driver = actordb_driver;
+										_ ->
+											Driver = esqlite3
+									end;
+								_ ->
+									Driver = actordb_driver
+							end,
+							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Driver,Name);
 						Err ->
 							?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
 							init:stop()
@@ -165,7 +177,12 @@ prestart() ->
 				false ->
 					NProcs = length(actordb_conf:paths())
 			end,
-			esqlite3:init({NProcs,actordb_sqlprocutil:static_sqls()}),
+			case actordb_conf:driver() of
+				esqlite3 ->
+					esqlite3:init({NProcs,actordb_sqlprocutil:static_sqls()});
+				actordb_driver ->
+					actordb_driver:init({actordb_conf:paths(),actordb_sqlprocutil:static_sqls()})
+			end,
 			emurmur3:init()
 	end.
 

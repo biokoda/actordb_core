@@ -168,11 +168,16 @@ actorpath(Actor) ->
 	end.
 
 drive(Actor) ->
-	case actordb_conf:paths() of
-		[Path] ->
-			Path;
-		Paths ->
-			actordb:hash_pick(Actor,Paths)
+	case actordb_conf:driver() of
+		esqlite3 ->
+			case actordb_conf:paths() of
+				[Path] ->
+					Path;
+				Paths ->
+					actordb:hash_pick(Actor,Paths)
+			end;
+		_ ->
+			[]
 	end.
 
 split_point(From,To) ->
@@ -193,15 +198,15 @@ type_schema(Type,Version) ->
 			{Version,[]}
 	end.
 
-createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout) ->
-	createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,bkdcore:node_name()).
-createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Name) ->
+createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver) ->
+	createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver,bkdcore:node_name()).
+createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver,Name) ->
 	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},{cfgtime,os:timestamp()},
-								   {journal_mode,Journal},{sync,Sync},{query_timeout,QueryTimeout},{node_name,Name}]).
+								   {journal_mode,Journal},{sync,Sync},{query_timeout,QueryTimeout},{node_name,Name},{driver,Driver}]).
 
 change_journal(Journal,Sync) ->
 	bkdcore:mkmodule(actordb_conf,[{db_path,actordb_conf:db_path()},{paths,actordb_conf:paths()},{node_name,bkdcore:node_name()},
-								   {level_size,actordb_conf:level_size()},{journal_mode,Journal},
+								   {level_size,actordb_conf:level_size()},{journal_mode,Journal},{driver,actordb_conf:driver()},
 								   {sync,butil:tobin(Sync)},{query_timeout,actordb_conf:query_timeout()}]).
 
 % Out of schema.cfg create module with functions:
