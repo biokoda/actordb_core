@@ -4,7 +4,9 @@
 
 -module(actordb_sqlite).
 -export([init/1,init/2,init/3,exec/2,exec/3,exec/4,exec/5,exec/6,set_pragmas/2,set_pragmas/3,okornot/1,
-		 stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1,rollback/1]).  %wal_pages/1
+		 stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1,rollback/1,wal_checksum/4,make_wal_header/1,
+		 lz4_compress/1,lz4_decompress/2,replicate_opts/3,parse_helper/2,all_tunnel_call/1,tcp_reconnect/0,
+		 tcp_connect_async/5,store_prepared_table/2]).
 -include("actordb.hrl").
 
 init(Path) ->
@@ -56,6 +58,75 @@ init(Path,JournalMode,Thread) ->
 					end
 			end
 	end.
+
+wal_checksum(Bin,C1,C2,Size) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:wal_checksum(Bin,C1,C2,Size);
+		_ ->
+			esqlite3:wal_checksum(Bin,C1,C2,Size)
+	end.
+make_wal_header(Size) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:make_wal_header(Size);
+		_ ->
+			esqlite3:make_wal_header(Size)
+	end.
+lz4_compress(Bin) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:lz4_compress(Bin);
+		_ ->
+			esqlite3:lz4_compress(Bin)
+	end.
+lz4_decompress(Bin,Size) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:lz4_decompress(Bin,Size);
+		_ ->
+			esqlite3:lz4_decompress(Bin,Size)
+	end.
+replicate_opts(Db,Bin,Type) when element(1,Db) == connection ->
+	esqlite3:replicate_opts(Db,Bin,Type);
+replicate_opts(Db,Bin,Type) ->
+	actordb_driver:replicate_opts(Db,Bin,Type).
+parse_helper(Bin,Offset) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:parse_helper(Bin,Offset);
+		_ ->
+			esqlite3:parse_helper(Bin,Offset)
+	end.
+all_tunnel_call(Bin) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:all_tunnel_call(Bin);
+		_ ->
+			esqlite3:all_tunnel_call(Bin)
+	end.
+tcp_reconnect() ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:tcp_reconnect();
+		_ ->
+			esqlite3:tcp_reconnect()
+	end.
+tcp_connect_async(IP,Port,Bin,Pos,Type) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:tcp_connect_async(IP,Port,Bin,Pos,Type);
+		_ ->
+			esqlite3:tcp_connect_async(IP,Port,Bin,Pos,Type)
+	end.
+store_prepared_table(Vers,Sqls) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:store_prepared_table(Vers,Sqls);
+		_ ->
+			esqlite3:store_prepared_table(Vers,Sqls)
+	end.
+
 
 rollback(Db) when element(1,Db) == connection ->
 	okornot(exec(Db,<<"ROLLBACK;">>));

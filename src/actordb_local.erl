@@ -276,7 +276,7 @@ handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 handle_info(reconnect_raft,P) ->
 	start_timer(P),
 	erlang:send_after(500,self(),reconnect_raft),
-	esqlite3:tcp_reconnect(),
+	actordb_sqlite:tcp_reconnect(),
 	{noreply,P};
 handle_info(read_ref,P) ->
 	erlang:send_after(1000,self(),read_ref),
@@ -415,7 +415,7 @@ store_raft_connection([Nd|T],Tuple) ->
 					Type = 2
 			end,
 			?AINF("Starting raft connection to ~p",[{Nd,IP,Port}]),
-			case esqlite3:tcp_connect_async(IP,Port,[bkdcore:rpccookie(Nd),"tunnel,",actordb_conf:node_name(),",actordb_util"],Pos-1,Type) of
+			case actordb_sqlite:tcp_connect_async(IP,Port,[bkdcore:rpccookie(Nd),"tunnel,",actordb_conf:node_name(),",actordb_util"],Pos-1,Type) of
 				Ref when is_reference(Ref) ->
 					store_raft_connection(T,setelement(Pos,Tuple,Nd));
 				_ ->

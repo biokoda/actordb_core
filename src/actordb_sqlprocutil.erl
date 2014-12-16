@@ -46,7 +46,7 @@ ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 									{state_rw,Resp},P#dp.cbmod]}).
 
 append_wal(P,Header,Bin) ->
-	case file:write(P#dp.db,[Header,esqlite3:lz4_decompress(Bin,?PAGESIZE)]) of
+	case file:write(P#dp.db,[Header,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)]) of
 		ok ->
 			ok;
 		Err ->
@@ -170,7 +170,7 @@ create_var_header_with_db(P) ->
 	case filelib:file_size(P#dp.dbpath) of
 		?PAGESIZE ->
 			{ok,Dbfile} = prim_file:read_file(P#dp.dbpath),
-			{Compressed,CompressedSize} = esqlite3:lz4_compress(Dbfile),
+			{Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Dbfile),
 			<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
 			term_to_binary({P#dp.current_term,actordb_conf:node_name(),
 									P#dp.evnum,P#dp.evterm,follower_call_counts(P),DbCompressed});
@@ -215,7 +215,7 @@ reopen_db(P) ->
 			{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,write,binary,raw]),
 			case file:position(F,eof) of
 				{ok,0} ->
-					ok = file:write(F,esqlite3:make_wal_header(?PAGESIZE));
+					ok = file:write(F,actordb_sqlite:make_wal_header(?PAGESIZE));
 				{ok,_WalSize} ->
 					ok
 			end,
@@ -409,14 +409,14 @@ store_follower(P,NF) ->
 % Read until commit set in header.
 send_wal(P,#flw{file = File} = F) ->
 	{ok,<<Header:40/binary,Page/binary>>} = file:read(File,40+?PAGESIZE),
-     {HC1,HC2} = esqlite3:wal_checksum(Header,0,0,32),
-     {C1,C2} = esqlite3:wal_checksum(Page,HC1,HC2,byte_size(Page)),
+     {HC1,HC2} = actordb_sqlite:wal_checksum(Header,0,0,32),
+     {C1,C2} = actordb_sqlite:wal_checksum(Page,HC1,HC2,byte_size(Page)),
 	case Header of
 		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,
 		  _:32,_:32,Chk1:32/unsigned-big,Chk2:32/unsigned-big,_/binary>> when Evnum == F#flw.next_index ->
 			case ok of
 				_ when C1 == Chk1, C2 == Chk2 ->
-					{Compressed,CompressedSize} = esqlite3:lz4_compress(Page),
+					{Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Page),
 					<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
 					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},

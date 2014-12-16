@@ -255,7 +255,7 @@ set_global_state(MasterNode,State) ->
 					Vers = list_to_tuple([list_to_tuple([PS#ps.version || PS <- tuple_to_list(PT)]) || {_Type,PT} <- ListProp]),
 					Sqls = list_to_tuple([list_to_tuple([PS#ps.sql || PS <- tuple_to_list(PT)]) || {_Type,PT} <- ListProp]),
 					% ?AINF("Setting new prepstatements table ~p~n~p",[Vers,Sqls]),
-					esqlite3:store_prepared_table(Vers,Sqls)
+					actordb_sqlite:store_prepared_table(Vers,Sqls)
 			end
 	end,
 	% If any cfg changed, call setcfg for it.

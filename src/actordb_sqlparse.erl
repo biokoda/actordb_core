@@ -612,7 +612,7 @@ split_statements(Bin1) ->
 	end.
 
 find_ending(Bin,Offset1,Prev,IsIolist) ->
-	case esqlite3:parse_helper(Bin,Offset1) of
+	case actordb_sqlparse:parse_helper(Bin,Offset1) of
 		ok ->
 			case Prev of
 				[] ->

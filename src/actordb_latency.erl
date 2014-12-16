@@ -79,7 +79,7 @@ handle_info(latency_check,P) ->
 	% This will affect election timers. Election timer should
 	%  not be lower than connection latency. 
 	Term = term_to_binary({?MODULE,[node(),os:timestamp()]}),
-	_NSent = esqlite3:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
+	_NSent = actordb_sqlite:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
 	erlang:send_after(300,self(),latency_check),
 	{noreply,P};
 handle_info({stop},P) ->

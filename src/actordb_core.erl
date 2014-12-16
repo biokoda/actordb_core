@@ -181,7 +181,7 @@ prestart() ->
 				esqlite3 ->
 					esqlite3:init({NProcs,actordb_sqlprocutil:static_sqls()});
 				actordb_driver ->
-					actordb_driver:init({actordb_conf:paths(),actordb_sqlprocutil:static_sqls()})
+					ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls()})
 			end,
 			emurmur3:init()
 	end.

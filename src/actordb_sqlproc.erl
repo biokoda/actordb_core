@@ -691,7 +691,7 @@ state_rw_call(What,From,P) ->
 							case ok of
 								_ when element(1,P#dp.db) == connection ->
 									ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
-									ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,NewTerm}),ReplType);
+									ok = actordb_sqlite:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,NewTerm}),ReplType);
 								_ ->
 									ok
 							end,
@@ -705,7 +705,7 @@ state_rw_call(What,From,P) ->
 					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}}
 			end;
 		{set_dbfile,Bin} ->
-			spawn(fun() -> ok = prim_file:write_file(P#dp.dbpath,esqlite3:lz4_decompress(Bin,?PAGESIZE)) end),
+			spawn(fun() -> ok = prim_file:write_file(P#dp.dbpath,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)) end),
 			{reply,ok,P#dp{activity = make_ref()}};
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
@@ -1199,7 +1199,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 													locked = lists:delete(ae,P1#dp.locked)}),
 			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
 			?DBG("Elected leader term=~p, nodes_synced=~p",[P1#dp.current_term,AllSynced]),
-			ok = esqlite3:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),ReplType),
+			ok = actordb_sqlite:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),ReplType),
 
 			case P#dp.schemavers of
 				undefined ->
