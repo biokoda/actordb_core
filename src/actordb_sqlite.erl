@@ -19,7 +19,7 @@ init(Path,JournalMode,Thread) ->
 			Sql = <<"select name, sql from sqlite_master where type='table';",
 					"$PRAGMA cache_size=",(butil:tobin(?DEF_CACHE_PAGES))/binary,";">>,
 			case actordb_driver:open(Path,Thread,Sql) of
-				{ok,Db,[_,[{columns,_},{rows,Tables}]]} ->
+				{ok,Db,{ok,[[{columns,_},{rows,Tables}]]}} ->
 					{ok,Db,Tables,?PAGESIZE};
 				Err ->
 					?AERR("Unable to open sqlite file at ~p error ~p",[Path,Err]),

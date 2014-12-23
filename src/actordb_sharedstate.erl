@@ -508,7 +508,7 @@ cb_path(_,_Name,_Type) ->
 			P = [bkdcore:statepath(),"/state/"],
 			filelib:ensure_dir(P);
 		_ ->
-			P = "/state/"
+			P = "state/"
 	end,
 	P.
 

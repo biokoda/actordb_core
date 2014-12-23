@@ -166,6 +166,12 @@ prestart() ->
 						ok;
 					Errx2 ->
 						throw({path_invalid,F++"/shards/",Errx2})
+				end,
+				case  filelib:ensure_dir(F++"/state/") of
+					ok -> 
+						ok;
+					Errx3 ->
+						throw({path_invalid,F++"/state/",Errx3})
 				end
 			 end || F <- actordb_conf:paths()],
 

@@ -404,7 +404,7 @@ dotunnels() ->
 call_tunnels() ->
 	?debugFmt("Call tunnels on ~p",[node()]),
 	Term = term_to_binary({?MODULE,[node(),self()]}),
-	NSent = esqlite3:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
+	NSent = actordb_sqlite:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
 	?debugFmt("Get respones ~p",[NSent]),
 	% Presumed 2 threads and 2 nodes
 	ok = get_responses(2*2).
