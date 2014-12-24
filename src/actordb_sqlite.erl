@@ -157,7 +157,7 @@ copy_to_trash(Path) ->
 	filelib:ensure_dir(Trash),
 	file:copy(Path,Trash).
 
-checkpoint(Db) ->
+checkpoint(Db) when element(1,Db) == connection ->
 	exec(Db,<<"PRAGMA wal_checkpoint;">>).
 
 close(Db) ->

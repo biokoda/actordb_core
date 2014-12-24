@@ -1423,7 +1423,11 @@ init([_|_] = Opts) ->
 					VotedFor = undefined,
 					VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
 			end,
+			Driver = actordb_conf:driver(),
 			case ok of
+				_ when P#dp.mors == slave, Driver == actordb_driver ->
+					{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
+								voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})};
 				_ when P#dp.mors == slave ->
 					% Read evnum and evterm from wal file if it exists
 					case file:open([P#dp.dbpath,"-wal"],[read,binary,raw]) of
@@ -1445,9 +1449,7 @@ init([_|_] = Opts) ->
 													voted_for = VotedFor, evnum = VoteEvnum, evterm = VoteEvTerm})}
 							end;
 						{error,enoent} ->
-							% {ok,P#dp{current_term = VotedCurrentTerm, voted_for = VotedFor, evnum = VoteEvum}}
 							{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
-										% election = actordb_sqlprocutil:election_timer(undefined),
 										voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})}
 					end;
 				_ when MovedToNode == undefined; RightCluster ->

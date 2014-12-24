@@ -194,7 +194,10 @@ send_empty_ae(P,F) ->
 	F#flw{wait_for_response_since = make_ref()}.
 
 reopen_db(#dp{mors = master} = P) ->
+	Driver = actordb_conf:driver(),
 	case ok of
+		_ when Driver == actordb_driver ->
+			P;
 		% we are master but db not open or open as file descriptor to -wal file
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
@@ -209,7 +212,10 @@ reopen_db(#dp{mors = master} = P) ->
 			end
 	end;
 reopen_db(P) ->
+	Driver = actordb_conf:driver(),
 	case ok of
+		_ when Driver == actordb_driver ->
+			P;
 		_ when element(1,P#dp.db) == connection; P#dp.db == undefined ->
 			actordb_sqlite:stop(P#dp.db),
 			{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,write,binary,raw]),
@@ -260,12 +266,17 @@ set_followers(HaveSchema,P) ->
 
 % Find first valid evnum,evterm in wal (from beginning)
 wal_from([_|_] = Path) ->
-	case file:open(Path,[read,binary,raw]) of
-		{ok,F} ->
-			{ok,_} = file:position(F,32),
-			wal_from(F);
+	case actordb_conf:drier() of
+		actordb_driver ->
+			{0,0};
 		_ ->
-			{0,0}
+			case file:open(Path,[read,binary,raw]) of
+				{ok,F} ->
+					{ok,_} = file:position(F,32),
+					wal_from(F);
+				_ ->
+					{0,0}
+			end
 	end;
 wal_from(F) ->
 	case file:read(F,40) of
@@ -283,14 +294,36 @@ wal_from(F) ->
 	end.
 
 try_wal_recover(P,F) when F#flw.file /= undefined ->
-	file:close(F#flw.file),
+	case F#flw.file of
+		{iter,_} ->
+			ok;
+		_ ->
+			file:close(F#flw.file)
+	end,
 	try_wal_recover(P,F#flw{file = undefined});
 try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
-	case wal_from([P#dp.dbpath,"-wal"]) of
-		{0,0} ->
-			{false,store_follower(P,F),F};
-		WF ->
-			try_wal_recover(P#dp{wal_from = WF},F)
+	case actordb_conf:driver() of
+		actordb_driver ->
+			case F#flw.match_index of
+				0 ->
+					Evnum = 1;
+				Evnum ->
+					ok
+			end,
+			case actordb_driver:iterate_wal(P#dp.db,Evnum) of
+				{ok,Iter2,Bin,_IsActiveWal} ->
+					NF = F#flw{file = Iter2,pagebuf = Bin},
+					{true,store_follower(P,NF),NF};
+				done ->
+					{false,P,F}
+			end;
+		_ ->
+			case wal_from([P#dp.dbpath,"-wal"]) of
+				{0,0} ->
+					{false,store_follower(P,F),F};
+				WF ->
+					try_wal_recover(P#dp{wal_from = WF},F)
+			end
 	end;
 try_wal_recover(P,F) ->
 	?DBG("Try_wal_recover for=~p, myev=~p MatchIndex=~p MyEvFrom=~p",
@@ -379,7 +412,7 @@ continue_maybe(P,F,SuccessHead) ->
 			case StartRes of
 				ok ->
 					% Send wal
-					case send_wal(P,F) of
+					case catch send_wal(P,F) of
 						wal_corruption ->
 							store_follower(P,F#flw{wait_for_response_since = make_ref()});
 						_ ->
@@ -407,6 +440,34 @@ store_follower(P,NF) ->
 
 
 % Read until commit set in header.
+send_wal(P,#flw{file = {iter,_}} = F) ->
+	case F#flw.pagebuf of
+		<<>> ->
+			case actordb_driver:iterate_wal(P#dp.db,F#flw.file) of
+				{ok,Iter,<<Header:144/binary,Page/binary>>,_IsLastWal} ->
+					ok;
+				done ->
+					?ERR("Detected disk corruption while trying to replicate to stale follower. Stepping down as leader."),
+					throw(wal_corruption),
+					Iter = Header = Page = undefined
+			end;
+		<<Header:144/binary,Page/binary>> ->
+			Iter = F#flw.file
+	end,
+	<<_:32,Commit:32,_/binary>> = Header,
+	{Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Page),
+	<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
+	WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+				{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},
+				[nostart]]}),
+	case WalRes == ok orelse WalRes == done of
+		true when Commit == 0 ->
+			send_wal(P,F#flw{file = Iter, pagebuf = <<>>});
+		true ->
+			ok;
+		_ ->
+			error
+	end;
 send_wal(P,#flw{file = File} = F) ->
 	{ok,<<Header:40/binary,Page/binary>>} = file:read(File,40+?PAGESIZE),
      {HC1,HC2} = actordb_sqlite:wal_checksum(Header,0,0,32),
@@ -1090,61 +1151,71 @@ delactorfile(P) ->
 	end.
 
 checkpoint(P) ->
-	{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
-	DbSize = NPages*(?PAGESIZE+40),
-	case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
-		true ->
-			NotSynced = lists:foldl(fun(F,Count) ->
-				case F#flw.match_index /= P#dp.evnum of
-					true ->
-						Count+1;
-					false ->
-						Count
-				end 
-			end,0,P#dp.follower_indexes),
-			case NotSynced of
-				0 ->
-					P#dp{wal_from = do_checkpoint(P)};
-				% If nodes arent synced, tolerate 30MB of wal size.
-				_ when DbSize >= 1024*1024*30 ->
-					P#dp{wal_from = do_checkpoint(P)};
-				_ ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			P;
+		_ ->
+			{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
+			DbSize = NPages*(?PAGESIZE+40),
+			case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
+				true ->
+					NotSynced = lists:foldl(fun(F,Count) ->
+						case F#flw.match_index /= P#dp.evnum of
+							true ->
+								Count+1;
+							false ->
+								Count
+						end 
+					end,0,P#dp.follower_indexes),
+					case NotSynced of
+						0 ->
+							P#dp{wal_from = do_checkpoint(P)};
+						% If nodes arent synced, tolerate 30MB of wal size.
+						_ when DbSize >= 1024*1024*30 ->
+							P#dp{wal_from = do_checkpoint(P)};
+						_ ->
+							P
+					end;
+				false ->
 					P
-			end;
-		false ->
-			P
+			end
 	end.
 
 do_checkpoint(P) ->
-	% Only do one check point at a time.
-	case catch register(checkpointer,self()) of
-		true ->
-			?DBG("Executing checkpoint ~p",[P#dp.mors]),
-			case P#dp.mors of
-				master ->
-					actordb_sqlite:checkpoint(P#dp.db),
-					save_term(P),
-					unregister(checkpointer),
-					[bkdcore_rpc:cast(F#flw.node,
-								{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}]})
-							 || F <- P#dp.follower_indexes, F#flw.match_index == P#dp.evnum];
-				_ ->
-					{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-					actordb_sqlite:checkpoint(Db),
-					unregister(checkpointer),
-					save_term(P),
-					actordb_sqlite:stop(Db)
-			end,
+	case actordb_conf:driver() of
+		actordb_driver ->
 			{0,0};
 		_ ->
-			?DBG("Delaying checkpoint ~p",[P#dp.mors]),
-			case P#dp.mors of
-				master ->
-					ok;
+			% Only do one check point at a time.
+			case catch register(checkpointer,self()) of
+				true ->
+					?DBG("Executing checkpoint ~p",[P#dp.mors]),
+					case P#dp.mors of
+						master ->
+							actordb_sqlite:checkpoint(P#dp.db),
+							save_term(P),
+							unregister(checkpointer),
+							[bkdcore_rpc:cast(F#flw.node,
+										{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}]})
+									 || F <- P#dp.follower_indexes, F#flw.match_index == P#dp.evnum];
+						_ ->
+							{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+							actordb_sqlite:checkpoint(Db),
+							unregister(checkpointer),
+							save_term(P),
+							actordb_sqlite:stop(Db)
+					end,
+					{0,0};
 				_ ->
-					erlang:send_after(100,self(),do_checkpoint)
-			end,
-			P#dp.wal_from
+					?DBG("Delaying checkpoint ~p",[P#dp.mors]),
+					case P#dp.mors of
+						master ->
+							ok;
+						_ ->
+							erlang:send_after(100,self(),do_checkpoint)
+					end,
+					P#dp.wal_from
+			end
 	end.
 
 delete_actor(P) ->

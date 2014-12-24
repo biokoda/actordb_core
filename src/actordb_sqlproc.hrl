@@ -50,7 +50,7 @@
 %          First element of tuple is table name. Sql must contain _insert; statement.
 -record(write,{sql, mfa, transaction, records = []}).
 -record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0, 
-              file, wait_for_response_since, last_seen}).
+              file, wait_for_response_since, last_seen, pagebuf = <<>>}).
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
