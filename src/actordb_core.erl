@@ -177,12 +177,12 @@ prestart() ->
 
 			% Start dependencies
 			application:start(esqlite),
-			case length(actordb_conf:paths())*2 >= erlang:system_info(logical_processors) of
-				true ->
-					NProcs = length(actordb_conf:paths())*2;
-				false ->
-					NProcs = length(actordb_conf:paths())
-			end,
+			% case length(actordb_conf:paths())*2 >= erlang:system_info(logical_processors) of
+			% 	true ->
+			% 		NProcs = length(actordb_conf:paths())*2;
+			% 	false ->
+					NProcs = length(actordb_conf:paths()),
+			% end,
 			case actordb_conf:driver() of
 				esqlite3 ->
 					esqlite3:init({NProcs,actordb_sqlprocutil:static_sqls()});

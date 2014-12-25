@@ -46,12 +46,17 @@ ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 									{state_rw,Resp},P#dp.cbmod]}).
 
 append_wal(P,Header,Bin) ->
-	case file:write(P#dp.db,[Header,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)]) of
-		ok ->
-			ok;
-		Err ->
-			?AERR("Append wal failed ~p, state ~p",[Err,P]),
-			throw(cant_append)
+	case element(1,P#dp.db) of
+		actordb_driver ->
+			ok = actordb_driver:inject_page(P#dp.db,Bin,Header);
+		_ ->
+			case file:write(P#dp.db,[Header,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)]) of
+				ok ->
+					ok;
+				Err ->
+					?AERR("Append wal failed ~p, state ~p",[Err,P]),
+					throw(cant_append)
+			end
 	end.
 
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
@@ -266,7 +271,7 @@ set_followers(HaveSchema,P) ->
 
 % Find first valid evnum,evterm in wal (from beginning)
 wal_from([_|_] = Path) ->
-	case actordb_conf:drier() of
+	case actordb_conf:driver() of
 		actordb_driver ->
 			{0,0};
 		_ ->
@@ -500,6 +505,17 @@ send_wal(P,#flw{file = File} = F) ->
 
 
 % Go back one entry
+rewind_wal(P) when element(1,P#dp.db) == actordb_driver ->
+	case actordb_driver:wal_rewind(P#dp.db,P#dp.evnum) of
+		{ok,0} ->
+			P;
+		{ok,_} ->
+			Sql = <<"SELECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
+			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
+			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
+			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
+			P#dp{evnum = Evnum, evterm = EvTerm}
+	end;
 rewind_wal(P) ->
 	?DBG("Rewinding wal"),
 	case file:position(P#dp.db,{cur,-(?PAGESIZE+40)}) of

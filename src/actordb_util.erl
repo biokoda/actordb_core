@@ -155,16 +155,26 @@ actor_ae_stream(ActorPid,Count) ->
 
 
 shard_path(Name) ->
-	[drive(Name), "/shards/"].
+	case actordb_conf:driver() of
+		actordb_driver ->
+			"shards/";
+		_ ->
+			[drive(Name), "/shards/"]
+	end.
 
 actorpath(Actor) ->
-	Path = drive(Actor),
-	case actordb_conf:level_size() of
-		0 ->
-			[Path, "/actors/"];
-		Max ->
-			[Path,"/actors/", butil:tolist(hash(["db_level",butil:tobin(Actor)]) rem Max), 
-					"/"]
+	case actordb_conf:driver() of
+		actordb_driver ->
+			["actors/"];
+		_ ->
+			Path = drive(Actor),
+			case actordb_conf:level_size() of
+				0 ->
+					[Path, "/actors/"];
+				Max ->
+					[Path,"/actors/", butil:tolist(hash(["db_level",butil:tobin(Actor)]) rem Max), 
+							"/"]
+			end
 	end.
 
 drive(Actor) ->
