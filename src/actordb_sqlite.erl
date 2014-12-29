@@ -128,11 +128,8 @@ store_prepared_table(Vers,Sqls) ->
 	end.
 
 
-rollback(Db) when element(1,Db) == connection ->
-	okornot(exec(Db,<<"ROLLBACK;">>));
-rollback(_) ->
-	% actordb_driver does rollback automaticaly on errors
-	ok.
+rollback(Db) ->
+	okornot(exec(Db,<<"ROLLBACK;">>)).
 
 move_to_trash(Path) ->
 	case actordb_conf:level_size() of
