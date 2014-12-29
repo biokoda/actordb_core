@@ -201,6 +201,8 @@ send_empty_ae(P,F) ->
 reopen_db(#dp{mors = master} = P) ->
 	Driver = actordb_conf:driver(),
 	case ok of
+		_ when Driver == actordb_driver, P#dp.db == undefined  ->
+			init_opendb(P);
 		_ when Driver == actordb_driver ->
 			P;
 		% we are master but db not open or open as file descriptor to -wal file
@@ -219,6 +221,8 @@ reopen_db(#dp{mors = master} = P) ->
 reopen_db(P) ->
 	Driver = actordb_conf:driver(),
 	case ok of
+		_ when Driver == actordb_driver, P#dp.db == undefined  ->
+			init_opendb(P);
 		_ when Driver == actordb_driver ->
 			P;
 		_ when element(1,P#dp.db) == connection; P#dp.db == undefined ->

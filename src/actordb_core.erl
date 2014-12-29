@@ -176,7 +176,6 @@ prestart() ->
 			 end || F <- actordb_conf:paths()],
 
 			% Start dependencies
-			application:start(esqlite),
 			% case length(actordb_conf:paths())*2 >= erlang:system_info(logical_processors) of
 			% 	true ->
 			% 		NProcs = length(actordb_conf:paths())*2;
