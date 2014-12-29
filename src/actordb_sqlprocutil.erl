@@ -5,6 +5,7 @@
 -compile(export_all).
 -include_lib("actordb_sqlproc.hrl").
 
+
 static_sqls() ->
 	% Prepared statements which will be referenced by their index in the tuple.
 	% Used for common queries and they only get parsed once per actor.
@@ -172,9 +173,9 @@ reply_maybe(P,N,[]) ->
 create_var_header(P) ->
 	term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,follower_call_counts(P)}).
 create_var_header_with_db(P) ->
-	case filelib:file_size(P#dp.dbpath) of
+	case filelib:file_size(P#dp.fullpath) of
 		?PAGESIZE ->
-			{ok,Dbfile} = prim_file:read_file(P#dp.dbpath),
+			{ok,Dbfile} = prim_file:read_file(P#dp.fullpath),
 			{Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Dbfile),
 			<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
 			term_to_binary({P#dp.current_term,actordb_conf:node_name(),
@@ -213,7 +214,7 @@ reopen_db(#dp{mors = master} = P) ->
 		_ ->
 			case P#dp.wal_from == {0,0} of
 				true ->
-					P#dp{wal_from = wal_from([P#dp.dbpath,"-wal"])};
+					P#dp{wal_from = wal_from([P#dp.fullpath,"-wal"])};
 				false ->
 					P
 			end
@@ -227,7 +228,7 @@ reopen_db(P) ->
 			P;
 		_ when element(1,P#dp.db) == connection; P#dp.db == undefined ->
 			actordb_sqlite:stop(P#dp.db),
-			{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,write,binary,raw]),
+			{ok,F} = file:open([P#dp.fullpath,"-wal"],[read,write,binary,raw]),
 			case file:position(F,eof) of
 				{ok,0} ->
 					ok = file:write(F,actordb_sqlite:make_wal_header(?PAGESIZE));
@@ -244,7 +245,7 @@ init_opendb(P) ->
 	NP = P#dp{db = Db},
 	case SchemaTables of
 		[_|_] ->
-			?DBG("Opening HAVE schema",[]),
+			?DBG("Opening HAVE schema ~p",[SchemaTables]),
 			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db,
 					<<"SELECT * FROM __adb;">>,read),
 			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
@@ -253,7 +254,7 @@ init_opendb(P) ->
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
 			% BaseVers = butil:toint(butil:ds_val(?BASE_SCHEMA_VERSI,Rows,0)),
 			set_followers(true,NP#dp{evnum = Evnum, schemavers = Vers,
-						wal_from = wal_from([P#dp.dbpath,"-wal"]),
+						wal_from = wal_from([P#dp.fullpath,"-wal"]),
 						evterm = EvTerm,
 						movedtonode = MovedToNode1});
 		[] -> 
@@ -327,7 +328,7 @@ try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
 					{false,P,F}
 			end;
 		_ ->
-			case wal_from([P#dp.dbpath,"-wal"]) of
+			case wal_from([P#dp.fullpath,"-wal"]) of
 				{0,0} ->
 					{false,store_follower(P,F),F};
 				WF ->
@@ -369,7 +370,7 @@ try_wal_recover(P,F) ->
 	{Res,store_follower(P,NF),NF}.
 
 open_wal_at(P,Index) ->
-	{ok,F} = file:open([P#dp.dbpath,"-wal"],[read,binary,raw]),
+	{ok,F} = file:open([P#dp.fullpath,"-wal"],[read,binary,raw]),
 	{ok,_} = file:position(F,32),
 	open_wal_at(P,Index,F,undefined,undefined).
 open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
@@ -538,13 +539,13 @@ rewind_wal(P) ->
 		{error,_} ->
 			?DBG("Resetting to zero"),
 			file:close(P#dp.db),
-			file:delete([P#dp.dbpath,"-wal"]),
+			file:delete([P#dp.fullpath,"-wal"]),
 			% rewind to 0, causing a complete restore from another node
 			reopen_db(P#dp{evnum = 0, evterm = 0, db = undefined})
 	end.
 
 save_term(P) ->
-	ok = butil:savetermfile([P#dp.dbpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm}),
+	ok = butil:savetermfile([P#dp.fullpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm}),
 	% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
 	P.
 
@@ -835,7 +836,7 @@ start_verify(P,JustStarted) ->
 						followers = P#dp.follower_indexes, cbmod = P#dp.cbmod},
 			case actordb_election:whois_leader(E) of
 				Result when is_pid(Result); Result == Me ->
-					ok = butil:savetermfile([P#dp.dbpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm}),
+					ok = butil:savetermfile([P#dp.fullpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm}),
 					% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,actordb_conf:node_name(),
 						% CurrentTerm,P#dp.evnum,P#dp.evterm),
 					NP = set_followers(P#dp.schemavers /= undefined,
@@ -1149,10 +1150,10 @@ delactorfile(P) ->
 	save_term(P),
 	case P#dp.movedtonode of
 		undefined ->
-			file:delete(P#dp.dbpath),
-			% file:delete(P#dp.dbpath++"-term"),
-			file:delete(P#dp.dbpath++"-wal"),
-			file:delete(P#dp.dbpath++"-shm");
+			file:delete(P#dp.fullpath),
+			% file:delete(P#dp.fullpath++"-term"),
+			file:delete(P#dp.fullpath++"-wal"),
+			file:delete(P#dp.fullpath++"-shm");
 		_ ->
 			% Leave behind redirect marker.
 			% Create a file with "1" attached to end
@@ -1161,10 +1162,10 @@ delactorfile(P) ->
 			ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,Sql,<<"COMMIT;">>],Records,write)),
 			actordb_sqlite:stop(Db),
 			% Rename into the actual dbfile (should be atomic op)
-			ok = file:rename(P#dp.dbpath++"1",P#dp.dbpath),
-			file:delete(P#dp.dbpath++"-wal"),
-			% file:delete(P#dp.dbpath++"-term"),
-			file:delete(P#dp.dbpath++"-shm")
+			ok = file:rename(P#dp.fullpath++"1",P#dp.fullpath),
+			file:delete(P#dp.fullpath++"-wal"),
+			% file:delete(P#dp.fullpath++"-term"),
+			file:delete(P#dp.fullpath++"-shm")
 	end.
 
 checkpoint(P) ->
@@ -1381,7 +1382,14 @@ parse_opts(P,[]) ->
 									[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
 									butil:encode_percent(butil:tolist(P#dp.actorname))++"."++
 									butil:encode_percent(butil:tolist(P#dp.actortype)),
-			P#dp{dbpath = DbPath,activity_now = actor_start(P), netchanges = actordb_local:net_changes()};
+			case actordb_conf:driver() of
+				actordb_driver ->
+					ThreadNum = actordb_util:hash(DbPath) rem length(actordb_conf:paths()),
+					FullPath = lists:nth(ThreadNum+1,actordb_conf:paths())++"/"++DbPath;
+				_ ->
+					FullPath = DbPath
+			end,
+			P#dp{dbpath = DbPath,fullpath = FullPath,activity_now = actor_start(P), netchanges = actordb_local:net_changes()};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.
@@ -1496,17 +1504,17 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data},_CallFrom,P) ->
 	{FromPid,Ref} = From1,
-	Size = filelib:file_size([P#dp.dbpath,"-wal"]),
+	Size = filelib:file_size([P#dp.fullpath,"-wal"]),
 	case ok of
 		_ when Data == done orelse Size =< Data -> %when P#dp.transactionid == undefined ->
 			erlang:send_after(1000,self(),check_locks),
-			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},
+			{reply,{[P#dp.fullpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},
 				P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 		% true ->
 		% 	{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
 		_ ->
 			?DBG("wal_size from=~p, insize=~p, filesize=~p",[From1,Data,Size]), 
-			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},P}
+			{reply,{[P#dp.fullpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},P}
 	end;
 dbcopy_call({checksplit,Data},_,P) ->
 	{M,F,A} = Data,
@@ -1593,8 +1601,7 @@ dbcopy_do(P,Bin) ->
 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}).
 
 dbcopy(P,Home,ActorTo) ->
-	ThreadNum = actordb_util:hash(P#dp.dbpath) rem length(actordb_conf:paths()),
-	{ok,F} = file:open(lists:nth(ThreadNum+1,actordb_conf:paths())++"/"++P#dp.dbpath,[read,binary,raw]),
+	{ok,F} = file:open(P#dp.fullpath,[read,binary,raw]),
 	dbcopy(P,Home,ActorTo,F,0,db).
 dbcopy(P,Home,ActorTo,{iter,_} = Iter,Bin,wal) ->
 	case Bin of
@@ -1756,16 +1763,9 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 					end,
 					F1 = F;
 				false when Status == db ->
-					file:delete(P#dp.dbpath++"-wal"),
-					file:delete(P#dp.dbpath++"-shm"),
-					case actordb_conf:driver() of
-						actordb_driver ->
-							ThreadNum = actordb_util:hash(P#dp.dbpath) rem length(actordb_conf:paths()),
-							Path = lists:nth(ThreadNum+1,actordb_conf:paths())++"/"++P#dp.dbpath;
-						_ ->
-							Path = P#dp.dbpath
-					end,
-					{ok,F1} = file:open(Path,[write,raw]),
+					file:delete(P#dp.fullpath++"-wal"),
+					file:delete(P#dp.fullpath++"-shm"),
+					{ok,F1} = file:open(P#dp.fullpath,[write,raw]),
 					ok = file:write(F1,Bin);
 				false when Status == wal ->
 					ok = file:close(F),
@@ -1774,7 +1774,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 							ok = actordb_driver:inject_page(F1,Bin);
 						_ ->
-							{ok,F1} = file:open(P#dp.dbpath++"-wal",[write,raw]),
+							{ok,F1} = file:open(P#dp.fullpath++"-wal",[write,raw]),
 							ok = file:write(F1,Bin)
 					end;
 				false when Status == done ->
@@ -1805,9 +1805,9 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(F, Sql,read),
 							Evnum1 = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 							Evterm1 = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-							ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Evterm1,Evnum1,Evterm1});
+							ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,Evterm1,Evnum1,Evterm1});
 						_ when is_integer(Evnum) ->
-							ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Evterm,Evnum,Evterm});
+							ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,Evterm,Evnum,Evterm});
 							% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
 							% 	Evterm,Evnum,Evterm);
 						false ->
@@ -1817,7 +1817,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 						[] ->
 							?ERR("DB open after move without schema?",[]),
 							actordb_sqlite:stop(Db),
-							actordb_sqlite:move_to_trash(P#dp.dbpath),
+							actordb_sqlite:move_to_trash(P#dp.fullpath),
 							exit(copynoschema);
 						_ ->
 							?DBG("Copyreceive done ~p ~p",[

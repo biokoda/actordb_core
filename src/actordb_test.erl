@@ -172,23 +172,18 @@ copyactor() ->
 
 recoveractor() ->
 	?debugFmt("recoveractor",[]),
-	% S = ['slave1@127.0.0.1','slave2@127.0.0.1','slave3@127.0.0.1'],
-	% rpc:call(findnd(S),actordb,exec,[butil:tobin(Bin)]);
-	rpc:call('slave1@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
-	rpc:call('slave2@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
-	rpc:call('slave3@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
-	file:delete([?TESTPTH,"/slave1/actors/ac1.type1"]),
-	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-wal"]),
-	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-shm"]),
-	file:delete([?TESTPTH,"/slave1/actors/ac1.type1-term"]),
-	% file:delete([?TESTPTH,"/slave2/actors/ac1.type1"]),
-	% file:delete([?TESTPTH,"/slave2/actors/ac1.type1-wal"]),
-	% file:delete([?TESTPTH,"/slave2/actors/ac1.type1-shm"]),
-	% file:delete([?TESTPTH,"/slave2/actors/ac1.type1-term"]),
-	Res = exec(<<"actor type1(ac1) create; select * from tab;">>),
-	?debugFmt("After deleting data from 1 node ~p",[Res]),
-	?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
-			Res).
+	ok.
+	% rpc:call('slave1@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
+	% rpc:call('slave2@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
+	% rpc:call('slave3@127.0.0.1',actordb_sqlproc,stop,[{<<"ac1">>,type1}]),
+	% file:delete([?TESTPTH,"/slave1/actors/ac1.type1"]),
+	% file:delete([?TESTPTH,"/slave1/actors/ac1.type1-wal"]),
+	% file:delete([?TESTPTH,"/slave1/actors/ac1.type1-shm"]),
+	% file:delete([?TESTPTH,"/slave1/actors/ac1.type1-term"]),
+	% Res = exec(<<"actor type1(ac1) create; select * from tab;">>),
+	% ?debugFmt("After deleting data from 1 node ~p",[Res]),
+	% ?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
+	% 		Res).
 
 multiupdate_write() ->
 	?debugFmt("multiupdates",[]),

@@ -420,7 +420,7 @@ state_rw_call(What,From,P) ->
 		actornum ->
 			case P#dp.mors of
 				master ->
-					{reply,{ok,P#dp.dbpath,actordb_sqlprocutil:read_num(P)},P};
+					{reply,{ok,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},P};
 				slave when P#dp.masternode /= undefined ->
 					actordb_sqlprocutil:redirect_master(P);
 				slave ->
@@ -705,7 +705,7 @@ state_rw_call(What,From,P) ->
 					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}}
 			end;
 		{set_dbfile,Bin} ->
-			spawn(fun() -> ok = prim_file:write_file(P#dp.dbpath,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)) end),
+			spawn(fun() -> ok = prim_file:write_file(P#dp.fullpath,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)) end),
 			{reply,ok,P#dp{activity = make_ref()}};
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
@@ -1399,7 +1399,7 @@ init([_|_] = Opts) ->
 			explain({registered,Pid},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_ACTORNUM) > 0 ->
-			explain({actornum,P#dp.dbpath,actordb_sqlprocutil:read_num(P)},Opts),
+			explain({actornum,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_EXISTS) > 0 ->
 			{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
@@ -1421,7 +1421,7 @@ init([_|_] = Opts) ->
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
-			case butil:readtermfile([P#dp.dbpath,"-term"]) of
+			case butil:readtermfile([P#dp.fullpath,"-term"]) of
 			% case actordb_termstore:read_term_info(P#dp.actorname,P#dp.actortype) of
 				{ok, VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
 					ok;
@@ -1436,7 +1436,7 @@ init([_|_] = Opts) ->
 								voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})};
 				_ when P#dp.mors == slave ->
 					% Read evnum and evterm from wal file if it exists
-					case file:open([P#dp.dbpath,"-wal"],[read,binary,raw]) of
+					case file:open([P#dp.fullpath,"-wal"],[read,binary,raw]) of
 						{ok,F} ->
 							case file:position(F,eof) of
 								{ok,WalSize} when WalSize > 32+40+?PAGESIZE ->
