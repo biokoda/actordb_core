@@ -611,8 +611,16 @@ split_statements(Bin1) ->
 			[{GlobalVar,Statement}|split_statements(rem_spaces(Next))]
 	end.
 
+parse_helper(Bin,Offset1) ->
+	case actordb_conf:driver() of
+		actordb_driver ->
+			actordb_driver:parse_helper(Bin,Offset1);
+		_ ->
+			esqlite3:parse_helper(Bin,Offset1)
+	end.
+
 find_ending(Bin,Offset1,Prev,IsIolist) ->
-	case actordb_sqlparse:parse_helper(Bin,Offset1) of
+	case parse_helper(Bin,Offset1) of
 		ok ->
 			case Prev of
 				[] ->

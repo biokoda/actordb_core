@@ -846,9 +846,6 @@ start_verify(P,JustStarted) ->
 							Verifypid = self(),
 							self() ! {'DOWN',make_ref(),process,self(),{leader,P#dp.follower_indexes,false}}
 					end,
-					% {Verifypid,_} = spawn_monitor(fun() -> 
-					% 				start_election(NP)
-					% 					end),
 					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
 				LeaderNode when is_binary(LeaderNode) ->
 					actordb_local:actor_mors(slave,LeaderNode),
@@ -1455,6 +1452,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 			case lists:keyfind(Ref,#cpto.ref,P#dp.dbcopy_to) of
 				false ->
 					Db = P#dp.db,
+					ok = actordb_driver:checkpoint_lock(Db,1),
 					{Pid,_} = spawn_monitor(fun() -> 
 							dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
 					{reply,{ok,Ref},P#dp{db = Db,
@@ -1495,14 +1493,14 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 dbcopy_call({wal_read,From1,Data},_CallFrom,P) ->
 	{FromPid,Ref} = From1,
 	Size = filelib:file_size([P#dp.dbpath,"-wal"]),
-	case Size =< Data of
-		true -> %when P#dp.transactionid == undefined ->
+	case ok of
+		_ when Data == done orelse Size =< Data -> %when P#dp.transactionid == undefined ->
 			erlang:send_after(1000,self(),check_locks),
 			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},
 				P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 		% true ->
 		% 	{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
-		false ->
+		_ ->
 			?DBG("wal_size from=~p, insize=~p, filesize=~p",[From1,Data,Size]), 
 			{reply,{[P#dp.dbpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},P}
 	end;
@@ -1582,35 +1580,69 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 			end
 	end.
 
+dbcopy_done(P,Home) ->
+	gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},done}}),
+	Param = [{bin,<<>>},{status,done},{origin,original},{evnum,0},{evterm,0}],
+	exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]})).
+dbcopy_do(P,Bin) ->
+	Param = [{bin,Bin},{status,wal},{origin,original},{evnum,0},{evterm,0}],
+	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}).
+
 dbcopy(P,Home,ActorTo) ->
-	{ok,F} = file:open(P#dp.dbpath,[read,binary,raw]),
+	ThreadNum = actordb_util:hash(P#dp.dbpath) rem length(actordb_conf:paths()),
+	{ok,F} = file:open(lists:nth(ThreadNum+1,actordb_conf:paths())++"/"++P#dp.dbpath,[read,binary,raw]),
 	dbcopy(P,Home,ActorTo,F,0,db).
+dbcopy(P,Home,ActorTo,{iter,_} = Iter,Bin,wal) ->
+	case Bin of
+		<<>> ->
+			case actordb_driver:iterate_wal(P#dp.db,Iter) of
+				{ok,Iter1,Bin1,1} ->
+					dbcopy_do(P,Bin1),
+					dbcopy(P,Home,ActorTo,Iter1,<<>>,wal);
+				done ->
+					dbcopy_done(P,Home)
+			end;
+		_ ->
+			dbcopy_do(P,Bin),
+			dbcopy(P,Home,ActorTo,Iter,<<>>,wal)
+	end;
 dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 	still_alive(P,Home,ActorTo),
-	WR = gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}),
-	case WR of
-		{_Walname,Offset,Evnum,Evterm} ->
-			?DBG("dbsend done ",[]),
-			Param = [{bin,<<>>},{status,done},{origin,original},{evnum,Evnum},{evterm,Evterm}],
-			exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));
-		{_Walname,Walsize,_,_} when Offset > Walsize ->
-			?ERR("Offset larger than walsize ~p ~p ~p ~p",[ActorTo,P#dp.actortype,Offset,Walsize]),
-			exit(copyfail);
-		{Walname,Walsize,Evnum,Evterm} ->
-			Readnum = min(1024*1024,Walsize-Offset),
-			case Offset of
-				0 ->
-					{ok,F1} = file:open(Walname,[read,binary,raw]);
-				_ ->
-					F1 = F
-			end,
-			{ok,Bin} = file:read(F1,Readnum),
-			?DBG("dbsend wal ~p",[{Walname,Walsize}]),
-			Param = [{bin,Bin},{status,wal},{origin,original},{evnum,Evnum},{evterm,Evterm}],
-			ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
-			dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
+	case actordb_conf:driver() of
+		actordb_driver ->
+			case actordb_driver:iterate_wal(P#dp.db,Offset) of
+				{ok,Iter,Bin,1} ->
+					dbcopy_do(P,Bin),
+					dbcopy(P,Home,ActorTo,Iter,Bin,wal);
+				done ->
+					dbcopy_done(P,Home)
+			end;
+		_ ->
+			WR = gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}),
+			case WR of
+				{_Walname,Offset,Evnum,Evterm} ->
+					?DBG("dbsend done ",[]),
+					Param = [{bin,<<>>},{status,done},{origin,original},{evnum,Evnum},{evterm,Evterm}],
+					exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));
+				{_Walname,Walsize,_,_} when Offset > Walsize ->
+					?ERR("Offset larger than walsize ~p ~p ~p ~p",[ActorTo,P#dp.actortype,Offset,Walsize]),
+					exit(copyfail);
+				{Walname,Walsize,Evnum,Evterm} ->
+					Readnum = min(1024*1024,Walsize-Offset),
+					case Offset of
+						0 ->
+							{ok,F1} = file:open(Walname,[read,binary,raw]);
+						_ ->
+							F1 = F
+					end,
+					{ok,Bin} = file:read(F1,Readnum),
+					?DBG("dbsend wal ~p",[{Walname,Walsize}]),
+					Param = [{bin,Bin},{status,wal},{origin,original},{evnum,Evnum},{evterm,Evterm}],
+					ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
+					dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
+			end
 	end;
-dbcopy(P,Home,ActorTo,F,0,db) ->
+dbcopy(P,Home,ActorTo,F,Iter,db) ->
 	still_alive(P,Home,ActorTo),
 	{ok,Bin} = file:read(F,1024*1024),
 	?DBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
@@ -1618,10 +1650,10 @@ dbcopy(P,Home,ActorTo,F,0,db) ->
 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
 	case byte_size(Bin) == 1024*1024 of
 		true ->
-			dbcopy(P,Home,ActorTo,F,0,db);
+			dbcopy(P,Home,ActorTo,F,Iter,db);
 		false ->
 			file:close(F),
-			dbcopy(P,Home,ActorTo,undefined,0,wal)
+			dbcopy(P,Home,ActorTo,undefined,Iter,wal)
 	end.
 
 dbcopy_send(Ref,Param) ->
@@ -1712,28 +1744,65 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 			end,
 			case CurStatus == Status of
 				true ->
-					ok = file:write(F,Bin),
+					case element(1,F) of
+						file_descriptor ->
+							ok = file:write(F,Bin);
+						_ ->
+							ok = actordb_driver:inject_page(F,Bin)
+					end,
 					F1 = F;
 				false when Status == db ->
 					file:delete(P#dp.dbpath++"-wal"),
 					file:delete(P#dp.dbpath++"-shm"),
-					{ok,F1} = file:open(P#dp.dbpath,[write,raw]),
+					case actordb_conf:driver() of
+						actordb_driver ->
+							ThreadNum = actordb_util:hash(P#dp.dbpath) rem length(actordb_conf:paths()),
+							Path = lists:nth(ThreadNum+1,actordb_conf:paths())++"/"++P#dp.dbpath;
+						_ ->
+							Path = P#dp.dbpath
+					end,
+					{ok,F1} = file:open(Path,[write,raw]),
 					ok = file:write(F1,Bin);
 				false when Status == wal ->
 					ok = file:close(F),
-					{ok,F1} = file:open(P#dp.dbpath++"-wal",[write,raw]),
-					ok = file:write(F1,Bin);
+					case actordb_conf:driver() of
+						actordb_driver ->
+							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+							ok = actordb_driver:inject_page(F1,Bin);
+						_ ->
+							{ok,F1} = file:open(P#dp.dbpath++"-wal",[write,raw]),
+							ok = file:write(F1,Bin)
+					end;
 				false when Status == done ->
 					case ok of
 						_ when element(1,F) == connection ->
 							actordb_sqlite:stop(F);
+						_ when element(1,F) == actordb_driver ->
+							ok;
 						_ ->
 							file:close(F)
 					end,
 					F1 = undefined,
-					{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-					case is_integer(Evnum) of
-						true ->
+					case ok of
+						_ when element(1,F) == actordb_driver ->
+							case actordb_sqlite:exec(F,<<"select name, sql from sqlite_master where type='table';">>,read) of
+								{ok,[{columns,_},{rows,SchemaTables}]} ->
+									ok;
+								_ ->
+									SchemaTables = []
+							end,
+							Db = F;
+						_ ->
+							{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal)
+					end,
+					case ok of
+						_ when element(1,F) == actordb_driver ->
+							Sql = <<"SELECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
+							{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(F, Sql,read),
+							Evnum1 = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
+							Evterm1 = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
+							ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Evterm1,Evnum1,Evterm1});
+						_ when is_integer(Evnum) ->
 							ok = butil:savetermfile([P#dp.dbpath,"-term"],{undefined,Evterm,Evnum,Evterm});
 							% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
 							% 	Evterm,Evnum,Evterm);

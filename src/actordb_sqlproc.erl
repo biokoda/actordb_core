@@ -1343,6 +1343,12 @@ down_info(PID,_Ref,Reason,P) ->
 			WithoutCopy = lists:keydelete(PID,#lck.pid,P#dp.locked),
 			NewCopyto = lists:keydelete(PID,#cpto.pid,P#dp.dbcopy_to),
 			false = lists:keyfind(C#cpto.ref,2,WithoutCopy),
+			case NewCopyto of
+				[] ->
+					ok = actordb_driver:checkpoint_lock(P#dp.db,0);
+				_ ->
+					ok
+			end,
 			% wait_copy not in list add it (2nd stage of lock)
 			WithoutCopy1 =  [#lck{ref = C#cpto.ref, ismove = C#cpto.ismove,node = C#cpto.node,time = os:timestamp(),
 									actorname = C#cpto.actorname}|WithoutCopy],
