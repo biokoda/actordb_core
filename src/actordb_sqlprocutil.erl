@@ -1488,7 +1488,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}}
 	end;
 % Initial call on node that is destination of copy
-dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
+dbcopy_call({start_receive,Copyfrom,Ref},_,#dp{db = cleared} = P) ->
 	?DBG("start receive entire db ~p ~p",[Copyfrom,P#dp.db]),
 	% clean up any old sqlite handles.
 	garbage_collect(),
@@ -1497,11 +1497,21 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 		true when P#dp.mors /= master ->
 			redirect_master(P);
 		_ ->
-			actordb_sqlite:stop(P#dp.db),
 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
-
 			{reply,ok,reopen_db(P#dp{db = undefined, mors = slave,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined})}
 	end;
+dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
+	% first clear existing db
+	case P#dp.db of
+		_ when element(1,P#dp.db) == actordb_driver ->
+			actordb_driver:wal_rewind(P#dp.db,0);
+		_ when element(1,P#dp.db) == connection ->
+			actordb_sqlite:stop(P#dp.db);
+		_ when P#dp.db == undefined ->
+			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+			actordb_driver:wal_rewind(Db,0)
+	end,
+	dbcopy_call({start_receive,Copyfrom,Ref},CF,P#dp{db = cleared});
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data},_CallFrom,P) ->
 	{FromPid,Ref} = From1,
