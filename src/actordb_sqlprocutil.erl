@@ -46,12 +46,13 @@ ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[nostart],
 									{state_rw,Resp},P#dp.cbmod]}).
 
-append_wal(P,Header,Bin) ->
+append_wal(P,Header,Bin1) ->
+	Bin = actordb_sqlite:lz4_decompress(Bin1,?PAGESIZE),
 	case element(1,P#dp.db) of
 		actordb_driver ->
 			ok = actordb_driver:inject_page(P#dp.db,Bin,Header);
 		_ ->
-			case file:write(P#dp.db,[Header,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)]) of
+			case file:write(P#dp.db,[Header,Bin]) of
 				ok ->
 					ok;
 				Err ->
@@ -1488,7 +1489,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 	end;
 % Initial call on node that is destination of copy
 dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
-	?DBG("start receive entire db ~p",[Copyfrom]),
+	?DBG("start receive entire db ~p ~p",[Copyfrom,P#dp.db]),
 	% clean up any old sqlite handles.
 	garbage_collect(),
 	% If move, split or copy actor to a new actor this must be called on master.
@@ -1771,6 +1772,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 					ok = file:close(F),
 					case actordb_conf:driver() of
 						actordb_driver ->
+							?DBG("Opening new at ~p",[P#dp.dbpath]),
 							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 							ok = actordb_driver:inject_page(F1,Bin);
 						_ ->
