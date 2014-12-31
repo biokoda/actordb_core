@@ -33,7 +33,7 @@ handle_call(stop, _, P) ->
 
 handle_cast({return_call,_Nd,Time},P) ->
 	Now = os:timestamp(),
-	Latency = timer:now_diff(Now,Time),
+	Latency = min(3000,timer:now_diff(Now,Time)),
 
 	% Time is received from all nodes. Keep the last received one (highest latency)
 	case lists:keyfind(Time,1,P#dp.interval) of
@@ -78,9 +78,14 @@ handle_info(latency_check,P) ->
 	% We can keep track of max latency this way.
 	% This will affect election timers. Election timer should
 	%  not be lower than connection latency. 
-	Term = term_to_binary({?MODULE,[node(),os:timestamp()]}),
-	_NSent = actordb_sqlite:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
-	erlang:send_after(300,self(),latency_check),
+	case nodes() of
+		[] ->
+			ok;
+		_ ->
+			Term = term_to_binary({?MODULE,[node(),os:timestamp()]}),
+			_NSent = actordb_sqlite:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
+			erlang:send_after(300,self(),latency_check)
+	end,
 	{noreply,P};
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);

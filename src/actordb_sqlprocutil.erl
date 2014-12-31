@@ -433,7 +433,7 @@ continue_maybe(P,F,SuccessHead) ->
 				% to be continued in appendentries_response
 				_ ->
 					file:close(F#flw.file),
-					store_follower(P,F#flw{file = undefined, wait_for_response_since = make_ref()})
+					store_follower(P,F#flw{file = undefined, pagebuf = <<>>, wait_for_response_since = make_ref()})
 			end;
 		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
@@ -441,7 +441,7 @@ continue_maybe(P,F,SuccessHead) ->
 		false ->
 			file:close(F#flw.file),
 			bkdcore_rpc:cast(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}]}),
-			store_follower(P,F#flw{file = undefined})
+			store_follower(P,F#flw{file = undefined, pagebuf = <<>>})
 	end.
 
 store_follower(P,#flw{distname = undefined} = F) ->

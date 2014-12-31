@@ -276,7 +276,12 @@ handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 handle_info(reconnect_raft,P) ->
 	start_timer(P),
 	erlang:send_after(500,self(),reconnect_raft),
-	actordb_sqlite:tcp_reconnect(),
+	case nodes() of
+		[] ->
+			ok;
+		_ ->
+			actordb_sqlite:tcp_reconnect()
+	end,
 	{noreply,P};
 handle_info(read_ref,P) ->
 	erlang:send_after(1000,self(),read_ref),
