@@ -1151,10 +1151,15 @@ delactorfile(P) ->
 	save_term(P),
 	case P#dp.movedtonode of
 		undefined ->
-			file:delete(P#dp.fullpath),
-			% file:delete(P#dp.fullpath++"-term"),
-			file:delete(P#dp.fullpath++"-wal"),
-			file:delete(P#dp.fullpath++"-shm");
+			case actordb_conf:driver() of
+				actordb_driver ->
+					actordb_driver:delete_actor(P#dp.db),
+					ok;
+				_ ->
+					file:delete(P#dp.fullpath),
+					file:delete(P#dp.fullpath++"-wal"),
+					file:delete(P#dp.fullpath++"-shm")
+			end;
 		_ ->
 			% Leave behind redirect marker.
 			% Create a file with "1" attached to end

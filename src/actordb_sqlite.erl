@@ -18,7 +18,7 @@ init(Path,JournalMode,Thread) ->
 		actordb_driver ->
 			Sql = <<"select name, sql from sqlite_master where type='table';",
 					"$PRAGMA cache_size=",(butil:tobin(?DEF_CACHE_PAGES))/binary,";">>,
-			case actordb_driver:open(Path,Thread,Sql) of
+			case actordb_driver:open(Path,Thread,Sql,JournalMode) of
 				{ok,Db,{ok,[[{columns,_},{rows,Tables}]]}} ->
 					{ok,Db,Tables,?PAGESIZE};
 				Err ->
