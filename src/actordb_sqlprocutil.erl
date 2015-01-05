@@ -206,7 +206,12 @@ reopen_db(#dp{mors = master} = P) ->
 		_ when Driver == actordb_driver, P#dp.db == undefined  ->
 			init_opendb(P);
 		_ when Driver == actordb_driver ->
-			P;
+			case actordb_sqlite:exec(P#dp.db,<<"SELECT * FROM __adb;">>,read) of
+				{ok,[{columns,_},{rows,[_|_] = Rows}]} ->
+					read_db_state(P,Rows);
+				_ ->
+					P
+			end;
 		% we are master but db not open or open as file descriptor to -wal file
 		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
 			file:close(P#dp.db),
@@ -247,21 +252,26 @@ init_opendb(P) ->
 	case SchemaTables of
 		[_|_] ->
 			?DBG("Opening HAVE schema ~p",[SchemaTables]),
-			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db,
-					<<"SELECT * FROM __adb;">>,read),
-			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
-			Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
-			MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
-			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-			% BaseVers = butil:toint(butil:ds_val(?BASE_SCHEMA_VERSI,Rows,0)),
-			set_followers(true,NP#dp{evnum = Evnum, schemavers = Vers,
-						wal_from = wal_from([P#dp.fullpath,"-wal"]),
-						evterm = EvTerm,
-						movedtonode = MovedToNode1});
+			read_db_state(NP);
 		[] -> 
 			?DBG("Opening NO schema",[]),
 			set_followers(false,NP)
 	end.
+
+read_db_state(P) ->
+	{ok,[{columns,_},{rows,[_|_] = Rows}]} = actordb_sqlite:exec(P#dp.db,
+			<<"SELECT * FROM __adb;">>,read),
+	read_db_state(P,Rows).
+read_db_state(P,Rows) ->
+	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
+	Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
+	MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
+	EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
+	% BaseVers = butil:toint(butil:ds_val(?BASE_SCHEMA_VERSI,Rows,0)),
+	set_followers(true,P#dp{evnum = Evnum, schemavers = Vers,
+				wal_from = wal_from([P#dp.fullpath,"-wal"]),
+				evterm = EvTerm,
+				movedtonode = MovedToNode1}).
 
 set_followers(HaveSchema,P) ->
 	case apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,HaveSchema]) of

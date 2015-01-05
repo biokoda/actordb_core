@@ -279,7 +279,8 @@ set_global_state(MasterNode,State) ->
 			   	true ->
 			   		bkdcore_changecheck:set_nodes_groups(NewNodes,NewGroups),
 			   		actordb_election:connect_all(),
-			   		spawn(fun() ->timer:sleep(100), start(?STATE_NM_LOCAL,?STATE_TYPE,[{slave,length(nodes()) > 0}]) end);
+			   		actordb_local:mod_netchanges(),
+			   		spawn(fun() ->timer:sleep(500), start(?STATE_NM_LOCAL,?STATE_TYPE,[{slave,length(nodes()) > 0},{startreason,startup}]) end);
 			   	false ->
 			   		ok
 			end;
@@ -624,12 +625,12 @@ cb_unverified_call(_S,_Msg)  ->
 
 
 cb_nodelist(#st{name = ?STATE_NM_LOCAL} = S,_HasSchema) ->
-	?ADBG("local nodelist",[]),
 	case bkdcore:nodelist() of
 		[] ->
 			?AERR("Local state without nodelist."),
 			exit(normal);
-		_ ->
+		_L ->
+			?ADBG("local nodelist=~p",[_L]),
 			{ok,S,bkdcore:cluster_nodes()}
 	end;
 cb_nodelist(#st{name = ?STATE_NM_GLOBAL} = S,HasSchema) ->

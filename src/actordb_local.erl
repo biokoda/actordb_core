@@ -13,7 +13,7 @@
 -export([subscribe_stat/0,report_write/0, report_read/0,get_nreads/0,get_nactors/0]).
 % Ref age
 -export([min_ref_age/1]).
--export([net_changes/0]).
+-export([net_changes/0,mod_netchanges/0]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
 -define(MB,1024*1024).
@@ -27,6 +27,8 @@ killactors() ->
 
 net_changes() ->
 	butil:ds_val(netchanges,?NETCHANGES).
+mod_netchanges() ->
+	ets:update_counter(?NETCHANGES,netchanges,1).
 
 % Tells you at least how old a ref is. Precision is only ~200ms and it goes up to 2s.
 % After 2s, it goes to 10s with precision 1s.
@@ -366,11 +368,11 @@ handle_info(save_updaters,P) ->
 			{noreply,P#dp{updaters_saved = false}}
 	end;
 handle_info({nodedown, Nd},P) ->
-	ets:update_counter(?NETCHANGES,netchanges,1),
 	case bkdcore:name_from_dist_name(Nd) of
 		undefined ->
 			{noreply,P};
 		Nm ->
+			ets:update_counter(?NETCHANGES,netchanges,1),
 			% Some node has gone down, kill all slaves on this node.
 			spawn(fun() -> 
 				L = ets:match(actorsalive, #actor{masternode=Nm, pid = '$1', _='_'}),
@@ -378,8 +380,13 @@ handle_info({nodedown, Nd},P) ->
 			end),
 			{noreply,P}
 	end;
-handle_info({nodeup,_},P)  ->
-	ets:update_counter(?NETCHANGES,netchanges,1),
+handle_info({nodeup,Nd},P)  ->
+	case bkdcore:name_from_dist_name(Nd) of
+		undefined ->
+			ok;
+		_ ->
+			ets:update_counter(?NETCHANGES,netchanges,1)
+	end,
 	{noreply,P};
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);

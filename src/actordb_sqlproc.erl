@@ -540,8 +540,8 @@ state_rw_call(What,From,P) ->
 							{reply,ok,P#dp{activity = make_ref(),locked = [ae]}};
 						% last page
 						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
-							?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p",
-									[Evnum,AEType,queue:is_empty(P#dp.callqueue)]),
+							?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p, masternd=~p",
+									[Evnum,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
 							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref(),locked = []},
 							reply(From,done),
 							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
@@ -1195,6 +1195,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 		{leader,NewFollowers,AllSynced} ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined, 
+													masternode = actordb_conf:node_name(), masternodedist = bkdcore:dist_name(actordb_conf:node_name()), 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													locked = lists:delete(ae,P1#dp.locked)}),
 			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
