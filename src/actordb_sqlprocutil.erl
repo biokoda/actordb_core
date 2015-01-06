@@ -479,9 +479,12 @@ continue_maybe(P,F,SuccessHead) ->
 					case catch send_wal(P,F) of
 						wal_corruption ->
 							store_follower(P,F#flw{wait_for_response_since = make_ref()});
-						_ ->
+						error ->
+							?ERR("Error iterating wal"),
+							store_follower(P,F#flw{wait_for_response_since = make_ref()});
+						NF when element(1,NF) == flw ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
-							store_follower(P,F#flw{wait_for_response_since = make_ref()})
+							store_follower(P,NF#flw{wait_for_response_since = make_ref()})
 					end;
 				% to be continued in appendentries_response
 				_ ->
@@ -528,7 +531,7 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 		true when Commit == 0 ->
 			send_wal(P,F#flw{file = Iter, pagebuf = <<>>});
 		true ->
-			ok;
+			F#flw{file = Iter, pagebuf = <<>>};
 		_ ->
 			error
 	end;
@@ -550,7 +553,7 @@ send_wal(P,#flw{file = File} = F) ->
 						true when Commit == 0 ->
 							send_wal(P,F);
 						true ->
-							ok;
+							F;
 						_ ->
 							error
 					end;

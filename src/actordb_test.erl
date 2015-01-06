@@ -33,11 +33,11 @@ all_test_() ->
 		% fun test_creating_shards/0,
 		fun test_parsing/0,
 		% {setup,	fun single_start/0, fun single_stop/1, fun test_single/1}
-		{setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
+		% {setup,	fun onetwo_start/0, fun onetwo_stop/1, fun test_onetwo/1}
 		% {setup, fun cluster_start/0, fun cluster_stop/1, fun test_cluster/1}
 		% {setup, fun missingn_start/0, fun missingn_stop/1, fun test_missingn/1}
 		% {setup,	fun mcluster_start/0,	fun mcluster_stop/1, fun test_mcluster/1}
-		% {setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
+		{setup,	fun clusteraddnode_start/0,	fun clusteraddnode_stop/1, fun test_clusteraddnode/1}
 		% {setup,	fun clusteradd_start/0,	fun clusteradd_stop/1, fun test_clusteradd/1}
 		% {setup,	fun failednodes_start/0, fun failednodes_stop/1, fun test_failednodes/1}
 	].
@@ -148,8 +148,10 @@ basic_read() ->
 	% ?debugFmt("~p",[exec(<<"actor type1(ac",(butil:tobin(1))/binary,"); select * from tab1;">>)]),
 	[begin
 		?debugFmt("~p Read ac~p",[ltime(),N]),
-	?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},
-			exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; select * from tab;">>))
+		{ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_] = Rows}]} = Res = 
+			exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; select * from tab;">>),
+		?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},Res),
+		?debugFmt("Rows ~p",[length(Rows)])
 	 end
 	 || N <- lists:seq(1,numactors())].
 
@@ -356,7 +358,9 @@ test_onetwo(_) ->
 	  {timeout,60,fun basic_write/0},
 	  fun kv_readwrite/0,
 	  fun multiupdate_write/0,
-	  fun multiupdate_read/0
+	  fun multiupdate_read/0,
+	  fun basic_write/0,
+	  fun basic_read/0
 	  	].
 test_add_second() ->
 	create_allgroups([[1,2]]),
