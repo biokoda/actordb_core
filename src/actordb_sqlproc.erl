@@ -23,7 +23,7 @@ try_actornum(Name,Type,CbMod) ->
 read(Name,Flags,[{copy,CopyFrom}],Start) ->
 	case distreg:whereis(Name) of
 		undefined ->
-			case call(Name,Flags,{read,<<"select * from __adb limit 1;">>},Start) of
+			case call(Name,Flags,#read{sql = <<"select * from __adb limit 1;">>, flags = Flags},Start) of
 				{ok,_} ->
 					{ok,[{columns,{<<"status">>}},{row,{<<"ok">>}}]};
 				_E ->
@@ -41,9 +41,10 @@ read(Name,Flags,[{copy,CopyFrom}],Start) ->
 			end
 	end;
 read(Name,Flags,[delete],Start) ->
-	call(Name,Flags,#write{sql = delete,transaction = {0,0,<<>>}},Start);
+	% transaction = {0,0,<<>>}
+	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
 read(Name,Flags,Sql,Start) ->
-	call(Name,Flags,{read,Sql},Start).
+	call(Name,Flags,#read{sql = Sql, flags = Flags},Start).
 
 write(Name,Flags,{{_,_,_} = TransactionId,Sql},Start) ->
 	write(Name,Flags,{undefined,TransactionId,Sql},Start);
@@ -56,23 +57,24 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 				abort ->
 					call(Name,Flags,{commit,false,TransactionId},Start);
 				[delete] ->
-					call(Name,Flags,#write{mfa = MFA,sql = delete, transaction = TransactionId},Start);
+					call(Name,Flags,#write{mfa = MFA,sql = delete, transaction = TransactionId, flags = Flags},Start);
 				_ ->
-					call(Name,Flags,#write{mfa = MFA,sql = iolist_to_binary(Sql), transaction = TransactionId},Start)
+					call(Name,Flags,#write{mfa = MFA,sql = iolist_to_binary(Sql), transaction = TransactionId, flags = Flags},Start)
 			end;
 		_ when Sql == undefined ->
-			call(Name,Flags,#write{mfa = MFA},Start);
+			call(Name,Flags,#write{mfa = MFA, flags = Flags},Start);
 		_ ->
-			call(Name,[wait_election|Flags],#write{mfa = MFA, sql = iolist_to_binary(Sql)},Start)
+			call(Name,[wait_election|Flags],#write{mfa = MFA, sql = iolist_to_binary(Sql), flags = Flags},Start)
 	end;
 write(Name,Flags,[delete],Start) ->
 	% Delete actor calls are placed in a fake multi-actor transaction. 
 	% This way if the intent to delete is written, then actor will actually delete itself.
-	call(Name,Flags,#write{sql = delete,transaction = {0,0,<<>>}},Start);
+	% call(Name,Flags,#write{sql = delete,transaction = {0,0,<<>>}},Start);
+	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
 write(Name,Flags,{Sql,Records},Start) ->
-	call(Name,[wait_election|Flags],#write{sql = iolist_to_binary(Sql), records = Records},Start);
+	call(Name,[wait_election|Flags],#write{sql = iolist_to_binary(Sql), records = Records, flags = Flags},Start);
 write(Name,Flags,Sql,Start) ->
-	call(Name,[wait_election|Flags],#write{sql = iolist_to_binary(Sql)},Start).
+	call(Name,[wait_election|Flags],#write{sql = iolist_to_binary(Sql), flags = Flags},Start).
 
 
 call(Name,Flags,Msg,Start) ->
@@ -302,10 +304,21 @@ handle_call(Msg,From,P) ->
 		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
 			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref()}};
-		#write{} = Msg1 ->
-			write_call(Msg1,From,P#dp{activity = make_ref()});
-		{read,Msg1} ->
-			read_call(Msg1,From,P#dp{activity = make_ref()});
+		_ when P#dp.movedtonode == deleted andalso (element(1,Msg) == read orelse element(1,Msg) == write) ->
+			% #write and #read have flags in same pos
+			Flags = element(#write.flags,Msg),
+			case lists:member(create,Flags) of
+				true ->
+					WC = actordb_sqlprocutil:actually_delete(P),
+					write_call(WC, undefined, 
+						P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref(), movedtonode = undefined});
+				false ->
+					{reply, {error,nocreate},P}
+			end;
+		#write{} ->
+			write_call(Msg,From,P#dp{activity = make_ref()});
+		#read{}->
+			read_call(Msg,From,P#dp{activity = make_ref()});
 		{move,NewShard,Node,CopyReset,CbState} ->
 			% Call to move this actor to another cluster. 
 			% First store the intent to move with all needed data. This way even if a node chrashes, the actor will attempt to move
@@ -333,6 +346,9 @@ handle_call(Msg,From,P) ->
 				Err ->
 					{reply, Err,P}
 			end;
+		% delete ->
+		% 	actordb_sqlprocutil:delete_actor(P),
+		% 	{stop,normal,P};
 		stop ->
 			{stop, shutdown, stopped, P};
 		Msg ->
@@ -360,16 +376,30 @@ commit_call(Doit,Id,From,P) ->
 			end,
 			?DBG("Commit write ~p",[P#dp.transactioninfo]),
 			{Sql,EvNum,_NewVers} = P#dp.transactioninfo,
+			case Sql of
+				<<"delete">> when Doit == true ->
+					Moved = deleted;
+				_ ->
+					Moved = P#dp.movedtonode
+			end,
 			case Doit of
-				true when Sql == <<"delete">> ->
-					actordb_sqlprocutil:delete_actor(P),
-					reply(From,ok),
-					?DBG("Commit delete"),
-					{stop,normal,P#dp{db = undefined}};
+				% true when Sql == <<"delete">> ->
+				% 	% ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>)),
+				% 	reply(From,ok),
+				% 	?DBG("Commit delete"),
+				% 	% actordb_sqlprocutil:delete_actor(P),
+				% 	{noreply,ae_timer(P#dp{})};
 				true when P#dp.follower_indexes == [] ->
-					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>)),
+					case Moved of
+						deleted ->
+							Me = self(),
+							actordb_sqlprocutil:delete_actor(P),
+							spawn(fun() -> stop(Me) end);
+						_ ->
+							ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>))
+					end,
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined,transactioncheckref = undefined,
-							 transactioninfo = undefined, activity = make_ref(),
+							 transactioninfo = undefined, activity = make_ref(),movedtonode = Moved,
 							 evnum = EvNum, evterm = P#dp.current_term})};
 				true ->
 					% We can safely release savepoint.
@@ -379,16 +409,16 @@ commit_call(Doit,Id,From,P) ->
 					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>,
 												P#dp.evterm,EvNum,<<>>)),
 					{noreply,ae_timer(P#dp{callfrom = From, activity = make_ref(),
-								  callres = ok,evnum = EvNum,
+								  callres = ok,evnum = EvNum,movedtonode = Moved,
 								  follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
 								 transactionid = undefined, transactioninfo = undefined,transactioncheckref = undefined})};
 				false when P#dp.follower_indexes == [] ->
-					case Sql of
-						<<"delete">> ->
-							ok;
-						_ ->
-							actordb_sqlite:rollback(P#dp.db)
-					end,
+					% case Sql of
+					% 	<<"delete">> ->
+					% 		ok;
+					% 	_ ->
+							actordb_sqlite:rollback(P#dp.db),
+					% end,
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined, transactioninfo = undefined,
 									transactioncheckref = undefined,activity = make_ref()})};
 				false ->
@@ -398,13 +428,13 @@ commit_call(Doit,Id,From,P) ->
 					%  Thus this EvNum section of WAL contains pages from failed transaction and 
 					%  cleanup of transaction from __transactions.
 					{Tid,Updaterid,_} = P#dp.transactionid,
-					case Sql of
-						<<"delete">> ->
-							ok;
-						_ ->
+					% case Sql of
+					% 	<<"delete">> ->
+					% 		ok;
+					% 	_ ->
 							% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>,P#dp.evterm,P#dp.evnum,<<>>)
-							ok = actordb_sqlite:rollback(P#dp.db)
-					end,
+							ok = actordb_sqlite:rollback(P#dp.db),
+					% end,
 					NewSql = <<"DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary," AND updater=",
 										(butil:tobin(Updaterid))/binary,";">>,
 					write_call(#write{sql = NewSql},From,P#dp{callfrom = undefined,
@@ -709,15 +739,15 @@ state_rw_call(What,From,P) ->
 			{reply,ok,P#dp{activity = make_ref()}};
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
-		doelection ->
-			?DBG("Doelection hint ~p",[{P#dp.verified,P#dp.election}]),
-			reply(From,ok),
-			case is_pid(P#dp.election) orelse is_reference(P#dp.election) of
-				false ->
-					{noreply,actordb_sqlprocutil:start_verify(P,false)};
-				_ ->
-					{noreply,P}
-			end;
+		% doelection ->
+		% 	?DBG("Doelection hint ~p",[{P#dp.verified,P#dp.election}]),
+		% 	reply(From,ok),
+		% 	case is_pid(P#dp.election) orelse is_reference(P#dp.election) of
+		% 		false ->
+		% 			{noreply,actordb_sqlprocutil:start_verify(P,false)};
+		% 		_ ->
+		% 			{noreply,P}
+		% 	end;
 		{delete,MovedToNode} ->
 			reply(From,ok),
 			actordb_sqlite:stop(P#dp.db),
@@ -729,7 +759,7 @@ state_rw_call(What,From,P) ->
 			{reply,ok,P}
 	end.
 
-read_call([exists],_From,#dp{mors = master} = P) ->
+read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
 read_call(Msg,From,#dp{mors = master} = P) ->	
 	case actordb_sqlprocutil:has_schema_updated(P,[]) of
@@ -737,9 +767,9 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 			case P#dp.netchanges == actordb_local:net_changes() of
 				false ->
 					?DBG("Running re-election before read"),
-					{noreply,actordb_sqlprocutil:start_verify(P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)},false)};
+					{noreply,actordb_sqlprocutil:start_verify(P#dp{callqueue = queue:in({From, Msg},P#dp.callqueue)},false)};
 				true ->
-					case Msg of	
+					case Msg#read.sql of	
 						{Mod,Func,Args} ->
 							case apply(Mod,Func,[P#dp.cbstate|Args]) of
 								{reply,What,Sql,NS} ->
@@ -793,7 +823,7 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 		% Schema has changed. Execute write on schema update.
 		% Place this read in callqueue for later execution.
 		{NewVers,Sql1} ->
-			write_call1(#write{sql = Sql1},undefined,NewVers, P#dp{callqueue = queue:in({From,{read,Msg}},P#dp.callqueue)})
+			write_call1(#write{sql = Sql1},undefined,NewVers, P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)})
 	end;
 read_call(_Msg,_From,P) ->
 	?DBG("redirect read ~p",[P#dp.masternode]),
@@ -801,7 +831,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P) ->
-	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,"Sql",Transaction}]),
+	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,"Sql..",Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -856,15 +886,24 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	case Sql of
 		delete ->
-			actordb_sqlprocutil:delete_actor(P),
-			reply(From,ok),
+			case P#dp.follower_indexes of
+				[] ->
+					Me = self(),
+					actordb_sqlprocutil:delete_actor(P),
+					spawn(fun() -> stop(Me) end);
+				_ ->
+					ok
+			end,
+			% reply(From,ok),
 			?DBG("Write delete"),
-			{stop,normal,P#dp{db = undefined}};
+			% {stop,normal,P#dp{db = undefined}};
+			write_call1(W#write{sql = <<"#s02;">>,records = [[[?MOVEDTOI,<<"$deleted$">>]]]},From,NewVers,P#dp{movedtonode = deleted});
 		{moved,MovedTo} ->
-			actordb_sqlprocutil:delete_actor(P#dp{movedtonode = MovedTo}),
-			reply(From,ok),
-			?DBG("Write moved"),
-			{stop,normal,P#dp{db = undefined}};
+			% actordb_sqlprocutil:delete_actor(P#dp{movedtonode = MovedTo}),
+			% reply(From,ok),
+			% ?DBG("Write moved"),
+			% {stop,normal,P#dp{db = undefined}};
+			write_call1(W#write{sql = <<"#s02;">>,records = [[[?MOVEDTOI,MovedTo]]]},From,NewVers,P#dp{movedtonode = {moved,MovedTo}});
 		_ ->
 			ComplSql = 
 					[<<"#s00;">>, % savepoint
@@ -1038,7 +1077,7 @@ handle_info({doelection,LatencyBefore,TimerFrom},P) ->
 	% Delay if latency significantly increased since start of timer.
 	% But only if more than 100ms latency. Which should mean significant load or bad network which
 	%  from here means same thing. 
-	case LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100000 of
+	case LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100 of
 		true ->
 			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
 		false ->
@@ -1057,11 +1096,14 @@ handle_info(doelection1,P) ->
 	case ok of
 		_ when P#dp.verified, P#dp.mors == master, P#dp.dbcopy_to /= [] ->
 			% Do not run elections while db is being copied
-			{noreply,P#dp{election = undefined}};
+			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
 		_ when P#dp.verified, P#dp.mors == master ->
 			RSY = actordb_sqlprocutil:check_for_resync(P,P#dp.follower_indexes,synced),
 			?DBG("Election timer action ~p",[RSY]),
 			case RSY of
+				synced when P#dp.movedtonode == deleted ->
+					% actordb_sqlprocutil:delete_actor(P),
+					{stop,normal,P};
 				synced ->
 					{noreply,P#dp{election = undefined}};
 				resync ->
@@ -1186,6 +1228,10 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			P = P1,
 			?ERR("Election failed, retrying later ~p",[Err]),
 			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
+		{leader,_,_} when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.movedtonode == deleted ->
+			P = P1,
+			?INF("Stopping with nocreate ",[]),
+			{stop,nocreate,P1};
 		% We are leader, evnum == 0, which means no other node has any data.
 		% If create flag not set stop.
 		{leader,_,_} when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
@@ -1194,12 +1240,22 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{stop,nocreate,P1};
 		{leader,NewFollowers,AllSynced} ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
-			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined, 
+			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined,
 													masternode = actordb_conf:node_name(), masternodedist = bkdcore:dist_name(actordb_conf:node_name()), 
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													locked = lists:delete(ae,P1#dp.locked)}),
+			case P#dp.movedtonode of
+				deleted ->
+					SqlIn = (actordb_sqlprocutil:actually_delete(P1))#write.sql,
+					Moved = undefined,
+					SchemaVers = undefined;
+				_ ->
+					SqlIn = [],
+					Moved = P#dp.movedtonode,
+					SchemaVers = P#dp.schemavers
+			end,
 			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
-			?DBG("Elected leader term=~p, nodes_synced=~p",[P1#dp.current_term,AllSynced]),
+			?DBG("Elected leader term=~p, nodes_synced=~p, moved=~p",[P1#dp.current_term,AllSynced,P#dp.movedtonode]),
 			ok = actordb_sqlite:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),ReplType),
 
 			case P#dp.schemavers of
@@ -1234,8 +1290,9 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
 			{NP,Sql,Records,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset, 
-																			cbstate = CbState},
-																		Transaction,CopyFrom,[],P#dp.callfrom),
+																				movedtonode = Moved,
+																			cbstate = CbState, schemavers = SchemaVers},
+																		Transaction,CopyFrom,SqlIn,P#dp.callfrom),
 			% If nothing to store and all nodes synced, send an empty AE.
 			case is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
 				true when AllSynced, NewFollowers == [] ->

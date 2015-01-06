@@ -77,23 +77,33 @@ reply_maybe(P,N,[]) ->
 	% case N == length(P#dp.follower_indexes)+1 of
 		% If transaction active or copy/move actor, we can continue operation now because it has been safely replicated.
 		true when P#dp.transactioninfo /= undefined; element(1,P#dp.callfrom) == exec ->
+			Me = self(),
 			% Now it's time to execute second stage of transaction.
 			% This means actually executing the transaction sql, without releasing savepoint.
 			case P#dp.transactioninfo /= undefined of
 				true ->
 					{Sql,EvNumNew,NewVers} = P#dp.transactioninfo,
 					{Tid,Updaterid,_} = P#dp.transactionid,
-					case Sql of
-						<<"delete">> ->
-							case ok of
-								_ when Tid == 0, Updaterid == 0 ->
-									self() ! commit_transaction,
-									Res = ok;
-								_ ->
-									Res = {actordb_conf:node_name(),ok}
-							end;
+					% case Sql of
+					% 	<<"delete">> ->
+					% 		case ok of
+					% 			_ when Tid == 0, Updaterid == 0 ->
+					% 				self() ! commit_transaction,
+					% 				Res = ok;
+					% 			_ ->
+					% 				Res = {actordb_conf:node_name(),ok}
+					% 		end;
+					case ok of
 						_ when P#dp.follower_indexes /= [] ->
-							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+							case Sql of
+								<<"delete">> ->
+									Recs = [[[?MOVEDTOI,<<"$deleted$">>]]],
+									Sql1 = <<"#s02;">>;
+								_ ->
+									Recs = [],
+									Sql1 = Sql
+							end,
+							NewSql = [Sql1,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
 												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
 							% No release savepoint yet. That comes in transaction confirm.
@@ -106,12 +116,11 @@ reply_maybe(P,N,[]) ->
 									 <<"#s02;">>
 									 ],
 							VarHeader = create_var_header(P),
-							Records = [[[?EVNUMI,butil:tobin(EvNumNew)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+							Records = Recs++[[[?EVNUMI,butil:tobin(EvNumNew)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 							Res1 = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.evterm,EvNumNew,VarHeader),
 							Res = {actordb_conf:node_name(),Res1},
 							case actordb_sqlite:okornot(Res1) of
 								Something when Something /= ok, P#dp.transactionid /= undefined ->
-									Me = self(),
 									spawn(fun() -> gen_server:call(Me,{commit,false,P#dp.transactionid}) end);
 								_ ->
 									ok
@@ -140,6 +149,13 @@ reply_maybe(P,N,[]) ->
 					From = P#dp.callfrom
 			end,
 			?DBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
+			case P#dp.movedtonode of
+				deleted ->
+					actordb_sqlprocutil:delete_actor(P),
+					spawn(fun() -> actordb_sqlproc:stop(Me) end);
+				_ ->
+					ok
+			end,
 			reply(From,Res),
 			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, 
 									schemavers = NewVers,activity = make_ref()})),
@@ -161,6 +177,14 @@ reply_maybe(P,N,[]) ->
 			end;
 		true ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
+			case P#dp.movedtonode of
+				deleted ->
+					Me = self(),
+					actordb_sqlprocutil:delete_actor(P),
+					spawn(fun() -> actordb_sqlproc:stop(Me) end);
+				_ ->
+					ok
+			end,
 			reply(P#dp.callfrom,P#dp.callres),
 			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined})));
 		false ->
@@ -266,12 +290,31 @@ read_db_state(P,Rows) ->
 	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 	Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 	MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
+	case MovedToNode1 of
+		<<"$deleted$">> ->
+			delete_actor(P),
+			MovedToNode = deleted;
+		<<>> ->
+			MovedToNode = undefined;
+		MovedToNode ->
+			ok
+	end,
+	% ?DBG("Opening with moved=~p",[MovedToNode]),
 	EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
 	% BaseVers = butil:toint(butil:ds_val(?BASE_SCHEMA_VERSI,Rows,0)),
 	set_followers(true,P#dp{evnum = Evnum, schemavers = Vers,
 				wal_from = wal_from([P#dp.fullpath,"-wal"]),
 				evterm = EvTerm,
-				movedtonode = MovedToNode1}).
+				movedtonode = MovedToNode}).
+
+actually_delete(P) ->
+	% Delete just means adding deleted flag. But if we get a query with create, this means
+	% we must delete all data. Drop everything except __adb. This way evnum and evterm continue where they left off.
+	{ok,[{columns,_},{rows,Tables}]} = actordb_sqlite:exec(P#dp.db,<<"select name from sqlite_master where type='table';">>,read),
+	Drops = [<<"$DROP TABLE ",Name/binary,";">> || {Name} <- Tables, Name /= <<"__adb">>],
+	?DBG("Drop tables in deleted=~p",[Drops]),
+	#write{sql = ["$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?MOVEDTO,",'');",
+				  "$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?BASE_SCHEMA_VERS,",0);",Drops], records = []}.
 
 set_followers(HaveSchema,P) ->
 	case apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,HaveSchema]) of
@@ -734,9 +777,9 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	% DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
 	% 	[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
 	DefVals = [[[?SCHEMA_VERSI,SchemaVers],[?ATYPEI,Type],[?EVNUMI,0],[?EVTERMI,0]|Moved]],
-	{[<<"$CREATE TABLE __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
+	{[<<"$CREATE TABLE IF NOT EXISTS __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 		 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
-		 "$CREATE TABLE __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
+		 "$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
 		 "#s02;"],DefVals}.
 	 % <<"$INSERT INTO __adb (id,val) VALUES ">>,
 	 % 	butil:iolist_join(DefVals,$,),$;].
@@ -829,7 +872,7 @@ check_for_resync(P,[F|L],_Action) ->
 
 start_verify(P,JustStarted) ->
 	case ok of
-		_ when P#dp.movedtonode /= undefined ->
+		_ when is_binary(P#dp.movedtonode) ->
 			P#dp{verified = true};
 		% Actor was started with mode slave. It will remain in slave(follower) mode and
 		%  not attempt to become candidate for now.
@@ -965,9 +1008,10 @@ follower_nodes(L) ->
 % 	{N,F,AllSynced}.
 
 
+% SqlIn - only has anything in it if this is recreate after delete
 post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
-	case iolist_size(SqlIn) of
-		0 ->
+	% case iolist_size(SqlIn) of
+	% 	0 ->
 			% If actor is starting with a write, we can incorporate the actual write to post election sql.
 			% This is why wait_election flag is added at actordb_sqlproc:write.
 			QueueEmpty = queue:is_empty(P#dp.callqueue),
@@ -998,14 +1042,10 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 						_ ->
 							Flags = P#dp.flags bor ?FLAG_SEND_DB
 					end,
-					% Set on firt write and not changed after. This is used to prevent a case of an actor
-					% getting deleted, but later created new. A server that was offline during delete missed
-					% the delete call and relies on actordb_events.
 					ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
 					{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
 					Records = Records1++CallRecords++[[[?ANUMI,butil:tobin(ActorNum)]]],
-					Sql = [BS,Schema,CallWrite,
-							% <<"$INSERT OR REPLACE INTO __adb VALUES (">>,?ANUM,",'",butil:tobin(ActorNum),<<"');">>
+					Sql = [SqlIn,BS,Schema,CallWrite,
 							"#s02;"
 							];
 				_ ->
@@ -1017,15 +1057,15 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 							Sql = CallWrite;
 						{SchemaVers,Schema} ->
 							NP = P#dp{schemavers = SchemaVers},
-							Sql = [Schema,CallWrite,
+							Sql = [SqlIn,Schema,CallWrite,
 									<<"$UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
 										<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
 					end
 			end,
 			{NP#dp{callqueue = CQ, flags = Flags},Sql,Records,Callfrom};
-		_ ->
-			{P,SqlIn,[],Callfrom1}
-	end;
+	% 	_ ->
+	% 		{P,SqlIn,[],Callfrom1}
+	% end;
 post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfrom) ->
 	case base64:decode(MSql1) of
 		<<"delete">> ->
@@ -1254,7 +1294,7 @@ do_checkpoint(P) ->
 
 delete_actor(P) ->
 	?DBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
-	case (P#dp.flags band ?FLAG_TEST == 0) andalso P#dp.movedtonode == undefined of
+	case ((P#dp.flags band ?FLAG_TEST == 0) andalso P#dp.movedtonode == undefined) orelse P#dp.movedtonode == deleted of
 		true ->
 			case actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype) of
 				{redirect,Shard,Node} ->
@@ -1273,11 +1313,13 @@ delete_actor(P) ->
 		[] ->
 			ok;
 		_ ->
-			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
-							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}}]})
+			% {_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
+			% 				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}}]})
+			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,stop,
+							[{P#dp.actorname,P#dp.actortype}]})
 	end,
-	actordb_sqlite:stop(P#dp.db),
-	delactorfile(P).
+	actordb_sqlite:stop(P#dp.db).
+	% delactorfile(P).
 empty_queue(Q,ReplyMsg) ->
 	case queue:is_empty(Q) of
 		true ->
