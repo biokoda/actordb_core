@@ -5,7 +5,7 @@
 -module(actordb_sqlite).
 -export([init/1,init/2,init/3,exec/2,exec/3,exec/4,exec/5,exec/6,set_pragmas/2,set_pragmas/3,okornot/1,
 		 stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1,rollback/1,wal_checksum/4,make_wal_header/1,
-		 lz4_compress/1,lz4_decompress/2,replicate_opts/3,parse_helper/2,all_tunnel_call/1,tcp_reconnect/0,
+		 lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,all_tunnel_call/1,tcp_reconnect/0,
 		 tcp_connect_async/5,store_prepared_table/2]).
 -include("actordb.hrl").
 
@@ -91,6 +91,12 @@ replicate_opts(Db,Bin,Type) when element(1,Db) == connection ->
 	esqlite3:replicate_opts(Db,Bin,Type);
 replicate_opts(Db,Bin,Type) ->
 	actordb_driver:replicate_opts(Db,Bin,Type).
+
+replicate_opts(Db,Bin) when element(1,Db) == connection ->
+	esqlite3:replicate_opts(Db,Bin);
+replicate_opts(Db,Bin) ->
+	actordb_driver:replicate_opts(Db,Bin).
+
 parse_helper(Bin,Offset) ->
 	case actordb_conf:driver() of
 		actordb_driver ->

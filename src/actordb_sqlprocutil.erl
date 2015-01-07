@@ -253,8 +253,11 @@ reopen_db(P) ->
 	Driver = actordb_conf:driver(),
 	case ok of
 		_ when Driver == actordb_driver, P#dp.db == undefined  ->
-			init_opendb(P);
+			NP = init_opendb(P),
+			actordb_sqlite:replicate_opts(NP#dp.db,<<>>),
+			NP;
 		_ when Driver == actordb_driver ->
+			actordb_sqlite:replicate_opts(P#dp.db,<<>>),
 			P;
 		_ when element(1,P#dp.db) == connection; P#dp.db == undefined ->
 			actordb_sqlite:stop(P#dp.db),
@@ -1558,7 +1561,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,#dp{db = cleared} = P) ->
 			redirect_master(P);
 		_ ->
 			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
-			{reply,ok,reopen_db(P#dp{db = undefined, mors = slave,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined})}
+			{reply,ok,P#dp{db = undefined, mors = slave,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
 	end;
 dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
 	% first clear existing db
@@ -1674,28 +1677,28 @@ dbcopy_do(P,Bin) ->
 dbcopy(P,Home,ActorTo) ->
 	{ok,F} = file:open(P#dp.fullpath,[read,binary,raw]),
 	dbcopy(P,Home,ActorTo,F,0,db).
-dbcopy(P,Home,ActorTo,{iter,_} = Iter,Bin,wal) ->
-	case Bin of
-		<<>> ->
+dbcopy(P,Home,ActorTo,{iter,_} = Iter,_Bin,wal) ->
+	% case Bin of
+	% 	<<>> ->
 			case actordb_driver:iterate_wal(P#dp.db,Iter) of
-				{ok,Iter1,Bin1,1} ->
+				{ok,Iter1,Bin1,_} ->
 					dbcopy_do(P,Bin1),
 					dbcopy(P,Home,ActorTo,Iter1,<<>>,wal);
 				done ->
 					dbcopy_done(P,Home)
 			end;
-		_ ->
-			dbcopy_do(P,Bin),
-			dbcopy(P,Home,ActorTo,Iter,<<>>,wal)
-	end;
+	% 	_ ->
+	% 		dbcopy_do(P,Bin),
+	% 		dbcopy(P,Home,ActorTo,Iter,<<>>,wal)
+	% end;
 dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 	still_alive(P,Home,ActorTo),
 	case actordb_conf:driver() of
 		actordb_driver ->
 			case actordb_driver:iterate_wal(P#dp.db,Offset) of
-				{ok,Iter,Bin,1} ->
+				{ok,Iter,Bin,_} ->
 					dbcopy_do(P,Bin),
-					dbcopy(P,Home,ActorTo,Iter,Bin,wal);
+					dbcopy(P,Home,ActorTo,Iter,Iter,wal);
 				done ->
 					dbcopy_done(P,Home)
 			end;
@@ -1724,7 +1727,7 @@ dbcopy(P,Home,ActorTo,F,Offset,wal) ->
 					dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
 			end
 	end;
-dbcopy(P,Home,ActorTo,F,Iter,db) ->
+dbcopy(P,Home,ActorTo,F,0,db) ->
 	still_alive(P,Home,ActorTo),
 	{ok,Bin} = file:read(F,1024*1024),
 	?DBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
@@ -1732,10 +1735,10 @@ dbcopy(P,Home,ActorTo,F,Iter,db) ->
 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
 	case byte_size(Bin) == 1024*1024 of
 		true ->
-			dbcopy(P,Home,ActorTo,F,Iter,db);
+			dbcopy(P,Home,ActorTo,F,0,db);
 		false ->
 			file:close(F),
-			dbcopy(P,Home,ActorTo,undefined,Iter,wal)
+			dbcopy(P,Home,ActorTo,undefined,0,wal)
 	end.
 
 dbcopy_send(Ref,Param) ->
@@ -1830,6 +1833,8 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 						file_descriptor ->
 							ok = file:write(F,Bin);
 						_ ->
+							% <<_:8/binary,Evn:64,_/binary>> = Bin,
+							% ?DBG("Inject page evnum ~p",[Evn]),
 							ok = actordb_driver:inject_page(F,Bin)
 					end,
 					F1 = F;
@@ -1844,6 +1849,8 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 						actordb_driver ->
 							?DBG("Opening new at ~p",[P#dp.dbpath]),
 							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+							% <<_:8/binary,Evn:64,_/binary>> = Bin,
+							% ?DBG("Inject page evnum ~p",[Evn]),
 							ok = actordb_driver:inject_page(F1,Bin);
 						_ ->
 							{ok,F1} = file:open(P#dp.fullpath++"-wal",[write,raw]),
@@ -1864,7 +1871,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							case actordb_sqlite:exec(F,<<"select name, sql from sqlite_master where type='table';">>,read) of
 								{ok,[{columns,_},{rows,SchemaTables}]} ->
 									ok;
-								_ ->
+								_X ->
 									SchemaTables = []
 							end,
 							Db = F;

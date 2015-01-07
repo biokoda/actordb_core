@@ -144,6 +144,7 @@ actor_ae_stream(ActorPid,Count) ->
 		{'DOWN',_,_,ActorPid,_} ->
 			ok;
 		{call_slave,Cb,Actor,Type,Term,Header,Page} ->
+			% ?ADBG("Calling slave ~p",[Actor]),
 			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,Count}},[nostart]),
 			actor_ae_stream(ActorPid,Count);
 		stop ->
