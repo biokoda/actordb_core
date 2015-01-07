@@ -102,6 +102,7 @@ prestart() ->
 			% Read args file manually to get paths for state.
 			case butil:ds_val(config,Args) of
 				undefined ->
+					PagesPerWal = 1000,
 					?AERR("No app.config file in parameters! ~p",[init:get_arguments()]),
 					init:stop();
 				Cfgfile ->
@@ -157,6 +158,7 @@ prestart() ->
 							end,
 							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Driver,Name);
 						Err ->
+							PagesPerWal = 1000,
 							?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
 							init:stop()
 					end
