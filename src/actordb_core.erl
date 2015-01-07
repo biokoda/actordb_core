@@ -108,15 +108,23 @@ prestart() ->
 					case catch file:consult(Cfgfile) of
 						{ok,[L]} ->
 							ActorParam = butil:ds_val(actordb_core,L),
-							[Main,Extra,Level,_Journal,Sync,NumMngrs,QueryTimeout1] = 
+							[Main,Extra,Level,_Journal,Sync,NumMngrs,QueryTimeout1,PagesPerWal1] = 
 								butil:ds_vals([main_db_folder,extra_db_folders,level_size,
-													journal_mode,sync,num_transaction_managers,query_timeout],ActorParam,
-												["db",[],0,wal,0,12,60000]),
+													journal_mode,sync,num_transaction_managers,query_timeout,pages_per_wal],ActorParam,
+												["db",[],0,wal,0,12,60000,1024*3]),
 							case QueryTimeout1 of
 								0 ->
 									QueryTimeout = infinity;
 								QueryTimeout ->
 									ok
+							end,
+							case ok  of
+								_ when PagesPerWal1 < 100 ->
+									PagesPerWal = 100;
+								_ when PagesPerWal1 > 100000 ->
+									PagesPerWal = 100000;
+								_ ->
+									PagesPerWal = PagesPerWal1
 							end,
 							application:set_env(actordb_core,num_transaction_managers,NumMngrs),
 							Statep = butil:expand_path(butil:tolist(Main)),
@@ -186,7 +194,7 @@ prestart() ->
 				esqlite3 ->
 					esqlite3:init({NProcs,actordb_sqlprocutil:static_sqls()});
 				actordb_driver ->
-					ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls()})
+					ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls(),PagesPerWal})
 			end,
 			emurmur3:init()
 	end.
