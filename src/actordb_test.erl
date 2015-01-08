@@ -757,7 +757,7 @@ start_slave(N) ->
 			ok
 	end,
 	file:write_file(?TESTPTH++Name++".config",io_lib:fwrite("~p.~n",[[{bkdcore,Opts},
-						{actordb_core,[{main_db_folder,?TESTPTH++Name},{extra_db_folders,[]},{mysql_protocol,0}]},
+						{actordb_core,[{main_db_folder,?TESTPTH++Name},{extra_db_folders,[]},{mysql_protocol,0},{pages_per_wal,500}]},
 						{lager,[{handlers,setup_loging()}]},
 						{sasl,[{errlog_type,error}]}]])),
 	% file:write_file(?TESTPTH++Name++"/etc/actordb.cfg",io_lib:fwrite("~p.~n",[[{db_path,?TESTPTH++Name},{level_size,0}]])),

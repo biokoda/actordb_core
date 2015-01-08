@@ -1833,8 +1833,8 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 						file_descriptor ->
 							ok = file:write(F,Bin);
 						_ ->
-							% <<_:8/binary,Evn:64,_/binary>> = Bin,
-							% ?DBG("Inject page evnum ~p",[Evn]),
+							<<_:8/binary,Evn:64,_/binary>> = Bin,
+							?DBG("Inject page evnum ~p",[Evn]),
 							ok = actordb_driver:inject_page(F,Bin)
 					end,
 					F1 = F;
@@ -1842,6 +1842,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 					file:delete(P#dp.fullpath++"-wal"),
 					file:delete(P#dp.fullpath++"-shm"),
 					{ok,F1} = file:open(P#dp.fullpath,[write,raw]),
+					?DBG("Writing db file ~p",[byte_size(Bin)]),
 					ok = file:write(F1,Bin);
 				false when Status == wal ->
 					ok = file:close(F),
@@ -1849,8 +1850,9 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 						actordb_driver ->
 							?DBG("Opening new at ~p",[P#dp.dbpath]),
 							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-							% <<_:8/binary,Evn:64,_/binary>> = Bin,
-							% ?DBG("Inject page evnum ~p",[Evn]),
+							% ok = actordb_sqlite:exec(F1,<<"$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>,write),
+							<<_:8/binary,Evn:64,_/binary>> = Bin,
+							?DBG("Inject page evnum ~p",[Evn]),
 							ok = actordb_driver:inject_page(F1,Bin);
 						_ ->
 							{ok,F1} = file:open(P#dp.fullpath++"-wal",[write,raw]),
