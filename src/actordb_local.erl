@@ -162,20 +162,20 @@ actor_started(Name,Type,Size) ->
 
 % mors = master/slave
 actor_mors(Mors,MasterNode) ->
-	ets:update_element(actorsalive,self(),[{#actor.mors,Mors},{#actor.masternode,MasterNode}]),
-	DN = bkdcore:dist_name(MasterNode),
-	case DN == node() of
-		false ->
-			case lists:member(DN,nodes()) of
-				false ->
-					?AERR("Not in nodes ~p ~p",[DN,nodes()]),
-					actordb_sqlproc:diepls(self(),not_in_nodes);
-				_ ->
-					ok
-			end;
-		_ ->
-			ok
-	end.
+	ets:update_element(actorsalive,self(),[{#actor.mors,Mors},{#actor.masternode,MasterNode}]).
+	% DN = bkdcore:dist_name(MasterNode),
+	% case DN == node() of
+	% 	false ->
+	% 		case lists:member(DN,nodes()) of
+	% 			false ->
+	% 				?AERR("Not in nodes ~p ~p",[DN,nodes()]),
+	% 				actordb_sqlproc:diepls(self(),not_in_nodes);
+	% 			_ ->
+	% 				ok
+	% 		end;
+	% 	_ ->
+	% 		ok
+	% end.
 
 actor_cachesize(Size) ->
 	A = butil:ds_val(self(),actorsalive),

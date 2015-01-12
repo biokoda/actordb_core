@@ -1315,6 +1315,7 @@ delete_actor(P) ->
 		_ ->
 			ok
 	end,
+	?DBG("Deleted from shard"),
 	case P#dp.follower_indexes of
 		[] ->
 			ok;
@@ -1833,8 +1834,8 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 						file_descriptor ->
 							ok = file:write(F,Bin);
 						_ ->
-							<<_:8/binary,Evn:64,_/binary>> = Bin,
-							?DBG("Inject page evnum ~p",[Evn]),
+							% <<_:8/binary,Evn:64,_/binary>> = Bin,
+							% ?DBG("Inject page evnum ~p",[Evn]),
 							ok = actordb_driver:inject_page(F,Bin)
 					end,
 					F1 = F;
@@ -1851,8 +1852,8 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							?DBG("Opening new at ~p",[P#dp.dbpath]),
 							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 							% ok = actordb_sqlite:exec(F1,<<"$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>,write),
-							<<_:8/binary,Evn:64,_/binary>> = Bin,
-							?DBG("Inject page evnum ~p",[Evn]),
+							% <<_:8/binary,Evn:64,_/binary>> = Bin,
+							% ?DBG("Inject page evnum ~p",[Evn]),
 							ok = actordb_driver:inject_page(F1,Bin);
 						_ ->
 							{ok,F1} = file:open(P#dp.fullpath++"-wal",[write,raw]),
@@ -1901,7 +1902,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							actordb_sqlite:move_to_trash(P#dp.fullpath),
 							exit(copynoschema);
 						_ ->
-							?DBG("Copyreceive done ~p ~p",[
+							?DBG("Copyreceive done ~p ~p ~p",[SchemaTables,
 								 {Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELECT * FROM __adb;")]),
 							actordb_sqlite:stop(Db),
 							Source ! {Ref,self(),ok},
