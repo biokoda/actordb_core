@@ -151,8 +151,8 @@ reply_maybe(P,N,[]) ->
 			?DBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
 			case P#dp.movedtonode of
 				deleted ->
-					actordb_sqlprocutil:delete_actor(P),
-					spawn(fun() -> actordb_sqlproc:stop(Me) end);
+					actordb_sqlprocutil:delete_actor(P);
+					% spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
 					ok
 			end,
@@ -628,6 +628,7 @@ doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transact
 					reply(From,Res),
 					doqueue(NP);
 				{stop,_,NP} ->
+					?DBG("Doqueue for call stop ~p",[Msg]),
 					self() ! stop,
 					NP;
 				% If call returns noreply, it will continue processing later.
@@ -1050,6 +1051,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 					end,
 					ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
 					{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
+					?DBG("Adding base schema ~p",[BS]),
 					Records = Records1++CallRecords++[[[?ANUMI,butil:tobin(ActorNum)]]],
 					Sql = [SqlIn,BS,Schema,CallWrite,
 							"#s02;"
@@ -1198,37 +1200,37 @@ read_num(P) ->
 			end
 	end.
 
-delactorfile(P) ->
-	[Pid ! delete || {_,Pid,_,_} <- P#dp.dbcopy_to],
-	?DBG("delfile master=~p, ismoved=~p",[P#dp.mors,P#dp.movedtonode]),
-	% Term files are not deleted. This is because of deleted actors. If a node was offline
-	%  when an actor was deleted, then the actor was created anew still while offline, 
-	%  this will keep the term and evnum number higher than that old file and raft logic will overwrite that data.
-	save_term(P),
-	case P#dp.movedtonode of
-		undefined ->
-			case actordb_conf:driver() of
-				actordb_driver ->
-					actordb_driver:delete_actor(P#dp.db),
-					ok;
-				_ ->
-					file:delete(P#dp.fullpath),
-					file:delete(P#dp.fullpath++"-wal"),
-					file:delete(P#dp.fullpath++"-shm")
-			end;
-		_ ->
-			% Leave behind redirect marker.
-			% Create a file with "1" attached to end
-			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath++"1",off),
-			{Sql,Records} = base_schema(0,P#dp.actortype,P#dp.movedtonode),
-			ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,Sql,<<"COMMIT;">>],Records,write)),
-			actordb_sqlite:stop(Db),
-			% Rename into the actual dbfile (should be atomic op)
-			ok = file:rename(P#dp.fullpath++"1",P#dp.fullpath),
-			file:delete(P#dp.fullpath++"-wal"),
-			% file:delete(P#dp.fullpath++"-term"),
-			file:delete(P#dp.fullpath++"-shm")
-	end.
+% delactorfile(P) ->
+% 	[Pid ! delete || {_,Pid,_,_} <- P#dp.dbcopy_to],
+% 	?DBG("delfile master=~p, ismoved=~p",[P#dp.mors,P#dp.movedtonode]),
+% 	% Term files are not deleted. This is because of deleted actors. If a node was offline
+% 	%  when an actor was deleted, then the actor was created anew still while offline, 
+% 	%  this will keep the term and evnum number higher than that old file and raft logic will overwrite that data.
+% 	save_term(P),
+% 	case P#dp.movedtonode of
+% 		undefined ->
+% 			case actordb_conf:driver() of
+% 				actordb_driver ->
+% 					actordb_driver:delete_actor(P#dp.db),
+% 					ok;
+% 				_ ->
+% 					file:delete(P#dp.fullpath),
+% 					file:delete(P#dp.fullpath++"-wal"),
+% 					file:delete(P#dp.fullpath++"-shm")
+% 			end;
+% 		_ ->
+% 			% Leave behind redirect marker.
+% 			% Create a file with "1" attached to end
+% 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath++"1",off),
+% 			{Sql,Records} = base_schema(0,P#dp.actortype,P#dp.movedtonode),
+% 			ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,Sql,<<"COMMIT;">>],Records,write)),
+% 			actordb_sqlite:stop(Db),
+% 			% Rename into the actual dbfile (should be atomic op)
+% 			ok = file:rename(P#dp.fullpath++"1",P#dp.fullpath),
+% 			file:delete(P#dp.fullpath++"-wal"),
+% 			% file:delete(P#dp.fullpath++"-term"),
+% 			file:delete(P#dp.fullpath++"-shm")
+% 	end.
 
 checkpoint(P) ->
 	case actordb_conf:driver() of
@@ -1315,16 +1317,16 @@ delete_actor(P) ->
 		_ ->
 			ok
 	end,
-	?DBG("Deleted from shard"),
-	case P#dp.follower_indexes of
-		[] ->
-			ok;
-		_ ->
-			% {_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
-			% 				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}}]})
-			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,stop,
-							[{P#dp.actorname,P#dp.actortype}]})
-	end,
+	% ?DBG("Deleted from shard ~p",[P#dp.follower_indexes]),
+	% case P#dp.follower_indexes of
+	% 	[] ->
+	% 		ok;
+	% 	_ ->
+	% 		% {_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
+	% 		% 				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}}]})
+	% 		{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,stop,
+	% 						[{P#dp.actorname,P#dp.actortype}]})
+	% end,
 	actordb_sqlite:stop(P#dp.db).
 	% delactorfile(P).
 empty_queue(Q,ReplyMsg) ->
@@ -1529,7 +1531,6 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 			case lists:keyfind(Ref,#cpto.ref,P#dp.dbcopy_to) of
 				false ->
 					Db = P#dp.db,
-					ok = actordb_driver:checkpoint_lock(Db,1),
 					{Pid,_} = spawn_monitor(fun() -> 
 							dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
 					{reply,{ok,Ref},P#dp{db = Db,
@@ -1677,6 +1678,15 @@ dbcopy_do(P,Bin) ->
 
 dbcopy(P,Home,ActorTo) ->
 	{ok,F} = file:open(P#dp.fullpath,[read,binary,raw]),
+	ok = actordb_driver:checkpoint_lock(P#dp.db,1),
+	Me = self(),
+	spawn(fun() ->
+		erlang:monitor(process,Me),
+		receive
+			{'DOWN',_Ref,_,_Me,_} ->
+				actordb_driver:checkpoint_lock(P#dp.db,0)
+		end
+	end),
 	dbcopy(P,Home,ActorTo,F,0,db).
 dbcopy(P,Home,ActorTo,{iter,_} = Iter,_Bin,wal) ->
 	% case Bin of

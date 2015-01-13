@@ -394,7 +394,7 @@ commit_call(Doit,Id,From,P) ->
 						deleted ->
 							Me = self(),
 							actordb_sqlprocutil:delete_actor(P),
-							spawn(fun() -> stop(Me) end);
+							spawn(fun() -> ?DBG("Stopping in commit"), stop(Me) end);
 						_ ->
 							ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>))
 					end,
@@ -748,11 +748,11 @@ state_rw_call(What,From,P) ->
 		% 		_ ->
 		% 			{noreply,P}
 		% 	end;
-		{delete,MovedToNode} ->
-			reply(From,ok),
-			actordb_sqlite:stop(P#dp.db),
-			?DBG("Received delete call"),
-			actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
+		% {delete,MovedToNode} ->
+		% 	reply(From,ok),
+		% 	actordb_sqlite:stop(P#dp.db),
+		% 	?DBG("Received delete call"),
+		% 	actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
 			{stop,normal,P#dp{db = undefined}};
 		checkpoint ->
 			actordb_sqlprocutil:do_checkpoint(P),
@@ -831,7 +831,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P) ->
-	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,"Sql..",Transaction}]),
+	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
@@ -890,7 +890,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 				[] ->
 					Me = self(),
 					actordb_sqlprocutil:delete_actor(P),
-					spawn(fun() -> stop(Me) end);
+					spawn(fun() -> ?DBG("Stopping in write"), stop(Me) end);
 				_ ->
 					ok
 			end,
@@ -1102,6 +1102,7 @@ handle_info(doelection1,P) ->
 			?DBG("Election timer action ~p",[RSY]),
 			case RSY of
 				synced when P#dp.movedtonode == deleted ->
+					?DBG("Stopping because deleted"),
 					% actordb_sqlprocutil:delete_actor(P),
 					{stop,normal,P};
 				synced ->
@@ -1401,12 +1402,6 @@ down_info(PID,_Ref,Reason,P) ->
 			WithoutCopy = lists:keydelete(PID,#lck.pid,P#dp.locked),
 			NewCopyto = lists:keydelete(PID,#cpto.pid,P#dp.dbcopy_to),
 			false = lists:keyfind(C#cpto.ref,2,WithoutCopy),
-			case NewCopyto of
-				[] ->
-					ok = actordb_driver:checkpoint_lock(P#dp.db,0);
-				_ ->
-					ok
-			end,
 			% wait_copy not in list add it (2nd stage of lock)
 			WithoutCopy1 =  [#lck{ref = C#cpto.ref, ismove = C#cpto.ismove,node = C#cpto.node,time = os:timestamp(),
 									actorname = C#cpto.actorname}|WithoutCopy],
