@@ -753,7 +753,7 @@ state_rw_call(What,From,P) ->
 		% 	actordb_sqlite:stop(P#dp.db),
 		% 	?DBG("Received delete call"),
 		% 	actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
-			{stop,normal,P#dp{db = undefined}};
+			% {stop,normal,P#dp{db = undefined}};
 		checkpoint ->
 			actordb_sqlprocutil:do_checkpoint(P),
 			{reply,ok,P}
@@ -1305,8 +1305,8 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 					{noreply,ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
 												netchanges = actordb_local:net_changes()})};
 				_ ->
-					?DBG("Running post election write on nodes ~p, evterm=~p, current_term=~p, withdb ~p",
-							[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,NP#dp.flags band ?FLAG_SEND_DB > 0]),
+					?DBG("Running post election write on nodes ~p, evterm=~p, current_term=~p, withdb ~p, vers ~p",
+							[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,NP#dp.flags band ?FLAG_SEND_DB > 0,NP#dp.schemavers]),
 					% it must always return noreply
 					write_call(#write{sql = Sql, transaction = NP#dp.transactionid, records = Records},Callfrom, NP)
 			end;
