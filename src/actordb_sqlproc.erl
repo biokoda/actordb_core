@@ -346,9 +346,10 @@ handle_call(Msg,From,P) ->
 				Err ->
 					{reply, Err,P}
 			end;
-		% delete ->
-		% 	actordb_sqlprocutil:delete_actor(P),
-		% 	{stop,normal,P};
+		delete ->
+			% actordb_sqlprocutil:delete_actor(P),
+			% {stop,normal,P};
+			{reply,ok,P#dp{movedtonode = deleted}};
 		stop ->
 			{stop, shutdown, stopped, P};
 		Msg ->
@@ -748,12 +749,13 @@ state_rw_call(What,From,P) ->
 		% 		_ ->
 		% 			{noreply,P}
 		% 	end;
-		% {delete,MovedToNode} ->
-		% 	reply(From,ok),
-		% 	actordb_sqlite:stop(P#dp.db),
-		% 	?DBG("Received delete call"),
-		% 	actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
+		{delete,MovedToNode} ->
+			reply(From,ok),
+			% actordb_sqlite:stop(P#dp.db),
+			% ?DBG("Received delete call"),
+			% actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
 			% {stop,normal,P#dp{db = undefined}};
+			{reply,ok,P#dp{movedtonode = MovedToNode}};
 		checkpoint ->
 			actordb_sqlprocutil:do_checkpoint(P),
 			{reply,ok,P}
@@ -1045,6 +1047,7 @@ handle_cast({diepls,_Reason},P) ->
 	Empty = queue:is_empty(P#dp.callqueue),
 	Age = actordb_local:min_ref_age(P#dp.activity),
 	CanDie = apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]),
+	?DBG("Age ~p, verified ~p, empty ~p, candie ~p",[Age,P#dp.verified,Empty,CanDie]),
 	case ok of
 		_ when Age > 2000, P#dp.verified, Empty, CanDie /= never ->
 			{stop,normal,P};

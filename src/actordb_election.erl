@@ -129,7 +129,7 @@ doelection(E1) ->
 		_ ->
 			Nodes = [F#flw.distname || F <- E#election.followers],
 			{Results,_GetFailed} = rpc:multicall(Nodes,actordb_sqlproc,call_slave,
-				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]])
+				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]],2000)
 	end,
 	Stop = os:timestamp(),
 	?ADBG("Election took=~p, results ~p failed ~p, contacted ~p",[timer:now_diff(Stop,Start),Results,_GetFailed,Nodes]),

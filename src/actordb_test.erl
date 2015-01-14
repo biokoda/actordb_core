@@ -359,7 +359,7 @@ test_onetwo(_) ->
 	  fun kv_readwrite/0,
 	  fun multiupdate_write/0,
 	  fun multiupdate_read/0,
-	  fun basic_write/0,
+	  {timeout,20,fun basic_write/0},
 	  fun basic_read/0
 	  	].
 test_add_second() ->
