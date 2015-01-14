@@ -230,10 +230,11 @@ reopen_db(#dp{mors = master} = P) ->
 		_ when Driver == actordb_driver, P#dp.db == undefined  ->
 			init_opendb(P);
 		_ when Driver == actordb_driver ->
-			case actordb_sqlite:exec(P#dp.db,<<"SELECT * FROM __adb;">>,read) of
+			case actordb_sqlite:exec(P#dp.db,<<"SeLECT * FROM __adb;">>,read) of
 				{ok,[{columns,_},{rows,[_|_] = Rows}]} ->
 					read_db_state(P,Rows);
-				_ ->
+				_XX ->
+					?DBG("Read __adb result ~p",[_XX]),
 					P
 			end;
 		% we are master but db not open or open as file descriptor to -wal file
@@ -287,9 +288,10 @@ init_opendb(P) ->
 
 read_db_state(P) ->
 	{ok,[{columns,_},{rows,[_|_] = Rows}]} = actordb_sqlite:exec(P#dp.db,
-			<<"SELECT * FROM __adb;">>,read),
+			<<"sELECT * FROM __adb;">>,read),
 	read_db_state(P,Rows).
 read_db_state(P,Rows) ->
+	?DBG("Adb rows ~p",[Rows]),
 	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 	Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
 	MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
@@ -313,7 +315,7 @@ read_db_state(P,Rows) ->
 actually_delete(P) ->
 	% Delete just means adding deleted flag. But if we get a query with create, this means
 	% we must delete all data. Drop everything except __adb. This way evnum and evterm continue where they left off.
-	{ok,[{columns,_},{rows,Tables}]} = actordb_sqlite:exec(P#dp.db,<<"select name from sqlite_master where type='table';">>,read),
+	{ok,[{columns,_},{rows,Tables}]} = actordb_sqlite:exec(P#dp.db,<<"SELECT NAME FROM sqlite_master WHERE type='table';">>,read),
 	Drops = [<<"$DROP TABLE ",Name/binary,";">> || {Name} <- Tables, Name /= <<"__adb">>],
 	?DBG("Drop tables in deleted=~p",[Drops]),
 	#write{sql = ["$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?MOVEDTO,",'');",
@@ -580,7 +582,7 @@ rewind_wal(P) when element(1,P#dp.db) == actordb_driver ->
 		{ok,0} ->
 			P;
 		{ok,_} ->
-			Sql = <<"SELECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
+			Sql = <<"SElECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
 			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
 			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
@@ -1194,7 +1196,7 @@ read_num(P) ->
 			<<>>;
 		_ ->
 			Res = actordb_sqlite:exec(Db,
-						<<"SELECT * FROM __adb WHERE id=",?ANUM/binary,";">>,read),
+						<<"SELeCT * FROM __adb WHERE id=",?ANUM/binary,";">>,read),
 			case Res of
 				{ok,[{columns,_},{rows,[]}]} ->
 					<<>>;
@@ -1915,7 +1917,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							exit(copynoschema);
 						_ ->
 							?DBG("Copyreceive done ~p ~p ~p",[SchemaTables,
-								 {Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELECT * FROM __adb;")]),
+								 {Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELEcT * FROM __adb;")]),
 							actordb_sqlite:stop(Db),
 							Source ! {Ref,self(),ok},
 							case Origin of
