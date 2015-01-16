@@ -921,11 +921,18 @@ start_verify(P,JustStarted) ->
 					end,
 					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
 				LeaderNode when is_binary(LeaderNode) ->
-					actordb_local:actor_mors(slave,LeaderNode),
-					doqueue(reopen_db(P#dp{masternode = LeaderNode, election = undefined,
-								masternodedist = bkdcore:dist_name(LeaderNode), 
+					?DBG("Received leader ~p",[LeaderNode]),
+					DistName = bkdcore:dist_name(LeaderNode),
+					case lists:member(DistName,nodes()) of
+						true ->
+							actordb_local:actor_mors(slave,LeaderNode),
+							doqueue(reopen_db(P#dp{masternode = LeaderNode, election = undefined,
+								masternodedist = DistName, 
 								callfrom = undefined, callres = undefined, 
 								verified = true, activity = make_ref()}));
+						_ ->
+							P#dp{election = election_timer(P#dp.election)}		
+					end;
 				Err ->
 					?DBG("Election try result ~p",[Err]),
 					P#dp{election = election_timer(P#dp.election)}

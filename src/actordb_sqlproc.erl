@@ -351,6 +351,7 @@ handle_call(Msg,From,P) ->
 			% {stop,normal,P};
 			{reply,ok,P#dp{movedtonode = deleted}};
 		stop ->
+			?DBG("Received stop call"),
 			{stop, shutdown, stopped, P};
 		Msg ->
 			% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
