@@ -209,9 +209,9 @@ start(_Type, _Args) ->
 	prestart(),
 	bkdcore:start(actordb:configfiles()),
 	butil:wait_for_app(bkdcore),
-
-	case file:read_file_info([actordb_sharedstate:cb_path(undefined,undefined,undefined),
-								butil:tolist(?STATE_NM_GLOBAL),".",butil:tolist(?STATE_TYPE)]) of
+	Pth1 = [actordb_sharedstate:cb_path(undefined,undefined,undefined),
+			butil:tolist(?STATE_NM_GLOBAL),".",butil:tolist(?STATE_TYPE)],
+	case file:read_file_info(Pth1) of
 		{ok,I} when I#file_info.size > 0 ->
 			StateStart = normal;
 		_I ->
@@ -225,7 +225,12 @@ start(_Type, _Args) ->
 							StateStart = wait
 					end;
 				_ ->
-					StateStart = wait
+					case file:read_file_info([actordb_conf:db_path(),"/",Pth1]) of
+						{ok,I} when I#file_info.size > 0 ->
+							StateStart = normal;
+						_ ->
+							StateStart = wait
+					end
 			end
 	end,
 
