@@ -524,7 +524,7 @@ test_clusteraddnode(_) ->
 	  fun multiupdate_read/0,
 	  fun() -> test_print_end([1,2,3]) end,
 	  fun() -> ?debugFmt("STOPPING SLAVE2",[]), stop_slaves([2]) end,
-	  {timeout,20,fun basic_write/0},
+	  {timeout,30,fun basic_write/0},
 	  fun basic_read/0,
 	  fun copyactor/0
 	  	].
@@ -771,7 +771,7 @@ start_slave(N) ->
 setup_loging() ->
 	{ok,_Handlers} = application:get_env(lager,handlers),
 	% [{lager_console_backend,[info,Param]} || {lager_console_backend,[debug,Param]} <- Handlers].
-	[{lager_console_backend,[debug,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
+	[{lager_console_backend,[info,{lager_default_formatter, [time," ",pid," ",node," ",module," ",line,
 								" [",severity,"] ", message, "\n"]}]}].
 
 slave_name(N) ->

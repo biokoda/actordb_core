@@ -408,7 +408,7 @@ commit_call(Doit,Id,From,P) ->
 					% This will send the remaining WAL pages to followers that have commit flag set.
 					% Followers will then rpc back appendentries_response.
 					% We can also set #dp.evnum now.
-					ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>,
+					actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>,
 												P#dp.evterm,EvNum,<<>>)),
 					{noreply,ae_timer(P#dp{callfrom = From, activity = make_ref(),
 								  callres = ok,evnum = EvNum,movedtonode = Moved,
