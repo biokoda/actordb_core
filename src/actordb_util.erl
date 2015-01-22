@@ -36,12 +36,12 @@ wait_for_startup(Type,Who,N) ->
 		X when is_integer(X) ->
 			ok;
 		{'EXIT',_} ->
-			?ADBG("WAIT FOR STARTUP ~p",[Who]),
+			% ?ADBG("WAIT FOR STARTUP ~p",[Who]),
 			case N > 100 of
 				true ->
 					throw(startup_timeout);
 				_ ->
-					timer:sleep(50),
+					timer:sleep(100),
 					wait_for_startup(Type,Who,N+1)
 			end
 	end.

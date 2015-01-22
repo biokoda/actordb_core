@@ -278,9 +278,14 @@ set_global_state(MasterNode,State) ->
 			case (NewNodes /= OldNodes orelse NewGroups /= OldGroups) of
 			   	true ->
 			   		bkdcore_changecheck:set_nodes_groups(NewNodes,NewGroups),
+			   		% GlobGroupCfg = [{G,bkdcore:nodelist(G)} || G <- bkdcore:groups_of_type(cluster)],
+			   		% application:set_env(kernel,global_groups,GlobGroupCfg),
+			   		% global_group:sync(),
+			   		% global:sync(),
 			   		actordb_election:connect_all(),
 			   		actordb_local:mod_netchanges(),
-			   		spawn(fun() ->timer:sleep(500), start(?STATE_NM_LOCAL,?STATE_TYPE,[{slave,length(nodes()) > 0},{startreason,startup}]) end);
+			   		spawn(fun() ->timer:sleep(500),?ADBG("Nodes: ~p",[nodes()]), 
+			   						start(?STATE_NM_LOCAL,?STATE_TYPE,[{slave,length(nodes()) > 0},{startreason,startup}]) end);
 			   	false ->
 			   		ok
 			end;

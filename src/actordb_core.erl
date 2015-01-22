@@ -10,7 +10,8 @@ stop() ->
 	actordb_backpressure:inc_callcount(1000000),
 	% Max wait 30s
 	wait_done_queries(30000),
-	application:stop(actordb_core).
+	application:stop(actordb_core),
+	actordb_election:stop().
 stop_complete()	 ->
 	case ets:info(bpcounters,size) == undefined of
 		true ->

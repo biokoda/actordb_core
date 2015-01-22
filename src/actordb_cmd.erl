@@ -6,6 +6,7 @@
 -compile(export_all).
 -define(DELIMITER,"~n-------------------------~n~p~n-------------------------~n").
 -include("actordb.hrl").
+-define(ERR(F,P),lists:flatten(io_lib:fwrite(F,P))).
 
 getschema(Etc) ->
 	case application:get_env(actordb,schema) of
@@ -38,7 +39,7 @@ cmd(init,parse,Etc) ->
 					{error,Err}
 			end;
 		X ->
-			throw(io_lib:fwrite("Error parsing nodes.yaml: ~p",[X]))
+			throw(?ERR("Error parsing nodes.yaml: ~p",[X]))
 	end of
 		ok ->
 			{ok,"Start new cluster?"};
@@ -46,13 +47,13 @@ cmd(init,parse,Etc) ->
 			{error,E}
 	catch
 		throw:Str when is_list(Str) ->
-			{error,io_lib:fwrite("~s~n",[Str])};
+			{error,?ERR("~s~n",[Str])};
 		throw:S ->
-			{error,io_lib:fwrite("~p~n",[S])};
+			{error,?ERR("~p~n",[S])};
 		_:{badmatch,{error,enoent}} ->
-			{error,io_lib:fwrite("File(s) missing: ~n~p~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml",Etc++"/schema.yaml"])};
+			{error,?ERR("File(s) missing: ~n~p~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml",Etc++"/schema.yaml"])};
 		_:Err1 ->
-			{error,io_lib:fwrite("Error parsing nodes.yaml or schema.yaml ~p~n",[Err1])}
+			{error,?ERR("Error parsing nodes.yaml or schema.yaml ~p~n",[Err1])}
 	end;
 cmd(init,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
@@ -63,9 +64,9 @@ cmd(init,commit,Etc) ->
 			"ok"
 	catch
 		_:{badmatch,{error,enoent}} ->
-			io_lib:fwrite("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/schema.yaml"]);
+			?ERR("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/schema.yaml"]);
 		_:Err ->
-			io_lib:fwrite("Parsing configs ~p~n",[Err])
+			?ERR("Parsing configs ~p~n",[Err])
 	end;
 cmd(updatenodes,parse,Etc) ->
 	try case readnodes(Etc++"/nodes.yaml") of
@@ -73,7 +74,7 @@ cmd(updatenodes,parse,Etc) ->
 			Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
 			compare_groups(nodes_to_names(Nodes),Groups,compare_nodes(Nodes,[]));
 		X ->
-			throw(io_lib:fwrite("Error parsing nodes.yaml ~p",[X]))
+			throw(?ERR("Error parsing nodes.yaml ~p",[X]))
 	end of
 		[_|_] = Out ->
 			{ok,Out};
@@ -81,11 +82,11 @@ cmd(updatenodes,parse,Etc) ->
 			{ok,nochange}
 	catch
 		throw:Str ->
-			{error,io_lib:fwrite("~s~n",[Str])};
+			{error,?ERR("~s~n",[Str])};
 		_:{badmatch,{error,enoent}} ->
-			{error,io_lib:fwrite("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml"])};
+			{error,?ERR("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml"])};
 		_:Err ->
-			{error,io_lib:fwrite("~p~n",[Err])}
+			{error,?ERR("~p~n",[Err])}
 	end;
 cmd(updatenodes,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
@@ -95,12 +96,12 @@ cmd(updatenodes,commit,Etc) ->
 		ok ->
 			"done";
 		Err ->
-			io_lib:fwrite("~p~n",[Err])
+			?ERR("~p~n",[Err])
 	catch
 		_:{badmatch,{error,enoent}} ->
-			io_lib:fwrite("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml"]);
+			?ERR("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml"]);
 		_:Err ->
-			io_lib:fwrite("Error ~p~n",[Err])
+			?ERR("Error ~p~n",[Err])
 	end;
 cmd(updateschema,parse,Etc) ->
 	case catch actordb_schema:types() of
@@ -118,12 +119,12 @@ cmd(updateschema,parse,Etc) ->
 					end
 			catch
 				_:{badmatch,{error,enoent}} ->
-					{error,io_lib:fwrite("File missing ~p~n",[Etc++"/schema.yaml"])};
+					{error,?ERR("File missing ~p~n",[Etc++"/schema.yaml"])};
 				_:Err ->
-					{error,io_lib:fwrite("Unable to parse schema:~n~p.",[Err])}
+					{error,?ERR("Unable to parse schema:~n~p.",[Err])}
 			end;
 		_ ->
-			{error,io_lib:fwrite("No existing schema, run init?",[])}
+			{error,?ERR("No existing schema, run init?",[])}
 	end;
 cmd(updateschema,commit,Etc) ->
 	try Schema = getschema(Etc),
@@ -131,12 +132,12 @@ cmd(updateschema,commit,Etc) ->
 		ok ->
 			"done";
 		Err ->
-			io_lib:fwrite("~p~n",[Err])
+			?ERR("~p~n",[Err])
 	catch
 		_:{badmatch,{error,enoent}} ->
-			io_lib:fwrite("File missing ~p~n",[Etc++"/schema.yaml"]);
+			?ERR("File missing ~p~n",[Etc++"/schema.yaml"]);
 		_:Err ->
-			io_lib:fwrite("~p~n",[Err])
+			?ERR("~p~n",[Err])
 	end;
 cmd(dummy,_,Etc) ->
 	Etc;
@@ -147,7 +148,7 @@ cmd(stats,stats,{Node,Pid,Ref}) ->
 					send_stats(Node,Pid,Ref) end),
 	ok;
 cmd(_,_,_) ->
-	{error,io_lib:fwrite("uncrecognized command.~nSupported commands: ~p, ~p, ~p~n",[init,updateschema,updatenodes])}.
+	{error,?ERR("uncrecognized command.~nSupported commands: ~p, ~p, ~p~n",[init,updateschema,updatenodes])}.
 
 send_stats(Node,Pid,Ref) ->
 	case lists:member(Node,nodes(connected)) of
@@ -180,7 +181,7 @@ readnodes(Pth) ->
 					throw("Invalid nodes.yaml. First object is neither nodes nor groups")
 			end;
 		Err ->
-			throw(io_lib:fwrite("Invalid nodes.yaml ~n~p~n",[Err]))
+			throw(?ERR("Invalid ~s:~p~n",[Pth,Err]))
 	end.
 
 nodes_to_names(Nodes) ->
@@ -202,7 +203,7 @@ compare_groups(Nodes,[GroupInfo|T],Out) ->
 		[] ->
 			case bkdcore:nodelist(Name) of
 				[] ->
-					compare_groups(Nodes,T,io_lib:fwrite("New group:"++?DELIMITER,[GroupInfo])++Out);
+					compare_groups(Nodes,T,?ERR("New group:"++?DELIMITER,[GroupInfo])++Out);
 				ExistingNodes ->
 					case lists:subtract(ExistingNodes,GNodes) == [] andalso
 								GP == bkdcore:group_param(Name) andalso
@@ -210,11 +211,11 @@ compare_groups(Nodes,[GroupInfo|T],Out) ->
 						true ->
 							compare_groups(Nodes,T,Out);
 						false ->
-							compare_groups(Nodes,T,io_lib:fwrite("Changed group:"++?DELIMITER,[GroupInfo])++Out)
+							compare_groups(Nodes,T,?ERR("Changed group:"++?DELIMITER,[GroupInfo])++Out)
 					end
 			end;
 		Unknown ->
-			throw(io_lib:fwrite("Nodes ~p in group ~p not listed in nodes.yaml",[Unknown,Name]))
+			throw(?ERR("Nodes ~p in group ~p not listed in nodes.yaml",[Unknown,Name]))
 	end;
 compare_groups(_,[],Out) ->
 	Out.
@@ -223,13 +224,13 @@ compare_nodes([NewInfo|T],Out) ->
 	{Name,_AddrReal,_Port,_Pub,_Dist} = All = bkdcore_changecheck:read_node(NewInfo),
 	case bkdcore:node_address(Name) of
 		undefined ->
-			compare_nodes(T,io_lib:fwrite("New node:"++?DELIMITER,[NewInfo])++Out);
+			compare_nodes(T,?ERR("New node:"++?DELIMITER,[NewInfo])++Out);
 		{IPCur,PortCur} ->
 			case All == {Name,IPCur,PortCur,bkdcore:public_address(Name),bkdcore:dist_name(Name)} of
 				true ->
 					compare_nodes(T,Out);
 				false ->
-					compare_nodes(T,io_lib:fwrite("Changed node:"++?DELIMITER,[NewInfo])++Out)
+					compare_nodes(T,?ERR("Changed node:"++?DELIMITER,[NewInfo])++Out)
 			end
 	end;
 compare_nodes([],Out) ->
@@ -249,7 +250,7 @@ compare_schema([Type|T],New,Out) when Type == ids; Type == types; Type == iskv; 
 compare_schema([Type|T],New,Out) ->
 	case lists:keyfind(Type,1,New) of
 		false ->
-			{error,io_lib:fwrite("Missing type ~p in new config. Config invalid.~n",[Type])};
+			{error,?ERR("Missing type ~p in new config. Config invalid.~n",[Type])};
 		{_,_,_} ->
 			compare_schema(T,New,Out);
 		{_,SqlNew} ->
@@ -263,8 +264,7 @@ compare_schema([Type|T],New,Out) ->
 					case ok of
 						_ when SizeCur < SizeNew ->
 							Lines = [binary_to_list(iolist_to_binary(element(N,SqlNew))) || N <- lists:seq(SizeCur+1,SizeNew)],
-							Out1 = Out ++ io_lib:fwrite("Update type ~p:"++?DELIMITER,
-																			[Type,Lines]);
+							Out1 = Out ++ ?ERR("Update type ~p:"++?DELIMITER,[Type,Lines]);
 						_ ->
 							Out1 = Out
 					end,
@@ -285,7 +285,7 @@ compare_schema([],New,O) ->
 				[] ->
 					{ok,O};
 				NewTypes1 ->
-					{ok,O ++ io_lib:fwrite("New actors:"++?DELIMITER,[NewTypes1])}
+					{ok,O ++ ?ERR("New actors:"++?DELIMITER,[NewTypes1])}
 			end
 	end.
 
@@ -300,11 +300,11 @@ check_sql(Type,SqlNew,IsKv) ->
 				ok;
 			{sql_error,E,_E1} ->
 				actordb_sqlite:stop(Db),
-				throw({error,io_lib:fwrite("SQL Error for type \"~p\"~n~p~n~p~n",[Type,E,
+				throw({error,?ERR("SQL Error for type \"~p\"~n~p~n~p~n",[Type,E,
 									binary_to_list(iolist_to_binary(element(N,SqlNew)))])});
 			{error,E} ->
 				actordb_sqlite:stop(Db),
-				throw({error,io_lib:fwrite("SQL Error for type ~p, ~p~n",[Type,E])})
+				throw({error,?ERR("SQL Error for type ~p, ~p~n",[Type,E])})
 		end,
 		case IsKv of
 			true ->
@@ -314,7 +314,7 @@ check_sql(Type,SqlNew,IsKv) ->
 							true ->
 								check_actor_table(Db,Type);
 							_ ->
-								throw({error,io_lib:fwrite("KV requires an \"actors\" table."++
+								throw({error,?ERR("KV requires an \"actors\" table."++
 													"~nType ~p has tables: ~p",
 									[Type,[X || {X} <- Tables]])})
 						end
@@ -329,26 +329,26 @@ check_actor_table(Db,Type) ->
 	Rows = [lists:zip(tuple_to_list(Columns),tuple_to_list(Row)) || Row <- Rows1],
 	case butil:findobj(<<"name">>,<<"id">>,Rows) of
 		false ->
-			throw({error,io_lib:fwrite("KV data type ~p does not contain \"id\" column of type TEXT.",[Type])});
+			throw({error,?ERR("KV data type ~p does not contain \"id\" column of type TEXT.",[Type])});
 		IdCol ->
 			case butil:ds_val(<<"type">>,IdCol) of
 				<<"TEXT">> ->
 					ok;
 				IdColType ->
-					throw({error,io_lib:fwrite("KV data type ~p \"id\" column should be TEXT, but is ~p.",
+					throw({error,?ERR("KV data type ~p \"id\" column should be TEXT, but is ~p.",
 							[Type,butil:tolist(IdColType)])})
 			end
 	end,
 	case butil:findobj(<<"name">>,<<"hash">>,Rows) of
 		false ->
-			throw({error,io_lib:fwrite("KV data type ~p does not contain \"hash\" column of type INTEGER.",
+			throw({error,?ERR("KV data type ~p does not contain \"hash\" column of type INTEGER.",
 					[Type])});
 		HashCol ->
 			case butil:ds_val(<<"type">>,HashCol) of
 				<<"INTEGER">> ->
 					ok;
 				ColType ->
-					throw({error,io_lib:fwrite("KV data type ~p \"hash\" column should be INTEGER, but is ~p.",
+					throw({error,?ERR("KV data type ~p \"hash\" column should be INTEGER, but is ~p.",
 							[Type,butil:tolist(ColType)])})
 			end
 	end.

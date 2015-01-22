@@ -72,7 +72,8 @@ handle_call(stop, _, P) ->
 	{stop, shutdown, stopped, P}.
 
 handle_cast(do_connect,P) ->
-	[spawn(fun() -> net_adm:ping(bkdcore:dist_name(Nd)) end) || Nd <- bkdcore:cluster_nodes()],
+	L = bkdcore:cluster_nodes(),
+	[spawn(fun() -> net_adm:ping(bkdcore:dist_name(Nd)) end) || Nd <- L],
 	{noreply,P};
 handle_cast(_, P) ->
 	{noreply, P}.
