@@ -1251,7 +1251,7 @@ checkpoint(P) ->
 		actordb_driver ->
 			P;
 		_ ->
-			{_,NPages} = actordb_sqlite:wal_pages(P#dp.db),
+			{_,NPages} = esqlite3:wal_pages(P#dp.db),
 			DbSize = NPages*(?PAGESIZE+40),
 			case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
 				true ->
