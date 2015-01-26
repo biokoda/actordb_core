@@ -247,16 +247,22 @@ rpc(undefined,Actor,MFA) ->
 	?AERR("Call to undefined node! ~p ~p",[Actor,MFA]),
 	{error,badnode};
 rpc(Node,Actor,MFA) ->
-	case bkdcore:rpc(Node,MFA) of
-		{error,econnrefused} ->
-			case lists:delete(Node,bkdcore:nodelist(bkdcore:cluster_group(Node))) of
-				[] ->
-					{error,econnrefused};
-				Nodes ->
-					call_loop(Actor,Nodes,MFA)
-			end;
-		Res ->
-			Res
+	case actordb_conf:node_name() == Node of
+		true ->
+			{Mod,Func,Arg} = MFA,
+			apply(Mod,Func,Arg);
+		_ ->
+			case bkdcore:rpc(Node,MFA) of
+				{error,econnrefused} ->
+					case lists:delete(Node,bkdcore:nodelist(bkdcore:cluster_group(Node))) of
+						[] ->
+							{error,econnrefused};
+						Nodes ->
+							call_loop(Actor,Nodes,MFA)
+					end;
+				Res ->
+					Res
+			end
 	end.
 
 call_loop(_,[],_) ->
