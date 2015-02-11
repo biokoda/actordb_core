@@ -164,6 +164,7 @@ prestart() ->
 									TermDb = false
 							end,
 							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Driver,TermDb,Name),
+
 							% Ensure folders exist.
 							[begin
 								case filelib:ensure_dir(F++"/actors/") of
