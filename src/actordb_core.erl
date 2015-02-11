@@ -157,34 +157,39 @@ prestart() ->
 								_ ->
 									Driver = actordb_driver
 							end,
-							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Driver,Name);
+							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Driver,Name),
+							% Ensure folders exist.
+							[begin
+								case filelib:ensure_dir(F++"/actors/") of
+									ok ->
+										case Level > 0 of
+											true ->
+												[ok = filelib:ensure_dir(F++"/actors/"++butil:tolist(N)++"/") || N <- lists:seq(0,Level)];
+											false ->
+												ok
+										end;
+									Errx1 ->
+										throw({path_invalid,F++"/actors/",Errx1})
+								end,
+								case  filelib:ensure_dir(F++"/shards/") of
+									ok -> 
+										ok;
+									Errx2 ->
+										throw({path_invalid,F++"/shards/",Errx2})
+								end,
+								case  filelib:ensure_dir(F++"/state/") of
+									ok -> 
+										ok;
+									Errx3 ->
+										throw({path_invalid,F++"/state/",Errx3})
+								end
+							 end || F <- actordb_conf:paths()];
 						Err ->
 							PagesPerWal = 1000,
 							?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
 							init:stop()
 					end
 			end,
-			% Ensure folders exist.
-			[begin
-				case filelib:ensure_dir(F++"/actors/") of
-					ok ->
-						ok;
-					Errx1 ->
-						throw({path_invalid,F++"/actors/",Errx1})
-				end,
-				case  filelib:ensure_dir(F++"/shards/") of
-					ok -> 
-						ok;
-					Errx2 ->
-						throw({path_invalid,F++"/shards/",Errx2})
-				end,
-				case  filelib:ensure_dir(F++"/state/") of
-					ok -> 
-						ok;
-					Errx3 ->
-						throw({path_invalid,F++"/state/",Errx3})
-				end
-			 end || F <- actordb_conf:paths()],
 
 			% Start dependencies
 			% case length(actordb_conf:paths())*2 >= erlang:system_info(logical_processors) of
