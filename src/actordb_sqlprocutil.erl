@@ -27,11 +27,11 @@ static_sqls() ->
 	% #d07; -> d means it returns result
 	"INSERT INTO transactions (commited) VALUES (0);",
 	% #s08;
-	"UPDATE transactions SET commited=1 WHERE id=?1 AND (commited=0 OR commited=1);"
-	% % #s09;
-	% "INSERT OR REPLACE INTO terms VALUES (?1,?2,?3,?4,?5,?6);",
-	% % #d10;
-	% "SELECT * FROM terms WHERE actor=?1 AND type=?2;"
+	"UPDATE transactions SET commited=1 WHERE id=?1 AND (commited=0 OR commited=1);",
+	% #s09;
+	"INSERT OR REPLACE INTO terms VALUES (?1,?2,?3,?4,?5,?6);",
+	% #d10;
+	"SELECT * FROM terms WHERE actor=?1 AND type=?2;"
 	}.
 
 reply(undefined,_Msg) ->
@@ -179,7 +179,7 @@ reply_maybe(P,N,[]) ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
 			case P#dp.movedtonode of
 				deleted ->
-					Me = self(),
+					%Me = self(),
 					actordb_sqlprocutil:delete_actor(P);
 					% spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
@@ -612,10 +612,17 @@ rewind_wal(P) ->
 	end.
 
 save_term(P) ->
-	ok = butil:savetermfile([P#dp.fullpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm}),
-	% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
+	% ok = butil:savetermfile([P#dp.fullpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm}),
+	%ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
+	store_term(P,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
 	P.
-
+store_term(P,VotedFor,CurrentTerm,Evnum,EvTerm) ->
+	case actordb_conf:termdb() of
+		false ->
+			ok = butil:savetermfile([P#dp.fullpath,"-term"],{VotedFor,CurrentTerm,Evnum,EvTerm});
+		true ->
+			ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,VotedFor,CurrentTerm,Evnum,EvTerm)
+	end.
 
 doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transactionid == undefined, P#dp.locked == [] ->
 	case queue:is_empty(P#dp.callqueue) of
@@ -904,9 +911,10 @@ start_verify(P,JustStarted) ->
 						followers = P#dp.follower_indexes, cbmod = P#dp.cbmod},
 			case actordb_election:whois_leader(E) of
 				Result when is_pid(Result); Result == Me ->
-					ok = butil:savetermfile([P#dp.fullpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm}),
+					% ok = butil:savetermfile([P#dp.fullpath,"-term"],{actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm}),
 					% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,actordb_conf:node_name(),
-						% CurrentTerm,P#dp.evnum,P#dp.evterm),
+					%	 CurrentTerm,P#dp.evnum,P#dp.evterm),
+					store_term(P,actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm),
 					NP = set_followers(P#dp.schemavers /= undefined,
 							reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me, 
 									mors = master, verified = false})),
@@ -1908,11 +1916,15 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							Evnum1 = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 							Evterm1 = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
 							?DBG("Storing evnum=~p, evterm=~p, curterm=~p",[Evnum1,Evterm1,butil:ds_val(curterm,Param)]),
-							ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1});
+							% ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1});
+							% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
+							% 	butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1);
+							store_term(P,undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1);
 						_ when is_integer(Evnum) ->
-							ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,Evterm,Evnum,Evterm});
+							% ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,Evterm,Evnum,Evterm});
 							% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
 							% 	Evterm,Evnum,Evterm);
+							store_term(P,undefined,Evterm,Evnum,Evterm);
 						false ->
 							ok
 					end,

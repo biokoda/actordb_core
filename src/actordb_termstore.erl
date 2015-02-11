@@ -7,14 +7,11 @@
 -export([store_term_info/6,read_term_info/2]).
 -include_lib("actordb.hrl").
 
-% Not used atm.
-% Maybe it would be better if it had public ETS and reads would always go to ETS?
-
 store_term_info(A,T,VF,CurTerm,EvNum,EvTerm) ->
-	gen_server:call(?MODULE,{write,A,T,VF,CurTerm,EvNum,EvTerm}).
+	gen_server:call(?MODULE,{write,A,T,VF,CurTerm,EvNum,EvTerm},infinity).
 
 read_term_info(A,T) ->
-	gen_server:call(?MODULE,{read,A,T}).
+	gen_server:call(?MODULE,{read,A,T},infinity).
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -33,8 +30,9 @@ print_info() ->
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
 handle_call(Msg,CF,#dp{db = undefined} = P) ->
-	Pth = lists:flatten([bkdcore:statepath(),"/termstore"]),
-	filelib:ensure_dir(Pth),
+	Pth = lists:flatten(["termstore"]),
+	% Pth = lists:flatten([bkdcore:statepath(),"/termstore"]),
+	% filelib:ensure_dir(Pth),
 	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(Pth,wal),
 	case SchemaTables of
 		[] ->
@@ -77,13 +75,14 @@ handle_cast(_, P) ->
 handle_info(timeout,P) ->
 	ok = actordb_sqlite:exec(P#dp.db,<<"#s09;">>,[P#dp.writes]),
 	[gen_server:reply(element(1,W),ok) || W <- P#dp.writes],
-	case P#dp.write_count > 1000 of
-		true ->
-			NW = 0,
-			actordb_sqlite:checkpoint(P#dp.db);
-		false ->
-			NW = P#dp.write_count
-	end,
+	% case P#dp.write_count > 1000 of
+	% 	true ->
+	% 		NW = 0,
+	% 		actordb_sqlite:checkpoint(P#dp.db);
+	% 	false ->
+	% 		NW = P#dp.write_count
+	% end,
+	NW = P#dp.write_count,
 	{noreply,P#dp{writes = [], write_count = NW}};
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);

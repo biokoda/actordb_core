@@ -166,16 +166,15 @@ shard_path(Name) ->
 actorpath(Actor) ->
 	case actordb_conf:driver() of
 		actordb_driver ->
-			["actors/"];
+			Path = "";
 		_ ->
-			Path = drive(Actor),
-			case actordb_conf:level_size() of
-				0 ->
-					[Path, "/actors/"];
-				Max ->
-					[Path,"/actors/", butil:tolist(hash(["db_level",butil:tobin(Actor)]) rem Max), 
-							"/"]
-			end
+			Path = [drive(Actor),"/"]
+	end,
+	case actordb_conf:level_size() of
+		0 ->
+			[Path, "actors/"];
+		Max ->
+			[Path,"actors/", butil:tolist(hash(["db_level",butil:tobin(Actor)]) rem Max), "/"]
 	end.
 
 drive(Actor) ->
@@ -209,10 +208,10 @@ type_schema(Type,Version) ->
 			{Version,[]}
 	end.
 
-createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver) ->
-	createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver,bkdcore:node_name()).
-createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver,Name) ->
-	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},{cfgtime,os:timestamp()},
+createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,UseTermDb,Driver) ->
+	createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver,UseTermDb,bkdcore:node_name()).
+createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver,UseTermDb,Name) ->
+	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},{cfgtime,os:timestamp()},{termdb,UseTermDb},
 								   {journal_mode,Journal},{sync,Sync},{query_timeout,QueryTimeout},{node_name,Name},{driver,Driver}]).
 
 change_journal(Journal,Sync) ->

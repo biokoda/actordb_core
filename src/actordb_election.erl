@@ -28,7 +28,7 @@ connect_all() ->
 % If nodename master has been chosen
 % If pid monitor for exit signal.
 whois_leader(E) ->
-	gen_server:call(pid(),{whois_leader,E#election{candidate = actordb_conf:node_name()}}).
+	gen_server:call(pid(),{whois_leader,E#election{candidate = actordb_conf:node_name()}},infinity).
 
 start() ->
 	gen_server:start({global,?MODULE},?MODULE, [], []).
