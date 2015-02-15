@@ -11,7 +11,7 @@ store_term_info(A,T,VF,CurTerm,EvNum,EvTerm) ->
 	gen_server:call(?MODULE,{write,A,T,VF,CurTerm,EvNum,EvTerm},infinity).
 
 read_term_info(A,T) ->
-	gen_server:call(?MODULE,{read,A,T},infinity).
+	butil:ds_val({A,T},termstore).
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -29,18 +29,6 @@ print_info() ->
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
 
-handle_call(Msg,CF,#dp{db = undefined} = P) ->
-	Pth = lists:flatten(["termstore"]),
-	% Pth = lists:flatten([bkdcore:statepath(),"/termstore"]),
-	% filelib:ensure_dir(Pth),
-	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(Pth,wal),
-	case SchemaTables of
-		[] ->
-			{ok,_} = actordb_sqlite:exec(Db,schema(),write);
-		_ ->
-			ok
-	end,
-	handle_call(Msg,CF,P#dp{db = Db});
 handle_call({write,Actor,Type,VotedFor,CurTerm,EvNum,EvTerm},CallFrom,P) ->
 	% Do not write directly. Use timeout which will mean draining message queue.
 	% This way if many write calls they will get combined.
@@ -51,6 +39,7 @@ handle_call({write,Actor,Type,VotedFor,CurTerm,EvNum,EvTerm},CallFrom,P) ->
 		[] ->
 			self() ! timeout
 	end,
+	ets:insert(termstore,{{butil:tobin(Actor),Type},VotedFor,CurTerm,EvNum,EvTerm}),
 	{noreply,P#dp{writes = [{CallFrom,butil:tobin(Actor),Type,VotedFor,CurTerm,EvNum,EvTerm}|P#dp.writes], 
 				write_count = P#dp.write_count + 1}};
 handle_call({read,Actor,Type},_,P) ->
@@ -96,7 +85,23 @@ terminate(_, _) ->
 code_change(_, P, _) ->
 	{ok, P}.
 init(_) ->
-	{ok,#dp{}}.
+	case ets:info(termstore,size) of
+		undefined ->
+			ets:new(termstore, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]);
+		_ ->
+			ok
+	end,
+	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init("termstore",wal,0),
+	case SchemaTables of
+		[] ->
+			{ok,_} = actordb_sqlite:exec(Db,schema(),write);
+		_ ->
+			ok
+	end,
+	{ok,[{columns,_},{rows,R}]} = actordb_sqlite:exec(Db,<<"select * from terms;">>,read),
+
+	ets:insert(termstore,[{{A,T},VF,CT,EN,ET} || {A,T,VF,CT,EN,ET} <- R]),
+	{ok,#dp{db = Db}}.
 
 
 schema() ->

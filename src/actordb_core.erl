@@ -54,6 +54,7 @@ wait_distreg_procs() ->
 start_ready() ->
 	?AINF("Start ready."),
 	application:set_env(actordb_core,isready,true),
+	% actordb_termstore:start(),
 	case application:get_env(actordb_core,mysql_protocol) of
 		undefined ->
 			ok;

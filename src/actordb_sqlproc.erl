@@ -1489,7 +1489,7 @@ init([_|_] = Opts) ->
 			case ok of
 				_ when TermDb ->
 					case actordb_termstore:read_term_info(P#dp.actorname,P#dp.actortype) of
-						{ok, VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
+						{_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
 							ok;
 						_ ->
 							VotedFor = undefined,
