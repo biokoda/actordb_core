@@ -947,6 +947,12 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 											netchanges = actordb_local:net_changes(),
 										evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers})}
 					end;
+				Resp when EvNum == 1 ->
+					% Restart with write but just with schema.
+					actordb_sqlite:rollback(P#dp.db),
+					reply(From,Resp),
+					{NP,SchemaSql,SchemaRecords,_} = post_election_sql(P#dp{schemavers = undefined},[],undefined,[],undefined),
+					write_call1(W#write{sql = SchemaSql},undefined,NP#dp.schemavers,NP);
 				Resp ->
 					% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 					actordb_sqlite:rollback(P#dp.db),
