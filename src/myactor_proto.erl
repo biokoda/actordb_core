@@ -282,7 +282,7 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
     ?PROTO_DBG("got query (~s)",[Query]),
     Q0 = myactor_util:rem_spaces(Query),
     HasActorCmd = myactor_util:is_actor(Q0),
-    case actordb_sqlparse:parse_statements(Query) of
+    case catch actordb_sqlparse:parse_statements(Query) of
         ["show connection state"++_] ->
             ?PROTO_DBG("showing connection state: ~p",[Cst]),
             Flags = [ [butil:tobin(Flag)," "] ||  Flag <- Cst#cst.current_actor_flags],
@@ -391,7 +391,10 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
                 _ ->
                     Cst0 = queue_append(Cst,Q0),
                     send_ok(Cst0)
-            end;            
+            end;
+        {error,Err} ->
+            ?ERR_DESC(Cst,{error,Err}), 
+            send_err(Cst,<<ErrDesc/binary>>);
         Stmts ->
             ?PROTO_DBG("stmts term = ~p",[Stmts]),
             case HasActorCmd of
