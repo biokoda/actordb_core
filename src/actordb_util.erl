@@ -145,8 +145,15 @@ actor_ae_stream(ActorPid,Count) ->
 			ok;
 		{call_slave,Cb,Actor,Type,Term,Header,Page} ->
 			% ?ADBG("Calling slave ~p",[Actor]),
-			actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,Count}},[nostart]),
-			actor_ae_stream(ActorPid,Count);
+			case actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,Count}},[nostart]) of
+				ok ->
+					actor_ae_stream(ActorPid,Count);
+				done ->
+					actor_ae_stream(ActorPid,Count);
+				_Err ->
+					% Same as start ae. Die off.
+					ok
+			end;
 		stop ->
 			ok
 	after 30000 ->

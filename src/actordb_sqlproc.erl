@@ -565,19 +565,26 @@ state_rw_call(What,From,P) ->
 		{appendentries_wal,Term,Header,Body,AEType,CallCount} ->
 			case ok of
 				_ when Term == P#dp.current_term; AEType == head ->
-					actordb_sqlprocutil:append_wal(P,Header,Body),
-					case Header of
-						% dbsize == 0, not last page
-						<<_:32,0:32,_/binary>> ->
-							{reply,ok,P#dp{activity = make_ref(),locked = [ae]}};
-						% last page
-						<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
-							?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p, masternd=~p",
-									[Evnum,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
-							NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref(),locked = []},
-							reply(From,done),
-							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
-							{noreply,NP}
+					AWR = actordb_sqlprocutil:append_wal(P,Header,Body),
+					case AWR of
+						ok ->
+							case Header of
+								% dbsize == 0, not last page
+								<<_:32,0:32,_/binary>> ->
+									{reply,ok,P#dp{activity = make_ref(),locked = [ae]}};
+								% last page
+								<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
+									?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p, masternd=~p",
+											[Evnum,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
+									NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref(),locked = []},
+									reply(From,done),
+									actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
+									{noreply,NP}
+							end;
+						_ ->
+							reply(From,false),
+							actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
+							{noreply,P}
 					end;
 				_ ->
 					?ERR("AE WAL received wrong term ~p",[{Term,P#dp.current_term}]),
@@ -1488,7 +1495,7 @@ init([_|_] = Opts) ->
 			case ok of
 				_ when TermDb ->
 					case actordb_termstore:read_term_info(P#dp.actorname,P#dp.actortype) of
-						{ok, VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
+						{_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
 							ok;
 						_ ->
 							VotedFor = undefined,

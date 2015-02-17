@@ -50,7 +50,7 @@ append_wal(P,Header,Bin1) ->
 	Bin = actordb_sqlite:lz4_decompress(Bin1,?PAGESIZE),
 	case element(1,P#dp.db) of
 		actordb_driver ->
-			ok = actordb_driver:inject_page(P#dp.db,Bin,Header);
+			actordb_driver:inject_page(P#dp.db,Bin,Header);
 		_ ->
 			case file:write(P#dp.db,[Header,Bin]) of
 				ok ->
