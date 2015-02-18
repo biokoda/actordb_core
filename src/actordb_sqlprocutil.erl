@@ -1039,63 +1039,58 @@ follower_nodes(L) ->
 
 % SqlIn - only has anything in it if this is recreate after delete
 post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
-	% case iolist_size(SqlIn) of
-	% 	0 ->
-			% If actor is starting with a write, we can incorporate the actual write to post election sql.
-			% This is why wait_election flag is added at actordb_sqlproc:write.
-			QueueEmpty = queue:is_empty(P#dp.callqueue),
-			case Callfrom1 of
-				undefined when QueueEmpty == false ->
-					case queue:out_r(P#dp.callqueue) of
-						{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite1, records = CallRecords}}},CQ} ->
-							CallWrite = semicolon(CallWrite1);
-						_ ->
-							CallRecords = [],
-							CallWrite = <<>>,
-							CQ = P#dp.callqueue,
-							Callfrom = Callfrom1
-					end;
-				Callfrom ->
+	% If actor is starting with a write, we can incorporate the actual write to post election sql.
+	% This is why wait_election flag is added at actordb_sqlproc:write.
+	QueueEmpty = queue:is_empty(P#dp.callqueue),
+	case Callfrom1 of
+		undefined when QueueEmpty == false ->
+			case queue:out_r(P#dp.callqueue) of
+				{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite1, records = CallRecords}}},CQ} ->
+					CallWrite = semicolon(CallWrite1);
+				_ ->
 					CallRecords = [],
 					CallWrite = <<>>,
-					CQ = P#dp.callqueue
-			end,
-			?DBG("Adding write to post election sql schemavers=~p",[P#dp.schemavers]),
-			case P#dp.schemavers of
-				undefined ->
-					{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
-					NP = P#dp{schemavers = SchemaVers},
-					case P#dp.follower_indexes of
-						[] ->
-							Flags = P#dp.flags;
-						_ ->
-							Flags = P#dp.flags bor ?FLAG_SEND_DB
-					end,
-					ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
-					{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
-					?DBG("Adding base schema ~p",[BS]),
-					Records = Records1++CallRecords++[[[?ANUMI,butil:tobin(ActorNum)]]],
-					Sql = [SqlIn,BS,Schema,CallWrite,
-							"#s02;"
-							];
+					CQ = P#dp.callqueue,
+					Callfrom = Callfrom1
+			end;
+		Callfrom ->
+			CallRecords = [],
+			CallWrite = <<>>,
+			CQ = P#dp.callqueue
+	end,
+	?DBG("Adding write to post election sql schemavers=~p",[P#dp.schemavers]),
+	case P#dp.schemavers of
+		undefined ->
+			{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
+			NP = P#dp{schemavers = SchemaVers},
+			case P#dp.follower_indexes of
+				[] ->
+					Flags = P#dp.flags;
 				_ ->
-					Records = [],
-					Flags = P#dp.flags,
-					case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
-						{_,[]} ->
-							NP = P,
-							Sql = CallWrite;
-						{SchemaVers,Schema} ->
-							NP = P#dp{schemavers = SchemaVers},
-							Sql = [SqlIn,Schema,CallWrite,
-									<<"$UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
-										<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
-					end
+					Flags = P#dp.flags bor ?FLAG_SEND_DB
 			end,
-			{NP#dp{callqueue = CQ, flags = Flags},Sql,Records,Callfrom};
-	% 	_ ->
-	% 		{P,SqlIn,[],Callfrom1}
-	% end;
+			ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
+			{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
+			?DBG("Adding base schema ~p",[BS]),
+			Records = Records1++CallRecords++[[[?ANUMI,butil:tobin(ActorNum)]]],
+			Sql = [SqlIn,BS,Schema,CallWrite,
+					"#s02;"
+					];
+		_ ->
+			Records = [],
+			Flags = P#dp.flags,
+			case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
+				{_,[]} ->
+					NP = P,
+					Sql = CallWrite;
+				{SchemaVers,Schema} ->
+					NP = P#dp{schemavers = SchemaVers},
+					Sql = [SqlIn,Schema,CallWrite,
+							<<"$UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
+								<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
+			end
+	end,
+	{NP#dp{callqueue = CQ, flags = Flags},Sql,Records,Callfrom};
 post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfrom) ->
 	case base64:decode(MSql1) of
 		<<"delete">> ->
