@@ -1314,8 +1314,8 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			% If nothing to store and all nodes synced, send an empty AE.
 			case is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
 				true when AllSynced, NewFollowers == [] ->
-					{noreply,actordb_sqlprocutil:doqueue(NP#dp{follower_indexes = NewFollowers,
-												netchanges = actordb_local:net_changes()})};
+					{noreply,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:do_cb(NP#dp{follower_indexes = NewFollowers,
+												netchanges = actordb_local:net_changes()}))};
 				true when AllSynced ->
 					?DBG("Nodes synced, running empty AE."),
 					NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
