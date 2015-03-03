@@ -11,8 +11,12 @@
 getschema(Etc) ->
 	case application:get_env(actordb,schema) of
 		undefined ->
-			[Schema] = yamerl_constr:file(Etc++"/schema.yaml"),
-			Schema;
+			case yamerl_constr:file(Etc++"/schema.yaml") of
+				[Schema] ->
+					Schema;
+				[] ->
+					[]
+			end;
 		{ok,Mod} ->
 			apply(Mod,schema,[])
 	end.
