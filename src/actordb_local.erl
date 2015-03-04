@@ -510,14 +510,10 @@ init(_) ->
 			ok
 	end,
 	case ok of
-		_ when Ulimit =< 256 ->
-			Proclimit = 100;
 		_ when Ulimit =< 1024 ->
-			Proclimit = 600;
-		% when Ulimit =< 5000 ->
-		% 	ProcLimit = erlang:round(Ulimit*0.8);
+			Proclimit = erlang:round(Ulimit*0.5);
 		_ ->
-			Proclimit = erlang:round(Ulimit*0.8) %Ulimit - 2000
+			Proclimit = erlang:round(Ulimit*0.8)
 	end,
 	case ok of
 		_ when Memlimit1 =< ?GB ->
