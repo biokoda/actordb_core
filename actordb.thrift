@@ -45,6 +45,8 @@ struct LoginResult
 {
 	1: required bool success,
 	2: optional string error
+	3: optional list<string> readaccess;
+	4: optional list<string> writeaccess;
 }
 
 union Result
