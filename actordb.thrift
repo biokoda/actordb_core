@@ -68,6 +68,6 @@ service Actordb {
   Result exec_all(1: required string actortype, 2: required string sql, 3: list<string> flags = []),
 
   // all in sql: actor sometype(actorname) create; select * from mytab;
-  Result sqlexec(1: required string sql)
+  Result exec_sql(1: required string sql)
 }
 
