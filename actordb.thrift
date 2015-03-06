@@ -43,21 +43,31 @@ struct WriteResult
 
 struct LoginResult
 {
-	1: required bool success,
-	2: optional string error
-	3: optional list<string> readaccess;
-	4: optional list<string> writeaccess;
+  1: required bool success,
+  2: optional string error
+  3: optional list<string> readaccess;
+  4: optional list<string> writeaccess;
 }
 
 union Result
 {
-	1: ReadResult read,
-	2: WriteResult write
+  1: ReadResult read,
+  2: WriteResult write
 }
 
 service Actordb {
-	LoginResult login(1: required string username, 2: required string password),
+  LoginResult login(1: required string username, 2: required string password),
 
-	Result sqlexec(1: required string sql)
+  // query for 1 actor of type
+  Result exec_single(1: required string actorname, 2: required string actortype, 3: required string sql, 4: list<string> flags = []),
+
+  // query over some actors of type
+  Result exec_multi(1: required list<string> actors, 2: required string actortype, 3: required string sql, 4: list<string> flags = []),
+
+  // query over all actors for type
+  Result exec_all(1: required string actortype, 2: required string sql, 3: list<string> flags = []),
+
+  // all in sql: actor sometype(actorname) create; select * from mytab;
+  Result sqlexec(1: required string sql)
 }
 
