@@ -424,10 +424,7 @@ parse_prepare(Sql) ->
 			Del = true;
 		<<"delete ",Delrem/binary>> ->
 			Del = true;
-		<<D,E,L,E,T,E," ",Delrem/binary>> when (D == $d orelse D == $D) andalso 
-											(E == $e orelse E == $E) andalso
-											(L == $l orelse L == $L) andalso
-											(T == $t orelse T == $T)  ->
+		<<D,E,L,E,T,E," ",Delrem/binary>> when ?D(D) andalso ?E(E) andalso ?L(L) andalso ?T(T)  ->
 			Del = true;
 		_ ->
 			Delrem = <<>>,
