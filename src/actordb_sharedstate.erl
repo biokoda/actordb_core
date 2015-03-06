@@ -349,7 +349,7 @@ create_nodelist() ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 % Prepared statements are stored for all types in a single value.
 % We do not use property lists but property tuples. Actor type position is important and needs to be fixed,
-% because it gets passed on to esqlite driver.
+% because it gets passed on to driver.
 % {
 %  {ActorType,{#ps{},#ps{},#ps{},...}},
 %  {ActorType1,{#ps{},#ps{},..}}
