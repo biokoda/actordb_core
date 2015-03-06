@@ -190,6 +190,8 @@ send_handshake(Cst,Hash) when is_record(Cst,cst) ->
     Caps = 16#80000 bor %% PLAIN AUTH 
         16#200 bor %% PROTOCOL 4.1
         16#8000 bor %% for mysql_native_password
+        16#00002000 bor %% transactions
+        16#00000008 bor %% schema name
         0,
     <<CapsLow:16/little, CapsUp:16/little>> = <<Caps:32/little>>,
     <<Auth1:8/binary, Auth2/binary>> = Hash,

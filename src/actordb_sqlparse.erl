@@ -7,7 +7,27 @@
 -export([parse_statements/1,parse_statements/2,split_statements/1]).
 -export([split_actor/1]).
 -include("actordb.hrl").
-
+-define(R(R),(R == $r orelse R == $R)).
+-define(C(C),(C == $c orelse C == $C)).
+-define(E(E),(E == $e orelse E == $E)).
+-define(A(A),(A == $a orelse A == $A)).
+-define(T(T),(T == $t orelse T == $T)).
+-define(I(I),(I == $i orelse I == $I)).
+-define(N(N),(N == $n orelse N == $N)).
+-define(S(S),(S == $s orelse S == $S)).
+-define(O(O),(O == $o orelse O == $O)).
+-define(M(M),(M == $m orelse M == $M)).
+-define(L(L),(L == $l orelse L == $L)).
+-define(B(B),(B == $b orelse B == $B)).
+-define(K(K),(K == $k orelse K == $K)).
+-define(X(X),(X == $x orelse X == $X)).
+-define(U(U),(U == $u orelse U == $U)).
+-define(P(P),(P == $p orelse P == $P)).
+-define(W(W),(W == $w orelse W == $W)).
+-define(H(H),(H == $h orelse H == $H)).
+-define(G(G),(G == $g orelse G == $G)).
+-define(D(D),(D == $d orelse D == $D)).
+-define(V(V),(V == $v orelse V == $V)).
 
 is_write([<<_/binary>> = Bin|_]) ->
 	is_write(Bin);
@@ -93,73 +113,73 @@ is_write(Bin) ->
 			{execute,Rem};
 		<<"EXECUTE ",Rem/binary>> ->
 			{execute,Rem};
+		% Everything is a transaction. 
+		% So throw out transaction start/end statements.
+		<<"BEGIN",_/binary>> ->
+			skip;
+		<<"Begin",_/binary>> ->
+			skip;
+		<<"begin",_/binary>> ->
+			skip;
+		<<"COMMIT",_/binary>> ->
+			skip;
+		<<"Commit",_/binary>> ->
+			skip;
+		<<"commit",_/binary>> ->
+			skip;
+		<<"SAVEPOINT ",_/binary>> ->
+			skip;
+		<<"Savepoint ",_/binary>> ->
+			skip;
+		<<"savepoint ",_/binary>> ->
+			skip;
+		<<"ROLLBACK",_/binary>> ->
+			skip;
+		<<"Rollback",_/binary>> ->
+			skip;
+		<<"rollback",_/binary>> ->
+			skip;
+		<<"RELEASE",_/binary>> ->
+			skip;
+		<<"Release",_/binary>> ->
+			skip;
+		<<"release",_/binary>> ->
+			skip;
 		% If you write sql like a moron then you get to these slow parts.
-		<<C,R,E,A,T,E," ",_/binary>> when (C == $c orelse C == $C) andalso 
-											(R == $r orelse R == $R) andalso
-											(E == $e orelse E == $E) andalso
-											(A == $a orelse A == $A) andalso
-											(T == $t orelse T == $T) ->
+		<<C,R,E,A,T,E," ",_/binary>> when ?C(C) andalso ?R(R) andalso ?E(E) andalso ?A(A) andalso ?T(T) ->
 			true;
-		<<I,N,S,E,R,T," ",_/binary>> when (I == $i orelse I == $I) andalso 
-											(N == $n orelse N == $N) andalso
-											(S == $s orelse S == $S) andalso
-											(E == $e orelse E == $E) andalso
-											(R == $r orelse R == $R) andalso
-											(T == $t orelse T == $T) ->
+		<<I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
 			true;
-		<<"_",I,N,S,E,R,T," ",_/binary>> when (I == $i orelse I == $I) andalso 
-											(N == $n orelse N == $N) andalso
-											(S == $s orelse S == $S) andalso
-											(E == $e orelse E == $E) andalso
-											(R == $r orelse R == $R) andalso
-											(T == $t orelse T == $T) ->
+		<<"_",I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso  ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
 			true;
-		<<U,P,D,A,T,E," ",_/binary>> when (U == $u orelse U == $U) andalso 
-											(P == $p orelse P == $P) andalso
-											(D == $d orelse D == $D) andalso
-											(A == $a orelse A == $A) andalso
-											(T == $t orelse T == $T) andalso
-											(E == $e orelse E == $E) ->
+		<<U,P,D,A,T,E," ",_/binary>> when ?U(U) andalso ?P(P) andalso ?D(D) andalso ?A(A) andalso ?T(T) andalso ?E(E) ->
 			true;	
-		<<D,E,L,E,T,E," ",_/binary>> when (D == $d orelse D == $D) andalso 
-											(E == $e orelse E == $E) andalso
-											(L == $l orelse L == $L) andalso
-											(T == $t orelse T == $T)  ->
+		<<D,E,L,E,T,E," ",_/binary>> when ?D(D) andalso ?E(E) andalso ?L(L) andalso ?T(T)  ->
 			true;
-		<<R,E,P,L,A,C,E," ",_/binary>> when (R == $r orelse R == $R) andalso 
-											(E == $e orelse E == $E) andalso
-											(P == $p orelse P == $P) andalso
-											(L == $l orelse L == $L) andalso
-											(A == $a orelse A == $A) andalso
-											(C == $c orelse C == $C) ->
+		<<R,E,P,L,A,C,E," ",_/binary>> when ?R(R) andalso  ?E(E) andalso ?P(P) andalso ?L(L) andalso ?A(A) andalso ?C(C) ->
 			true;
-		<<P,R,A,G,M,A," ",Rem/binary>> when (P == $p orelse P == $P) andalso 
-											(R == $r orelse R == $R) andalso
-											(A == $a orelse A == $A) andalso
-											(G == $g orelse G == $G) andalso
-											(M == $m orelse M == $M) ->
+		<<P,R,A,G,M,A," ",Rem/binary>> when ?P(P) andalso  ?R(R) andalso ?A(A) andalso ?G(G) andalso ?M(M) ->
 			{pragma,Rem};
-		<<S,H,O,W," ",Rem/binary>> when (S == $s orelse S == $S) andalso
-										(H == $h orelse H == $H) andalso
-										(O == $o orelse O == $O) andalso
-										(W == $w orelse W == $W) ->
+		<<S,H,O,W," ",Rem/binary>> when ?S(S) andalso ?H(H) andalso ?O(O) andalso ?W(W) ->
 			{show,Rem};
-		<<W,I,T,H," ",Rem/binary>> when (W == $w orelse W == $W) andalso
-										(I == $i orelse I == $I) andalso
-										(T == $t orelse T == $T) andalso
-										(H == $h orelse H == $H) ->
+		<<W,I,T,H," ",Rem/binary>> when ?W(W) andalso ?I(I) andalso ?T(T) andalso ?H(H) ->
 			{with,Rem};
-		<<P,R,E,P,A,R,E," ",Rem/binary>> when (P == $p orelse P == $P) andalso
-										(R == $r orelse R == $R) andalso
-										(E == $e orelse E == $E) andalso
-										(A == $a orelse A == $A) ->
+		<<P,R,E,P,A,R,E," ",Rem/binary>> when ?P(P) andalso ?R(R) andalso ?E(E) andalso ?A(A) ->
 			{prepare,Rem};
-		<<E,X,E,C,U,T,E," ",Rem/binary>> when (E == $e orelse E == $E) andalso
-										(X == $x orelse X == $X) andalso
-										(C == $c orelse C == $C) andalso
-										(U == $u orelse U == $U) andalso
-										(T == $t orelse T == $T) ->
+		<<E,X,E,C,U,T,E," ",Rem/binary>> when ?E(E) andalso ?X(X) andalso ?C(C) andalso ?U(U) andalso ?T(T) ->
 			{prepare,Rem};
+		<<R,E,L,E,A,S,E,_/binary>> when ?R(R) andalso ?E(E) andalso ?L(L) andalso ?A(A) andalso ?S(S) ->
+			skip;
+		<<C,O,M,M,I,T,_/binary>> when ?C(C) andalso ?O(O) andalso ?M(M) andalso ?I(I) andalso ?T(T) ->
+			skip;
+		<<R,O,L,L,B,A,C,K,_/binary>> when ?R(R) andalso ?O(O) andalso ?L(L) andalso	?B(B) andalso
+										?A(A) andalso ?C(C) andalso ?K(K) ->
+			skip;
+		<<B,E,G,I,N,_/binary>> when ?B(B) andalso ?E(E) andalso ?G(G) andalso ?I(I) andalso ?N(N) ->
+			skip;
+		<<S,A,V,E,P,O,I,N,T,_/binary>> when ?S(S) andalso ?A(A) andalso ?V(V) andalso ?E(E) andalso ?P(P) andalso
+		                              ?O(O) andalso ?I(I) andalso ?N(N) andalso ?T(T) ->
+			skip;
 		_ ->
 			false
 	end.
@@ -257,6 +277,8 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 				{with,WithRem} ->
 					IsWriteH = find_as(WithRem),
 					parse_statements(BP,T,L,PreparedRows,CurUse,[H|CurStatements],IsWrite orelse IsWriteH, GIsWrite orelse IsWriteH);
+				skip ->
+					parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite, GIsWrite);
 				% ignore ->
 				% 	parse_statements(T,L,CurUse,CurStatements,IsWrite,GIsWrite);
 				IsWriteH ->
