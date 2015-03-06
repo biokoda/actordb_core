@@ -28,8 +28,9 @@ struct ReadResult
 {
   1: required bool success,
   2: optional string error,
-  3: optional list<string> columns,
-  3: optional list<map<string,Val>> rows
+  3: optional bool hasMore, // not used yet
+  4: optional list<string> columns,
+  5: optional list<map<string,Val>> rows
 }
 
 struct WriteResult
@@ -39,3 +40,22 @@ struct WriteResult
   3: optional i64 lastChangeRowid,
   4: optional i64 rowsChanged
 }
+
+struct LoginResult
+{
+	1: required bool success,
+	2: optional string error
+}
+
+union Result
+{
+	1: ReadResult read,
+	2: WriteResult write
+}
+
+service Actordb {
+	LoginResult login(1: required string username, 2: required string password),
+
+	Result sqlexec(1: required string sql)
+}
+
