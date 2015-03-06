@@ -28,13 +28,14 @@ struct ReadResult
 {
   1: required bool success,
   2: optional string error,
+  3: optional list<string> columns,
   3: optional list<map<string,Val>> rows
 }
 
 struct WriteResult
 {
-	1: required bool success,
-	2: optional string error,
-	3: optional i64 lastChangeRowid,
-	4: optional i64 rowsChanged
+  1: required bool success,
+  2: optional string error,
+  3: optional i64 lastChangeRowid,
+  4: optional i64 rowsChanged
 }
