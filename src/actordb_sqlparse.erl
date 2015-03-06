@@ -173,7 +173,7 @@ is_write(Bin) ->
 		<<C,O,M,M,I,T,_/binary>> when ?C(C) andalso ?O(O) andalso ?M(M) andalso ?I(I) andalso ?T(T) ->
 			skip;
 		<<R,O,L,L,B,A,C,K,_/binary>> when ?R(R) andalso ?O(O) andalso ?L(L) andalso	?B(B) andalso
-										?A(A) andalso ?C(C) andalso ?K(K) ->
+                                       ?A(A) andalso ?C(C) andalso ?K(K) ->
 			skip;
 		<<B,E,G,I,N,_/binary>> when ?B(B) andalso ?E(E) andalso ?G(G) andalso ?I(I) andalso ?N(N) ->
 			skip;
