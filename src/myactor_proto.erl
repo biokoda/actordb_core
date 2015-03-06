@@ -280,11 +280,22 @@ recv_command(Cst,<<?COM_QUIT>>) ->
     Cst;  
 recv_command(Cst,<<?COM_PING>>) ->    
     send_ok(Cst);
-recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
+recv_command(Cst1,<<?COM_QUERY,Query/binary>>) ->
     ?PROTO_DBG("got query (~s)",[Query]),
     Q0 = myactor_util:rem_spaces(Query),
     HasActorCmd = myactor_util:is_actor(Q0),
-    case catch actordb_sqlparse:parse_statements(Query) of
+    BpAction = Cst1#cst.bp_action,
+    case BpAction of
+        undefined ->
+            BpState = actordb:start_bp(),
+            Cst = Cst1#cst{bp_action = #bp_action{state = BpState}};
+        _ ->
+            BpState = BpAction#bp_action.state,
+            Cst = Cst1
+    end,
+    case catch actordb_sqlparse:parse_statements(BpState,Query) of
+        [] ->
+            send_ok(Cst);
         ["show connection state"++_] ->
             ?PROTO_DBG("showing connection state: ~p",[Cst]),
             Flags = [ [butil:tobin(Flag)," "] ||  Flag <- Cst#cst.current_actor_flags],
@@ -317,11 +328,20 @@ recv_command(Cst,<<?COM_QUERY,Query/binary>>) ->
         ["set "++_] ->  % actordb does not support set queries for now
             ?PROTO_DBG("set names() query"),
             send_ok(Cst);
-        ["commit"++_] ->  % actordb does not support set queries for now
+        ["commit"++_] -> 
             ?PROTO_DBG("commit query"),
             send_ok(Cst);
-        ["rollback"++_] ->  % actordb does not support set queries for now
+        ["begin"++_] -> 
+            ?PROTO_DBG("begin query"),
+            send_ok(Cst);
+        ["savepoint"++_] -> 
+            ?PROTO_DBG("savepoint query"),
+            send_ok(Cst);
+        ["rollback"++_] ->
             ?PROTO_DBG("rollback query"),
+            send_ok(Cst);
+        ["release"++_] ->
+            ?PROTO_DBG("release query"),
             send_ok(Cst);
         ["show databases"++_] ->
             ?PROTO_DBG("got show dbs query"),
@@ -447,14 +467,8 @@ queue_append(Cst,Query) ->
 %%       2. Executes the query<br/>
 %%       3. Sends the response to the socket where backpressure is handled<br/>
 %%          
-execute_query(Cst,Stmts0,Query) ->
-    BpAction = Cst#cst.bp_action,
-    case BpAction of
-        undefined ->
-            BpState = actordb:start_bp();
-        _ ->
-            BpState = BpAction#bp_action.state
-    end,    
+execute_query(Cst,Stmts0,Query) ->  
+    BpState = (Cst#cst.bp_action)#bp_action.state,
     case catch actordb:exec_bp1(BpState,size(Stmts0),Stmts0) of   % -> {ok,Result} or {sleep,Result}
         {'EXIT',Err} ->
             ?ERR_DESC(Cst,Err), % = ErrDesc

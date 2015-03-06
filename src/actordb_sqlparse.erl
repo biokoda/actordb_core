@@ -453,6 +453,8 @@ prepare_params(<<",",Rem/binary>>,Word,L) ->
 	prepare_params(Rem,<<>>,[type_to_atom(Word)|L]);
 prepare_params(<<" ",Rem/binary>>,Word,L) ->
 	prepare_params(Rem,Word,L);
+prepare_params(<<")",Rem/binary>>,<<>>,L) ->
+	{lists:reverse(L),Rem};
 prepare_params(<<")",Rem/binary>>,Word,L) ->
 	{lists:reverse([type_to_atom(Word)|L]),Rem};
 prepare_params(<<C,Rem/binary>>,Word,L) ->
@@ -767,7 +769,9 @@ count_name(<<" ",_/binary>>,N) ->
 	N;
 count_name(<<";",_/binary>>,N) ->
 	N;
-count_name(<<C,Rem/binary>>,N) when C /= $', C > 32, C /= $`, C /= $", C /= $(, C /= $) ->
+count_name(<<"(",_/binary>>,N) ->
+	N;
+count_name(<<C,Rem/binary>>,N) when C /= $', C > 32, C /= $`, C /= $", C /= $) ->
 	count_name(Rem,N+1).
 
 count_string(<<"''",Rem/binary>>,N) ->
