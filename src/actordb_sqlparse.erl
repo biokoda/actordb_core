@@ -4,7 +4,7 @@
 
 -module(actordb_sqlparse).
 % -compile(export_all).
--export([parse_statements/1,parse_statements/2,split_statements/1]).
+-export([parse_statements/1,parse_statements/2,parse_statements/3,split_statements/1, check_flags/2]).
 -export([split_actor/1]).
 -include("actordb.hrl").
 -define(R(R),(R == $r orelse R == $R)).
@@ -29,161 +29,6 @@
 -define(D(D),(D == $d orelse D == $D)).
 -define(V(V),(V == $v orelse V == $V)).
 
-is_write([<<_/binary>> = Bin|_]) ->
-	is_write(Bin);
-is_write({Bin,_}) ->
-	is_write(Bin);
-is_write(<<$$,Bin/binary>>) ->
-	is_write(Bin);
-is_write(Bin) ->
-	case Bin of
-		<<"#w",_/binary>> ->
-			true;
-		<<"#r",_/binary>> ->
-			false;
-		<<"select ",_/binary>> ->
-			false;
-		<<"SELECT ",_/binary>> ->
-			false;
-		<<"Select ",_/binary>> ->
-			false;
-		<<"INSERT ",_/binary>> ->
-			true;
-		<<"Insert ",_/binary>> ->
-			true;
-		<<"insert ",_/binary>> ->
-			true;
-		<<"UPDATE ",_/binary>> ->
-			true;
-		<<"Update ",_/binary>> ->
-			true;
-		<<"update ",_/binary>> ->
-			true;
-		<<"replace ",_/binary>> ->
-			true;
-		<<"REPLACE ",_/binary>> ->
-			true;
-		<<"Replace ",_/binary>> ->
-			true;
-		<<"Delete ",_/binary>> ->
-			true;
-		<<"DELETE ",_/binary>> ->
-			true;
-		<<"delete ",_/binary>> ->
-			true;
-		<<"CREATE ",_/binary>> ->
-			true;
-		<<"Create ",_/binary>> ->
-			true;
-		<<"create ",_/binary>> ->
-			true;
-		<<"_insert ",_/binary>> ->
-			true;
-		<<"_INSERT ",_/binary>> ->
-			true;
-		<<"_Insert ",_/binary>> ->
-			true;
-		<<"pragma ",Rem/binary>> ->
-			{pragma,Rem};
-		<<"Pragma ",Rem/binary>> ->
-			{pragma,Rem};
-		<<"PRAGMA ",Rem/binary>> ->
-			{pragma,Rem};
-		<<"show ",Rem/binary>> ->
-			{show,Rem};
-		<<"Show ",Rem/binary>> ->
-			{show,Rem};
-		<<"SHOW ",Rem/binary>> ->
-			{show,Rem};
-		<<"with ",Rem/binary>> ->
-			{with,Rem};
-		<<"With ",Rem/binary>> ->
-			{with,Rem};
-		<<"WITH ",Rem/binary>> ->
-			{with,Rem};
-		<<"PREPARE ",Rem/binary>> ->
-			{prepare, Rem};
-		<<"Prepare ",Rem/binary>> ->
-			{prepare, Rem};	
-		<<"prepare ",Rem/binary>> ->
-			{prepare, Rem};	
-		<<"Execute ",Rem/binary>> ->
-			{execute,Rem};
-		<<"execute ",Rem/binary>> ->
-			{execute,Rem};
-		<<"EXECUTE ",Rem/binary>> ->
-			{execute,Rem};
-		% Everything is a transaction. 
-		% So throw out transaction start/end statements.
-		<<"BEGIN",_/binary>> ->
-			skip;
-		<<"Begin",_/binary>> ->
-			skip;
-		<<"begin",_/binary>> ->
-			skip;
-		<<"COMMIT",_/binary>> ->
-			skip;
-		<<"Commit",_/binary>> ->
-			skip;
-		<<"commit",_/binary>> ->
-			skip;
-		<<"SAVEPOINT ",_/binary>> ->
-			skip;
-		<<"Savepoint ",_/binary>> ->
-			skip;
-		<<"savepoint ",_/binary>> ->
-			skip;
-		<<"ROLLBACK",_/binary>> ->
-			skip;
-		<<"Rollback",_/binary>> ->
-			skip;
-		<<"rollback",_/binary>> ->
-			skip;
-		<<"RELEASE",_/binary>> ->
-			skip;
-		<<"Release",_/binary>> ->
-			skip;
-		<<"release",_/binary>> ->
-			skip;
-		% If you write sql like a moron then you get to these slow parts.
-		<<C,R,E,A,T,E," ",_/binary>> when ?C(C) andalso ?R(R) andalso ?E(E) andalso ?A(A) andalso ?T(T) ->
-			true;
-		<<I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
-			true;
-		<<"_",I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso  ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
-			true;
-		<<U,P,D,A,T,E," ",_/binary>> when ?U(U) andalso ?P(P) andalso ?D(D) andalso ?A(A) andalso ?T(T) andalso ?E(E) ->
-			true;	
-		<<D,E,L,E,T,E," ",_/binary>> when ?D(D) andalso ?E(E) andalso ?L(L) andalso ?T(T)  ->
-			true;
-		<<R,E,P,L,A,C,E," ",_/binary>> when ?R(R) andalso  ?E(E) andalso ?P(P) andalso ?L(L) andalso ?A(A) andalso ?C(C) ->
-			true;
-		<<P,R,A,G,M,A," ",Rem/binary>> when ?P(P) andalso  ?R(R) andalso ?A(A) andalso ?G(G) andalso ?M(M) ->
-			{pragma,Rem};
-		<<S,H,O,W," ",Rem/binary>> when ?S(S) andalso ?H(H) andalso ?O(O) andalso ?W(W) ->
-			{show,Rem};
-		<<W,I,T,H," ",Rem/binary>> when ?W(W) andalso ?I(I) andalso ?T(T) andalso ?H(H) ->
-			{with,Rem};
-		<<P,R,E,P,A,R,E," ",Rem/binary>> when ?P(P) andalso ?R(R) andalso ?E(E) andalso ?A(A) ->
-			{prepare,Rem};
-		<<E,X,E,C,U,T,E," ",Rem/binary>> when ?E(E) andalso ?X(X) andalso ?C(C) andalso ?U(U) andalso ?T(T) ->
-			{prepare,Rem};
-		<<R,E,L,E,A,S,E,_/binary>> when ?R(R) andalso ?E(E) andalso ?L(L) andalso ?A(A) andalso ?S(S) ->
-			skip;
-		<<C,O,M,M,I,T,_/binary>> when ?C(C) andalso ?O(O) andalso ?M(M) andalso ?I(I) andalso ?T(T) ->
-			skip;
-		<<R,O,L,L,B,A,C,K,_/binary>> when ?R(R) andalso ?O(O) andalso ?L(L) andalso	?B(B) andalso
-                                       ?A(A) andalso ?C(C) andalso ?K(K) ->
-			skip;
-		<<B,E,G,I,N,_/binary>> when ?B(B) andalso ?E(E) andalso ?G(G) andalso ?I(I) andalso ?N(N) ->
-			skip;
-		<<S,A,V,E,P,O,I,N,T,_/binary>> when ?S(S) andalso ?A(A) andalso ?V(V) andalso ?E(E) andalso ?P(P) andalso
-		                              ?O(O) andalso ?I(I) andalso ?N(N) andalso ?T(T) ->
-			skip;
-		_ ->
-			false
-	end.
-
 % Returns: {[{Actors,IsWrite,Statements},..],IsWrite}
 % Actors: {Type,[Actor1,Actor2,Actor3,...],[Flag1,Flag2]} |
 % 		  {Type,$*,[Flag1,Flag2]} |
@@ -200,8 +45,11 @@ is_write(Bin) ->
 parse_statements(Bin) ->
 	parse_statements(undefined,Bin).
 parse_statements(BP,Bin) ->
+	parse_statements(BP,Bin,undefined).
+parse_statements(BP,Bin,Actors) ->
 	L = split_statements(rem_spaces(Bin)),
-	parse_statements(BP,L,[],[],undefined,[],false,false).
+	parse_statements(BP,L,[],[],Actors,[],false,false).
+
 parse_statements(BP,[<<>>|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) ->
 	parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite);
 parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) ->
@@ -886,6 +734,8 @@ check_flags(<<";">>,L) ->
 	L;
 check_flags(<<>>,L) ->
 	L;
+check_flags(<<C,R,E,A,T,E,Rem/binary>>,L) when ?C(C) andalso ?R(R) andalso ?E(E) andalso ?A(A) andalso ?T(T) ->
+	check_flags(Rem,[create|L]);
 check_flags(<<_,Rem/binary>>,L) ->
 	check_flags(Rem,L).
 
@@ -963,3 +813,158 @@ find_comma_or_char(<<C,Rem/binary>>) when (C >= $a andalso C =< $z) orelse
 find_comma_or_char(<<_,Rem/binary>>) ->
 	find_comma_or_char(Rem).
 
+
+is_write([<<_/binary>> = Bin|_]) ->
+	is_write(Bin);
+is_write({Bin,_}) ->
+	is_write(Bin);
+is_write(<<$$,Bin/binary>>) ->
+	is_write(Bin);
+is_write(Bin) ->
+	case Bin of
+		<<"#w",_/binary>> ->
+			true;
+		<<"#r",_/binary>> ->
+			false;
+		<<"select ",_/binary>> ->
+			false;
+		<<"SELECT ",_/binary>> ->
+			false;
+		<<"Select ",_/binary>> ->
+			false;
+		<<"INSERT ",_/binary>> ->
+			true;
+		<<"Insert ",_/binary>> ->
+			true;
+		<<"insert ",_/binary>> ->
+			true;
+		<<"UPDATE ",_/binary>> ->
+			true;
+		<<"Update ",_/binary>> ->
+			true;
+		<<"update ",_/binary>> ->
+			true;
+		<<"replace ",_/binary>> ->
+			true;
+		<<"REPLACE ",_/binary>> ->
+			true;
+		<<"Replace ",_/binary>> ->
+			true;
+		<<"Delete ",_/binary>> ->
+			true;
+		<<"DELETE ",_/binary>> ->
+			true;
+		<<"delete ",_/binary>> ->
+			true;
+		<<"CREATE ",_/binary>> ->
+			true;
+		<<"Create ",_/binary>> ->
+			true;
+		<<"create ",_/binary>> ->
+			true;
+		<<"_insert ",_/binary>> ->
+			true;
+		<<"_INSERT ",_/binary>> ->
+			true;
+		<<"_Insert ",_/binary>> ->
+			true;
+		<<"pragma ",Rem/binary>> ->
+			{pragma,Rem};
+		<<"Pragma ",Rem/binary>> ->
+			{pragma,Rem};
+		<<"PRAGMA ",Rem/binary>> ->
+			{pragma,Rem};
+		<<"show ",Rem/binary>> ->
+			{show,Rem};
+		<<"Show ",Rem/binary>> ->
+			{show,Rem};
+		<<"SHOW ",Rem/binary>> ->
+			{show,Rem};
+		<<"with ",Rem/binary>> ->
+			{with,Rem};
+		<<"With ",Rem/binary>> ->
+			{with,Rem};
+		<<"WITH ",Rem/binary>> ->
+			{with,Rem};
+		<<"PREPARE ",Rem/binary>> ->
+			{prepare, Rem};
+		<<"Prepare ",Rem/binary>> ->
+			{prepare, Rem};	
+		<<"prepare ",Rem/binary>> ->
+			{prepare, Rem};	
+		<<"Execute ",Rem/binary>> ->
+			{execute,Rem};
+		<<"execute ",Rem/binary>> ->
+			{execute,Rem};
+		<<"EXECUTE ",Rem/binary>> ->
+			{execute,Rem};
+		% Everything is a transaction. 
+		% So throw out transaction start/end statements.
+		<<"BEGIN",_/binary>> ->
+			skip;
+		<<"Begin",_/binary>> ->
+			skip;
+		<<"begin",_/binary>> ->
+			skip;
+		<<"COMMIT",_/binary>> ->
+			skip;
+		<<"Commit",_/binary>> ->
+			skip;
+		<<"commit",_/binary>> ->
+			skip;
+		<<"SAVEPOINT ",_/binary>> ->
+			skip;
+		<<"Savepoint ",_/binary>> ->
+			skip;
+		<<"savepoint ",_/binary>> ->
+			skip;
+		<<"ROLLBACK",_/binary>> ->
+			skip;
+		<<"Rollback",_/binary>> ->
+			skip;
+		<<"rollback",_/binary>> ->
+			skip;
+		<<"RELEASE",_/binary>> ->
+			skip;
+		<<"Release",_/binary>> ->
+			skip;
+		<<"release",_/binary>> ->
+			skip;
+		% If you write sql like a moron then you get to these slow parts.
+		<<C,R,E,A,T,E," ",_/binary>> when ?C(C) andalso ?R(R) andalso ?E(E) andalso ?A(A) andalso ?T(T) ->
+			true;
+		<<I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
+			true;
+		<<"_",I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso  ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
+			true;
+		<<U,P,D,A,T,E," ",_/binary>> when ?U(U) andalso ?P(P) andalso ?D(D) andalso ?A(A) andalso ?T(T) andalso ?E(E) ->
+			true;	
+		<<D,E,L,E,T,E," ",_/binary>> when ?D(D) andalso ?E(E) andalso ?L(L) andalso ?T(T)  ->
+			true;
+		<<R,E,P,L,A,C,E," ",_/binary>> when ?R(R) andalso  ?E(E) andalso ?P(P) andalso ?L(L) andalso ?A(A) andalso ?C(C) ->
+			true;
+		<<P,R,A,G,M,A," ",Rem/binary>> when ?P(P) andalso  ?R(R) andalso ?A(A) andalso ?G(G) andalso ?M(M) ->
+			{pragma,Rem};
+		<<S,H,O,W," ",Rem/binary>> when ?S(S) andalso ?H(H) andalso ?O(O) andalso ?W(W) ->
+			{show,Rem};
+		<<W,I,T,H," ",Rem/binary>> when ?W(W) andalso ?I(I) andalso ?T(T) andalso ?H(H) ->
+			{with,Rem};
+		<<P,R,E,P,A,R,E," ",Rem/binary>> when ?P(P) andalso ?R(R) andalso ?E(E) andalso ?A(A) ->
+			{prepare,Rem};
+		<<E,X,E,C,U,T,E," ",Rem/binary>> when ?E(E) andalso ?X(X) andalso ?C(C) andalso ?U(U) andalso ?T(T) ->
+			{prepare,Rem};
+		<<R,E,L,E,A,S,E,_/binary>> when ?R(R) andalso ?E(E) andalso ?L(L) andalso ?A(A) andalso ?S(S) ->
+			skip;
+		<<C,O,M,M,I,T,_/binary>> when ?C(C) andalso ?O(O) andalso ?M(M) andalso ?I(I) andalso ?T(T) ->
+			skip;
+		<<R,O,L,L,B,A,C,K,_/binary>> when ?R(R) andalso ?O(O) andalso ?L(L) andalso	?B(B) andalso
+                                       ?A(A) andalso ?C(C) andalso ?K(K) ->
+			skip;
+		<<B,E,G,I,N,_/binary>> when ?B(B) andalso ?E(E) andalso ?G(G) andalso ?I(I) andalso ?N(N) ->
+			skip;
+		<<S,A,V,E,P,O,I,N,T,_/binary>> when ?S(S) andalso ?A(A) andalso ?V(V) andalso ?E(E) andalso ?P(P) andalso
+		                              ?O(O) andalso ?I(I) andalso ?N(N) andalso ?T(T) ->
+			skip;
+		_ ->
+			false
+	end.

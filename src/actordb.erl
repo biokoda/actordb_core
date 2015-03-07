@@ -6,7 +6,7 @@
 % API
 -export([exec/1,types/0,tables/1,columns/2,prepare_statement/1]).
 % API backpressure
--export([exec_bp/2,check_bp/0,sleep_bp/1,stop_bp/1]).
+-export([exec_bp/2,exec_bp/5,check_bp/0,sleep_bp/1,stop_bp/1]).
 % start/stop
 -export([start/0,stop/0,stop_complete/0,is_ready/0]).
 % start/stop internal
@@ -131,6 +131,14 @@ exec_bp(P,Sql) ->
 	Size = byte_size(Sql),
 	Parsed = actordb_sqlparse:parse_statements(P,Sql),
 	exec_bp1(P,Size,Parsed).
+
+exec_bp(P,Actor,Type,Flags,Sql) when is_binary(Actor) ->
+	exec_bp(P,[Actor],Type,Flags,Sql);
+exec_bp(P,Actors,Type,Flags,Sql) ->
+	Size = byte_size(Sql),
+	Parsed = actordb_sqlparse:parse_statements(P,Sql,{Type,Actors,Flags}),
+	exec_bp1(P,Size,Parsed).
+
 exec_bp1(_,Size,_) when Size > 1024*1024*16 ->
 	{error,sql_too_large};
 exec_bp1(P,Size,Sql) ->
