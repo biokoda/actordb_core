@@ -337,7 +337,14 @@ takemax(_,_) ->
 	[].
 
 create_nodelist() ->
-	L = lists:delete(actordb_conf:node_name(),bkdcore:nodelist()),
+	L1 = lists:delete(actordb_conf:node_name(),bkdcore:nodelist()),
+	Masters = butil:ds_val(master_group,?GLOBALETS),
+	case lists:member(actordb_conf:node_name(), Masters) of
+		true ->
+			L = L1 -- Masters;
+		false ->
+			L = []
+	end,
 	list_to_tuple(lists:sort(fun(A,B) -> actordb_util:hash([actordb_conf:node_name(), A]) <
 						   actordb_util:hash([actordb_conf:node_name(), B]) 
 				end,L)).
