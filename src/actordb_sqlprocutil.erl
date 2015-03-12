@@ -41,6 +41,9 @@ reply([_|_] = From,Msg) ->
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
+ae_respond(P,undefined,_Success,_PrevEvnum,_AEType,_CallCount) ->
+	?ERR("Unable to respond for AE because leader is gone"),
+	ok;
 ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType,CallCount},
 	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[nostart],
@@ -883,6 +886,8 @@ check_for_resync(P,[F|L],_Action) ->
 		_ when Wait > 1000, IsAlive ->
 			resync;
 		_ when LastSeen > 1000, F#flw.match_index /= P#dp.evnum, IsAlive ->
+			resync;
+		_ when IsAlive == false, LastSeen > 3000 ->
 			resync;
 		_ when IsAlive == false ->
 			check_for_resync(P,L,wait_longer);
