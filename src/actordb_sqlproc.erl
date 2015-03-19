@@ -101,6 +101,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
 			% test_mon_stop(),
+			?ADBG("Redirect call ~p",[Node]),
 			case lists:member(Node,bkdcore:cluster_nodes()) of
 				true ->
 					case IsRedirect of
@@ -120,7 +121,13 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 						onlylocal ->
 							{redirect,Node};
 						_ ->
-							actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,false]})
+							case actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,false]}) of
+								{error,Conerr} when Connerr == econnrefused; Connerr == timeout ->
+									Pid ! doelection,
+									call(Name,Flags,Msg,Start,false,Pid);
+								Res ->
+									Res
+							end
 					end
 			end;
 		{'EXIT',{noproc,_}} = _X  ->
