@@ -122,7 +122,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 							{redirect,Node};
 						_ ->
 							case actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,false]}) of
-								{error,Conerr} when Connerr == econnrefused; Connerr == timeout ->
+								{error,Connerr} when Connerr == econnrefused; Connerr == timeout ->
 									Pid ! doelection,
 									call(Name,Flags,Msg,Start,false,Pid);
 								Res ->
@@ -848,7 +848,7 @@ read_call(_Msg,_From,P) ->
 
 
 write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P) ->
-	?DBG("writecall evnum_prewrite=~p, writeinfo=~p",[P#dp.evnum,{MFA,Sql,Transaction}]),
+	?DBG("writecall evnum_prewrite=~p,term=~p, writeinfo=~p",[P#dp.evnum,P#dp.current_term,{MFA,Sql,Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
 		{NewVers,Sql1} ->
 			% First update schema, then do the transaction.
