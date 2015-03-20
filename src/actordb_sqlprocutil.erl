@@ -477,7 +477,7 @@ continue_maybe(P,F,SuccessHead) ->
 					end
 			end;
 		true ->
-			?DBG("Sending AE start on evnum=~p",[F#flw.next_index]),
+			?DBG("Sending AE start on evnum=~p, matchindex=~p, matchterm=~p",[F#flw.next_index,F#flw.match_index,F#flw.match_term]),
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 							F#flw.match_index,F#flw.match_term,recover,{F#flw.match_index,F#flw.match_term}}}]}),

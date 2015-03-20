@@ -561,7 +561,7 @@ state_rw_call(What,From,P) ->
 				_ ->
 					case AEType == recover of
 						true ->
-							?INF("AE start ok for recovery from ~p, evnum=~p",[LeaderNode,P#dp.evnum]);
+							?INF("AE start ok for recovery from ~p, evnum=~p, evterm=~p",[LeaderNode,P#dp.evnum,P#dp.evterm]);
 						false ->
 							?DBG("AE start ok from ~p",[LeaderNode])
 					end,
@@ -581,8 +581,8 @@ state_rw_call(What,From,P) ->
 									{reply,ok,P#dp{activity = make_ref(),locked = [ae]}};
 								% last page
 								<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
-									?DBG("AE WAL done evnum=~p aetype=~p queueempty=~p, masternd=~p",
-											[Evnum,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
+									?DBG("AE WAL done evnum=~p, evterm=~p aetype=~p queueempty=~p, masternd=~p",
+											[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
 									NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref(),locked = []},
 									reply(From,done),
 									actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
@@ -616,8 +616,8 @@ state_rw_call(What,From,P) ->
 							[Node,Success,AEType,Follower#flw.match_index,EvNum,MatchEvnum,{SentIndex,SentTerm}]),
 					{reply,ok,P};
 				_ ->
-					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p",
-							[Node,Success,AEType,Follower#flw.match_index,EvNum,MatchEvnum]),
+					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p,HisOldTerm=~p HisEvNum=~p, histerm=~p, MatchSent=~p",
+							[Node,Success,AEType,Follower#flw.match_index,Follower#flw.match_term,EvNum,EvTerm,MatchEvnum]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
 											wait_for_response_since = undefined, last_seen = make_ref()}, 
 					case Success of
