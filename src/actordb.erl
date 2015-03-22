@@ -132,6 +132,8 @@ exec_bp(P,Sql) ->
 	Parsed = actordb_sqlparse:parse_statements(P,Sql),
 	exec_bp1(P,Size,Parsed).
 
+exec_bp(P,<<>>,_,_,_) ->
+	throw({error,empty_actor_name});
 exec_bp(P,Actor,Type,Flags,Sql) when is_binary(Actor) ->
 	exec_bp(P,[Actor],Type,Flags,Sql);
 exec_bp(P,Actors,Type,Flags,Sql) ->

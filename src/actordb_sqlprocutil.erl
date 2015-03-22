@@ -382,7 +382,7 @@ try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
 				Evnum ->
 					ok
 			end,
-			case actordb_driver:iterate_wal(P#dp.db,Evnum) of
+			case actordb_driver:iterate_wal(P#dp.db,Evnum,F#flw.match_term) of
 				{ok,Iter2,Bin,_IsActiveWal} ->
 					NF = F#flw{file = Iter2,pagebuf = Bin},
 					{true,store_follower(P,NF),NF};
