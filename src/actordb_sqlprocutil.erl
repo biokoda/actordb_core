@@ -387,7 +387,8 @@ try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
 					NF = F#flw{file = Iter2,pagebuf = Bin},
 					{true,store_follower(P,NF),NF};
 				{ok,Term} ->
-					{true,store_follower(P,F#flw{match_term = Term})};
+					NF = F#flw{match_term = Term},
+					{true,store_follower(P,NF),NF};
 				done ->
 					{false,P,F}
 			end;

@@ -667,8 +667,8 @@ state_rw_call(What,From,P) ->
 											end;
 										{true,NP,NF} ->
 											% we can recover from wal
-											?DBG("Recovering from wal, for node=~p, match_index=~p,myevnum=~p",
-													[NF#flw.node,NF#flw.match_index,P#dp.evnum]),
+											?DBG("Recovering from wal, for node=~p, match_index=~p, match_term=~p, myevnum=~p",
+													[NF#flw.node,NF#flw.match_index,NF#flw.match_term,P#dp.evnum]),
 											reply(From,ok),
 											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,false)}
 									end
