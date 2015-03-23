@@ -386,6 +386,8 @@ try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
 				{ok,Iter2,Bin,_IsActiveWal} ->
 					NF = F#flw{file = Iter2,pagebuf = Bin},
 					{true,store_follower(P,NF),NF};
+				{ok,Term} ->
+					{true,store_follower(P,F#flw{match_term = Term})};
 				done ->
 					{false,P,F}
 			end;
@@ -482,7 +484,7 @@ continue_maybe(P,F,SuccessHead) ->
 				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 							F#flw.match_index,F#flw.match_term,recover,{F#flw.match_index,F#flw.match_term}}}]}),
 			case StartRes of
-				ok ->
+				ok when F#flw.file /= undefined ->
 					% Send wal
 					case catch send_wal(P,F) of
 						wal_corruption ->
