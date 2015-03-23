@@ -23,7 +23,7 @@ tunnel_callback(Nd,Time) ->
 return_call(Nd,Time) ->
 	gen_server:cast(?MODULE,{return_call, Nd,Time}).
 
--record(dp,{interval = [], global_max = 0, global_min = 0, interval_max = 0}).
+-record(dp,{interval = [], global_max = 0, global_min = 0, interval_max = 0, nresponses = 0}).
 
 handle_call(print_info,_,P) ->
 	?AINF("~p",[P]),
@@ -33,6 +33,7 @@ handle_call(stop, _, P) ->
 
 handle_cast({return_call,_Nd,Time},P) ->
 	Now = os:timestamp(),
+	%?AINF("Latency from=~p, is=~p",[_Nd,timer:now_diff(Now,Time)]),
 	Latency = min(3000,timer:now_diff(Now,Time) div 1000),
 	% Time is received from all nodes. Keep the last received one (highest latency)
 	case lists:keyfind(Time,1,P#dp.interval) of
@@ -66,6 +67,7 @@ handle_cast({return_call,_Nd,Time},P) ->
 	% ?ADBG("Latency nd=~p latency=~p max_in_interval=~p",[Nd,Latency,MaxInInterval]),
 	{noreply,P#dp{global_max = max(Latency,P#dp.global_max), 
 					interval = Interval1,
+					nresponses = P#dp.nresponses + 1,
 					interval_max = max(P#dp.interval_max,MaxInInterval),
 				  global_min = min(Latency,P#dp.global_min)}};
 handle_cast(_, P) ->
@@ -77,15 +79,15 @@ handle_info(latency_check,P) ->
 	% We can keep track of max latency this way.
 	% This will affect election timers. Election timer should
 	%  not be lower than connection latency. 
+	erlang:send_after(300,self(),latency_check),
 	case nodes() of
 		[] ->
-			ok;
+			{noreply,P};
 		_ ->
 			Term = term_to_binary({?MODULE,[node(),os:timestamp()]}),
 			_NSent = actordb_sqlite:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
-			erlang:send_after(300,self(),latency_check)
-	end,
-	{noreply,P};
+			{noreply,P}
+	end;
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
