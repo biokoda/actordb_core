@@ -104,9 +104,8 @@ prestart() ->
 		_ ->
 			[Name1|_] = string:tokens(butil:tolist(node()),"@"),
 			Name = butil:tobin(Name1),
-			?AINF("Starting actordb"),
 			Args = init:get_arguments(),
-			?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
+			% ?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
 			% Read args file manually to get paths for state.
 			case butil:ds_val(config,Args) of
 				undefined ->
@@ -138,7 +137,7 @@ prestart() ->
 							application:set_env(actordb_core,num_transaction_managers,NumMngrs),
 							Statep = butil:expand_path(butil:tolist(Main)),
 							filelib:ensure_dir(Statep),
-							?AINF("State path ~p, ~p",[Main,Statep]),
+							% ?AINF("State path ~p, ~p",[Main,Statep]),
 							% No etc folder. config files are provided manually.
 							BkdcoreParam = butil:ds_val(bkdcore,L),
 							case butil:ds_val(etc,BkdcoreParam) of
@@ -222,7 +221,7 @@ prestart() ->
 	end.
 
 start() ->
-	?AINF("Starting actordb"),
+	% ?AINF("Starting actordb"),
 	application:start(actordb_core).
 
 start(_Type, _Args) ->
@@ -256,7 +255,7 @@ start(_Type, _Args) ->
 
 	Res = actordb_sup:start_link(),
 
-	?AINF("Starting sharedstate type ~p",[StateStart]),
+	% ?AINF("Starting sharedstate type ~p",[StateStart]),
 	case StateStart of
 		normal ->
 			actordb_sharedstate:start(?STATE_NM_GLOBAL,?STATE_TYPE,[{slave,false},create]);
