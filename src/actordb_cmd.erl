@@ -348,7 +348,7 @@ compare_tables1(Type,[Table|T],Db,NewDb) ->
 			compare_tables1(Type,T,Db,NewDb);
 		false ->
 			throw({error,?ERR("For type=~p, schema was not modified correctly, add lines to the end of the list."++
-				" Do not modify existing SQL statements.~n",[Type])})
+				" Do not modify existing SQL statements.~nMismatch was found for table: ~s~n",[Type,Table])})
 	end;
 compare_tables1(_,[],_,_) ->
 	ok.
