@@ -40,7 +40,7 @@ cmd(init,parse,Etc) ->
 				{error,Err} ->
 					{error,Err};
 				Err ->
-					{error,Err}
+					{error,?ERR("~p",[Err])}
 			end;
 		X ->
 			throw(?ERR("Error parsing nodes.yaml: ~p",[X]))
@@ -48,7 +48,7 @@ cmd(init,parse,Etc) ->
 		ok ->
 			{ok,"Start new cluster?"};
 		{error,E} ->
-			{error,E}
+			{error,?ERR("~p",[E])}
 	catch
 		throw:Str when is_list(Str) ->
 			{error,?ERR("~s~n",[Str])};
@@ -119,7 +119,7 @@ cmd(updateschema,parse,Etc) ->
 						{error,Err} ->
 							{error,Err};
 						Err ->
-							{error,Err}
+							{error,?ERR("~p",[Err])}
 					end
 			catch
 				_:{badmatch,{error,enoent}} ->
@@ -264,7 +264,7 @@ compare_schema([Type|T],New,Out) ->
 				SqlCur ->
 					SizeCur = tuple_size(SqlCur),
 					SizeNew = tuple_size(SqlNew),
-					check_sql(Type,SqlNew,actordb_schema:iskv(Type)),
+					check_sql(Type,SizeCur,SqlNew,actordb_schema:iskv(Type)),
 					case ok of
 						_ when SizeCur < SizeNew ->
 							Lines = [binary_to_list(iolist_to_binary(element(N,SqlNew))) || N <- lists:seq(SizeCur+1,SizeNew)],
@@ -283,7 +283,7 @@ compare_schema([],New,O) ->
 		_ ->
 			{iskv,multihead,MultiheadList1} = lists:keyfind(iskv,1,New),
 			MultiheadList = [Name || {Name,true} <- lists:keydelete(any,1,MultiheadList1)],
-			[check_sql(Type,SqlNew,lists:member(Type,MultiheadList)) || {Type,SqlNew} <- NewTypes],
+			[check_sql(Type,0,SqlNew,lists:member(Type,MultiheadList)) || {Type,SqlNew} <- NewTypes],
 			
 			case [Tuple || Tuple <- NewTypes, tuple_size(Tuple) == 2] of
 				[] ->
@@ -293,10 +293,12 @@ compare_schema([],New,O) ->
 			end
 	end.
 
-check_sql(Type,SqlNew,IsKv) ->
+check_sql(Type,SizeCur,SqlNew,IsKv) ->
 	SizeNew = tuple_size(SqlNew),
 	{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
+	% io:format("~p~n",[Type]),
 	[begin
+		% io:format("Check sql running: ~s\n",[element(N,SqlNew)]),
 		case actordb_sqlite:exec(Db,[element(N,SqlNew)]) of
 			ok ->
 				ok;
@@ -310,23 +312,46 @@ check_sql(Type,SqlNew,IsKv) ->
 				actordb_sqlite:stop(Db),
 				throw({error,?ERR("SQL Error for type ~p, ~p~n",[Type,E])})
 		end,
-		case IsKv of
+		case N == SizeCur of
 			true ->
-				case actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';") of
-					{ok,[{columns,{<<"name">>}},{rows,Tables}]} ->
-						case lists:member({<<"actors">>},Tables) of
-							true ->
-								check_actor_table(Db,Type);
-							_ ->
-								throw({error,?ERR("KV requires an \"actors\" table."++
-													"~nType ~p has tables: ~p",
-									[Type,[X || {X} <- Tables]])})
-						end
-				end;
+				compare_tables(Type,Db);
 			false ->
 				ok
 		end
-	end || N <- lists:seq(1,SizeNew)].
+	end || N <- lists:seq(1,SizeNew)],
+	case IsKv of
+		true ->
+			case actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';") of
+				{ok,[{columns,{<<"name">>}},{rows,Tables}]} ->
+					case lists:member({<<"actors">>},Tables) of
+						true ->
+							check_actor_table(Db,Type);
+						_ ->
+							throw({error,?ERR("KV requires an \"actors\" table."++
+												"~nType ~p has tables: ~p",
+								[Type,[X || {X} <- Tables]])})
+					end
+			end;
+		false ->
+			ok
+	end.
+
+compare_tables(Type,NewDb) ->
+	{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
+	ok = actordb_sqlite:exec(Db,tuple_to_list(apply(actordb_schema,Type,[]))),
+	compare_tables1(Type,actordb:tables(Type),Db,NewDb).
+compare_tables1(Type,[Table|T],Db,NewDb) ->
+	OldColumns = actordb_sqlite:exec(Db,["pragma table_info(",Table,");"]),
+	NewColumns = actordb_sqlite:exec(NewDb,["pragma table_info(",Table,");"]),
+	case OldColumns == NewColumns of
+		true ->
+			compare_tables1(Type,T,Db,NewDb);
+		false ->
+			throw({error,?ERR("For type=~p, schema was not modified correctly, add lines to the end of the list."++
+				" Do not modify existing SQL statements.~n",[Type])})
+	end;
+compare_tables1(_,[],_,_) ->
+	ok.
 
 check_actor_table(Db,Type) ->
 	{ok,[{columns,Columns},{rows,Rows1}]} = actordb_sqlite:exec(Db,"pragma table_info(actors);"),
