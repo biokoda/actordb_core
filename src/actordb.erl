@@ -4,9 +4,9 @@
 
 -module(actordb).
 % API
--export([exec/1,types/0,tables/1,columns/2,prepare_statement/1]).
+-export([exec/1,exec/2,types/0,tables/1,columns/2,prepare_statement/1]).
 % API backpressure
--export([exec_bp/2,exec_bp/5,check_bp/0,sleep_bp/1,stop_bp/1]).
+-export([start_bp/0,exec_bp/2,exec_bp/5,check_bp/0,sleep_bp/1,stop_bp/1]).
 % start/stop
 -export([start/0,stop/0,stop_complete/0,is_ready/0]).
 % start/stop internal
@@ -15,8 +15,7 @@
 -export([direct_call/6,actor_id_type/1,configfiles/0,exec1/1,
 		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
 -include("actordb.hrl").
--compile(export_all).
-
+% -compile(export_all).
 
 is_ready() ->
 	case application:get_env(actordb_core,isready) of
