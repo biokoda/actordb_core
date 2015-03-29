@@ -67,7 +67,7 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 			call(Name,[wait_election|Flags],#write{mfa = MFA, sql = iolist_to_binary(Sql), flags = Flags},Start)
 	end;
 write(Name,Flags,[delete],Start) ->
-	% Delete actor calls are placed in a fake multi-actor transaction. 
+	% Delete actor calls are placed in a fake multi-actor transaction.
 	% This way if the intent to delete is written, then actor will actually delete itself.
 	% call(Name,Flags,#write{sql = delete,transaction = {0,0,<<>>}},Start);
 	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
@@ -216,7 +216,7 @@ start(Opts) ->
 		{ok,Pid} ->
 			{ok,Pid};
 		{error,normal} ->
-			% Init failed gracefully. It should have sent an explanation. 
+			% Init failed gracefully. It should have sent an explanation.
 			receive
 				{Ref,nocreate} ->
 					{error,nocreate};
@@ -271,7 +271,7 @@ handle_call(Msg,From,P) ->
 			case P#dp.masternode of
 				undefined ->
 					?DBG("Queing msg no master yet ~p",[Msg]),
-					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), 
+					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue),
 									election = actordb_sqlprocutil:election_timer(P#dp.election),
 									flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}};
 				_ ->
@@ -317,7 +317,7 @@ handle_call(Msg,From,P) ->
 			case lists:member(create,Flags) of
 				true ->
 					WC = actordb_sqlprocutil:actually_delete(P),
-					write_call(WC, undefined, 
+					write_call(WC, undefined,
 						P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref(), movedtonode = undefined});
 				false ->
 					{reply, {error,nocreate},P}
@@ -327,7 +327,7 @@ handle_call(Msg,From,P) ->
 		#read{}->
 			read_call(Msg,From,P#dp{activity = make_ref()});
 		{move,NewShard,Node,CopyReset,CbState} ->
-			% Call to move this actor to another cluster. 
+			% Call to move this actor to another cluster.
 			% First store the intent to move with all needed data. This way even if a node chrashes, the actor will attempt to move
 			%  on next startup.
 			% When write done, reply to caller and start with move process (in ..util:reply_maybe.
@@ -434,7 +434,7 @@ commit_call(Doit,Id,From,P) ->
 					% Transaction failed.
 					% Delete it from __transactions.
 					% EvNum will actually be the same as transactionsql that we have not finished.
-					%  Thus this EvNum section of WAL contains pages from failed transaction and 
+					%  Thus this EvNum section of WAL contains pages from failed transaction and
 					%  cleanup of transaction from __transactions.
 					{Tid,Updaterid,_} = P#dp.transactionid,
 					% case Sql of
@@ -508,9 +508,9 @@ state_rw_call(What,From,P) ->
 					end,
 					actordb_local:actor_mors(slave,LeaderNode),
 					state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(
-															P#dp{masternode = LeaderNode, 
-															masternodedist = bkdcore:dist_name(LeaderNode), 
-															callfrom = undefined, callres = undefined, 
+															P#dp{masternode = LeaderNode,
+															masternodedist = bkdcore:dist_name(LeaderNode),
+															callfrom = undefined, callres = undefined,
 															verified = true, activity = make_ref()})));
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
@@ -607,7 +607,7 @@ state_rw_call(What,From,P) ->
 					?DBG("Adding node to follower list ~p",[Node]),
 					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
 				_ when (not (AEType == head andalso Success)) andalso
-						(SentIndex /= Follower#flw.match_index orelse 
+						(SentIndex /= Follower#flw.match_index orelse
 						SentTerm /= Follower#flw.match_term orelse P#dp.verified == false) ->
 					% We can get responses from AE calls which are out of date. This is why the other node always sends
 					%  back {SentIndex,SentTerm} which are the parameters for follower that we knew of when we sent data.
@@ -619,7 +619,7 @@ state_rw_call(What,From,P) ->
 					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p,HisOldTerm=~p HisEvNum=~p, histerm=~p, MatchSent=~p",
 							[Node,Success,AEType,Follower#flw.match_index,Follower#flw.match_term,EvNum,EvTerm,MatchEvnum]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
-											wait_for_response_since = undefined, last_seen = make_ref()}, 
+											wait_for_response_since = undefined, last_seen = make_ref()},
 					case Success of
 						% An earlier response.
 						_ when P#dp.mors == slave ->
@@ -678,7 +678,7 @@ state_rw_call(What,From,P) ->
 		{request_vote,Candidate,NewTerm,LastEvnum,LastTerm} ->
 			?DBG("Request vote for=~p, mors=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
 					[Candidate,P#dp.mors,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
-			Uptodate = 
+			Uptodate =
 				case ok of
 					_ when P#dp.evterm < LastTerm ->
 						true;
@@ -778,7 +778,7 @@ state_rw_call(What,From,P) ->
 
 read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
-read_call(Msg,From,#dp{mors = master} = P) ->	
+read_call(Msg,From,#dp{mors = master} = P) ->
 	case actordb_sqlprocutil:has_schema_updated(P,[]) of
 		ok ->
 			case P#dp.netchanges == actordb_local:net_changes() of
@@ -786,7 +786,7 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 					?DBG("Running re-election before read"),
 					{noreply,actordb_sqlprocutil:start_verify(P#dp{callqueue = queue:in({From, Msg},P#dp.callqueue)},false)};
 				true ->
-					case Msg#read.sql of	
+					case Msg#read.sql of
 						{Mod,Func,Args} ->
 							case apply(Mod,Func,[P#dp.cbstate|Args]) of
 								{reply,What,Sql,NS} ->
@@ -922,9 +922,9 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 			% {stop,normal,P#dp{db = undefined}};
 			write_call1(W#write{sql = <<"#s02;">>,records = [[[?MOVEDTOI,MovedTo]]]},From,NewVers,P#dp{movedtonode = {moved,MovedTo}});
 		_ ->
-			ComplSql = 
+			ComplSql =
 					[<<"#s00;">>, % savepoint
-					 actordb_sqlprocutil:semicolon(Sql), 
+					 actordb_sqlprocutil:semicolon(Sql),
 					 <<"#s02;#s01;">> % __adb insert, release savepoint
 					 ],
 			Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
@@ -1001,7 +1001,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 							Res = ok,
 							ComplSql = <<"delete">>;
 						_ ->
-							ComplSql = 
+							ComplSql =
 								[<<"#s00;">>,
 								 actordb_sqlprocutil:semicolon(Sql1),
 								 <<"#s02;">>
@@ -1013,7 +1013,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 			case actordb_sqlite:okornot(Res) of
 				ok ->
 					?DBG("Transaction ok"),
-					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId, 
+					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId,
 								evterm = P#dp.current_term,
 								transactioncheckref = CheckRef,
 								transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[])};
@@ -1097,10 +1097,10 @@ handle_info(doelection,P) ->
 	self() ! doelection1,
 	{noreply,P};
 handle_info({doelection,LatencyBefore,TimerFrom},P) ->
-	LatencyNow = butil:ds_val(latency,latency),
+	LatencyNow = actordb_latency:latency(),
 	% Delay if latency significantly increased since start of timer.
 	% But only if more than 100ms latency. Which should mean significant load or bad network which
-	%  from here means same thing. 
+	%  from here means same thing.
 	case LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100 of
 		true ->
 			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
@@ -1138,9 +1138,9 @@ handle_info(doelection1,P) ->
 				timer ->
 					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
 			end;
-		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined; 
+		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined;
 					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
-			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso 
+			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso
 					bkdcore_rpc:is_connected(P#dp.masternode) of
 				true ->
 					?DBG("Election timeout, do nothing, master=~p",[P#dp.masternode]),
@@ -1266,7 +1266,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 		{leader,NewFollowers,AllSynced} ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined,
-													masternode = actordb_conf:node_name(), masternodedist = bkdcore:dist_name(actordb_conf:node_name()), 
+													masternode = actordb_conf:node_name(), masternodedist = bkdcore:dist_name(actordb_conf:node_name()),
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													locked = lists:delete(ae,P1#dp.locked)}),
 			case P#dp.movedtonode of
@@ -1300,7 +1300,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 							exit(error)
 					end
 			end,
-			
+
 			case butil:ds_val(?COPYFROMI,Rows) of
 				CopyFrom1 when byte_size(CopyFrom1) > 0 ->
 					{CopyFrom,CopyReset,CbState} = binary_to_term(base64:decode(CopyFrom1));
@@ -1314,7 +1314,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			%  - If empty db or schema not up to date create/update it.
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
-			{NP,Sql,Records,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset, 
+			{NP,Sql,Records,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset,
 																				movedtonode = Moved,
 																			cbstate = CbState, schemavers = SchemaVers},
 																		Transaction,CopyFrom,SqlIn,P#dp.callfrom),
@@ -1337,7 +1337,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 		follower ->
 			P = P1,
 			?DBG("Continue as follower"),
-			{noreply,actordb_sqlprocutil:reopen_db(P#dp{election = actordb_sqlprocutil:election_timer(undefined), 
+			{noreply,actordb_sqlprocutil:reopen_db(P#dp{election = actordb_sqlprocutil:election_timer(undefined),
 															masternode = undefined, mors = slave})};
 		_Err ->
 			P = P1,
@@ -1394,11 +1394,11 @@ down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 			{stop,normal,P};
 		nomajority ->
 			{stop,{error,nomajority},P};
-		% Error copying. 
+		% Error copying.
 		%  - There is a chance copy succeeded. If this node was able to send unlock msg
 		%    but connection was interrupted before replying. If this is the case next read/write call will start
 		%    actor on this node again and everything will be fine.
-		%  - If copy failed before unlock, then it actually did fail. In that case move will restart 
+		%  - If copy failed before unlock, then it actually did fail. In that case move will restart
 		%    eventually.
 		_ ->
 			?ERR("Coproc died with error ~p~n",[Reason]),
@@ -1430,7 +1430,7 @@ down_info(PID,_Ref,Reason,P) ->
 			WithoutCopy1 =  [#lck{ref = C#cpto.ref, ismove = C#cpto.ismove,node = C#cpto.node,time = os:timestamp(),
 									actorname = C#cpto.actorname}|WithoutCopy],
 			erlang:send_after(1000,self(),check_locks),
-			NP = P#dp{dbcopy_to = NewCopyto, 
+			NP = P#dp{dbcopy_to = NewCopyto,
 						locked = WithoutCopy1,
 						activity = make_ref()},
 			case queue:is_empty(P#dp.callqueue) of
@@ -1468,9 +1468,9 @@ init(#dp{} = P,_Why) ->
 % started actor is blocking waiting for init to finish.
 init([_|_] = Opts) ->
 	% put(opt,Opts),
-	% Random needs to be unique per-node, not per-actor. 
+	% Random needs to be unique per-node, not per-actor.
 	random:seed(actordb_conf:cfgtime()),
-	case actordb_sqlprocutil:parse_opts(#dp{mors = master, callqueue = queue:new(), 
+	case actordb_sqlprocutil:parse_opts(#dp{mors = master, callqueue = queue:new(),
 									schemanum = catch actordb_schema:num()},Opts) of
 		{registered,Pid} ->
 			explain({registered,Pid},Opts),
@@ -1486,7 +1486,7 @@ init([_|_] = Opts) ->
 			case lists:keyfind(lockinfo,1,Opts) of
 				{lockinfo,dbcopy,{Ref,CbState,CpFrom,CpReset}} ->
 					?DBG("Starting actor slave lock for copy on ref ~p",[Ref]),
-					{ok,Pid} = actordb_sqlprocutil:start_copyrec(P#dp{mors = slave, cbstate = CbState, 
+					{ok,Pid} = actordb_sqlprocutil:start_copyrec(P#dp{mors = slave, cbstate = CbState,
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
 				{lockinfo,wait} ->
@@ -1533,7 +1533,7 @@ init([_|_] = Opts) ->
 										file:read(F,24),
 									file:close(F),
 									?DBG("Actor start slave, with {Evnum,Evterm}=~p",[{Evnum,Evterm}]),
-									{ok,P#dp{current_term = VotedCurrentTerm, voted_for = VotedFor, 
+									{ok,P#dp{current_term = VotedCurrentTerm, voted_for = VotedFor,
 												% election = actordb_sqlprocutil:election_timer(undefined),
 												evnum = Evnum, evterm = Evterm}};
 								{ok,_} ->
@@ -1590,5 +1590,3 @@ ae_timer(P) ->
 	% 	_ ->
 	% 		P
 	% end.
-
-

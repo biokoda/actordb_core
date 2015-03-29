@@ -110,7 +110,7 @@ reply_maybe(P,N,[]) ->
 												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
 							% No release savepoint yet. That comes in transaction confirm.
-							ComplSql = 
+							ComplSql =
 									[%<<"$SAVEPOINT 'adb';">>,
 									<<"#s00;">>,
 									 NewSql,
@@ -160,7 +160,7 @@ reply_maybe(P,N,[]) ->
 					ok
 			end,
 			reply(From,Res),
-			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, 
+			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined,
 									schemavers = NewVers,activity = make_ref()})),
 			case Msg of
 				undefined ->
@@ -196,7 +196,7 @@ reply_maybe(P,N,[]) ->
 			P
 	end.
 
-% We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only 
+% We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only
 %  when election is won and this is first write after it.
 create_var_header(P) ->
 	term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,follower_call_counts(P)}).
@@ -284,7 +284,7 @@ init_opendb(P) ->
 		[_|_] ->
 			?DBG("Opening HAVE schema",[]),
 			read_db_state(NP);
-		[] -> 
+		[] ->
 			?DBG("Opening NO schema",[]),
 			set_followers(false,NP)
 	end.
@@ -332,8 +332,8 @@ set_followers(HaveSchema,P) ->
 		{ok,NS,NL} ->
 			ok
 	end,
-	P#dp{cbstate = NS,follower_indexes = P#dp.follower_indexes ++ 
-			[#flw{node = Nd,distname = bkdcore:dist_name(Nd),match_index = 0,next_index = P#dp.evnum+1} || Nd <- NL, 
+	P#dp{cbstate = NS,follower_indexes = P#dp.follower_indexes ++
+			[#flw{node = Nd,distname = bkdcore:dist_name(Nd),match_index = 0,next_index = P#dp.evnum+1} || Nd <- NL,
 					lists:keymember(Nd,#flw.node,P#dp.follower_indexes) == false]}.
 
 % Find first valid evnum,evterm in wal (from beginning)
@@ -801,7 +801,7 @@ base_schema(SchemaVers,Type,MovedTo) ->
 			% Moved = [{?MOVEDTO,MovedTo}]
 			Moved = [[?MOVEDTO,MovedTo]]
 	end,
-	% DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <- 
+	% DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <-
 	% 	[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
 	DefVals = [[[?SCHEMA_VERSI,SchemaVers],[?ATYPEI,Type],[?EVNUMI,0],[?EVTERMI,0]|Moved]],
 	{[<<"$CREATE TABLE IF NOT EXISTS __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
@@ -842,7 +842,8 @@ do_cb(P) ->
 	end.
 
 election_timer(undefined) ->
-	Latency = butil:ds_val(latency,latency),
+	Latency = actordb_latency:latency(),
+	% run_queue is a good indicator of system overload.
 	Fixed = max(300,Latency),
 	T = Fixed+random:uniform(Fixed),
 	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
@@ -924,7 +925,7 @@ start_verify(P,JustStarted) ->
 					%	 CurrentTerm,P#dp.evnum,P#dp.evterm),
 					store_term(P,actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm),
 					NP = set_followers(P#dp.schemavers /= undefined,
-							reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me, 
+							reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me,
 									mors = master, verified = false})),
 					case ok of
 						_ when is_pid(Result) ->
@@ -943,11 +944,11 @@ start_verify(P,JustStarted) ->
 						true ->
 							actordb_local:actor_mors(slave,LeaderNode),
 							doqueue(reopen_db(P#dp{masternode = LeaderNode, election = undefined,
-								masternodedist = DistName, 
-								callfrom = undefined, callres = undefined, 
+								masternodedist = DistName,
+								callfrom = undefined, callres = undefined,
 								verified = true, activity = make_ref()}));
 						_ ->
-							P#dp{election = election_timer(P#dp.election)}		
+							P#dp{election = election_timer(P#dp.election)}
 					end;
 				Err ->
 					?DBG("Election try result ~p",[Err]),
@@ -956,7 +957,7 @@ start_verify(P,JustStarted) ->
 	end.
 follower_nodes(L) ->
 	[F#flw.node || F <- L].
-% Call RequestVote RPC on cluster nodes. 
+% Call RequestVote RPC on cluster nodes.
 % This should be called in an async process and current_term and voted_for should have
 %  been set for this election (incremented current_term, voted_for = Me)
 % start_election(P) ->
@@ -1110,8 +1111,8 @@ post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfr
 	% This way sql does not get written twice to it.
 	ReplSql = {<<>>,P#dp.evnum+1,SchemaVers},
 	Transid = {Tid,Updid,Node},
-	NP = P#dp{transactioninfo = ReplSql, 
-				transactionid = Transid, 
+	NP = P#dp{transactioninfo = ReplSql,
+				transactionid = Transid,
 				schemavers = SchemaVers},
 	{NP,Sql,[],Callfrom};
 post_election_sql(P,[],Copyfrom,SqlIn,_) ->
@@ -1133,7 +1134,7 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 					true = Num /= <<>>,
 					case actordb:rpc(MoveTo,P#dp.actorname,
 							{actordb_sqlproc,try_actornum,[P#dp.actorname,P#dp.actortype,P#dp.cbmod]}) of
-						% Num matches with local num. Actor moved successfully. 
+						% Num matches with local num. Actor moved successfully.
 						{_,Num} ->
 							MovedToNode = MoveTo,
 							Sql1 = delete,
@@ -1148,7 +1149,7 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 							Sql1 = "",
 							MovedToNode = P#dp.movedtonode,
 							Callfrom =  {exec,undefined,{move,MoveTo}};
-						% Different num. Do not do anything. 
+						% Different num. Do not do anything.
 						{_,_} ->
 							MovedToNode = P#dp.movedtonode,
 							Sql1 = CleanupSql,
@@ -1229,7 +1230,7 @@ read_num(P) ->
 % 	[Pid ! delete || {_,Pid,_,_} <- P#dp.dbcopy_to],
 % 	?DBG("delfile master=~p, ismoved=~p",[P#dp.mors,P#dp.movedtonode]),
 % 	% Term files are not deleted. This is because of deleted actors. If a node was offline
-% 	%  when an actor was deleted, then the actor was created anew still while offline, 
+% 	%  when an actor was deleted, then the actor was created anew still while offline,
 % 	%  this will keep the term and evnum number higher than that old file and raft logic will overwrite that data.
 % 	save_term(P),
 % 	case P#dp.movedtonode of
@@ -1272,7 +1273,7 @@ checkpoint(P) ->
 								Count+1;
 							false ->
 								Count
-						end 
+						end
 					end,0,P#dp.follower_indexes),
 					case NotSynced of
 						0 ->
@@ -1493,12 +1494,12 @@ parse_opts(P,[]) ->
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% 
-% 
+%
+%
 % 							Copy full DB from one node to another.
-% 
-% 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+%
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 check_locks(P,[H|T],L) when is_tuple(H#lck.time) ->
 	case timer:now_diff(os:timestamp(),H#lck.time) > 3000000 of
 		true ->
@@ -1556,11 +1557,11 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 			case lists:keyfind(Ref,#cpto.ref,P#dp.dbcopy_to) of
 				false ->
 					Db = P#dp.db,
-					{Pid,_} = spawn_monitor(fun() -> 
+					{Pid,_} = spawn_monitor(fun() ->
 							dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
 					{reply,{ok,Ref},P#dp{db = Db,
-										dbcopy_to = [#cpto{node = Node, pid = Pid, ref = Ref, ismove = IsMove, 
-															actorname = ActornameToCopyto}|P#dp.dbcopy_to], 
+										dbcopy_to = [#cpto{node = Node, pid = Pid, ref = Ref, ismove = IsMove,
+															actorname = ActornameToCopyto}|P#dp.dbcopy_to],
 										activity = make_ref()}};
 				{_,_Pid,Ref,_} ->
 					?DBG("senddb already exists with same ref!"),
@@ -1616,7 +1617,7 @@ dbcopy_call({wal_read,From1,Data},_CallFrom,P) ->
 		% true ->
 		% 	{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
 		_ ->
-			?DBG("wal_size from=~p, insize=~p, filesize=~p",[From1,Data,Size]), 
+			?DBG("wal_size from=~p, insize=~p, filesize=~p",[From1,Data,Size]),
 			{reply,{[P#dp.fullpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},P}
 	end;
 dbcopy_call({checksplit,Data},_,P) ->
@@ -1651,7 +1652,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 							WriteMsg = #write{sql = [Sql,<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"]},
 							case ok of
 								_ when WithoutLock == [], DbCopyTo == [] ->
-									actordb_sqlproc:write_call(WriteMsg,CallFrom,P#dp{locked = WithoutLock, 
+									actordb_sqlproc:write_call(WriteMsg,CallFrom,P#dp{locked = WithoutLock,
 												dbcopy_to = DbCopyTo,
 												cbstate = NS});
 								_ ->
@@ -1671,7 +1672,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 										Flw when is_tuple(Flw) ->
 											CQ = queue:in_r({CallFrom,#write{sql = <<>>}},P#dp.callqueue),
 											{reply,ok,reply_maybe(store_follower(NP#dp{callqueue = CQ},
-														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm, 
+														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm,
 																	next_index = P#dp.evnum+1}))};
 										_ ->
 											{reply,ok,NP}
@@ -1688,7 +1689,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 					?ERR("dbcopy_to does not contain ref ~p, ~p",[Data,P#dp.dbcopy_to]),
 					{reply,false,P};
 				Cpto ->
-					NLC = LC#lck{actorname = Cpto#cpto.actorname, node = Cpto#cpto.node, 
+					NLC = LC#lck{actorname = Cpto#cpto.actorname, node = Cpto#cpto.node,
 									ismove = Cpto#cpto.ismove, time = os:timestamp()},
 					dbcopy_call({unlock,Data},CallFrom,
 							P#dp{locked = lists:keystore(LC#lck.ref,#lck.ref,P#dp.locked,NLC)})
@@ -1818,7 +1819,7 @@ start_copyrec(P) ->
 				Home ! {StartRef,self()},
 				case ok of
 					% if copyfrom binary, it's a restore within a cluster.
-					% if copyfrom tuple, it's moving/copying from one cluster to another 
+					% if copyfrom tuple, it's moving/copying from one cluster to another
 					%  or one actor to another.
 					_ when P#dp.mors == master, is_tuple(P#dp.copyfrom) ->
 						ConnectedNodes = [bkdcore:name_from_dist_name(Nd) || Nd <- bkdcore:cluster_nodes_connected()],
@@ -2027,4 +2028,3 @@ rpc(Nd,MFA) ->
 	Res = bkdcore:rpc(Nd,MFA),
 	% Printer ! done,
 	Res.
-

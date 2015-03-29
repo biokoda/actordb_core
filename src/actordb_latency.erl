@@ -3,9 +3,13 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 -module(actordb_latency).
 -behaviour(gen_server).
+-export([latency/0]).
 -export([start/0,stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 -export([tunnel_callback/2, return_call/2]).
 -include_lib("actordb.hrl").
+
+latency() ->
+	butil:ds_val(latency,latency) * statistics(run_queue)*20.
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -65,7 +69,7 @@ handle_cast({return_call,_Nd,Time},P) ->
 			ok
 	end,
 	% ?ADBG("Latency nd=~p latency=~p max_in_interval=~p",[Nd,Latency,MaxInInterval]),
-	{noreply,P#dp{global_max = max(Latency,P#dp.global_max), 
+	{noreply,P#dp{global_max = max(Latency,P#dp.global_max),
 					interval = Interval1,
 					nresponses = P#dp.nresponses + 1,
 					interval_max = max(P#dp.interval_max,MaxInInterval),
@@ -78,7 +82,7 @@ handle_info(latency_check,P) ->
 	% Nodes on the other side will do a rpc back with this time.
 	% We can keep track of max latency this way.
 	% This will affect election timers. Election timer should
-	%  not be lower than connection latency. 
+	%  not be lower than connection latency.
 	erlang:send_after(300,self(),latency_check),
 	case nodes() of
 		[] ->
@@ -92,9 +96,9 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(_, P) -> 
+handle_info(_, P) ->
 	{noreply, P}.
-	
+
 terminate(_, _) ->
 	ok.
 code_change(_, P, _) ->
@@ -109,4 +113,3 @@ init(_) ->
 			ok
 	end,
 	{ok,#dp{}}.
-
