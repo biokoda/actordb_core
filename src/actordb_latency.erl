@@ -9,7 +9,7 @@
 -include_lib("actordb.hrl").
 
 latency() ->
-	butil:ds_val(latency,latency) * statistics(run_queue)*20.
+	butil:ds_val(latency,latency) + min(3000,statistics(run_queue)*20).
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
