@@ -1112,7 +1112,7 @@ post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfr
 	NP = P#dp{transactioninfo = ReplSql,
 				transactionid = Transid,
 				schemavers = SchemaVers},
-	{NP,Sql,[],Callfrom};
+	{NP,Sql,[],[],Callfrom};
 post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 	CleanupSql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],
 	case Copyfrom of
@@ -1190,12 +1190,12 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 		_ ->
 			Sql = [SqlIn,Sql1]
 	end,
-	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode, cbstate = NS},Sql,[],Callfrom};
+	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode, cbstate = NS},Sql,[],[],Callfrom};
 post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], Copyfrom /= undefined ->
 	% Combine sqls for transaction and copy.
 	case post_election_sql(P,Transaction,undefined,Sql,Callfrom) of
 		{NP1,delete,_} ->
-			{NP1,delete,[],Callfrom};
+			{NP1,delete,[],[],Callfrom};
 		{NP1,Sql1,_} ->
 			post_election_sql(NP1,[],Copyfrom,Sql1,Callfrom)
 	end.
