@@ -100,12 +100,13 @@ reply_maybe(P,N,[]) ->
 						_ when P#dp.follower_indexes /= [] ->
 							case Sql of
 								<<"delete">> ->
+									Sql1 = [],
 									AdbRecs = [?MOVEDTOI,<<"$deleted$">>];
-									% Sql1 = ["INSERT OR REPLACE INTO __adb (id,val) VALUES (",?MOVEDTO,",'$deleted$');"];
 								_ ->
+									Sql1 = Sql,
 									AdbRecs = []
 							end,
-							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+							NewSql = [Sql1,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
 												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
 							% No release savepoint yet. That comes in transaction confirm.
