@@ -16,8 +16,8 @@ init(Path,JournalMode) ->
 init(Path,JournalMode,Thread) ->
 	case actordb_conf:driver() of
 		actordb_driver ->
-			Sql = <<"select name, sql from sqlite_master where type='table';",
-					"$PRAGMA cache_size=",(butil:tobin(?DEF_CACHE_PAGES))/binary,";">>,
+			% "$PRAGMA cache_size=",(butil:tobin(?DEF_CACHE_PAGES))/binary,";"
+			Sql = <<"select name, sql from sqlite_master where type='table';">>,
 			case actordb_driver:open(Path,Thread,Sql,JournalMode) of
 				{ok,Db,{ok,[[{columns,_},{rows,Tables}]]}} ->
 					{ok,Db,Tables,?PAGESIZE};
@@ -34,7 +34,7 @@ init(Path,JournalMode,Thread) ->
 		_ ->
 			Sql = <<"select name, sql from sqlite_master where type='table';",
 					"PRAGMA page_size=",(butil:tobin(?PAGESIZE))/binary,";"
-					% Exclusive locking is faster but unrealiable. 
+					% Exclusive locking is faster but unrealiable.
 					% "$PRAGMA locking_mode=EXCLUSIVE;",
 					"$PRAGMA foreign_keys=1;",
 					"$PRAGMA synchronous=",(actordb_conf:sync())/binary,";",
@@ -139,7 +139,7 @@ rollback(Db) ->
 
 move_to_trash(Path) ->
 	case actordb_conf:level_size() of
-		0 -> 
+		0 ->
 			Trash = filename:join(lists:reverse(tl(lists:reverse(filename:split(filename:dirname(Path))))))++
 						"/trash/"++filename:basename(Path);
 		_ ->
@@ -150,7 +150,7 @@ move_to_trash(Path) ->
 	file:rename(Path,Trash).
 copy_to_trash(Path) ->
 	case actordb_conf:level_size() of
-		0 -> 
+		0 ->
 			Trash = filename:join(lists:reverse(tl(lists:reverse(filename:split(filename:dirname(Path))))))++
 						"/trash/"++filename:basename(Path);
 		_ ->

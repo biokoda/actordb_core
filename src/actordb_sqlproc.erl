@@ -898,6 +898,7 @@ combine_write(P,{Mod,Func,_},Fromlist,Rows) ->
 			{P,Fromlist,Rows}
 	end.
 
+
 % Not a multiactor transaction write
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
@@ -927,8 +928,8 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 					 actordb_sqlprocutil:semicolon(Sql),
 					 <<"#s02;#s01;">> % __adb insert, release savepoint
 					 ],
-			Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
-			% ?AINF("Doing write ~p ~p",[ComplSql,Records]),
+			Records = W#write.records++[W#write.adb_recs++[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+			% ?AINF("Doing write ~p ~p",[iolist_to_binary(ComplSql),Records]),
 			case P#dp.flags band ?FLAG_SEND_DB > 0 of
 				true ->
 					VarHeader = actordb_sqlprocutil:create_var_header_with_db(P);
@@ -1006,7 +1007,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 								 actordb_sqlprocutil:semicolon(Sql1),
 								 <<"#s02;">>
 								 ],
-							Records = W#write.records++[[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+							Records = W#write.records++[W#write.adb_recs++[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,write)
 					end
 			end,
@@ -1314,7 +1315,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			%  - If empty db or schema not up to date create/update it.
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
-			{NP,Sql,Records,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset,
+			{NP,Sql,CallRecords,AdbRecords,Callfrom} = actordb_sqlprocutil:post_election_sql(P#dp{verified = true,copyreset = CopyReset,
 																				movedtonode = Moved,
 																			cbstate = CbState, schemavers = SchemaVers},
 																		Transaction,CopyFrom,SqlIn,P#dp.callfrom),
@@ -1332,7 +1333,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 					?DBG("Running post election write on nodes ~p, evterm=~p, current_term=~p, withdb ~p, vers ~p",
 							[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,NP#dp.flags band ?FLAG_SEND_DB > 0,NP#dp.schemavers]),
 					% it must always return noreply
-					write_call(#write{sql = Sql, transaction = NP#dp.transactionid, records = Records},Callfrom, NP)
+					write_call(#write{sql = Sql, transaction = NP#dp.transactionid, records = CallRecords, adb_recs = AdbRecords},Callfrom, NP)
 			end;
 		follower ->
 			P = P1,

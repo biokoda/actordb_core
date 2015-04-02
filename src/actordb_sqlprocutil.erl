@@ -100,13 +100,12 @@ reply_maybe(P,N,[]) ->
 						_ when P#dp.follower_indexes /= [] ->
 							case Sql of
 								<<"delete">> ->
-									Recs = [[[?MOVEDTOI,<<"$deleted$">>]]],
-									Sql1 = <<"#s02;">>;
+									AdbRecs = [?MOVEDTOI,<<"$deleted$">>];
+									% Sql1 = ["INSERT OR REPLACE INTO __adb (id,val) VALUES (",?MOVEDTO,",'$deleted$');"];
 								_ ->
-									Recs = [],
-									Sql1 = Sql
+									AdbRecs = []
 							end,
-							NewSql = [Sql1,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
+							NewSql = [Sql,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
 												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
 							% No release savepoint yet. That comes in transaction confirm.
@@ -119,7 +118,7 @@ reply_maybe(P,N,[]) ->
 									 <<"#s02;">>
 									 ],
 							VarHeader = create_var_header(P),
-							Records = Recs++[[[?EVNUMI,butil:tobin(EvNumNew)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+							Records = [[[?EVNUMI,butil:tobin(EvNumNew)],[?EVTERMI,butil:tobin(P#dp.current_term)]]++AdbRecs],
 							Res1 = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.evterm,EvNumNew,VarHeader),
 							Res = {actordb_conf:node_name(),Res1},
 							case actordb_sqlite:okornot(Res1) of
@@ -803,11 +802,10 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	end,
 	% DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <-
 	% 	[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
-	DefVals = [[[?SCHEMA_VERSI,SchemaVers],[?ATYPEI,Type],[?EVNUMI,0],[?EVTERMI,0]|Moved]],
+	DefVals = [[?SCHEMA_VERSI,butil:tobin(SchemaVers)],[?ATYPEI,Type],[?EVNUMI,<<"0">>],[?EVTERMI,<<"0">>]|Moved],
 	{[<<"$CREATE TABLE IF NOT EXISTS __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 		 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
-		 "$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>,
-		 "#s02;"],DefVals}.
+		 "$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>],DefVals}.
 	 % <<"$INSERT INTO __adb (id,val) VALUES ">>,
 	 % 	butil:iolist_join(DefVals,$,),$;].
 
@@ -1081,12 +1079,11 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 			ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
 			{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
 			?DBG("Adding base schema ~p",[BS]),
-			Records = Records1++CallRecords++[[[?ANUMI,butil:tobin(ActorNum)]]],
-			Sql = [SqlIn,BS,Schema,CallWrite,
-					"#s02;"
+			AdbRecords = Records1 ++ [[?ANUMI,butil:tobin(ActorNum)]],
+			Sql = [SqlIn,BS,Schema,CallWrite
 					];
 		_ ->
-			Records = [],
+			AdbRecords = [],
 			Flags = P#dp.flags,
 			case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
 				{_,[]} ->
@@ -1099,7 +1096,7 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 								<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
 			end
 	end,
-	{NP#dp{callqueue = CQ, flags = Flags},Sql,Records,Callfrom};
+	{NP#dp{callqueue = CQ, flags = Flags},Sql,CallRecords,AdbRecords,Callfrom};
 post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfrom) ->
 	case base64:decode(MSql1) of
 		<<"delete">> ->

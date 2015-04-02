@@ -46,18 +46,18 @@
 -define(FLAG_NO_ELECTION_TIMEOUT,512).
 
 
-% records: for bulk inserts to single actor. List of rows (tuples). 
+% records: for bulk inserts to single actor. List of rows (tuples).
 %          First element of tuple is table name. Sql must contain _insert; statement.
 % sql and flags must always be first and second position in #read and #write records.
--record(write,{sql, flags = [], mfa, transaction, records = []}).
+-record(write,{sql, flags = [], mfa, transaction, records = [], adb_recs = []}).
 -record(read,{sql, flags = []}).
--record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0, 
+-record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0,
               file, wait_for_response_since, last_seen, pagebuf = <<>>}).
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
 
--record(dp,{db, actorname,actortype, evnum = 0,evterm = 0, 
+-record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
 			activity, fixed_latency = 300,
 			activity_now,schemanum,schemavers,flags = 0, netchanges = 0, %base_schemavers = 0
 	% Raft parameters  (lastApplied = evnum)
@@ -73,10 +73,10 @@
   %  providing an external interface
   %  to a sqlite backed process.
   cbmod, cbstate,cbinit = false,
-  % callfrom is who is calling, 
+  % callfrom is who is calling,
   % callres result of sqlite call (need to replicate before replying)
   callfrom,callres,
-  % queue which holds gen_server:calls that can not be processed immediately because db has not 
+  % queue which holds gen_server:calls that can not be processed immediately because db has not
   %  been verified, is in the middle of a 2phase commit
   %  or is being restored from another node.
   callqueue,
@@ -84,7 +84,7 @@
   % mors = slave                     -> follower
   % mors = master, verified == false -> candidate
   % mors == master, verified == true -> leader
-  mors, 
+  mors,
   % Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
   % If local db is being restored, verified will be on false.
   % Possible values: true, false, failed (there is no majority of nodes with the same db state)
@@ -107,10 +107,10 @@
   % Once this has been set, db files will be deleted on process timeout.
   movedtonode,
   % Used when receiving complete actor state from another node.
-  copyfrom,copyreset = false,copyproc}). 
+  copyfrom,copyreset = false,copyproc}).
 % -define(R2P(Record), butil:rec2prop(Record#dp{writelog = byte_size(P#dp.writelog)}, record_info(fields, dp))).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
--define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
+-define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
 -ifndef(NOLOG).
 -define(DBG(F),lager:debug([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype])).
@@ -133,4 +133,3 @@
 -define(ERR(F),ok).
 -define(ERR(F,A),ok).
 -endif.
-
