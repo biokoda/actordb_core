@@ -66,7 +66,7 @@ print_info() ->
 % The only operation it will alow is checking transaction state and abandoning any transactions that are incomplete.
 -record(dp,{name, currow, confirming, callqueue, curfrom, execproc, curnum = 0,local = true}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
--define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
+-define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
 sqlname(P) ->
 	{P#dp.name,?MULTIUPDATE_TYPE}.
@@ -91,15 +91,15 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 			ok
 	end,
 
-	{Pid,_} = spawn_monitor(fun() -> 
+	{Pid,_} = spawn_monitor(fun() ->
 		% Send sql
-		% put(nchanges,0),
+		put(nchanges,0),
 		case catch do_multiupdate(P#dp{currow = Num},S) of
 			ok ->
 				% NChanges = get(nchanges),
 				% erase(),
 				?ADBG("multiupdate commiting"),
-				% With this write transaction is commited. 
+				% With this write transaction is commited.
 				% If any node goes down, actors will check back to this updater process
 				%  if transaction is set to commited or not. If commited is set and they have not commited, they will execute their sql
 				%  which they have saved locally.
@@ -118,7 +118,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% 		end
 				% end,
 				[bkdcore_rpc:cast(NodeName,{actordb_sqlprocutil,transaction_done,[Num,P#dp.name,done]}) || {{node,NodeName},_} <- get()],
-				exit(ok);
+				exit({ok,{changes,0,get(nchanges)}});
 			Err ->
 				?AERR("Multiupdate failed ~p",[Err]),
 				% case catch do_multiupdate(P#dp{currow = Num, confirming = false},S) of
@@ -192,9 +192,9 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(_, P) -> 
+handle_info(_, P) ->
 	{noreply, P}.
-	
+
 terminate(_, _) ->
 	ok.
 code_change(_, P, _) ->
@@ -238,7 +238,7 @@ schema(1) ->
 	<<"$CREATE TABLE transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, commited INTEGER DEFAULT 0);">>.
 
 
- 
+
 % For variables as a result of an sql statement, multiupdate uses the process dictionary.
 % Process dictionary because random access is required and nothing else is remotely as fast.
 % Structure:
@@ -282,9 +282,9 @@ read_mr_rows(N,L) ->
 % actordb:exec("use type1(all); insert into tab1 values (1,'a1');insert into tab1 values (2,'a2');").
 % actordb:exec("use type1(all);{{ACTORS}}SELECT * FROM tab1;use type1(foreach X.txt in ACTORS);insert into tab1 values ({{uniqid}},'{{X.txt}}');").
 
-% 
+%
 % 		LOOP OVER BLOCKS (1 block is: "use actortype(....);statement1;statement2;statementN")
-% 
+%
 do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
 	case AInfo of
 		{Type1,Gvar,Column,BlockVar,Flags} ->
@@ -345,9 +345,9 @@ do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
 do_multiupdate(_,[]) ->
 	ok.
 
-% 
+%
 % 			TYPE 1 - moving over all actors for type by traversing shard tree
-% 
+%
 move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,{Shard,_UpperLimit,Nd,Left,Right}) ->
 	% A bit of an ugly hack with proc. dictionary. The problem is a shard might get visited
 	%  more then once without this failsafe. If a node has too few shards, it will split them in half
@@ -439,22 +439,22 @@ move_over_shard_actors(Nd,Type,Flags,Shard,Actors,CountNow,CountAll,P,IsWrite,[l
 			ok
 	end,
 	CurNRows = get({<<"RESULT">>,nrows}),
-	Count = lists:foldl(fun({Actor},Cnt) -> 
+	Count = lists:foldl(fun({Actor},Cnt) ->
 				put({<<"RESULT">>,CurNRows+Cnt},{Actor}),
 				Cnt+1
 			end,0,Actors),
 	put({<<"RESULT">>,nrows},CurNRows+Count),
 	move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow+Count,CountAll+Count,P,IsWrite,[list],Varlist,Next);
 move_over_shard_actors(Nd,Type,Flags,Shard,Actors,CountNow,CountAll,P,IsWrite,StBin,Varlist,Next) ->
-	Count = lists:foldl(fun({Actor},Cnt) -> 
+	Count = lists:foldl(fun({Actor},Cnt) ->
 				do_actor(P,true,Type,Flags,Actor,IsWrite,StBin,Varlist),
 				Cnt+1
 			end,0,Actors),
 	move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow+Count,CountAll+Count,P,IsWrite,StBin,Varlist,Next).
 
-% 
+%
 % 			TYPE 2 - looping over a list with for
-% 
+%
 do_foreach(P,_,_,_,_,_,_,_,{N,N}) ->
 	P;
 do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N,Max}) ->
@@ -470,11 +470,11 @@ do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N,Max}) ->
 			do_actor(P,true,Type,Flags,Ac,IsWrite,StBin,Varlist),
 			do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N+1,Max})
 	end.
-	
 
-% 
+
+%
 % 			TYPE 3 - regular query on single or list of actors
-% 
+%
 do_block(P,IsMulti,Type,Flags,[Actor|T],IsWrite,Statements,Varlist) ->
 	case Actor of
 		{Var,Column} ->
@@ -530,9 +530,8 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 			store_vars(IsMulti,Actor,Varlist,[L]);
 		{ok,[_|_] = L} ->
 			store_vars(IsMulti,Actor,Varlist,L);
-		{ok,{changes,_,_NChanges}} ->
-			% put(nchanges,get(nchanges)+NChanges);
-			ok;
+		{ok,{changes,_,NChanges}} ->
+			put(nchanges,get(nchanges)+NChanges);
 		{ok,_} ->
 			ok;
 		ok ->
@@ -616,9 +615,9 @@ store_rows(_IsMulti,_Actor,Varname,N,[]) ->
 	put({Varname,nrows},N),
 	ok.
 
-% Takes a block of sql statements and creates an iolist, filling in any {{..}} variables. 
+% Takes a block of sql statements and creates an iolist, filling in any {{..}} variables.
 % Also returns a list of result variables ({{Var}}SELECT * ....)
-% Statement with no result variables or statement variables. 
+% Statement with no result variables or statement variables.
 statements_to_binary(CurActor,{Statements,PrepParams},<<>>,VarList) ->
 	{StatementOut,VarlistOut} = statements_to_binary(CurActor,Statements,[],VarList),
 	{{StatementOut,PrepParams},VarlistOut};
@@ -722,8 +721,3 @@ findpos(N,Val,Tuple) when element(N,Tuple) == Val ->
 	N;
 findpos(N,Val,Tuple) ->
 	findpos(N+1,Val,Tuple).
-
-
-
-
-
