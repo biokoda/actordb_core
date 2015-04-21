@@ -1480,9 +1480,14 @@ init([_|_] = Opts) ->
 			explain({actornum,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},Opts),
 			{stop,normal};
 		P when (P#dp.flags band ?FLAG_EXISTS) > 0 ->
-			{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-			explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(SchemaTables /= [])}]}]},Opts),
-			{stop,normal};
+			case P#dp.movedtonode of
+				deleted ->
+					explain({ok,[{columns,{<<"exists">>}},{rows,[{<<"false">>}]}]},Opts);
+				_ ->
+					{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(SchemaTables /= [])}]}]},Opts),
+					{stop,normal}
+			end;
 		P when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->
 			case lists:keyfind(lockinfo,1,Opts) of
 				{lockinfo,dbcopy,{Ref,CbState,CpFrom,CpReset}} ->

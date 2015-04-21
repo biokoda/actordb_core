@@ -15,7 +15,7 @@
 -export([direct_call/6,actor_id_type/1,configfiles/0,exec1/1,
 		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
 -include("actordb.hrl").
-% -compile(export_all).
+
 
 is_ready() ->
 	case application:get_env(actordb_core,isready) of

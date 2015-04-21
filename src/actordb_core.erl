@@ -57,7 +57,7 @@ start_ready() ->
 	% actordb_termstore:start(),
 	case application:get_env(actordb_core,thrift_port) of
 		{ok,ThriftPort} when ThriftPort > 0 ->
-			adbt:start(ThriftPort);
+			{ok,_} = adbt:start(ThriftPort);
 		_ ->
 			ok
 	end,
@@ -102,21 +102,27 @@ prestart() ->
 		[_|_] ->
 			ok;
 		_ ->
-			[Name1|_] = string:tokens(butil:tolist(node()),"@"),
-			Name = butil:tobin(Name1),
-			Args = init:get_arguments(),
 			% ?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
 			% Read args file manually to get paths for state.
-			case butil:ds_val(config,Args) of
-				undefined ->
-					PagesPerWal = 1000,
-					?AERR("No app.config file in parameters! ~p",[init:get_arguments()]),
-					init:stop();
-				Cfgfile ->
-					case catch file:consult(Cfgfile) of
-						{ok,[L]} ->
+			case init:get_argument(config) of
+				{ok, Files} ->
+				 [Name1|_] = string:tokens(butil:tolist(node()),"@"),
+				 Name = butil:tobin(Name1),
+				 L = lists:foldl(
+				          fun([File], Env) ->
+				                  BFName = filename:basename(File,".config"),
+				                  FName = filename:join(filename:dirname(File),
+				                                        BFName ++ ".config"),
+				                  case file:consult(FName) of
+				                      {ok, [L]} ->
+				                          L++Env;
+				                      _ ->
+				                       ?AERR("Error in config ~p",[FName]),
+				                       init:stop()
+				                  end
+				          end, [], Files),
 							ActorParam = butil:ds_val(actordb_core,L),
-							[Main,Extra,Level,_Journal,Sync,NumMngrs,QueryTimeout1,PagesPerWal1] = 
+							[Main,Extra,Level,_Journal,Sync,NumMngrs,QueryTimeout1,PagesPerWal1] =
 								butil:ds_vals([main_db_folder,extra_db_folders,level_size,
 													journal_mode,sync,num_transaction_managers,query_timeout,pages_per_wal],ActorParam,
 												["db",[],0,wal,0,12,60000,1024*3]),
@@ -170,47 +176,13 @@ prestart() ->
 									TermDb = false
 							end,
 							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Driver,TermDb,Name),
-
-							% Ensure folders exist.
-							[begin
-								case filelib:ensure_dir(F++"/actors/") of
-									ok ->
-										case Level > 0 of
-											true ->
-												[ok = filelib:ensure_dir(F++"/actors/"++butil:tolist(N)++"/") || N <- lists:seq(0,Level)];
-											false ->
-												ok
-										end;
-									Errx1 ->
-										throw({path_invalid,F++"/actors/",Errx1})
-								end,
-								case  filelib:ensure_dir(F++"/shards/") of
-									ok -> 
-										ok;
-									Errx2 ->
-										throw({path_invalid,F++"/shards/",Errx2})
-								end,
-								case  filelib:ensure_dir(F++"/state/") of
-									ok -> 
-										ok;
-									Errx3 ->
-										throw({path_invalid,F++"/state/",Errx3})
-								end
-							 end || F <- actordb_conf:paths()];
-						Err ->
-							PagesPerWal = 1000,
-							?AERR("Config invalid ~p~n~p ~p",[init:get_arguments(),Err,Cfgfile]),
-							init:stop()
-					end
+							ensure_folders(actordb_conf:paths(),Level);
+				_ ->
+					PagesPerWal = 1000,
+					?AERR("No app.config file in parameters! ~p",[init:get_arguments()]),
+					init:stop()
 			end,
-
-			% Start dependencies
-			% case length(actordb_conf:paths())*2 >= erlang:system_info(logical_processors) of
-			% 	true ->
-			% 		NProcs = length(actordb_conf:paths())*2;
-			% 	false ->
-					NProcs = length(actordb_conf:paths()),
-			% end,
+			NProcs = length(actordb_conf:paths()),
 			case actordb_conf:driver() of
 				esqlite3 ->
 					esqlite3:init({NProcs,actordb_sqlprocutil:static_sqls()});
@@ -262,9 +234,35 @@ start(_Type, _Args) ->
 		wait ->
 			actordb_sharedstate:start_wait(?STATE_NM_GLOBAL,?STATE_TYPE)
 	end,
-
 	Res.
 
 stop(_State) ->
 	ok.
 
+ensure_folders([], _Level)->
+	ok;
+ensure_folders([H|T], Level)->
+	case filelib:ensure_dir(H++"/actors/") of
+		ok ->
+			case Level > 0 of
+				true ->
+					[ok = filelib:ensure_dir(H++"/actors/"++butil:tolist(N)++"/") || N <- lists:seq(0,Level)];
+				false ->
+					ok
+			end;
+		Errx1 ->
+			throw({path_invalid,H++"/actors/",Errx1})
+	end,
+	case  filelib:ensure_dir(H++"/shards/") of
+		ok ->
+			ok;
+		Errx2 ->
+			throw({path_invalid,H++"/shards/",Errx2})
+	end,
+	case  filelib:ensure_dir(H++"/state/") of
+		ok ->
+			ok;
+		Errx3 ->
+			throw({path_invalid,H++"/state/",Errx3})
+	end,
+	ensure_folders(T, Level).

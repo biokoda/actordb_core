@@ -319,7 +319,7 @@ actually_delete(P) ->
 	% Delete just means adding deleted flag. But if we get a query with create, this means
 	% we must delete all data. Drop everything except __adb. This way evnum and evterm continue where they left off.
 	{ok,[{columns,_},{rows,Tables}]} = actordb_sqlite:exec(P#dp.db,<<"SELECT NAME FROM sqlite_master WHERE type='table';">>,read),
-	Drops = [<<"$DROP TABLE ",Name/binary,";">> || {Name} <- Tables, Name /= <<"__adb">>],
+	Drops = [<<"$DROP TABLE ",Name/binary,";">> || {Name} <- Tables, Name /= <<"__adb">> andalso Name /= <<"sqlite_sequence">>],
 	?DBG("Drop tables in deleted=~p",[Drops]),
 	#write{sql = ["$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?MOVEDTO,",'');",
 				  "$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?BASE_SCHEMA_VERS,",0);",Drops], records = []}.

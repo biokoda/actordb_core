@@ -36,11 +36,11 @@
 % IsWrite - boolean if any of the statements in the block change the db
 % Statements: [Statement]
 % Statement: {ResultGlobalVarName,SqlStatement]} |
-% 					 SqlStatement 
+% 					 SqlStatement
 % SqlStatement = list of: binary | char | {VariableName,VariableColumn} | uniqid
 % Actors:
 % 1. Fixed list of actors
-% 2. all actors of some type 
+% 2. all actors of some type
 % 3. actors as a result of a query preceing current block
 parse_statements(Bin) ->
 	parse_statements(undefined,Bin).
@@ -59,7 +59,7 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 				{pragma,PragmaRem} ->
 					case CurUse of
 						undefined ->
-							[];
+							[H];
 						_ ->
 							case parse_pragma(PragmaRem) of
 								delete ->
@@ -148,6 +148,8 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 parse_statements(_BP,[],_L,_Prepared,undefined,CurStatements,_,_) ->
 	Lines = [string:to_lower(butil:tolist(N)) || N <- lists:reverse(CurStatements), is_binary(N) orelse is_list(N)],
 	case meta_call(Lines,[]) of
+		[] when Lines == [] ->
+			CurStatements;
 		[] ->
 			Lines;
 		R ->
@@ -265,7 +267,7 @@ count_exec_name(<<_,Rem/binary>>,N) ->
 
 
 parse_prepare(Sql) ->
-	case Sql of 		
+	case Sql of
 		<<"Delete ",Delrem/binary>> ->
 			Del = true;
 		<<"DELETE ",Delrem/binary>> ->
@@ -384,7 +386,7 @@ parse_pragma(Bin) ->
 		<<"copy",R/binary>> ->
 			<<"=",Aname/binary>> = rem_spaces(R),
 			{copy,get_name(Aname)};
-		<<D,E,L,E,T,E,_/binary>> when (D == $d orelse D == $D) andalso 
+		<<D,E,L,E,T,E,_/binary>> when (D == $d orelse D == $D) andalso
 										(E == $e orelse E == $E) andalso
 										(L == $l orelse L == $L) andalso
 										(T == $t orelse T == $T) ->
@@ -595,10 +597,10 @@ count_hash(<<>>,_) ->
 
 count_param(<<"}}",_/binary>>,N) ->
 	N;
-count_param(<<C,Rem/binary>>,N) when C >= $a, C =< z; 
-									 C >= $A, C =< $Z; 
+count_param(<<C,Rem/binary>>,N) when C >= $a, C =< z;
+									 C >= $A, C =< $Z;
 									 C >= $0, C =< $9;
-									 C == $.; C == $=; C == $(; 
+									 C == $.; C == $=; C == $(;
 									 C == $); C == $_; C == $- ->
 	count_param(Rem,N+1);
 count_param(<<>>,_) ->
@@ -642,7 +644,7 @@ is_actor([H,{Var,Column},<<")",Flags/binary>>|_]) when is_binary(Flags) ->
 			[Actor,{Var,Column},rem_spaces(Flags)]
 	end;
 is_actor(Bin) ->
-	case Bin of 
+	case Bin of
 		<<"actor ",Rem/binary>> ->
 			Rem;
 		<<"ACTOR ",Rem/binary>> ->
@@ -889,16 +891,16 @@ is_write(Bin) ->
 		<<"PREPARE ",Rem/binary>> ->
 			{prepare, Rem};
 		<<"Prepare ",Rem/binary>> ->
-			{prepare, Rem};	
+			{prepare, Rem};
 		<<"prepare ",Rem/binary>> ->
-			{prepare, Rem};	
+			{prepare, Rem};
 		<<"Execute ",Rem/binary>> ->
 			{execute,Rem};
 		<<"execute ",Rem/binary>> ->
 			{execute,Rem};
 		<<"EXECUTE ",Rem/binary>> ->
 			{execute,Rem};
-		% Everything is a transaction. 
+		% Everything is a transaction.
 		% So throw out transaction start/end statements.
 		<<"BEGIN",_/binary>> ->
 			skip;
@@ -938,7 +940,7 @@ is_write(Bin) ->
 		<<"_",I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso  ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
 			true;
 		<<U,P,D,A,T,E," ",_/binary>> when ?U(U) andalso ?P(P) andalso ?D(D) andalso ?A(A) andalso ?T(T) andalso ?E(E) ->
-			true;	
+			true;
 		<<D,E,L,E,T,E," ",_/binary>> when ?D(D) andalso ?E(E) andalso ?L(L) andalso ?T(T)  ->
 			true;
 		<<R,E,P,L,A,C,E," ",_/binary>> when ?R(R) andalso  ?E(E) andalso ?P(P) andalso ?L(L) andalso ?A(A) andalso ?C(C) ->
