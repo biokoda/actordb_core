@@ -1373,8 +1373,21 @@ semicolon(<<_/binary>> = Sql) ->
 		_ ->
 			[Sql,$;]
 	end;
-semicolon(S) ->
-	S.
+semicolon([<<_/binary>> = Bin]) ->
+	semicolon(Bin);
+semicolon([C]) when is_integer(C) ->
+	case C of
+		$; ->
+			[C];
+		_ ->
+			[C,$;]
+	end;
+semicolon([C]) when is_list(C) ->
+	semicolon(C);
+semicolon([H|T]) ->
+	[H|semicolon(T)];
+semicolon([]) ->
+	[].
 
 has_schema_updated(P,Sql) ->
 	case catch actordb_schema:num() of
