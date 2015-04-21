@@ -95,7 +95,7 @@ columns(Type,Table) ->
 	end.
 
 % Create prepared statement from a full sql query: "actor user(*); insert into tab values (?1,?2);"
-% Returns ID (of the form #[r|w]XXXX) that can be used as a marker inside exec. 
+% Returns ID (of the form #[r|w]XXXX) that can be used as a marker inside exec.
 % Prepared statement parameters are a list of statements, containing list of rows, containing list of columns.
 % Examples:
 % Inserting 2 rows: actordb:exec("actor user(1);#w0102;",[[[1,'text1'],[2,'text2']]]).
@@ -154,7 +154,7 @@ exec_bp1(P,Size,Sql) ->
 	actordb_backpressure:dec_callcount(P),
 	GSize = actordb_backpressure:dec_callsize(Size),
 	actordb_backpressure:dec_callsize(P,Size),
-	
+
 	case actordb_backpressure:is_enabled(GSize,GCount) of
 		true ->
 			{sleep,Res};
@@ -302,6 +302,8 @@ hash_pick(Val) ->
 hash_pick(_,[]) ->
 	undefined;
 % Nodes are taken from bkdcore:nodelist, nodes from there are always sorted by name.
+hash_pick({Val,_},L) ->
+	hash_pick(Val,L);
 hash_pick(Val,L) ->
 	ValInt = actordb_util:hash([butil:tobin(Val),"asdf"]),
 	Len = length(L),
@@ -322,14 +324,3 @@ configfiles() ->
 							{preload,{actordb_util,parse_cfg_schema,[]}},
 							{onload,{actordb,schema_changed,[]}}]}
 	].
-
-
-
-
-
-
-
-
-
-
-
