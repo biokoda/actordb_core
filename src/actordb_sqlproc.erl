@@ -43,6 +43,8 @@ read(Name,Flags,[{copy,CopyFrom}],Start) ->
 read(Name,Flags,[delete],Start) ->
 	% transaction = {0,0,<<>>}
 	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
+read(Name,Flags,{Sql,[]},Start) ->
+	call(Name,Flags,#read{sql = Sql, flags = Flags},Start);
 read(Name,Flags,Sql,Start) ->
 	call(Name,Flags,#read{sql = Sql, flags = Flags},Start).
 
