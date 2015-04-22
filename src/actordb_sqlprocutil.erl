@@ -225,7 +225,7 @@ send_empty_ae(P,F) ->
 			{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 			 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 			 F#flw.match_index,F#flw.match_term,empty,{F#flw.match_index,F#flw.match_term}}}]}),
-	F#flw{wait_for_response_since = make_ref()}.
+	F#flw{wait_for_response_since = os:timestamp()}.
 
 reopen_db(#dp{mors = master} = P) ->
 	Driver = actordb_conf:driver(),
@@ -489,18 +489,18 @@ continue_maybe(P,F,SuccessHead) ->
 					% Send wal
 					case catch send_wal(P,F) of
 						wal_corruption ->
-							store_follower(P,F#flw{wait_for_response_since = make_ref()});
+							store_follower(P,F#flw{wait_for_response_since = os:timestamp()});
 						error ->
 							?ERR("Error iterating wal"),
-							store_follower(P,F#flw{wait_for_response_since = make_ref()});
+							store_follower(P,F#flw{wait_for_response_since = os:timestamp()});
 						NF when element(1,NF) == flw ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
-							store_follower(P,NF#flw{wait_for_response_since = make_ref()})
+							store_follower(P,NF#flw{wait_for_response_since = os:timestamp()})
 					end;
 				% to be continued in appendentries_response
 				_ ->
 					file:close(F#flw.file),
-					store_follower(P,F#flw{file = undefined, pagebuf = <<>>, wait_for_response_since = make_ref()})
+					store_follower(P,F#flw{file = undefined, pagebuf = <<>>, wait_for_response_since = os:timestamp()})
 			end;
 		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
@@ -846,7 +846,7 @@ election_timer(undefined) ->
 	Fixed = max(300,Latency),
 	T = Fixed+random:uniform(Fixed),
 	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
-	erlang:send_after(T,self(),{doelection,Latency,make_ref()});
+	erlang:send_after(T,self(),{doelection,Latency,os:timestamp()});
 election_timer(T) ->
 	case is_reference(T) andalso erlang:read_timer(T) /= false of
 		true ->
@@ -867,35 +867,32 @@ actor_start(P) ->
 % resync -> run election immediately
 % wait_longer -> wait for 3s and run election
 % timer -> run normal timer again
-check_for_resync(P, [F|L],Action) when F#flw.match_index == P#dp.evnum, F#flw.wait_for_response_since == undefined ->
-	check_for_resync(P,L,Action);
-check_for_resync(_,[],Action) ->
+check_for_resync(P,L,Action) ->
+	check_for_resync1(P,L,Action,os:timestamp()).
+check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum, F#flw.wait_for_response_since == undefined ->
+	check_for_resync1(P,L,Action,Now);
+check_for_resync1(_,[],Action,_) ->
 	Action;
-check_for_resync(P,[F|L],_Action) ->
+check_for_resync1(P,[F|L],_Action,Now) ->
 	IsAlive = lists:member(F#flw.distname,nodes()),
 	case F#flw.wait_for_response_since of
 		undefined ->
 			Wait = 0;
 		_ ->
-			Wait = actordb_local:min_ref_age(F#flw.wait_for_response_since)
+			Wait = timer:now_diff(Now,F#flw.wait_for_response_since)
 	end,
-	case F#flw.last_seen of
-		undefined ->
-			LastSeen = 30000;
-		_ ->
-			LastSeen = actordb_local:min_ref_age(F#flw.last_seen)
-	end,
+	LastSeen = timer:now_diff(Now,F#flw.last_seen),
 	case ok of
-		_ when Wait > 1000, IsAlive ->
+		_ when Wait > 1000000, IsAlive ->
 			resync;
 		_ when LastSeen > 1000, F#flw.match_index /= P#dp.evnum, IsAlive ->
 			resync;
-		_ when IsAlive == false, LastSeen > 3000 ->
+		_ when IsAlive == false, LastSeen > 3000000 ->
 			resync;
 		_ when IsAlive == false ->
-			check_for_resync(P,L,wait_longer);
+			check_for_resync1(P,L,wait_longer,Now);
 		_ ->
-			check_for_resync(P,L,timer)
+			check_for_resync1(P,L,timer,Now)
 	end.
 
 

@@ -621,7 +621,7 @@ state_rw_call(What,From,P) ->
 					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p,HisOldTerm=~p HisEvNum=~p, histerm=~p, MatchSent=~p",
 							[Node,Success,AEType,Follower#flw.match_index,Follower#flw.match_term,EvNum,EvTerm,MatchEvnum]),
 					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
-											wait_for_response_since = undefined, last_seen = make_ref()},
+											wait_for_response_since = undefined, last_seen = os:timestamp()},
 					case Success of
 						% An earlier response.
 						_ when P#dp.mors == slave ->
@@ -1058,9 +1058,9 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 	end.
 
 update_followers(_Evnum,L) ->
-	Ref = make_ref(),
+	Now = os:timestamp(),
 	[begin
-		F#flw{wait_for_response_since = Ref}
+		F#flw{wait_for_response_since = Now}
 	end || F <- L].
 
 
@@ -1108,7 +1108,7 @@ handle_info({doelection,LatencyBefore,TimerFrom},P) ->
 		true ->
 			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
 		false ->
-			case [F || F <- P#dp.follower_indexes, is_reference(F#flw.last_seen) andalso F#flw.last_seen > TimerFrom] of
+			case [F || F <- P#dp.follower_indexes, F#flw.last_seen > TimerFrom] of
 				[] ->
 					% Clear out msg queue first.
 					self() ! doelection1,
