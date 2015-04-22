@@ -885,7 +885,7 @@ check_for_resync1(P,[F|L],_Action,Now) ->
 	case ok of
 		_ when Wait > 1000000, IsAlive ->
 			resync;
-		_ when LastSeen > 1000, F#flw.match_index /= P#dp.evnum, IsAlive ->
+		_ when LastSeen > 1000000, F#flw.match_index /= P#dp.evnum, IsAlive ->
 			resync;
 		_ when IsAlive == false, LastSeen > 3000000 ->
 			resync;

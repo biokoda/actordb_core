@@ -521,6 +521,7 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 		Res1 ->
 			ok
 	end,
+	% ?AINF("Res=~p",[Res1]),
 	case Res1 of
 		{sql_error,Str} ->
 			exit({sql_error,Str});
@@ -535,7 +536,7 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 		{ok,_} ->
 			ok;
 		ok ->
-			ok;
+			put(nchanges,get(nchanges)+1);
 		{error,nocreate} ->
 			ok;
 		_ ->
