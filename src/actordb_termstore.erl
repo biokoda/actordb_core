@@ -27,7 +27,7 @@ print_info() ->
 
 -record(dp,{db, writes = [], write_count = 0}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
--define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
+-define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
 handle_call({write,Actor,Type,VotedFor,CurTerm,EvNum,EvTerm},CallFrom,P) ->
 	% Do not write directly. Use timeout which will mean draining message queue.
@@ -40,7 +40,7 @@ handle_call({write,Actor,Type,VotedFor,CurTerm,EvNum,EvTerm},CallFrom,P) ->
 			self() ! timeout
 	end,
 	ets:insert(termstore,{{butil:tobin(Actor),Type},VotedFor,CurTerm,EvNum,EvTerm}),
-	{noreply,P#dp{writes = [{CallFrom,butil:tobin(Actor),Type,VotedFor,CurTerm,EvNum,EvTerm}|P#dp.writes], 
+	{noreply,P#dp{writes = [{CallFrom,butil:tobin(Actor),Type,VotedFor,CurTerm,EvNum,EvTerm}|P#dp.writes],
 				write_count = P#dp.write_count + 1}};
 handle_call({read,Actor,Type},_,P) ->
 	case actordb_sqlite:exec(P#dp.db,<<"#d10;">>,[[[butil:tobin(Actor),Type]]]) of
@@ -77,9 +77,9 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(_, P) -> 
+handle_info(_, P) ->
 	{noreply, P}.
-	
+
 terminate(_, _) ->
 	ok.
 code_change(_, P, _) ->
@@ -107,4 +107,3 @@ init(_) ->
 schema() ->
 	<<"CREATE TABLE terms (actor TEXT, type TEXT, votedfor TEXT, curterm INTEGER,",
 		" evnum INTEGER, evterm INTEGER, PRIMARY KEY(actor,type)) WITHOUT ROWID;">>.
-

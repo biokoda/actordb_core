@@ -59,7 +59,7 @@
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
 			activity, fixed_latency = 300,
-			activity_now,schemanum,schemavers,flags = 0, netchanges = 0, %base_schemavers = 0
+			activity_now,schemanum,schemavers,flags = 0, netchanges = 0,
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]
 	current_term = 0,voted_for, follower_indexes = [],
@@ -102,7 +102,7 @@
   % If node is sending us a complete copy of db, this identifies the operation
   dbcopyref,
   % Where is master sqlproc.
-  masternode, masternodedist,
+  masternode, masternodedist, without_master_since,
   % If db has been moved completely over to a new node. All calls will be redirected to that node.
   % Once this has been set, db files will be deleted on process timeout.
   movedtonode,

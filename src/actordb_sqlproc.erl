@@ -511,6 +511,7 @@ state_rw_call(What,From,P) ->
 					actordb_local:actor_mors(slave,LeaderNode),
 					state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(
 															P#dp{masternode = LeaderNode,
+															without_master_since = undefined,
 															masternodedist = bkdcore:dist_name(LeaderNode),
 															callfrom = undefined, callres = undefined,
 															verified = true, activity = make_ref()})));
@@ -529,7 +530,7 @@ state_rw_call(What,From,P) ->
 									actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(
 												P#dp{mors = slave, verified = true, election = undefined,
 													voted_for = undefined,callfrom = undefined, callres = undefined,
-													masternode = LeaderNode,activity = make_ref(),
+													masternode = LeaderNode,without_master_since = undefined,activity = make_ref(),
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term}))));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
@@ -552,7 +553,7 @@ state_rw_call(What,From,P) ->
 					?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",[AEType,{Term,P#dp.current_term}]),
 					state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
-												 masternode = LeaderNode,verified = true,activity = make_ref(),
+												 masternode = LeaderNode, without_master_since = undefined,verified = true,activity = make_ref(),
 												 masternodedist = bkdcore:dist_name(LeaderNode)})));
 				_ when AEType == empty ->
 					?DBG("AE start, ok for empty"),
@@ -639,7 +640,7 @@ state_rw_call(What,From,P) ->
 							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
 								P#dp{mors = slave,current_term = CurrentTerm,
 									election = actordb_sqlprocutil:election_timer(P#dp.election),
-									masternode = undefined, masternodedist = undefined,
+									masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined,
 									voted_for = undefined, follower_indexes = []}))};
 						false when NFlw#flw.match_index == P#dp.evnum ->
 							% Follower is up to date. He replied false. Maybe our term was too old.
@@ -713,8 +714,8 @@ state_rw_call(What,From,P) ->
 									DoElection = false,
 									reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 									NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
-																		election = actordb_sqlprocutil:election_timer(P#dp.election),
-																		masternode = undefined, masternodedist = undefined});
+                          election = actordb_sqlprocutil:election_timer(P#dp.election),
+                          masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined});
 								true ->
 									DoElection = (P#dp.mors == master andalso P#dp.verified == true),
 									reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
@@ -729,8 +730,8 @@ state_rw_call(What,From,P) ->
 							DoElection = false,
 							reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
-																		election = actordb_sqlprocutil:election_timer(P#dp.election),
-																		masternode = undefined, masternodedist = undefined});
+                      election = actordb_sqlprocutil:election_timer(P#dp.election),
+											masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined});
 						% Higher term, but not as up to date. We can not vote for him.
 						% We do have to remember new term index though.
 						_ ->
@@ -1147,11 +1148,23 @@ handle_info(doelection1,P) ->
 					bkdcore_rpc:is_connected(P#dp.masternode) of
 				true ->
 					?DBG("Election timeout, do nothing, master=~p",[P#dp.masternode]),
-					{noreply,P};
+					{noreply,P#dp{without_master_since = undefined}};
+				false when P#dp.without_master_since == undefined ->
+					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
+						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
+					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined,
+              without_master_since = os:timestamp()},false)};
 				false ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+					Now = os:timestamp(),
+					case timer:now_diff(Now,P#dp.without_master_since) >= 3000000 of
+						true when Empty == false ->
+							actordb_sqlprocutil:empty_queue(P#dp.callqueue,{error,consensus_timeout}),
+							{noreply,actordb_sqlprocutil:start_verify(P#dp{callqueue = queue:new(),election = undefined},false)};
+						_ ->
+							{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+					end
 			end;
 		_ ->
 			?DBG("Election timeout"),
@@ -1269,7 +1282,9 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 		{leader,NewFollowers,AllSynced} ->
 			actordb_local:actor_mors(master,actordb_conf:node_name()),
 			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined,
-													masternode = actordb_conf:node_name(), masternodedist = bkdcore:dist_name(actordb_conf:node_name()),
+													masternode = actordb_conf:node_name(),
+													without_master_since = undefined,
+													masternodedist = bkdcore:dist_name(actordb_conf:node_name()),
 													flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
 													locked = lists:delete(ae,P1#dp.locked)}),
 			case P#dp.movedtonode of
@@ -1341,7 +1356,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			P = P1,
 			?DBG("Continue as follower"),
 			{noreply,actordb_sqlprocutil:reopen_db(P#dp{election = actordb_sqlprocutil:election_timer(undefined),
-															masternode = undefined, mors = slave})};
+															masternode = undefined, mors = slave, without_master_since = os:timestamp()})};
 		_Err ->
 			P = P1,
 			?ERR("Election invalid result ~p",[_Err]),
@@ -1473,7 +1488,8 @@ init([_|_] = Opts) ->
 	% put(opt,Opts),
 	% Random needs to be unique per-node, not per-actor.
 	random:seed(actordb_conf:cfgtime()),
-	case actordb_sqlprocutil:parse_opts(#dp{mors = master, callqueue = queue:new(),
+	Now = os:timestamp(),
+	case actordb_sqlprocutil:parse_opts(#dp{mors = master, callqueue = queue:new(), without_master_since = Now,
 									schemanum = catch actordb_schema:num()},Opts) of
 		{registered,Pid} ->
 			explain({registered,Pid},Opts),
