@@ -1221,37 +1221,6 @@ read_num(P) ->
 			end
 	end.
 
-% delactorfile(P) ->
-% 	[Pid ! delete || {_,Pid,_,_} <- P#dp.dbcopy_to],
-% 	?DBG("delfile master=~p, ismoved=~p",[P#dp.mors,P#dp.movedtonode]),
-% 	% Term files are not deleted. This is because of deleted actors. If a node was offline
-% 	%  when an actor was deleted, then the actor was created anew still while offline,
-% 	%  this will keep the term and evnum number higher than that old file and raft logic will overwrite that data.
-% 	save_term(P),
-% 	case P#dp.movedtonode of
-% 		undefined ->
-% 			case actordb_conf:driver() of
-% 				actordb_driver ->
-% 					actordb_driver:delete_actor(P#dp.db),
-% 					ok;
-% 				_ ->
-% 					file:delete(P#dp.fullpath),
-% 					file:delete(P#dp.fullpath++"-wal"),
-% 					file:delete(P#dp.fullpath++"-shm")
-% 			end;
-% 		_ ->
-% 			% Leave behind redirect marker.
-% 			% Create a file with "1" attached to end
-% 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath++"1",off),
-% 			{Sql,Records} = base_schema(0,P#dp.actortype,P#dp.movedtonode),
-% 			ok = actordb_sqlite:okornot(actordb_sqlite:exec(Db,[<<"BEGIN;">>,Sql,<<"COMMIT;">>],Records,write)),
-% 			actordb_sqlite:stop(Db),
-% 			% Rename into the actual dbfile (should be atomic op)
-% 			ok = file:rename(P#dp.fullpath++"1",P#dp.fullpath),
-% 			file:delete(P#dp.fullpath++"-wal"),
-% 			% file:delete(P#dp.fullpath++"-term"),
-% 			file:delete(P#dp.fullpath++"-shm")
-% 	end.
 
 checkpoint(P) ->
 	case actordb_conf:driver() of
