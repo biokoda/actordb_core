@@ -1502,8 +1502,21 @@ init([_|_] = Opts) ->
 				deleted ->
 					explain({ok,[{columns,{<<"exists">>}},{rows,[{<<"false">>}]}]},Opts);
 				_ ->
-					{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-					explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(SchemaTables /= [])}]}]},Opts),
+					% {ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					% explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(SchemaTables /= [])}]}]},Opts),
+					% {stop,normal}
+					LocalShard = actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype),
+					Val =
+					case LocalShard of
+						{redirect,Shard,Node} ->
+							actordb:rpc(Node,Shard,{actordb_shard,is_reg,[Shard,P#dp.actorname,P#dp.actortype]});
+						undefined ->
+							{Shard,_,Node} = actordb_shardmngr:find_global_shard(P#dp.actorname),
+							actordb:rpc(Node,Shard,{actordb_shard,is_reg,[Shard,P#dp.actorname,P#dp.actortype]});
+						Shard ->
+							actordb_shard:is_reg(Shard,P#dp.actorname,P#dp.actortype)
+					end,
+					explain({ok,[{columns,{<<"exists">>}},{rows,[{butil:tobin(Val)}]}]},Opts),
 					{stop,normal}
 			end;
 		P when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->

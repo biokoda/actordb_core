@@ -5,9 +5,9 @@
 -module(actordb_shard).
 -define(LAGERDBG,true).
 -export([start/1,start/2,start/3,start/4,start_steal/5,
-		 whereis/2,try_whereis/2,reg_actor/3, 
+		 whereis/2,try_whereis/2,reg_actor/3,is_reg/3,
 		top_actor/2,actor_stolen/5,print_info/2,list_actors/4,count_actors/2,del_actor/3,
-		kvread/4,kvwrite/4,get_schema_vers/2]). 
+		kvread/4,kvwrite/4,get_schema_vers/2]).
 -export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/2,cb_nodelist/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 cb_redirected_call/4,cb_write_done/2,cb_unverified_call/2,cb_replicate_type/1,
@@ -21,16 +21,16 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
 %												Explanation
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% A shard is a chunk of hash space for a specific actor type. 
+% A shard is a chunk of hash space for a specific actor type.
 % If actordb has multiple types of actors, they all have seperate shards.
 % Shard maintains an SQL table of actors that belong to it. Like actordb_actor it runs on top of actordb_sqlproc.
-% 
+%
 % Shard DB table:
 % ActorNameHash: actors are hashed across cluster, saving hash to DB enables queries like list of actors that should run
 % 								on a specific server
-% BlockedFlag: do not alow DB process to start. 
+% BlockedFlag: do not alow DB process to start.
 % MovingAwayFlag: actor is in the process of being moved to another cluster
 % [ActorName, ActorNameHash, BlockedFlag, MovingAwayFlag]
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -54,7 +54,7 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
 %											API
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 start({ShardName,Type}) ->
 	start(ShardName,Type).
@@ -91,7 +91,7 @@ start_steal(Nd,FromName,To,NewName,Type1) ->
 	?AINF("start_steal node=~p, shardfrom=~p newname=~p type=~p isrunning=~p",[Nd,FromName,NewName,Type1,try_whereis(NewName,Type1)]),
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
-	case lists:member(Nd,bkdcore:cluster_nodes()) of 
+	case lists:member(Nd,bkdcore:cluster_nodes()) of
 		false ->
 			% kv shards just copy db
 			% regular shards that hold the list of actors, require an actor-by-actor copy.
@@ -147,7 +147,7 @@ newshard_steal_done(P,Nd,_ShardFrom) ->
 	% ["$DELETE FROM actors WHERE hash < ",butil:tobin(P#state.name),";"].
 
 
-% Internal function that gets called on seperate process from cb_idle. 
+% Internal function that gets called on seperate process from cb_idle.
 % This is so that we don't execute a massive DELETE statement for large shards at the same time.
 do_cleanup(ShardName,Type,Pre,After) ->
 	case After of
@@ -228,6 +228,19 @@ del_actor(ShardName,ActorName,Type) ->
 			ok;
 		ok ->
 			ok
+	end.
+
+is_reg(_,_,?MULTIUPDATE_TYPE) ->
+	true;
+is_reg(_,_,?CLUSTEREVENTS_TYPE) ->
+	true;
+is_reg(ShardName,ActorName,Type1) ->
+	Type = butil:toatom(Type1),
+	case kvread(ShardName,ActorName,Type,<<"select * from actors where id='",ActorName/binary,"';">>) of
+		{ok,[{columns,_},{rows,[]}]} ->
+			false;
+		{ok,[{columns,_},{rows,[_|_]}]} ->
+			true
 	end.
 
 reg_actor(_,_,?MULTIUPDATE_TYPE) ->
@@ -322,11 +335,11 @@ whereis(ShardName,Type1) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
 %											Callbacks
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% 
+%
 % custom write callbacks
-% 
+%
 cb_reg_actor(P,ActorName) ->
 	?ADBG("cb_reg_actor ~p ~p ~p ~p ~p",[P#state.name,P#state.type,ActorName,P#state.stealingnow,P#state.stealingfrom]),
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
@@ -352,7 +365,7 @@ cb_reg_actor(P,ActorName) ->
 	end.
 
 cb_kvexec(P,Actor,Sql) ->
-	?ADBG("kvexec ~p ~p",[P#state.nextshard,Sql]),
+	?AINF("kvexec ~p ~p",[P#state.nextshard,Sql]),
 	case is_integer(P#state.nextshard) of
 		true ->
 			Hash = actordb_util:hash(butil:tobin(Actor)),
@@ -373,7 +386,7 @@ cb_do_cleanup(P,ReadResult) ->
 			NP = P#state{cleanup_pre = undefined, cleanup_after = undefined},
 			Sql = ["DELETE from __meta WHERE id=",?META_CLEANUP_PRE,";",
 					"DELETE FROM __meta WHERE id=",?META_CLEANUP_AFTER,";"];
-		% Limit delete with: 
+		% Limit delete with:
 		%  abs(random() % NumToDelete) < 1000
 		% If it contains a lot of items, it will delete ~1000 items at a time.
 		% {ok,[{columns,_},{rows,[{Count}]}]} when P#state.cleanup_after == undefined ->
@@ -433,9 +446,9 @@ cb_del_move_actor(P,_NewShard,Actor,NextShardNode,NextShard) ->
 	{Sql,P#state{nextshardnode = NextShardNode, nextshard = NextShard}}.
 
 
-% 
+%
 % Mandatory callbacks.
-% 
+%
 cb_startstate(Name,Type) ->
 	#state{name = Name, type = Type,idtype = actordb:actor_id_type(Type)}.
 cb_candie(Mors,Name,_Type,P) ->
@@ -444,15 +457,15 @@ cb_candie(Mors,Name,_Type,P) ->
 			% Master and is local shard, it is not temporary.
 			Local = not actordb_shardmngr:is_local_shard(Name,Name);
 		slave ->
-			% Slave and is local shard, it is temporary. 
+			% Slave and is local shard, it is temporary.
 			Local = actordb_shardmngr:is_local_shard(Name,Name)
 	end,
 	case P of
 		undefined ->
 			Local;
 		_ ->
-			Local andalso P#state.stealingnow == undefined andalso P#state.stealingfrom == undefined andalso 
-			P#state.nextshard == undefined 
+			Local andalso P#state.stealingnow == undefined andalso P#state.stealingfrom == undefined andalso
+			P#state.nextshard == undefined
 	end.
 
 
@@ -480,7 +493,7 @@ cb_call(do_steal,_,P) ->
 		undefined when P#state.stealingfrom /= undefined ->
 			case actordb_schema:iskv(P#state.type) of
 				false ->
-					case lists:member(P#state.stealingfrom,bkdcore:cluster_nodes()) of 
+					case lists:member(P#state.stealingfrom,bkdcore:cluster_nodes()) of
 						false ->
 							case actordb:rpc(P#state.stealingfrom,P#state.stealingfromshard,
 												{?MODULE,top_actor,[P#state.stealingfromshard,P#state.type]}) of
@@ -667,11 +680,3 @@ at(IdType,ActorName) ->
 		string ->
 			[$',butil:tobin(ActorName),$']
 	end.
-
-
-
-
-
-
-
-
