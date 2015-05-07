@@ -17,7 +17,7 @@
 % -compile(export_all).
 
 % In charge of shards on a single node.
-% Communicates with other nodes in cluster for when a node is down, which shards to take over 
+% Communicates with other nodes in cluster for when a node is down, which shards to take over
 % 	 (or not because not enough nodes online)
 
 
@@ -52,7 +52,7 @@ find_local_shard(Actor,Type,Hash,Retry) ->
 					find_local_shard(Actor,Type,Hash,Retry+1)
 			end;
 		false ->
-			% If shard is in the process of moving, shardtree will be set to current global shard 
+			% If shard is in the process of moving, shardtree will be set to current global shard
 			% (the node where shard is moving from).
 			{Shard,_,GlobalNode} = find_global_shard(Actor,Hash),
 			case actordb_shard:try_whereis(Shard,Type) of
@@ -98,7 +98,7 @@ find_global_shard(_Actor,Hash) ->
 	end.
 
 
-% Gets called on node from which shard is being taken. 
+% Gets called on node from which shard is being taken.
 % Its upper border gets lowered for every actor moved over to new node.
 set_shard_border(Shard,NewShard,Type,Limit,NewNode) ->
 	butil:ds_add({Shard,Type},{Limit,NewNode,NewShard},?BORDERETS).
@@ -125,7 +125,7 @@ find_shard({From, To, Node, _Left, _Right}, H) when H >= From, H =< To ->
 find_shard({_From, To, _Node, _Left, Right}, H) when H >= To ->
 	find_shard(Right, H);
 find_shard({From, _To, _Node, Left, _Right}, H) when H =< From ->
-	find_shard(Left, H);	
+	find_shard(Left, H);
 find_shard(undefined, _) ->
 	false;
 find_shard(_, _) ->
@@ -155,17 +155,17 @@ reload() ->
 
 -record(dp,{
 % From global state
-% [{ShardFrom,ShardTo,Nodename},...] 
+% [{ShardFrom,ShardTo,Nodename},...]
 	allshards,
 % Just the shards local to this node
 % [{From,To,Nodename},..]
-  localshards = [], 
+  localshards = [],
 % [{Pid,From,Type},..]
-  localshardpids = [], 
+  localshardpids = [],
 % Processes that do work async. Result returned in exit signal.
-  getstatepid,  
+  getstatepid,
 % Which shards are being taken from this node.
-% [{NewShard,OldShard,Node,[ActorType1,ActorType2,...]}]   
+% [{NewShard,OldShard,Node,[ActorType1,ActorType2,...]}]
   shardsbeingtaken = [],
   % Shards previously taken from this node.
   % shardsprevtaken = [],
@@ -173,7 +173,7 @@ reload() ->
   haveschema = false
   }).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
--define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
+-define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
 % Shard has been completely moved over to another node.
 handle_call({shard_moved,NewShard,Type,Node},From,P) ->
@@ -187,7 +187,7 @@ handle_call({shard_moved,NewShard,Type,Node},From,P) ->
 					?AINF("ALl types moved! ~p",[NewShard]),
 					CleanedUp = [{NShd,OShd,Nd,TypesToGo} || {NShd,OShd,Nd,TypesToGo} <- P#dp.shardsbeingtaken, NShd /= NewShard],
 					ok = actordb_sharedstate:write_cluster(["shardsbeingtaken,",bkdcore:node_name()],CleanedUp),
-					handle_call({change_shard_node,NewShard,OldShard,Node},From,P); 
+					handle_call({change_shard_node,NewShard,OldShard,Node},From,P);
 				Deleted ->
 					SBT = lists:keystore(NewShard,1,P#dp.shardsbeingtaken,{NewShard,OldShard,Node,Deleted}),
 					ok = actordb_sharedstate:write_cluster(["shardsbeingtaken,",bkdcore:node_name()],SBT),
@@ -356,7 +356,7 @@ handle_info(startshards,P) ->
 	[Pid ! borders_changed || {Pid,_From,_Type} <- Pidl],
 	{noreply,P#dp{localshardpids = Pidl}};
 handle_info(compileshards,P) ->
-	Local = create_shard_tree(P#dp.localshards), 
+	Local = create_shard_tree(P#dp.localshards),
 	All = create_shard_tree(P#dp.allshards),
 	Taken = lists:filter(fun({NewShard,_OldShard,_,_}) -> lists:keymember(NewShard,1,P#dp.allshards) == false end,P#dp.shardsbeingtaken),
 	?AINF("Compileshards ~p",[Local]),
@@ -404,7 +404,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
 				[] ->
 					Local = [];
 				_ ->
-					Local = [{NewShard,OldShard,Nd,TypesToGo} || {NewShard,OldShard,Nd,TypesToGo} <- Local1, 
+					Local = [{NewShard,OldShard,Nd,TypesToGo} || {NewShard,OldShard,Nd,TypesToGo} <- Local1,
 														lists:keymember(NewShard,1,P#dp.shardsbeingtaken) == false]
 			end,
 			case GlobalShards of
@@ -412,7 +412,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
 					{noreply,P#dp{getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local}};
 				GlobalShards when GlobalShards /= nostate ->
 					self() ! readshards,
-					{noreply,P#dp{allshards = GlobalShards,getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local, 
+					{noreply,P#dp{allshards = GlobalShards,getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local,
 									dirty = false}};
 				_G->
 					{noreply,getstate(P#dp{shardsbeingtaken = P#dp.shardsbeingtaken++Local})}
@@ -460,7 +460,7 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(Msg, P) -> 
+handle_info(Msg, P) ->
 	?AINF("shardmngr unhandled msg ~p",[Msg]),
 	{noreply, P}.
 
@@ -518,11 +518,11 @@ async_getstate() ->
 
 start_shards([{From,To,_Nd}|T],Existing) ->
 	% For every actor type, check if shard has been started for it.
-	StartedShards = butil:sparsemap(fun(Type) -> 
-										case butil:findtrue(fun({_Pid1,From1,Type1}) -> From == From1 andalso Type == Type1  
+	StartedShards = butil:sparsemap(fun(Type) ->
+										case butil:findtrue(fun({_Pid1,From1,Type1}) -> From == From1 andalso Type == Type1
 															end,Existing) of
 											% Shard does not exist.
-											false -> 
+											false ->
 												Pid = startshard(Type,From,To),
 												{Pid,From,Type};
 											_X ->
@@ -570,5 +570,3 @@ assign_shards([],[_],L,_) ->
 	L;
 assign_shards([],Shards,L,AllNodes) ->
 	assign_shards(AllNodes,Shards,L,AllNodes).
-
-

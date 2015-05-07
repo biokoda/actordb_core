@@ -5,9 +5,9 @@
 -module(actordb_actor).
 -compile(export_all).
 -include("actordb.hrl").
-% 
+%
 % Implements actor on top of actordb_sqlproc
-% 
+%
 
 -record(st,{name,type,doreg}).
 
@@ -63,10 +63,10 @@ write(Actor,Flags,Sql) ->
 
 
 
-% 
+%
 % Callbacks from actordb_sqlproc
-% 
- 
+%
+
 % Type = actor type (atom)
 % Version = what is current version (0 for no version)
 % Return:
@@ -99,7 +99,7 @@ cb_candie(Mors,Name,_Type,_S) ->
 			% Master and is local shard, it is not temporary.
 			not actordb_shardmngr:is_local_shard(Name);
 		slave ->
-			% Slave and is local shard, it is temporary. 
+			% Slave and is local shard, it is temporary.
 			actordb_shardmngr:is_local_shard(Name)
 	end.
 cb_checkmoved(Name,Type) ->
@@ -161,6 +161,3 @@ cb_init(S,EvNum) ->
 		_ ->
 			ok
 	end.
-
-
-
