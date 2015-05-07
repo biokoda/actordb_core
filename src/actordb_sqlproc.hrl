@@ -66,7 +66,7 @@
 	% EvNum,EvTerm of first item in wal
 	wal_from = {0,0},
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
-	locked = [],inrecovery = false,
+	locked = [],inrecovery = false, recovery_age = {0,0,0},
 	% Multiupdate id, set to {Multiupdateid,TransactionNum,OriginNode} if in the middle of a distributed transaction
 	transactioninfo,transactionid, transactioncheckref,
   % actordb_sqlproc is not used directly, it always has a callback module that sits in front of it,

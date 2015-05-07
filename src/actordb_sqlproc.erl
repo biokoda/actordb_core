@@ -477,12 +477,21 @@ state_rw_call(What,From,P) ->
 		% Start sets parameters. There may not be any wal append calls after if empty write.
 		% AEType = [head,empty,recover]
 		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,CallCount} ->
-			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType,
-												{PrevEvnum,PrevTerm},LeaderNode]),
+			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",
+         [AEType, {PrevEvnum,PrevTerm},LeaderNode]),
 			case ok of
 				_ when P#dp.inrecovery, AEType == head ->
 					?DBG("Ignoring head because inrecovery"),
-					{reply,false,P};
+					Now = os:timestamp(),
+					Diff = timer:now_diff(Now,P#dp.recovery_age),
+					% Reply may have gotten lost or leader could have changed.
+					case Diff > 2000000 of
+						true ->
+							?ERR("Recovery mode timeout ~p",[Diff]),
+							state_rw_call(What,From,P#dp{inrecovery = false});
+						false ->
+							{reply,false,P}
+					end;
 				_ when is_pid(P#dp.copyproc) ->
 					?DBG("Ignoring AE because copy in progress"),
 					{reply,false,P};
@@ -514,7 +523,7 @@ state_rw_call(What,From,P) ->
 															without_master_since = undefined,
 															masternodedist = bkdcore:dist_name(LeaderNode),
 															callfrom = undefined, callres = undefined,
-															verified = true, activity = make_ref()})));
+															verified = true})));
 				% This node is candidate or leader but someone with newer term is sending us log
 				_ when P#dp.mors == master ->
 					?ERR("AE start, stepping down as leader ~p ~p",
@@ -530,7 +539,7 @@ state_rw_call(What,From,P) ->
 									actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(
 												P#dp{mors = slave, verified = true, election = undefined,
 													voted_for = undefined,callfrom = undefined, callres = undefined,
-													masternode = LeaderNode,without_master_since = undefined,activity = make_ref(),
+													masternode = LeaderNode,without_master_since = undefined,
 													masternodedist = bkdcore:dist_name(LeaderNode),
 													current_term = Term}))));
 				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
@@ -548,27 +557,29 @@ state_rw_call(What,From,P) ->
 					end,
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType,CallCount),
-					{noreply,NP#dp{activity = make_ref()}};
+					{noreply,NP};
 				_ when Term > P#dp.current_term ->
 					?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",[AEType,{Term,P#dp.current_term}]),
 					state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(
 												P#dp{current_term = Term,voted_for = undefined,
-												 masternode = LeaderNode, without_master_since = undefined,verified = true,activity = make_ref(),
+												 masternode = LeaderNode, without_master_since = undefined,verified = true,
 												 masternodedist = bkdcore:dist_name(LeaderNode)})));
 				_ when AEType == empty ->
 					?DBG("AE start, ok for empty"),
 					reply(From,ok),
 					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType,CallCount),
-					{noreply,P#dp{verified = true,activity = make_ref()}};
+					{noreply,P#dp{verified = true}};
 				% Ok, now it will start receiving wal pages
 				_ ->
 					case AEType == recover of
 						true ->
+							Age = os:timestamp(),
 							?INF("AE start ok for recovery from ~p, evnum=~p, evterm=~p",[LeaderNode,P#dp.evnum,P#dp.evterm]);
 						false ->
+							Age = P#dp.recovery_age,
 							?DBG("AE start ok from ~p",[LeaderNode])
 					end,
-					{reply,ok,P#dp{verified = true,activity = make_ref(), inrecovery = AEType == recover}}
+					{reply,ok,P#dp{verified = true, inrecovery = AEType == recover, recovery_age = Age}}
 			end;
 		% Executed on follower.
 		% sqlite wal, header tells you if done (it has db size in header)
@@ -581,12 +592,19 @@ state_rw_call(What,From,P) ->
 							case Header of
 								% dbsize == 0, not last page
 								<<_:32,0:32,_/binary>> ->
-									{reply,ok,P#dp{activity = make_ref(),locked = [ae]}};
+									{reply,ok,P#dp{locked = [ae]}};
 								% last page
 								<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
 									?DBG("AE WAL done evnum=~p, evterm=~p aetype=~p queueempty=~p, masternd=~p",
 											[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
-									NP = P#dp{evnum = Evnum, evterm = Evterm,activity = make_ref(),locked = []},
+									% Prevent any timeouts on next ae since recovery process is progressing.
+									case P#dp.inrecovery of
+										true ->
+											RecoveryAge = os:timestamp();
+										false ->
+											RecoveryAge = P#dp.recovery_age
+									end,
+									NP = P#dp{evnum = Evnum, evterm = Evterm,locked = [], recovery_age = RecoveryAge},
 									reply(From,done),
 									actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
 									{noreply,NP}
@@ -755,7 +773,7 @@ state_rw_call(What,From,P) ->
 			end;
 		{set_dbfile,Bin} ->
 			spawn(fun() -> ok = prim_file:write_file(P#dp.fullpath,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)) end),
-			{reply,ok,P#dp{activity = make_ref()}};
+			{reply,ok,P#dp{}};
 		% Hint from a candidate that this node should start new election, because
 		%  it is more up to date.
 		% doelection ->
