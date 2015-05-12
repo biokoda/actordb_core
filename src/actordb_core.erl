@@ -78,7 +78,12 @@ start_ready() ->
 						_ ->
 							MaxCon = 1024
 					end,
-					case ranch:start_listener(myactor, 20, ranch_tcp, [{port, Port},{max_connections,MaxCon}], myactor_proto, []) of
+					TransOpts0 = [{port, Port},{max_connections,MaxCon}],
+					TransOpts = case get_network_interface() of
+						[] -> TransOpts0;
+						IP -> [{ip,IP}|TransOpts0]
+					end,
+					case ranch:start_listener(myactor, 20, ranch_tcp, TransOpts, myactor_proto, []) of
 						{ok, _} ->
 							ok;
 						{error,already_started} ->
@@ -266,3 +271,31 @@ ensure_folders([H|T], Level)->
 			throw({path_invalid,H++"/state/",Errx3})
 	end,
 	ensure_folders(T, Level).
+
+get_network_interface()->
+	case application:get_env(actordb_core, network_interface) of
+      {ok, Value} ->
+          case inet:parse_address(Value) of
+            {ok, IPAddress} -> ok;
+            _ ->
+              {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Value)
+          end;
+        _ ->
+          case string:tokens(atom_to_list(node()), "@") of
+            ["nonode","nohost"] -> IPAddress = {127,0,0,1};
+            [_Name, Value] ->
+              case inet:parse_address(Value) of
+                {ok, IPAddress} -> ok;
+                _ ->
+                  {ok, Hostname} = inet:gethostname(),
+                  {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Hostname)
+              end
+          end
+    end,
+    {ok, Addresses} = inet:getif(),
+    case lists:keyfind(IPAddress, 1, Addresses) of
+      false ->
+        [];
+      _ ->
+        IPAddress
+    end.
