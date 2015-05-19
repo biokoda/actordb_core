@@ -48,13 +48,13 @@ is_actor({Bin,_}) ->
     is_actor(Bin);
 is_actor(Bin) ->
     case Bin of 
-        <<"actor ",Rem/binary>> ->
+        <<"actor ",_Rem/binary>> ->
             true;
-        <<"ACTOR ",Rem/binary>> ->
+        <<"ACTOR ",_Rem/binary>> ->
             true;
-        <<"Actor ",Rem/binary>> ->
+        <<"Actor ",_Rem/binary>> ->
             true;
-        <<A,C,T,O,R," ",Rem/binary>>  when (A == $a orelse A == $A) andalso
+        <<A,C,T,O,R," ",_Rem/binary>>  when (A == $a orelse A == $A) andalso
                                         (C == $c orelse C == $C) andalso
                                         (T == $t orelse T == $T) andalso
                                         (O == $o orelse O == $O) andalso

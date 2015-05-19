@@ -365,7 +365,7 @@ cb_reg_actor(P,ActorName) ->
 	end.
 
 cb_kvexec(P,Actor,Sql) ->
-	?AINF("kvexec ~p ~p",[P#state.nextshard,Sql]),
+%	?AINF("kvexec ~p ~p",[P#state.nextshard,Sql]),
 	case is_integer(P#state.nextshard) of
 		true ->
 			Hash = actordb_util:hash(butil:tobin(Actor)),
