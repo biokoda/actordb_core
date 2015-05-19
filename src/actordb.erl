@@ -208,17 +208,17 @@ exec1(St,BindingValues)->
 		{{[{{Type,[Actor],Flags},IsWrite,Statements}],_}, [_|_]} when is_binary(Type) ->
 			direct_call(Actor,Type,Flags,IsWrite,{Statements, BindingValues},true);
 		% Single block, writes to more than one actor
-		{[{{_Type,[_,_|_],_Flags} = Actors,true,Statements}],_} ->
+		{{[{{_Type,[_,_|_],_Flags} = Actors,true,Statements}],_},[]} ->
 			actordb_multiupdate:exec([{Actors,true,Statements}]);
 		% Single block, lookup across multiple actors
-		{[{{_Type,[_,_|_],_Flags} = _Actors,false,_Statements}] = Multiread,_} ->
+		{{[{{_Type,[_,_|_],_Flags} = _Actors,false,_Statements}] = Multiread,_},[]} ->
 			actordb_multiupdate:multiread(Multiread);
-		{[{{_Type,$*,_Flags},false,_Statements}] = Multiread,_} ->
+		[{[{{_Type,$*,_Flags},false,_Statements}] = Multiread,_},[]] ->
 			actordb_multiupdate:multiread(Multiread);
-		{[{{_Type,$*,_Flags},true,_Statements}] = Multiblock,_} ->
+		[{[{{_Type,$*,_Flags},true,_Statements}] = Multiblock,_},[]] ->
 			actordb_multiupdate:exec(Multiblock);
 		% Multiple blocks, that change db
-		{[_,_|_] = Multiblock,true} ->
+		[{[_,_|_] = Multiblock,true},[]] ->
 			actordb_multiupdate:exec(Multiblock);
 		% Multiple blocks but only reads
 		{{[_,_|_] = Multiblock,false},[]} ->
