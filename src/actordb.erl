@@ -213,12 +213,12 @@ exec1(St,BindingValues)->
 		% Single block, lookup across multiple actors
 		{{[{{_Type,[_,_|_],_Flags} = _Actors,false,_Statements}] = Multiread,_},[]} ->
 			actordb_multiupdate:multiread(Multiread);
-		[{[{{_Type,$*,_Flags},false,_Statements}] = Multiread,_},[]] ->
+		{{[{{_Type,$*,_Flags},false,_Statements}] = Multiread,_},[]} ->
 			actordb_multiupdate:multiread(Multiread);
-		[{[{{_Type,$*,_Flags},true,_Statements}] = Multiblock,_},[]] ->
+		{{[{{_Type,$*,_Flags},true,_Statements}] = Multiblock,_},[]} ->
 			actordb_multiupdate:exec(Multiblock);
 		% Multiple blocks, that change db
-		[{[_,_|_] = Multiblock,true},[]] ->
+		{{[_,_|_] = Multiblock,true},[]} ->
 			actordb_multiupdate:exec(Multiblock);
 		% Multiple blocks but only reads
 		{{[_,_|_] = Multiblock,false},[]} ->
