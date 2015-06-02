@@ -8,12 +8,14 @@
 -export([start/1, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 % -compile(export_all).
 % -export([cb_schema/3,cb_path/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2]).
--export([multiread/1,exec/1,exec/2,get_schema/1,transaction_state/2]).
+-export([multiread/1,multiread/2,exec/1,exec/2,get_schema/1,transaction_state/2]).
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 
 % -record(dp,{id,recovering = false}).
 
+exec({S,BindingValues}) ->
+	exec([{AInfo,IsWrite,{Statements,[BinVal]}}||{{AInfo,IsWrite,Statements},BinVal} <- lists:zip(S,BindingValues)]);
 exec(S) ->
 	exec(actordb_local:pick_mupdate(),S).
 exec(Name,S) when is_integer(Name) ->
@@ -83,7 +85,6 @@ handle_call({transaction_state,Id},_From,P) ->
 	end;
 handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
-
 	case actordb_actor:write(sqlname(P),[create],<<"#d07;">>) of
 		{ok,{changes,Num,_}} ->
 			ok;
@@ -247,6 +248,9 @@ schema(1) ->
 % If a variable has local scope (it's from a for statement), it has a different {VariableName,cols}
 % [{VariableName,cols},{gvar,GlobalVarName,GlobalVarIndex}]
 % It also stores every node where an actor lives: [{{node,Nodename},true},...]
+
+multiread(L,BindingValues) ->
+	multiread([{AInfo,IsWrite,{Statements,[BinVal]}}||{{AInfo,IsWrite,Statements},BinVal} <- lists:zip(L,BindingValues)]).
 
 multiread(L) ->
 	ExistingPD = get(),

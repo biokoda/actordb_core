@@ -60,6 +60,8 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 					call(Name,Flags,{commit,false,TransactionId},Start);
 				[delete] ->
 					call(Name,Flags,#write{mfa = MFA,sql = delete, transaction = TransactionId, flags = Flags},Start);
+				{Sql0, PreparedStatements} ->
+					call(Name,Flags,#write{mfa = MFA,sql = iolist_to_binary(Sql0), records = PreparedStatements, transaction = TransactionId, flags = Flags},Start);
 				_ ->
 					call(Name,Flags,#write{mfa = MFA,sql = iolist_to_binary(Sql), transaction = TransactionId, flags = Flags},Start)
 			end;

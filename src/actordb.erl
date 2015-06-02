@@ -6,7 +6,7 @@
 % API
 -export([exec/1,exec/2,types/0,tables/1,columns/2,prepare_statement/1]).
 % API backpressure
--export([start_bp/0,exec_bp/2,exec_bp/5,check_bp/0,sleep_bp/1,stop_bp/1]).
+-export([start_bp/0,exec_bp/2,exec_bp/3,exec_bp/5,exec_bp/6,check_bp/0,sleep_bp/1,stop_bp/1]).
 % start/stop
 -export([start/0,stop/0,stop_complete/0,is_ready/0]).
 % start/stop internal
@@ -127,29 +127,44 @@ start_bp() ->
 exec_bp(P,[_|_] = Sql) ->
 	exec_bp(P,butil:tobin(Sql));
 exec_bp(P,Sql) ->
+	exec_bp(P,Sql,[]).
+%prep statements
+exec_bp(P,Sql,BindingValues)->
 	Size = byte_size(Sql),
 	Parsed = actordb_sqlparse:parse_statements(P,Sql),
-	exec_bp1(P,Size,Parsed).
+	exec_bp1(P,Size,Parsed,BindingValues).
 
-exec_bp(_P,<<>>,_,_,_) ->
-	throw({error,empty_actor_name});
+exec_bp(_P,<<>>,_Type,_Flags,_Sql) ->
+	exec_bp(_P,<<>>,_Type,_Flags,_Sql,[]);
 exec_bp(P,Actor,Type,Flags,Sql) when is_binary(Actor) ->
-	exec_bp(P,[Actor],Type,Flags,Sql);
+	exec_bp(P,[Actor],Type,Flags,Sql,[]);
 exec_bp(P,Actors,Type,Flags,Sql) ->
+	exec_bp(P,Actors,Type,Flags,Sql,[]).
+
+exec_bp(_P,<<>>,_Type,_Flags,_Sql,_BindingValues) ->
+	throw({error,empty_actor_name});
+exec_bp(P,Actor,Type,Flags,Sql,BindingValues) when is_binary(Actor) ->
+	exec_bp(P,[Actor],Type,Flags,Sql,BindingValues);
+exec_bp(P,Actors,Type,Flags,Sql,BindingValues)->
 	Size = byte_size(Sql),
 	Parsed = actordb_sqlparse:parse_statements(P,Sql,{Type,Actors,Flags}),
-	exec_bp1(P,Size,Parsed).
+	exec_bp1(P,Size,Parsed,BindingValues).
 
 exec_bp1(_,Size,_) when Size > 1024*1024*16 ->
 	{error,sql_too_large};
 exec_bp1(P,Size,Sql) ->
+	exec_bp1(P,Size,Sql,[]).
+
+exec_bp1(_,Size,_,_BindingValues) when Size > 1024*1024*16 ->
+	{error,sql_too_large};
+exec_bp1(P,Size,Sql,BindingValues) ->
 	% Global inc
 	actordb_backpressure:inc_callcount(),
 	% Local inc
 	actordb_backpressure:inc_callcount(P),
 	actordb_backpressure:inc_callsize(Size),
 	actordb_backpressure:inc_callsize(P,Size),
-	Res = exec1(Sql),
+	Res = exec1(Sql,BindingValues),
 	GCount = actordb_backpressure:dec_callcount(),
 	actordb_backpressure:dec_callcount(P),
 	GSize = actordb_backpressure:dec_callsize(Size),
@@ -177,47 +192,65 @@ stop_bp(P) ->
 	actordb_backpressure:stop_caller(P).
 
 exec([_|_] = Sql) ->
-	exec(butil:tobin(Sql));
+	exec(butil:tobin(Sql),[]);
 exec(Sql) ->
-	exec1(actordb_sqlparse:parse_statements(Sql)).
-exec1(St) ->
-	case St of
-		{[{{Type,[Actor],Flags},IsWrite,Statements}],_} when is_binary(Type) ->
-			direct_call(Actor,Type,Flags,IsWrite,Statements,true);
-		% Single block, writes to more than one actor
-		{[{{_Type,[_,_|_],_Flags} = Actors,true,Statements}],_} ->
-			actordb_multiupdate:exec([{Actors,true,Statements}]);
-		% Single block, lookup across multiple actors
-		{[{{_Type,[_,_|_],_Flags} = _Actors,false,_Statements}] = Multiread,_} ->
-			actordb_multiupdate:multiread(Multiread);
-		{[{{_Type,$*,_Flags},false,_Statements}] = Multiread,_} ->
-			actordb_multiupdate:multiread(Multiread);
-		{[{{_Type,$*,_Flags},true,_Statements}] = Multiblock,_} ->
-			actordb_multiupdate:exec(Multiblock);
-		% Multiple blocks, that change db
-		{[_,_|_] = Multiblock,true} ->
-			actordb_multiupdate:exec(Multiblock);
-		% Multiple blocks but only reads
-		{[_,_|_] = Multiblock,false} ->
-			actordb_multiupdate:multiread(Multiblock);
-		undefined ->
-			[];
-		[] ->
-			[];
-		[[{columns,_},_]|_] ->
-			St
-	end.
-exec([_|_] = Sql, Records) ->
-	exec(butil:tobin(Sql),Records);
-% This is for direct exec calls if you use actordb as an embedded db.
-% Prepared statements must be actual DB generated IDs of the form #[w|r]XXXX; and single actor calls.
-% You can get prepared statement IDs by calling actordb:prepare_statement/1.
-exec(Sql,[_|_] = Records) ->
-	{[{{Type,[Actor],Flags},IsWrite,Statements}],_} = actordb_sqlparse:parse_statements(Sql),
-	direct_call(Actor,Type,Flags,IsWrite,{Statements,Records},true);
-exec(Sql,[]) ->
-	exec(Sql).
+	exec1(actordb_sqlparse:parse_statements(Sql),[]).
 
+exec([_|_] = Sql, BindingValues) ->
+	exec(butil:tobin(Sql), BindingValues);
+exec(Sql, BindingValues) ->
+	exec1(actordb_sqlparse:parse_statements(Sql),BindingValues).
+
+exec1(St) ->
+	exec1(St,[]).
+exec1(St,BindingValues)->
+	case {St,BindingValues} of
+		{{[{{Type,[Actor],Flags},IsWrite,Statements}],_}, []} when is_binary(Type) ->
+			direct_call(Actor,Type,Flags,IsWrite,Statements,true);
+		{{[{{Type,[Actor],Flags},IsWrite,Statements}],_}, _} when is_binary(Type) ->
+			direct_call(Actor,Type,Flags,IsWrite,{Statements, BindingValues},true);
+		% Single block, writes to more than one actor
+		{{[{{_Type,[_,_|_],_Flags} = Actors,true,Statements}],_}, []} ->
+			actordb_multiupdate:exec([{Actors,true,Statements}]);
+		{{[{{_Type,[_,_|_],_Flags} = Actors,true,Statements}],_}, _} ->
+			actordb_multiupdate:exec([{Actors,true,{Statements, BindingValues}}]);
+		% Single block, lookup across multiple actors
+		{{[{{_Type,[_,_|_],_Flags} = _Actors,false,_Statements}] = Multiread,_}, []} ->
+			actordb_multiupdate:multiread(Multiread);
+		{{[{{_Type,[_,_|_],_Flags} = _Actors,false,_Statements}],_}, _} ->
+			Multiread = [{{_Type,[_,_|_],_Flags} = _Actors,false,{_Statements, BindingValues}}],
+			actordb_multiupdate:multiread(Multiread);
+		% Single block, lookup across all actors of certain type
+		{{[{{_Type,$*,_Flags},false,_Statements}] = Multiread,_}, []} ->
+			actordb_multiupdate:multiread(Multiread);
+		{{[{{_Type,$*,_Flags},false,_Statements}],_}, _} ->
+			Multiread = [{{_Type,$*,_Flags},false,{_Statements, BindingValues}}],
+			actordb_multiupdate:multiread(Multiread);
+		% Single block, write across all actors of certain type
+		{{[{{_Type,$*,_Flags},true,_Statements}] = Multiblock,_}, []} ->
+			actordb_multiupdate:exec(Multiblock);
+		{{[{{_Type,$*,_Flags},true,_Statements}],_}, _} ->
+			Multiblock = [{{_Type,$*,_Flags},true,{_Statements, BindingValues}}],
+			actordb_multiupdate:exec(Multiblock);
+
+		% Multiple blocks, that change db
+		{{[_,_|_] = Multiblock,true}, [] } ->
+			actordb_multiupdate:exec(Multiblock);
+			% Multiple blocks, that change db
+		{{[_,_|_] = Multiblock,true}, BindingValues } ->
+			actordb_multiupdate:exec({Multiblock,BindingValues});
+		% Multiple blocks but only reads
+		{{[_,_|_] = Multiblock,false}, [] } ->
+			actordb_multiupdate:multiread(Multiblock);
+		{{[_,_|_] = Multiblock,false},_} ->
+			actordb_multiupdate:multiread(Multiblock,BindingValues);
+		{undefined, _} ->
+			[];
+		{[],_} ->
+			[];
+		{[[{columns,_},_]|_],_} ->
+			St
+ 	end.
 
 direct_call(undefined,_,_,_,_,_) ->
 	[];
