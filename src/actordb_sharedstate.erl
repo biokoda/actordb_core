@@ -8,15 +8,15 @@
 -define(GLOBALETS,globalets).
 -define(MASTER_GROUP_SIZE,7).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% 
+%
 % 							API
-% 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
--record(st,{name,type,time_since_ping = {0,0,0}, 
-			master_group = [], waiting = false, 
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+-record(st,{name,type,time_since_ping = {0,0,0},
+			master_group = [], waiting = false,
 			current_write = [], evnum = 0, am_i_master = false, timer,
 			nodelist, nodepos = 0}).
-% Prepared statement. We need version so that an individual actor can detect when 
+% Prepared statement. We need version so that an individual actor can detect when
 %  an old statement has been deleted and another one has taken its place.
 -record(ps,{iswrite, actor_type, version = 0, sql}).
 
@@ -165,10 +165,10 @@ am_i_global_master() ->
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% 
+%
 % 							Helpers
-% 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 set_init_state_if_none(N,G,C) ->
 	case bkdcore:nodelist() of
 		[] ->
@@ -187,7 +187,7 @@ set_init_state(Nodes,Groups,Configs) ->
 		false ->
 			butil:safesend(actordb_local, {raft_connections,bkdcore:cluster_nodes()})
 	end.
-	
+
 
 cfgnames() ->
 	{ok,CL} = application:get_env(bkdcore,cfgfiles),
@@ -221,7 +221,7 @@ write_sql(Key,Val) ->
 	[<<"INSERT OR REPLACE INTO state VALUES ('">>,butil:tobin(Key),
 		"','",base64:encode(term_to_binary(Val,[compressed])),"');"].
 
-state_to_sql(Name) -> 
+state_to_sql(Name) ->
 	case Name of
 		?STATE_NM_GLOBAL ->
 			File = "stateglobal";
@@ -284,7 +284,7 @@ set_global_state(MasterNode,State) ->
 			   		% global:sync(),
 			   		actordb_election:connect_all(),
 			   		actordb_local:mod_netchanges(),
-			   		spawn(fun() ->timer:sleep(500),?ADBG("Nodes: ~p",[nodes()]), 
+			   		spawn(fun() ->timer:sleep(500),?ADBG("Nodes: ~p",[nodes()]),
 			   						start(?STATE_NM_LOCAL,?STATE_TYPE,[{slave,length(nodes()) > 0},{startreason,startup}]) end);
 			   	false ->
 			   		ok
@@ -346,14 +346,14 @@ create_nodelist() ->
 			L = []
 	end,
 	list_to_tuple(lists:sort(fun(A,B) -> actordb_util:hash([actordb_conf:node_name(), A]) <
-						   actordb_util:hash([actordb_conf:node_name(), B]) 
+						   actordb_util:hash([actordb_conf:node_name(), B])
 				end,L)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% 
+%
 % 							Callbacks
-% 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Prepared statements are stored for all types in a single value.
 % We do not use property lists but property tuples. Actor type position is important and needs to be fixed,
 % because it gets passed on to driver.
@@ -491,7 +491,7 @@ cb_write(#st{name = ?STATE_NM_LOCAL} = _S,L) ->
 	[write_sql(Key,Val) || {Key,Val} <- L];
 cb_write(#st{name = ?STATE_NM_GLOBAL} = S, L) ->
 	{[write_sql(Key,Val) || {Key,Val} <- L],S#st{current_write = L}}.
- 
+
 % Type = actor type (atom)
 % Version = what is current version (0 for no version)
 % Return:
@@ -624,12 +624,13 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Configs}) ->
 			{reply,{error,already_started}};
 		true ->
 			set_init_state(Nodes,Groups,Configs),
-			[bkdcore_rpc:cast(Nd,{?MODULE,set_init_state_if_none,[Nodes,Groups,Configs]}) || 
+			[bkdcore_rpc:cast(Nd,{?MODULE,set_init_state_if_none,[Nodes,Groups,Configs]}) ||
 				Nd <- bkdcore:nodelist(), Nd /= actordb_conf:node_name()],
 			timer:sleep(100),
 			Sql = [$$,write_sql(nodes,Nodes),
 				   $$,write_sql(groups,Groups),
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Configs]],
+			?ADBG("Writing init state ~p",[Sql]),
 			{reinit,Sql,S#st{current_write = [{nodes,Nodes},{groups,Groups}|Configs]}}
 	end;
 cb_unverified_call(_S,_Msg)  ->
@@ -680,7 +681,7 @@ cb_nodelist(S,true,{ok,[{columns,_},{rows,Rows}]} = ReadResult) ->
 return_mg(S,Nodes) ->
 	case lists:member(actordb_conf:node_name(),Nodes) of
 		true ->
-			{ok,S#st{current_write = [{master_group,Nodes}|S#st.current_write], 
+			{ok,S#st{current_write = [{master_group,Nodes}|S#st.current_write],
 					 master_group = Nodes},
 			    Nodes -- [actordb_conf:node_name()]};
 		false ->
@@ -698,7 +699,7 @@ cb_call(_Msg,_From,_S) ->
 cb_cast(_Msg,_S) ->
 	noreply.
 
-% Either global or cluster master executes timer. Master always pings slaves. Slaves ping 
+% Either global or cluster master executes timer. Master always pings slaves. Slaves ping
 %  passive nodes (nodes outside master_group)
 cb_info(ping_timer,#st{am_i_master = false,nodelist = undefined} = S)  ->
 	cb_info(ping_timer,S#st{nodelist = create_nodelist()});
@@ -722,12 +723,12 @@ cb_info(ping_timer,#st{} = S)  ->
 								Nd = element(((NdPos+S#st.nodepos) rem tuple_size(S#st.nodelist))+1,S#st.nodelist),
 								% ?ADBG("Pinging node=~p",[Nd]),
 								bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
-										[?MODULE,S#st.name,S#st.type,Msg]}) 
+										[?MODULE,S#st.name,S#st.type,Msg]})
 							 end || NdPos <- lists:seq(0,2)];
 						false ->
 							[begin
 								bkdcore_rpc:cast(Nd,{actordb_sqlproc,call_slave,
-										[?MODULE,S#st.name,S#st.type,Msg]}) 
+										[?MODULE,S#st.name,S#st.type,Msg]})
 							 end || Nd <- tuple_to_list(S#st.nodelist)]
 					end
 			end;
@@ -749,9 +750,3 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	?ADBG("Init Setting global state ~p",[State]),
 	set_global_state(actordb_conf:node_name(),State),
 	{ok,S#st{evnum = Evnum, waiting = false}}.
-
-
-
-
-
-

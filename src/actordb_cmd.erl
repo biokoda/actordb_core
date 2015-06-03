@@ -239,7 +239,7 @@ compare_nodes([NewInfo|T],Out) ->
 	end;
 compare_nodes([],Out) ->
 	Out.
- 
+
 parse_schema(Schema) ->
 	actordb_util:parse_cfg_schema(Schema).
 	% [Tuple || Tuple <- L1, tuple_size(Tuple) == 2].
@@ -247,7 +247,7 @@ parse_schema(Schema) ->
 compare_schema(Types,New) ->
 	N1 = [Data || Data <- New, (tuple_size(Data) == 2 orelse element(1,Data) == iskv)],
 	compare_schema(Types,N1,[]).
-% Move over existing tyes of actors. 
+% Move over existing tyes of actors.
 % For every type check if it exists in new schema and if any sql statements added.
 compare_schema([Type|T],New,Out) when Type == ids; Type == types; Type == iskv; Type == num ->
 	compare_schema(T,New,Out);
@@ -284,7 +284,7 @@ compare_schema([],New,O) ->
 			{iskv,multihead,MultiheadList1} = lists:keyfind(iskv,1,New),
 			MultiheadList = [Name || {Name,true} <- lists:keydelete(any,1,MultiheadList1)],
 			[check_sql(Type,0,SqlNew,lists:member(Type,MultiheadList)) || {Type,SqlNew} <- NewTypes],
-			
+
 			case [Tuple || Tuple <- NewTypes, tuple_size(Tuple) == 2] of
 				[] ->
 					{ok,O};
@@ -295,7 +295,7 @@ compare_schema([],New,O) ->
 
 check_sql(Type,SizeCur,SqlNew,IsKv) ->
 	SizeNew = tuple_size(SqlNew),
-	{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
+	{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
 	% io:format("~p~n",[Type]),
 	[begin
 		% io:format("Check sql running: ~s\n",[element(N,SqlNew)]),
@@ -381,4 +381,3 @@ check_actor_table(Db,Type) ->
 							[Type,butil:tolist(ColType)])})
 			end
 	end.
-

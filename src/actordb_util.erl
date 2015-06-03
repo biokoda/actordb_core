@@ -65,7 +65,7 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 			Ref = make_ref(),
 			case distreg:whereis({actor_ae_stream,Actor,Type}) of
 				undefined ->
-					PidOut1 = spawn(fun() -> 
+					PidOut1 = spawn(fun() ->
 						% ?ADBG("Started ae stream proc ~p.~p",[Actor,Type]),
 						case distreg:reg({actor_ae_stream,Actor,Type}) of
 							ok ->
@@ -269,7 +269,7 @@ parse_cfg_schema(G1) ->
 	TypeSqls = [{Type,list_to_tuple([check_for_end(S) || S <- check_str(Sqls)])} || {Type,_,Sqls} <- G],
 	TypeColumns = [begin
 		EntireSchema = tuple_to_list(Sqls),
-		{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
+		{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
 		actordb_sqlite:exec(Db,EntireSchema),
 		{ok,[{columns,{<<"name">>}},{rows,Tables}]} = actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';"),
 		Val = [begin
@@ -281,7 +281,7 @@ parse_cfg_schema(G1) ->
 		 {Type,multihead,[{tables,[Table || {Table} <- Tables]}|Val]}
 	end || {Type,Sqls} <- TypeSqls],
 
-	Out = [{types,Types}, {num,erlang:phash2(G1)}] ++ 
+	Out = [{types,Types}, {num,erlang:phash2(G1)}] ++
 	[{iskv,multihead,[{Type,true} || {Type,kv,_Sqls} <- G] ++ [{any,false}]}] ++
 	 [{ids,Ids}] ++ TypeColumns ++
 	 TypeSqls,
@@ -306,5 +306,3 @@ check_for_end([$\$|L]) ->
 	end;
 check_for_end(L) ->
 	check_for_end([$\$|L]).
-
-

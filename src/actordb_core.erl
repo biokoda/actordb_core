@@ -114,18 +114,18 @@ prestart() ->
 				 [Name1|_] = string:tokens(butil:tolist(node()),"@"),
 				 Name = butil:tobin(Name1),
 				 L = lists:foldl(
-				          fun([File], Env) ->
-				                  BFName = filename:basename(File,".config"),
-				                  FName = filename:join(filename:dirname(File),
-				                                        BFName ++ ".config"),
-				                  case file:consult(FName) of
-				                      {ok, [L]} ->
-				                          L++Env;
-				                      _ ->
-				                       ?AERR("Error in config ~p",[FName]),
-				                       init:stop()
-				                  end
-				          end, [], Files),
+						  fun([File], Env) ->
+								  BFName = filename:basename(File,".config"),
+								  FName = filename:join(filename:dirname(File),
+														BFName ++ ".config"),
+								  case file:consult(FName) of
+									  {ok, [L]} ->
+										  L++Env;
+									  _ ->
+									   ?AERR("Error in config ~p",[FName]),
+									   init:stop()
+								  end
+						  end, [], Files),
 							ActorParam = butil:ds_val(actordb_core,L),
 							[Main,Extra,Level,_Journal,Sync,NumMngrs,QueryTimeout1,PagesPerWal1] =
 								butil:ds_vals([main_db_folder,extra_db_folders,level_size,
@@ -211,22 +211,19 @@ start(_Type, _Args) ->
 		{ok,I} when I#file_info.size > 0 ->
 			StateStart = normal;
 		_I ->
-			case butil:readtermfile([bkdcore:statepath(),"/stateglobal"]) of
-				{_,[_|_] = State} ->
-					Nodes = butil:ds_val({bkdcore,master_group},State),
-					case lists:member(actordb_conf:node_name(),Nodes) of
-						true ->
-							StateStart = normal;
-						false ->
-							StateStart = wait
-					end;
-				_ ->
-					case file:read_file_info([actordb_conf:db_path(),"/",Pth1]) of
-						{ok,I} when I#file_info.size > 0 ->
-							StateStart = normal;
-						_ ->
-							StateStart = wait
-					end
+			% case file:read_file_info([actordb_conf:db_path(),"/",Pth1]) of
+			% 	{ok,I} when I#file_info.size > 0 ->
+			% 		StateStart = normal;
+			% 	_ ->
+			% 		StateStart = wait
+			% end
+			StPth = actordb_sharedstate:cb_path(1,2,3)++butil:tolist(?STATE_NM_GLOBAL)++"."++butil:tolist(?STATE_TYPE),
+			{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(StPth,wal),
+			case SchemaTables of
+				[] ->
+					StateStart = wait;
+				[_|_] ->
+					StateStart = normal
 			end
 	end,
 
@@ -274,28 +271,28 @@ ensure_folders([H|T], Level)->
 
 get_network_interface()->
 	case application:get_env(actordb_core, network_interface) of
-      {ok, Value} ->
-          case inet:parse_address(Value) of
-            {ok, IPAddress} -> ok;
-            _ ->
-              {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Value)
-          end;
-        _ ->
-          case string:tokens(atom_to_list(node()), "@") of
-            ["nonode","nohost"] -> IPAddress = {127,0,0,1};
-            [_Name, Value] ->
-              case inet:parse_address(Value) of
-                {ok, IPAddress} -> ok;
-                _ ->
-                  {ok, Hostname} = inet:gethostname(),
-                  {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Hostname)
-              end
-          end
-    end,
-    {ok, Addresses} = inet:getif(),
-    case lists:keyfind(IPAddress, 1, Addresses) of
-      false ->
-        [];
-      _ ->
-        IPAddress
-    end.
+	  {ok, Value} ->
+		  case inet:parse_address(Value) of
+			{ok, IPAddress} -> ok;
+			_ ->
+			  {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Value)
+		  end;
+		_ ->
+		  case string:tokens(atom_to_list(node()), "@") of
+			["nonode","nohost"] -> IPAddress = {127,0,0,1};
+			[_Name, Value] ->
+			  case inet:parse_address(Value) of
+				{ok, IPAddress} -> ok;
+				_ ->
+				  {ok, Hostname} = inet:gethostname(),
+				  {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Hostname)
+			  end
+		  end
+	end,
+	{ok, Addresses} = inet:getif(),
+	case lists:keyfind(IPAddress, 1, Addresses) of
+	  false ->
+		[];
+	  _ ->
+		IPAddress
+	end.

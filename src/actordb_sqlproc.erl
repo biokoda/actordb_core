@@ -989,7 +989,8 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 					% Restart with write but just with schema.
 					actordb_sqlite:rollback(P#dp.db),
 					reply(From,Resp),
-					{NP,SchemaSql,SchemaRecords,_} = actordb_sqlprocutil:post_election_sql(P#dp{schemavers = undefined},[],undefined,[],undefined),
+					PES = actordb_sqlprocutil:post_election_sql(P#dp{schemavers = undefined},[],undefined,[],undefined),
+					{NP,SchemaSql,SchemaRecords,_} = PES,
 					write_call1(W#write{sql = SchemaSql, records = SchemaRecords},undefined,NP#dp.schemavers,NP);
 				Resp ->
 					% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
