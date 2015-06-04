@@ -4,7 +4,7 @@
 
 -module(actordb_sqlite).
 -export([init/1,init/2,init/3,exec/2,exec/3,exec/4,exec/5,exec/6,set_pragmas/2,set_pragmas/3,okornot/1,
-		 stop/1,close/1,checkpoint/1,move_to_trash/1,copy_to_trash/1,rollback/1,wal_checksum/4,make_wal_header/1,
+		 stop/1,close/1,checkpoint/1,rollback/1,wal_checksum/4,make_wal_header/1,
 		 lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,all_tunnel_call/1,tcp_reconnect/0,
 		 tcp_connect_async/5,store_prepared_table/2]).
 -include("actordb.hrl").
@@ -23,13 +23,7 @@ init(Path,JournalMode,Thread) ->
 					{ok,Db,Tables,?PAGESIZE};
 				Err ->
 					?AERR("Unable to open sqlite file at ~p error ~p",[Path,Err]),
-					case move_to_trash(Path) of
-						ok ->
-							init(Path,JournalMode,Thread);
-						Err1 ->
-							?AERR("Unable to move to trash err ~p",[Err1]),
-							Err
-					end
+					{error,Err}
 			end;
 		_ ->
 			Sql = <<"select name, sql from sqlite_master where type='table';",
@@ -49,13 +43,7 @@ init(Path,JournalMode,Thread) ->
 				% If file corrupted, move to trash folder (one or two levels above current folder) and open again.
 				Err ->
 					?AERR("Unable to open sqlite file at ~p error ~p",[Path,Err]),
-					case move_to_trash(Path) of
-						ok ->
-							init(Path,JournalMode,Thread);
-						Err1 ->
-							?AERR("Unable to move to trash err ~p",[Err1]),
-							Err
-					end
+					{error,Err}
 			end
 	end.
 
@@ -136,29 +124,6 @@ store_prepared_table(Vers,Sqls) ->
 
 rollback(Db) ->
 	okornot(exec(Db,<<"ROLLBACK;">>)).
-
-move_to_trash(Path) ->
-	case actordb_conf:level_size() of
-		0 ->
-			Trash = filename:join(lists:reverse(tl(lists:reverse(filename:split(filename:dirname(Path))))))++
-						"/trash/"++filename:basename(Path);
-		_ ->
-			Trash = filename:join(lists:reverse(tl(tl(lists:reverse(filename:split(filename:dirname(Path)))))))++
-						"/trash/"++filename:basename(Path)
-	end,
-	filelib:ensure_dir(Trash),
-	file:rename(Path,Trash).
-copy_to_trash(Path) ->
-	case actordb_conf:level_size() of
-		0 ->
-			Trash = filename:join(lists:reverse(tl(lists:reverse(filename:split(filename:dirname(Path))))))++
-						"/trash/"++filename:basename(Path);
-		_ ->
-			Trash = filename:join(lists:reverse(tl(tl(lists:reverse(filename:split(filename:dirname(Path)))))))++
-						"/trash/"++filename:basename(Path)
-	end,
-	filelib:ensure_dir(Trash),
-	file:copy(Path,Trash).
 
 checkpoint(Db) when element(1,Db) == connection ->
 	exec(Db,<<"PRAGMA wal_checkpoint;">>).
