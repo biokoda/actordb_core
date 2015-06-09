@@ -41,14 +41,16 @@ start_steal(Name,Type1,Node,ShardName) ->
 	{ok,Pid}.
 
 
-read(Shard,{Name,Type} = Actor,Flags,Sql) ->
+read(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql} = Call) ->
 	case actordb_schema:iskv(Type) of
 		true ->
-			actordb_shard:kvread(Shard,Name,Type,Sql);
+			actordb_shard:kvread(Shard,Actor,Type,Sql);
 		_ ->
-			read(Actor,Flags,Sql)
+			read(Call)
 	end.
-read(Actor,Flags,Sql) ->
+read(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql}) ->
+	actordb_sqlproc:read({Actor, Type},Flags,Sql,?MODULE);
+read(#{actor:= Actor, flags := Flags, statements := Sql}) ->
 	actordb_sqlproc:read(Actor,Flags,Sql,?MODULE).
 
 

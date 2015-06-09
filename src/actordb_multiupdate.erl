@@ -70,7 +70,7 @@ sqlname(P) ->
 	{P#dp.name,?MULTIUPDATE_TYPE}.
 
 handle_call({transaction_state,Id},_From,P) ->
-	case actordb_actor:read(sqlname(P),[create],{<<"#d06;">>,[[[butil:toint(Id)]]]}) of
+	case actordb_actor:read(#{actors => sqlname(P), flags => [create], statements => {<<"#d06;">>,[[[butil:toint(Id)]]]}}) of
 		{ok,[{columns,_},{rows,[{_,Commited}]}]} ->
 			{reply,{ok,Commited},P};
 		{ok,[_,{rows,[]}]} ->
@@ -205,7 +205,7 @@ init(Name1) ->
 			{ok,_} = actordb_actor:start(P#dp.name,?MULTIUPDATE_TYPE,[create]),
 			ok = actordb_local:reg_mupdater(P#dp.name,self()),
 			erlang:send_after(1000,self(),timeout),
-			case actordb_actor:read(sqlname(P),[create],<<"SELECT max(id),commited FROM transactions;">>) of
+			case actordb_actor:read(#{actor => sqlname(P), flags => [create], statements => <<"SELECT max(id),commited FROM transactions;">>}) of
 				{ok,[{columns,_},{rows,[{Id,0}]}]} ->
 					ok = actordb_sqlite:okornot(actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => abandon_sql(Id)}));
 				{ok,_} ->
