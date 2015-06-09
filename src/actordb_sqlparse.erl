@@ -42,13 +42,14 @@
 % 1. Fixed list of actors
 % 2. all actors of some type
 % 3. actors as a result of a query preceing current block
-parse_statements(Bin) ->
+parse_statements(Bin) ->%exported1
 	parse_statements(undefined,Bin).
-parse_statements(BP,Bin) ->
+parse_statements(BP,Bin) ->%exported2
 	parse_statements(BP,Bin,undefined).
-parse_statements(BP,Bin,Actors) ->
+parse_statements(BP,Bin,Actors) ->%exported3
 	L = split_statements(rem_spaces(Bin)),
 	parse_statements(BP,L,[],[],Actors,[],false,false).
+
 
 parse_statements(BP,[<<>>|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) ->
 	parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite);

@@ -12,10 +12,6 @@
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 
-% -record(dp,{id,recovering = false}).
-
-exec({S,BindingValues}) ->
-	exec([{AInfo,IsWrite,{Statements,[BinVal]}}||{{AInfo,IsWrite,Statements},BinVal} <- lists:zip(S,BindingValues)]);
 exec(S) ->
 	exec(actordb_local:pick_mupdate(),S).
 exec(Name,S) when is_integer(Name) ->
@@ -85,7 +81,7 @@ handle_call({transaction_state,Id},_From,P) ->
 	end;
 handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
-	case actordb_actor:write(sqlname(P),[create],<<"#d07;">>) of
+	case actordb_actor:write(sqlname(P),#{flags => [create], statements => <<"#d07;">>}) of
 		{ok,{changes,Num,_}} ->
 			ok;
 		{ok,{rowid,Num}} ->
@@ -133,7 +129,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.
 				% Once commited is set to 1 or -1 it is final.
-				ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(Num))),
+				ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),#{flags => [create], statements => abandon_sql(Num)})),
 				exit(abandoned)
 		end
 	end),
@@ -289,28 +285,12 @@ read_mr_rows(N,L) ->
 %
 % 		LOOP OVER BLOCKS (1 block is: "use actortype(....);statement1;statement2;statementN")
 %
-do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
-	case AInfo of
-		{Type1,Gvar,Column,BlockVar,Flags} ->
+do_multiupdate(P,[H|T]) ->
+	case H of
+		#{type := Type1, actor := Actors, flags := Flags, var := undefined, column := undefined, blockvar := undefined } ->
 			Type = actordb_util:typeatom(Type1),
-			case get({Gvar,cols}) of
-				undefined ->
-					?AERR("global var columns not found ~p",[Gvar]),
-					do_multiupdate(P,[]);
-				Columns ->
-					case findpos(1,Column,Columns) of
-						N when is_integer(N) ->
-							NRows = get({Gvar,nrows}),
-							do_foreach(P,Type,Flags,N,Gvar,BlockVar,IsWrite,Statements,{0,NRows}),
-							do_multiupdate(P,T);
-						_ ->
-							?AERR("global var column not found ~p ~p",[Column,Columns]),
-							% TODO: error
-							do_multiupdate(P,[])
-					end
-			end;
-		{Type1,Actors,Flags} ->
-			Type = actordb_util:typeatom(Type1),
+			Statements = maps:get(statements, H),
+			IsWrite = maps:get(iswrite, H),
 			case statements_to_binary(undefined,Statements,<<>>,[]) of
 				undefined ->
 					do_multiupdate(P,[]);
@@ -344,6 +324,27 @@ do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
 							do_block(P,IsMulti,Type,Flags,Actors,IsWrite,StBin,Varlist)
 					end,
 					do_multiupdate(P,T)
+			end;
+		#{type := Type1, var := Gvar, column := Column, blockvar := BlockVar, flags := Flags} ->
+		%{Type1,Gvar,Column,BlockVar,Flags} ->
+			Type = actordb_util:typeatom(Type1),
+			Statements = maps:get(statements, H),
+			IsWrite = maps:get(iswrite, H),
+			case get({Gvar,cols}) of
+				undefined ->
+					?AERR("global var columns not found ~p",[Gvar]),
+					do_multiupdate(P,[]);
+				Columns ->
+					case findpos(1,Column,Columns) of
+						N when is_integer(N) ->
+							NRows = get({Gvar,nrows}),
+							do_foreach(P,Type,Flags,N,Gvar,BlockVar,IsWrite,Statements,{0,NRows}),
+							do_multiupdate(P,T);
+						_ ->
+							?AERR("global var column not found ~p ~p",[Column,Columns]),
+							% TODO: error
+							do_multiupdate(P,[])
+					end
 			end
 	end;
 do_multiupdate(_,[]) ->
@@ -497,26 +498,28 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,curactor) ->
 	{StBin,Varlist} = statements_to_binary(Actor,Statements1,<<>>,[]),
 	do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,StBin,Varlist);
 do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
+	%todo check statemnts1 for bindingvals
+	Call = #{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite, dorpc => true, bindingvals => []},
 	case is_tuple(P) of
 		true when IsWrite  ->
 			case Statements1 of
 				[Pragma] when is_atom(Pragma) ->
-					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()},[Pragma]};
+					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()}, [Pragma]};
 				_ ->
-					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()},Statements1}
+					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()}, Statements1}
 			end,
 			?ADBG("do_actor write ~p ~p",[Actor,Statements]),
 			case P#dp.confirming of
 				undefined ->
-					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,Statements,true);
+					Res = actordb:direct_call(Call#{statements => Statements});
 				true ->
-					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,{{P#dp.currow,P#dp.name,bkdcore:node_name()},commit},true);
+					Res = actordb:direct_call(Call#{statements => {{P#dp.currow,P#dp.name,bkdcore:node_name()},commit}});
 				false ->
-					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,{{P#dp.currow,P#dp.name,bkdcore:node_name()},abort},true)
+					Res = actordb:direct_call(Call#{statements => {{P#dp.currow,P#dp.name,bkdcore:node_name()},abort}})
 			end;
 		_ ->
 			?ADBG("do_actor read ~p ~p",[Actor,Statements1]),
-			Res = actordb:direct_call(Actor,Type,Flags,IsWrite,Statements1,true)
+			Res = actordb:direct_call(Call#{statements => Statements1})
 	end,
 	?ADBG("do_actor varlist ~p",[Varlist]),
 	case Res of

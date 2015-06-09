@@ -86,7 +86,8 @@ call(Name,Flags,Msg,Start) ->
 call(Name,Flags,Msg,Start,IsRedirect) ->
 	case distreg:whereis(Name) of
 		undefined ->
-			case startactor(Name,Start,[{startreason,Msg}|Flags]) of %
+
+			case startactor(Name,Start,[{startreason,Msg}|Flags]) of
 				{ok,Pid} when is_pid(Pid) ->
 					call(Name,Flags,Msg,Start,IsRedirect,Pid);
 				{error,nocreate} ->
@@ -153,7 +154,7 @@ startactor(Name,Start,Flags) ->
 			apply(Mod,Func,[Name|Args]);
 		undefined ->
 			{ok,undefined};
-		_ ->
+		_ ->io:fwrite("startactor name ~p  flags ~p ~n ",[Name,Flags]),
 			apply(Start,start,[Name,Flags])
 	end.
 

@@ -23,11 +23,11 @@ test_real() ->
 	% multiupdate_read().
 
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 		All tests are executed in slave nodes of current node.
-% 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%  
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 all_test_() ->
 	[
 		% fun test_creating_shards/0,
@@ -57,8 +57,7 @@ test_parsing() ->
 	?assertMatch({[{{<<"type1">>,<<"RES">>,<<"col">>,<<"X">>,[]},
 									  false,
 									  [<<"select * from table;">>]}],false},
-								actordb_sqlparse:parse_statements(<<"actor type1 ( foreach X.col in RES ) ;",
-												"select * from table;">>)),
+								actordb_sqlparse:parse_statements(<<"actor type1 ( foreach X.col in RES ) ;","select * from table;">>)),
 
 	?assertMatch({[{{<<"user">>,[<<"denis">>],[]},
 						   false,
@@ -98,11 +97,11 @@ test_creating_shards() ->
 	?debugFmt("Replaced all ~n~p",[All1]),
 	?debugFmt("Added fourth ~n~p",[lists:foldl(fun({SF,ST,_},A) -> lists:keyreplace(SF,1,A,{SF,ST,4}) end,All1,L1)]).
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 			SINGLE NODE TESTS
 % 		tests query operations 1 node cluster
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 single_start() ->
 	?debugFmt("Single start",[]),
@@ -148,7 +147,7 @@ basic_read() ->
 	% ?debugFmt("~p",[exec(<<"actor type1(ac",(butil:tobin(1))/binary,"); select * from tab1;">>)]),
 	[begin
 		?debugFmt("~p Read ac~p",[ltime(),N]),
-		{ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_] = Rows}]} = Res = 
+		{ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_] = Rows}]} = Res =
 			exec(<<"actor type1(ac",(butil:tobin(N))/binary,") create; select * from tab;">>),
 		?assertMatch({ok,[{columns,_},{rows,[{_,<<_/binary>>,_}|_]}]},Res),
 		?debugFmt("Rows ~p",[length(Rows)])
@@ -193,7 +192,7 @@ multiupdate_write() ->
 	?assertMatch({ok,_},exec(["actor type1(all) create;",
 							  "insert into tab2 values (1,'a1');",
 							  "insert into tab2 values (2,'a2');"])),
-	
+
 	?debugFmt("multiupdate fail insert",[]),
 	% Fail test
 	?assertMatch(ok,exec(["actor thread(first) create;",
@@ -212,7 +211,7 @@ multiupdate_write() ->
 	?assertMatch({ok,[{columns,{<<"id">>,<<"msg">>,<<"user">>}},
                       {rows,[{1,<<"a1">>,10}]}]},
                  exec(["actor thread(second);select * from thread;"])),
-	
+
 	?debugFmt("multiupdates foreach insert",[]),
 	% Select everything from tab2 for actor "all".
 	% Actorname is in .txt column, for every row take that actor and insert value with same unique integer id.
@@ -280,7 +279,7 @@ kv_readwrite() ->
 		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",
 		 	butil:tolist(N),");"])|| N <- lists:seq(1,1)]]),
 	[?assertMatch({ok,_},exec(["actor counters(id",butil:tolist(N),");",
-		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");"])) 
+		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");"]))
 				|| N <- lists:seq(1,numactors())],
 	[?assertMatch({ok,[{columns,_},{rows,[{_,_,N}]}]},
 					exec(["actor counters(id",butil:tolist(N),");",
@@ -331,17 +330,17 @@ kv_readwrite() ->
 	% Multiple tables test
 	[?assertMatch({ok,_},exec(["actor filesystem(id",butil:tolist(N),");",
 		 "insert into actors values ('id",butil:tolist(N),"',{{hash(id",butil:tolist(N),")}},",butil:tolist(N),");",
-		 "insert into users (fileid,uid) values ('id",butil:tolist(N),"',",butil:tolist(N),");"])) 
+		 "insert into users (fileid,uid) values ('id",butil:tolist(N),"',",butil:tolist(N),");"]))
 				|| N <- lists:seq(1,numactors())],
 
 	ok.
 
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 			ADD SECOND NODE
-% 	
-% 
+%
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 onetwo_start() ->
 	basic_init(),
@@ -371,11 +370,11 @@ test_add_second() ->
 
 
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 			SINGLE CLUSTER TESTS
 % 	Execute queries over cluster with 3 nodes
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 cluster_start() ->
 	basic_init(),
@@ -396,7 +395,7 @@ dotunnels() ->
 	S = ['slave1@127.0.0.1','slave2@127.0.0.1','slave3@127.0.0.1'],
 	[begin
 		?debugFmt("Calling ~p",[Nd]),
-		rpc:call(Nd,?MODULE,call_tunnels,[]) 
+		rpc:call(Nd,?MODULE,call_tunnels,[])
 	end || Nd <- S],
 	ok.
 
@@ -435,7 +434,7 @@ test_cluster(_) ->
 	  fun multiupdate_read/0,
 	  fun copyactor/0
 	 %  fun() -> test_print_end([1,2,3]) end
-	 
+
 	 %  {timeout,20,fun() -> timer:sleep(6000),
 	 %  			?debugFmt("SLEEP DONE",[]),
 	 %  			A = rpc:call('slave1@127.0.0.1',eprof,log,[?TESTPTH++"slave1.eprof.txt"]),
@@ -461,9 +460,9 @@ test_missingn(_) ->
 	 fun multiupdate_write/0,
 	 fun multiupdate_read/0,
 	 fun copyactor/0,
-	 fun() -> 
+	 fun() ->
 	 	?debugFmt("Stopping slave 3",[]),
-	 	stop_slaves([3]) 
+	 	stop_slaves([3])
 	 end,
 	 {timeout,30,fun basic_write/0}
 	 ].
@@ -473,11 +472,11 @@ missingn_stop(_) ->
 
 
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 			MULTIPLE CLUSTER TESTS
 % 	Execute queries over multiple clusters
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 mcluster_start() ->
 	basic_init(),
@@ -499,11 +498,11 @@ test_mcluster(_) ->
 	 ].
 
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 			ADD NODE TO CLUSTER
 % 	Start with a cluster, add a node after initial setup
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 clusteraddnode_start() ->
 	basic_init(),
@@ -590,11 +589,11 @@ wait_is_ready(Nd) ->
 			wait_is_ready(Nd)
 	end.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 			ADD CLUSTER TO NETWORK
 % 	Start with a cluster, add an additional cluster, wait for shards to move.
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 clusteradd_start() ->
 	basic_init(),
@@ -625,11 +624,11 @@ test_add_cluster() ->
 	wait_modified_tree(4,[1,2,3,4]).
 
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 			FAILED NODES
-% 	Run queries with nodes offline. 
-% 
+% 	Run queries with nodes offline.
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 failednodes_start() ->
 	basic_init(),
@@ -647,19 +646,19 @@ test_failednodes(_) ->
 	 {timeout,20,fun kv_readwrite/0},
 	 {timeout,20,fun multiupdate_write/0},
 	 {timeout,20,fun multiupdate_read/0},
-	 fun() -> 
+	 fun() ->
 	 	?debugFmt("Taking down node 2",[]),
-	 	stop_slaves([2]),ok 
+	 	stop_slaves([2]),ok
 	 end,
 	 {timeout,60,fun basic_write/0},
-	 {timeout,60,fun() -> 
+	 {timeout,60,fun() ->
 	 	?debugFmt("Starting back node 2",[]),
-	 	start_slaves([2]), ok 
+	 	start_slaves([2]), ok
 	 end},
 	 {timeout,60,fun basic_write/0},
-	 fun() -> 
+	 fun() ->
 	 	?debugFmt("Taking down node 2 and node 3",[]),
-	 	stop_slaves([2,3]),ok 
+	 	stop_slaves([2,3]),ok
 	 end,
 	 fun() -> case catch fun basic_write/0 of
 	 			_ ->
@@ -667,7 +666,7 @@ test_failednodes(_) ->
 	 		end end,
 	 {timeout,20,fun() ->
 	 	?debugFmt("Starting back node 2 and node 3",[]),
-	 	start_slaves([2,3]), wait_is_ready(2),wait_is_ready(3), ok 
+	 	start_slaves([2,3]), wait_is_ready(2),wait_is_ready(3), ok
 	 end},
 	 {timeout,20,fun basic_write/0},
 	 fun() -> test_print_end([1,2,3]) end
@@ -682,10 +681,10 @@ test_failednodes(_) ->
 
 
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 	UTILITY FUNCTIONS
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 exec(Bin) ->
 	% if testnd then we are running a unit test
@@ -748,7 +747,7 @@ start_slave(N) ->
 	Name = slave_name(N),
 	Cookie = erlang:get_cookie(),
 	% {etc,?TESTPTH++Name++"/etc"}
-	Opts = [{docompile,false},{autocompile,[]},{rpcport,9050+N}], 
+	Opts = [{docompile,false},{autocompile,[]},{rpcport,9050+N}],
 	case Name of
 		"slave1" ->
 			% file:write_file(?TESTPTH++Name++"/etc/schema.cfg",io_lib:fwrite("~p.~n",[schema()]));
@@ -819,7 +818,7 @@ create_allnodes(Slaves) ->
 % Writes the file only to first node so that config is spread to others.
 create_allgroups(Groups) ->
 	StrNodes = "nodes:\n"++create_allnodes(lists:flatten(Groups)),
-	{StrGroups,_} = lists:foldl(fun(G,{L,C}) -> 
+	{StrGroups,_} = lists:foldl(fun(G,{L,C}) ->
 						{["- name: "++"grp"++butil:tolist(C)++"\n",
 						  "  nodes: ["++butil:iolist_join([slave_name(Nd) || Nd <- G],",")++"]\n",
 						  "  type: cluster\n"|L],C+1}
@@ -871,10 +870,10 @@ schema() ->
 
 
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
-% 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
 % 		Experiments
-% 
+%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 
@@ -887,7 +886,7 @@ l(N) ->
 				(binary:copy(<<"a">>,1024*1))/binary,"');",
 				"insert into tab2 values (1,2,3,4,5);",
 				"select * from what where id=1 and id=2 or id=10 and id=11;">>,
-		
+
 		% cprof:start(),
 		Start = now(),
 		random:seed(os:timestamp()),
@@ -931,7 +930,7 @@ runt(C,P,S) ->
 runt1(Concurrency,PerWorker,S) ->
 	Start = now(),
 	[spawn_monitor(fun() -> {A,B,C} = now(),
-							random:seed(A,B,C), 
+							random:seed(A,B,C),
 							BP = actordb:start_bp(),
 							actordb:exec_bp(BP,<<"prepare prep (int,text) FOR type1 AS insert into tab values(?1,?2,1);">>),
 							run(binary:copy(<<"a">>,1024*S),BP,N,PerWorker),
@@ -977,13 +976,13 @@ run(D,P,W,N) ->
 		 % io:format("Done ~p~n",[{W,N}]),
 		% exec(<<"actor type1(ac",(butil:tobin(W))/binary,".",(butil:tobin(N))/binary,");",
 		% 					"insert into tab1 values (",(butil:tobin(butil:flatnow()))/binary,",'",D/binary,"',1);">>),
-		
+
 	run(D,P,W,N-1).
 
 
 tsingle(N) ->
-	spawn_monitor(fun() -> 
-			
+	spawn_monitor(fun() ->
+
 			file:delete("tt"),
 			file:delete("tt-wal"),
 			file:delete("tt-shm"),
@@ -994,7 +993,7 @@ tsingle(N) ->
 			% actordb_sqlite:exec(Db,<<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);">>)
 			Schema = <<"CREATE TABLE tab1 (id INTEGER PRIMARY KEY, txt TEXT);",
 						"CREATE TABLE tab2 (id INTEGER PRIMARY KEY, val INTEGER);">>,
-			_Schema1 = 
+			_Schema1 =
 			"CREATE TABLE t_dir (
 			  id INTEGER NOT NULL,
 			  v INTEGER DEFAULT 1,
@@ -1067,12 +1066,12 @@ tsingle(N) ->
 tsingle(Db,0) ->
 	Db;
 tsingle(Db,N) ->
-	% Sql = 
+	% Sql =
 	% <<
 	% "INSERT INTO t_file (id,v,eid,parent,name,tdiff,tdel,pub,size,mtime,crc,crch,sha,rev,fav,shared,misc,ext) VALUES ( ",
 	% 	(butil:tobin(N))/binary,
 	% 	",1,3,1015,'AUTHORS',0,0,0,601,63570777057,0,0,'',0,0,0,'836a','');">>,
-	
+
 	Txt = <<"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">>,
