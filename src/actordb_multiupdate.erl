@@ -81,7 +81,8 @@ handle_call({transaction_state,Id},_From,P) ->
 	end;
 handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
-	case actordb_actor:write(sqlname(P),#{flags => [create], statements => <<"#d07;">>}) of
+	case actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => <<"#d07;">>}) of
+	%case actordb_actor:write(sqlname(P),#{flags => [create], statements => <<"#d07;">>}) of
 		{ok,{changes,Num,_}} ->
 			ok;
 		{ok,{rowid,Num}} ->
@@ -101,7 +102,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				%  if transaction is set to commited or not. If commited is set and they have not commited, they will execute their sql
 				%  which they have saved locally.
 				ok = actordb_sqlite:okornot(
-						actordb_actor:write(sqlname(P),[create],{<<"#s08;">>,[[[Num]]]})),
+						actordb_actor:write(#{actor => sqlname(P),flags => [create], statements => {<<"#s08;">>,[[[Num]]]}})),
 				% Inform all actors that they should commit.
 				% case S of
 				% 	[{_,_,[delete]}|_] ->
@@ -129,7 +130,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.
 				% Once commited is set to 1 or -1 it is final.
-				ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),#{flags => [create], statements => abandon_sql(Num)})),
+				ok = actordb_sqlite:okornot(actordb_actor:write(#{ actor => sqlname(P), flags => [create], statements => abandon_sql(Num)})),
 				exit(abandoned)
 		end
 	end),
@@ -162,7 +163,7 @@ handle_info({'DOWN',_Monitor,_Ref,PID,Result}, #dp{execproc = PID} = P) ->
 		abandoned ->
 			ok;
 		_ ->
-			ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(P#dp.curnum)))
+			ok = actordb_sqlite:okornot(actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => abandon_sql(P#dp.curnum)}))
 	end,
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
@@ -206,7 +207,7 @@ init(Name1) ->
 			erlang:send_after(1000,self(),timeout),
 			case actordb_actor:read(sqlname(P),[create],<<"SELECT max(id),commited FROM transactions;">>) of
 				{ok,[{columns,_},{rows,[{Id,0}]}]} ->
-					ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(Id)));
+					ok = actordb_sqlite:okornot(actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => abandon_sql(Id)}));
 				{ok,_} ->
 					ok
 			end,

@@ -23,7 +23,6 @@ start({Name,Type},Flags) ->
 start(Name,Type) ->
 	start(Name,Type,[{slave,false}]).
 start(Name,Type1,Opt) ->
-	io:fwrite("Type1~p ~n",[Type1]),
 	Type = actordb_util:typeatom(Type1),
 	actordb_util:wait_for_startup(Type,Name,0),
 	case distreg:whereis({Name,Type}) of
@@ -52,16 +51,18 @@ read(Shard,{Name,Type} = Actor,Flags,Sql) ->
 read(Actor,Flags,Sql) ->
 	actordb_sqlproc:read(Actor,Flags,Sql,?MODULE).
 
-write(Shard,{Name,Type} = Actor,Flags,Sql) ->
+
+write(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql} = Call) ->
 	case actordb_schema:iskv(Type) of
 		true ->
-			actordb_shard:kvwrite(Shard,Name,Type,Sql);
+			actordb_shard:kvwrite(Shard,Actor,Type,Sql);
 		_ ->
-			write(Actor,#{flags => Flags, statements => Sql})
+			write(Call)
 	end.
-write(Actor,Call) ->
-	actordb_sqlproc:write(Actor,maps:get(flags,Call),maps:get(statements,Call),?MODULE).
-
+write(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql}) ->
+	actordb_sqlproc:write({Actor, Type},Flags,Sql,?MODULE);
+write(#{actor:= Actor, flags := Flags, statements := Sql}) ->
+	actordb_sqlproc:write(Actor,Flags,Sql,?MODULE).
 
 
 %
