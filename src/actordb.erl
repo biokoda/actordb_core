@@ -232,12 +232,14 @@ exec1(St,BindingValues)->
 		% 	Call = #{type => Type, actor => Actors, flags => Flags, iswrite => failsafe,
 		% 	statements => Statements, bindingvals => []},
 		% 	actordb_multiupdate:multiread(Call);
-		{{[{{_Type,[_,_|_],_Flags} = _Actors,false,_Statements}] = Multiread,_}, []} ->
-			actordb_multiupdate:multiread(Multiread);
-		{{[{{Type,[_,_|_] = Actors,Flags},false,Statements}],_}, _} ->
-			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => failsafe,
-			statements => Statements, bindingvals => BindingValues},
-			actordb_multiupdate:multiread(Call);
+		{{[{{Type, [_,_|_] = Actors, Flags},false, Statements}] = Multiread,_}, []} ->
+			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => false,
+			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
+			actordb_multiupdate:multiread([Call]);
+		{{[{{Type, [_,_|_] = Actors, Flags}, false, Statements}],_}, _} ->
+			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => false,
+			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
+			actordb_multiupdate:multiread([Call]);
 		% Single block, lookup across all actors of certain type
 
 
@@ -246,11 +248,14 @@ exec1(St,BindingValues)->
 
 		% Single block, lookup across all actors of type
 		%<<"actor user(*); SELECT * FROM todos;">>
-		{{[{{_Type,$*,_Flags},false,_Statements}] = Multiread,_}, []} ->
-			actordb_multiupdate:multiread(Multiread);
-		{{[{{_Type,$*,_Flags},false,_Statements}],_}, _} ->
-			Multiread = [{{_Type,$*,_Flags},false,{_Statements, BindingValues}}],
-			actordb_multiupdate:multiread(Multiread);
+		{{[{{ Type, $*, Flags}, false, Statements}],_}, []} ->
+			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
+			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
+			actordb_multiupdate:multiread([Call]);
+		{{[{{Type, $*, Flags}, false, Statements}],_}, _} ->
+			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
+			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
+			actordb_multiupdate:multiread([Call]);
 
 
 		% Single block, write across all actors of certain type
