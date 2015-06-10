@@ -49,20 +49,8 @@ ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[nostart],
 									{state_rw,Resp},P#dp.cbmod]}).
 
-append_wal(P,Header,Bin1) ->
-	Bin = actordb_sqlite:lz4_decompress(Bin1,?PAGESIZE),
-	case element(1,P#dp.db) of
-		actordb_driver ->
-			actordb_driver:inject_page(P#dp.db,Bin,Header);
-		_ ->
-			case file:write(P#dp.db,[Header,Bin]) of
-				ok ->
-					ok;
-				Err ->
-					?AERR("Append wal failed ~p, state ~p",[Err,P]),
-					throw(cant_append)
-			end
-	end.
+append_wal(P,Header,Bin) ->
+	actordb_driver:inject_page(P#dp.db,Bin,Header).
 
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	doqueue(P);

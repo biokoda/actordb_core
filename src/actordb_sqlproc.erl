@@ -458,346 +458,320 @@ commit_call(Doit,Id,From,P) ->
 	end.
 
 
-state_rw_call(What,From,P) ->
-	case What of
-		actornum ->
+state_rw_call(actornum,From,P) ->
+	case P#dp.mors of
+		master ->
+			{reply,{ok,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},P};
+		slave when P#dp.masternode /= undefined ->
+			actordb_sqlprocutil:redirect_master(P);
+		slave ->
+			{noreply, P#dp{callqueue = queue:in_r({From,{state_rw,actornum}},P#dp.callqueue)}}
+	end;
+state_rw_call(donothing,_From,P) ->
+	{reply,ok,P};
+state_rw_call(recovered,_From,P) ->
+	{reply,ok,P#dp{inrecovery = false}};
+state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,CallCount} = What,From,P) ->
+	% Executed on follower.
+	% AE is split into multiple calls (because wal is sent page by page as it is written)
+	% Start sets parameters. There may not be any wal append calls after if empty write.
+	% AEType = [head,empty,recover]
+	?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType, {PrevEvnum,PrevTerm},LeaderNode]),
+	case ok of
+		_ when P#dp.inrecovery, AEType == head ->
+			?DBG("Ignoring head because inrecovery"),
+			Now = os:timestamp(),
+			Diff = timer:now_diff(Now,P#dp.recovery_age),
+			% Reply may have gotten lost or leader could have changed.
+			case Diff > 2000000 of
+				true ->
+					?ERR("Recovery mode timeout ~p",[Diff]),
+					state_rw_call(What,From,P#dp{inrecovery = false});
+				false ->
+					{reply,false,P}
+			end;
+		_ when is_pid(P#dp.copyproc) ->
+			?DBG("Ignoring AE because copy in progress"),
+			{reply,false,P};
+		_ when Term < P#dp.current_term ->
+			?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
+					[AEType,{Term,P#dp.current_term}]),
+			reply(From,false),
+			actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType,CallCount),
+			% Some node thinks its master and sent us appendentries start.
+			% Because we are master with higher term, we turn it down.
+			% But we also start a new election so that nodes get synchronized.
 			case P#dp.mors of
 				master ->
-					{reply,{ok,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},P};
-				slave when P#dp.masternode /= undefined ->
-					actordb_sqlprocutil:redirect_master(P);
-				slave ->
-					{noreply, P#dp{callqueue = queue:in_r({From,{state_rw,What}},P#dp.callqueue)}}
-			end;
-		donothing ->
-			{reply,ok,P};
-		recovered ->
-			?INF("No longer in recovery"),
-			{reply,ok,P#dp{inrecovery = false}};
-		% Executed on follower.
-		% AE is split into multiple calls (because wal is sent page by page as it is written)
-		% Start sets parameters. There may not be any wal append calls after if empty write.
-		% AEType = [head,empty,recover]
-		{appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,CallCount} ->
-			?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",
-         [AEType, {PrevEvnum,PrevTerm},LeaderNode]),
-			case ok of
-				_ when P#dp.inrecovery, AEType == head ->
-					?DBG("Ignoring head because inrecovery"),
-					Now = os:timestamp(),
-					Diff = timer:now_diff(Now,P#dp.recovery_age),
-					% Reply may have gotten lost or leader could have changed.
-					case Diff > 2000000 of
-						true ->
-							?ERR("Recovery mode timeout ~p",[Diff]),
-							state_rw_call(What,From,P#dp{inrecovery = false});
-						false ->
-							{reply,false,P}
-					end;
-				_ when is_pid(P#dp.copyproc) ->
-					?DBG("Ignoring AE because copy in progress"),
-					{reply,false,P};
-				_ when Term < P#dp.current_term ->
-					?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
-							[AEType,{Term,P#dp.current_term}]),
-					reply(From,false),
-					actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType,CallCount),
-					% Some node thinks its master and sent us appendentries start.
-					% Because we are master with higher term, we turn it down.
-					% But we also start a new election so that nodes get synchronized.
-					case P#dp.mors of
-						master ->
-							{noreply, actordb_sqlprocutil:start_verify(P,false)};
-						_ ->
-							{noreply,P}
-					end;
-				_ when P#dp.mors == slave, P#dp.masternode /= LeaderNode ->
-					?DBG("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
-					case P#dp.callres /= undefined of
-						true ->
-							reply(P#dp.callfrom,{redirect,LeaderNode});
-						false ->
-							ok
-					end,
-					actordb_local:actor_mors(slave,LeaderNode),
-					state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(
-															P#dp{masternode = LeaderNode,
-															without_master_since = undefined,
-															masternodedist = bkdcore:dist_name(LeaderNode),
-															callfrom = undefined, callres = undefined,
-															verified = true})));
-				% This node is candidate or leader but someone with newer term is sending us log
-				_ when P#dp.mors == master ->
-					?ERR("AE start, stepping down as leader ~p ~p",
-							[AEType,{Term,P#dp.current_term}]),
-					case P#dp.callres /= undefined of
-						true ->
-							reply(P#dp.callfrom,{redirect,LeaderNode});
-						false ->
-							ok
-					end,
-					actordb_local:actor_mors(slave,LeaderNode),
-					state_rw_call(What,From,
-									actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(
-												P#dp{mors = slave, verified = true, election = undefined,
-													voted_for = undefined,callfrom = undefined, callres = undefined,
-													masternode = LeaderNode,without_master_since = undefined,
-													masternodedist = bkdcore:dist_name(LeaderNode),
-													current_term = Term}))));
-				_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
-					?ERR("AE start attempt failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
-								[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
-					% case P#dp.evnum > PrevEvnum andalso  of
-					case ok of
-						% Node is conflicted, delete last entry
-						_ when PrevEvnum > 0, AEType == recover ->
-							NP = actordb_sqlprocutil:rewind_wal(P);
-						% If false this node is behind. If empty this is just check call.
-						% Wait for leader to send an earlier event.
-						_ ->
-							NP = P
-					end,
-					reply(From,false),
-					actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType,CallCount),
-					{noreply,NP};
-				_ when Term > P#dp.current_term ->
-					?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",[AEType,{Term,P#dp.current_term}]),
-					state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(
-												P#dp{current_term = Term,voted_for = undefined,
-												 masternode = LeaderNode, without_master_since = undefined,verified = true,
-												 masternodedist = bkdcore:dist_name(LeaderNode)})));
-				_ when AEType == empty ->
-					?DBG("AE start, ok for empty"),
-					reply(From,ok),
-					actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType,CallCount),
-					{noreply,P#dp{verified = true}};
-				% Ok, now it will start receiving wal pages
+					{noreply, actordb_sqlprocutil:start_verify(P,false)};
 				_ ->
-					case AEType == recover of
-						true ->
-							Age = os:timestamp(),
-							?INF("AE start ok for recovery from ~p, evnum=~p, evterm=~p",[LeaderNode,P#dp.evnum,P#dp.evterm]);
-						false ->
-							Age = P#dp.recovery_age,
-							?DBG("AE start ok from ~p",[LeaderNode])
-					end,
-					{reply,ok,P#dp{verified = true, inrecovery = AEType == recover, recovery_age = Age}}
+					{noreply,P}
 			end;
-		% Executed on follower.
-		% sqlite wal, header tells you if done (it has db size in header)
-		{appendentries_wal,Term,Header,Body,AEType,CallCount} ->
+		_ when P#dp.mors == slave, P#dp.masternode /= LeaderNode ->
+			?DBG("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
+			case P#dp.callres /= undefined of
+				true ->
+					reply(P#dp.callfrom,{redirect,LeaderNode});
+				false ->
+					ok
+			end,
+			actordb_local:actor_mors(slave,LeaderNode),
+			NP = P#dp{masternode = LeaderNode,without_master_since = undefined,
+			masternodedist = bkdcore:dist_name(LeaderNode),
+			callfrom = undefined, callres = undefined,verified = true},
+			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP)));
+		% This node is candidate or leader but someone with newer term is sending us log
+		_ when P#dp.mors == master ->
+			?ERR("AE start, stepping down as leader ~p ~p",
+					[AEType,{Term,P#dp.current_term}]),
+			case P#dp.callres /= undefined of
+				true ->
+					reply(P#dp.callfrom,{redirect,LeaderNode});
+				false ->
+					ok
+			end,
+			actordb_local:actor_mors(slave,LeaderNode),
+			NP = P#dp{mors = slave, verified = true, election = undefined,
+				voted_for = undefined,callfrom = undefined, callres = undefined,
+				masternode = LeaderNode,without_master_since = undefined,
+				masternodedist = bkdcore:dist_name(LeaderNode),
+				current_term = Term},
+			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(NP))));
+		_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
+			?ERR("AE start attempt failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
+						[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
+			% case P#dp.evnum > PrevEvnum andalso  of
 			case ok of
-				_ when Term == P#dp.current_term; AEType == head ->
-					AWR = actordb_sqlprocutil:append_wal(P,Header,Body),
-					case AWR of
-						ok ->
-							case Header of
-								% dbsize == 0, not last page
-								<<_:32,0:32,_/binary>> ->
-									{reply,ok,P#dp{locked = [ae]}};
-								% last page
-								<<_:32,_:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>> ->
-									?DBG("AE WAL done evnum=~p, evterm=~p aetype=~p queueempty=~p, masternd=~p",
-											[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
-									% Prevent any timeouts on next ae since recovery process is progressing.
-									case P#dp.inrecovery of
-										true ->
-											RecoveryAge = os:timestamp();
-										false ->
-											RecoveryAge = P#dp.recovery_age
-									end,
-									NP = P#dp{evnum = Evnum, evterm = Evterm,locked = [], recovery_age = RecoveryAge},
-									reply(From,done),
-									actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
-									{noreply,NP}
-							end;
-						_ ->
-							reply(From,false),
-							actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
-							{noreply,P}
+				% Node is conflicted, delete last entry
+				_ when PrevEvnum > 0, AEType == recover ->
+					NP = actordb_sqlprocutil:rewind_wal(P);
+				% If false this node is behind. If empty this is just check call.
+				% Wait for leader to send an earlier event.
+				_ ->
+					NP = P
+			end,
+			reply(From,false),
+			actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType,CallCount),
+			{noreply,NP};
+		_ when Term > P#dp.current_term ->
+			?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",[AEType,{Term,P#dp.current_term}]),
+			NP = P#dp{current_term = Term,voted_for = undefined,
+			masternode = LeaderNode, without_master_since = undefined,verified = true,
+			masternodedist = bkdcore:dist_name(LeaderNode)},
+			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(NP)));
+		_ when AEType == empty ->
+			?DBG("AE start, ok for empty"),
+			reply(From,ok),
+			actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType,CallCount),
+			{noreply,P#dp{verified = true}};
+		% Ok, now it will start receiving wal pages
+		_ ->
+			case AEType == recover of
+				true ->
+					Age = os:timestamp(),
+					?INF("AE start ok for recovery from ~p, evnum=~p, evterm=~p",[LeaderNode,P#dp.evnum,P#dp.evterm]);
+				false ->
+					Age = P#dp.recovery_age,
+					?DBG("AE start ok from ~p",[LeaderNode])
+			end,
+			{reply,ok,P#dp{verified = true, inrecovery = AEType == recover, recovery_age = Age}}
+	end;
+% Executed on follower.
+% sqlite wal, header tells you if done (it has db size in header)
+state_rw_call({appendentries_wal,Term,Header,Body,AEType,CallCount},From,P) ->
+	case ok of
+		_ when Term == P#dp.current_term; AEType == head ->
+			AWR = actordb_sqlprocutil:append_wal(P,Header,Body),
+			case AWR of
+				ok ->
+					case Header of
+						% dbsize == 0, not last page
+						<<_:20/binary,0:32>> ->
+							{reply,ok,P#dp{locked = [ae]}};
+						% last page
+						<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> ->
+							?DBG("AE WAL done evnum=~p, evterm=~p aetype=~p queueempty=~p, masternd=~p",
+									[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
+							% Prevent any timeouts on next ae since recovery process is progressing.
+							case P#dp.inrecovery of
+								true ->
+									RecoveryAge = os:timestamp();
+								false ->
+									RecoveryAge = P#dp.recovery_age
+							end,
+							NP = P#dp{evnum = Evnum, evterm = Evterm,locked = [], recovery_age = RecoveryAge},
+							reply(From,done),
+							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
+							{noreply,NP}
 					end;
 				_ ->
-					?ERR("AE WAL received wrong term ~p",[{Term,P#dp.current_term}]),
 					reply(From,false),
 					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
 					{noreply,P}
 			end;
-		% Executed on leader.
-		{appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum,AEType,{SentIndex,SentTerm}} ->
-			Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
-			case Follower of
-				false ->
-					?DBG("Adding node to follower list ~p",[Node]),
-					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
-				_ when (not (AEType == head andalso Success)) andalso
-						(SentIndex /= Follower#flw.match_index orelse
-						SentTerm /= Follower#flw.match_term orelse P#dp.verified == false) ->
-					% We can get responses from AE calls which are out of date. This is why the other node always sends
-					%  back {SentIndex,SentTerm} which are the parameters for follower that we knew of when we sent data.
-					% If these two parameters match our current state, then response is valid.
-					?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p, sent=~p",
-							[Node,Success,AEType,Follower#flw.match_index,EvNum,MatchEvnum,{SentIndex,SentTerm}]),
+		_ ->
+			?ERR("AE WAL received wrong term ~p",[{Term,P#dp.current_term}]),
+			reply(From,false),
+			actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
+			{noreply,P}
+	end;
+% Executed on leader.
+state_rw_call({appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,MatchEvnum,AEType,{SentIndex,SentTerm}} = What,From,P) ->
+	Follower = lists:keyfind(Node,#flw.node,P#dp.follower_indexes),
+	case Follower of
+		false ->
+			?DBG("Adding node to follower list ~p",[Node]),
+			state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
+		_ when (not (AEType == head andalso Success)) andalso
+				(SentIndex /= Follower#flw.match_index orelse
+				SentTerm /= Follower#flw.match_term orelse P#dp.verified == false) ->
+			% We can get responses from AE calls which are out of date. This is why the other node always sends
+			%  back {SentIndex,SentTerm} which are the parameters for follower that we knew of when we sent data.
+			% If these two parameters match our current state, then response is valid.
+			?DBG("ignoring AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p, HisEvNum=~p, MatchSent=~p, sent=~p",
+					[Node,Success,AEType,Follower#flw.match_index,EvNum,MatchEvnum,{SentIndex,SentTerm}]),
+			{reply,ok,P};
+		_ ->
+			?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p,HisOldTerm=~p HisEvNum=~p, histerm=~p, MatchSent=~p",
+					[Node,Success,AEType,Follower#flw.match_index,Follower#flw.match_term,EvNum,EvTerm,MatchEvnum]),
+			NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
+									wait_for_response_since = undefined, last_seen = os:timestamp()},
+			case Success of
+				% An earlier response.
+				_ when P#dp.mors == slave ->
+					?ERR("Received AE response after stepping down"),
 					{reply,ok,P};
-				_ ->
-					?DBG("AE response, from=~p, success=~p, type=~p, HisOldEvnum=~p,HisOldTerm=~p HisEvNum=~p, histerm=~p, MatchSent=~p",
-							[Node,Success,AEType,Follower#flw.match_index,Follower#flw.match_term,EvNum,EvTerm,MatchEvnum]),
-					NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
-											wait_for_response_since = undefined, last_seen = os:timestamp()},
-					case Success of
-						% An earlier response.
-						_ when P#dp.mors == slave ->
-							?ERR("Received AE response after stepping down"),
+				true ->
+					reply(From,ok),
+					NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw,AEType == head orelse AEType == empty)),
+					?DBG("AE response for node ~p, followers=~p",
+							[Node,[{F#flw.node,F#flw.match_index,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
+					{noreply,NP};
+				% What we thought was follower is ahead of us and we need to step down
+				false when P#dp.current_term < CurrentTerm ->
+					?DBG("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
+					{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
+						P#dp{mors = slave,current_term = CurrentTerm,
+							election = actordb_sqlprocutil:election_timer(P#dp.election),
+							masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined,
+							voted_for = undefined, follower_indexes = []}))};
+				false when NFlw#flw.match_index == P#dp.evnum ->
+					% Follower is up to date. He replied false. Maybe our term was too old.
+					{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw))};
+				false ->
+					% If we are copying entire db to that node already, do nothing.
+					case [C || C <- P#dp.dbcopy_to, C#cpto.node == Node, C#cpto.actorname == P#dp.actorname] of
+						[_|_] ->
+							?DBG("Ignoring appendendentries false response because copying to"),
 							{reply,ok,P};
-						true ->
-							reply(From,ok),
-							NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(P,NFlw,AEType == head orelse AEType == empty)),
-							?DBG("AE response for node ~p, followers=~p",
-									[Node,[{F#flw.node,F#flw.match_index,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
-							{noreply,NP};
-						% What we thought was follower is ahead of us and we need to step down
-						false when P#dp.current_term < CurrentTerm ->
-							?DBG("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
-							{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
-								P#dp{mors = slave,current_term = CurrentTerm,
-									election = actordb_sqlprocutil:election_timer(P#dp.election),
-									masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined,
-									voted_for = undefined, follower_indexes = []}))};
-						false when NFlw#flw.match_index == P#dp.evnum ->
-							% Follower is up to date. He replied false. Maybe our term was too old.
-							{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw))};
-						false ->
-							% If we are copying entire db to that node already, do nothing.
-							case [C || C <- P#dp.dbcopy_to, C#cpto.node == Node, C#cpto.actorname == P#dp.actorname] of
-								[_|_] ->
-									?DBG("Ignoring appendendentries false response because copying to"),
-									{reply,ok,P};
-								[] ->
-									case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
-										{false,NP,NF} ->
-											?DBG("Can not recover from log, sending entire db"),
-											% We can not recover from wal. Send entire db.
-											Ref = make_ref(),
-											case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,
-																[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-																{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
-												ok ->
-													actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,
-																								P#dp.actorname}},
-																					From,NP);
-												_Err ->
-													?ERR("Unable to send db ~p",[_Err]),
-													{reply,false,P}
-											end;
-										{true,NP,NF} ->
-											% we can recover from wal
-											?DBG("Recovering from wal, for node=~p, match_index=~p, match_term=~p, myevnum=~p",
-													[NF#flw.node,NF#flw.match_index,NF#flw.match_term,P#dp.evnum]),
-											reply(From,ok),
-											{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,false)}
-									end
+						[] ->
+							case actordb_sqlprocutil:try_wal_recover(P,NFlw) of
+								{false,NP,NF} ->
+									?DBG("Can not recover from log, sending entire db"),
+									% We can not recover from wal. Send entire db.
+									Ref = make_ref(),
+									case bkdcore:rpc(NF#flw.node,{?MODULE,call_slave,
+														[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+														{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
+										ok ->
+											actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,
+																						P#dp.actorname}},
+																			From,NP);
+										_Err ->
+											?ERR("Unable to send db ~p",[_Err]),
+											{reply,false,P}
+									end;
+								{true,NP,NF} ->
+									% we can recover from wal
+									?DBG("Recovering from wal, for node=~p, match_index=~p, match_term=~p, myevnum=~p",
+											[NF#flw.node,NF#flw.match_index,NF#flw.match_term,P#dp.evnum]),
+									reply(From,ok),
+									{noreply,actordb_sqlprocutil:continue_maybe(NP,NF,false)}
 							end
 					end
-			end;
-		{request_vote,Candidate,NewTerm,LastEvnum,LastTerm} ->
-			?DBG("Request vote for=~p, mors=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
-					[Candidate,P#dp.mors,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
-			Uptodate =
-				case ok of
-					_ when P#dp.evterm < LastTerm ->
-						true;
-					_ when P#dp.evterm > LastTerm ->
-						false;
-					_ when P#dp.evnum < LastEvnum ->
-						true;
-					_ when P#dp.evnum > LastEvnum ->
-						false;
-					_ ->
-						true
-				end,
-			Follower = lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes),
-			case Follower of
-				false when P#dp.mors == master ->
-					?DBG("Adding node to follower list ~p",[Candidate]),
-					state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Candidate}));
-				_ ->
-					case ok of
-						% Candidates term is lower than current_term, ignore.
-						_ when NewTerm < P#dp.current_term ->
-							DoElection = (P#dp.mors == master andalso P#dp.verified == true),
-							reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
-							NP = P;
-						% We've already seen this term, only vote yes if we have not voted
-						%  or have voted for this candidate already.
-						_ when NewTerm == P#dp.current_term ->
-							case (P#dp.voted_for == undefined orelse P#dp.voted_for == Candidate) of
-								true when Uptodate ->
-									DoElection = false,
-									reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
-									NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
-                          election = actordb_sqlprocutil:election_timer(P#dp.election),
-                          masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined});
-								true ->
-									DoElection = (P#dp.mors == master andalso P#dp.verified == true),
-									reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
-									NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm});
-								false ->
-									DoElection =(P#dp.mors == master andalso P#dp.verified == true),
-									reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
-									NP = P
-							end;
-						% New candidates term is higher than ours, is he as up to date?
-						_ when Uptodate ->
+			end
+	end;
+state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P) ->
+	?DBG("Request vote for=~p, mors=~p, {histerm,myterm}=~p, {HisLogTerm,MyLogTerm}=~p {HisEvnum,MyEvnum}=~p",
+	[Candidate,P#dp.mors,{NewTerm,P#dp.current_term},{LastTerm,P#dp.evterm},{LastEvnum,P#dp.evnum}]),
+	Uptodate =
+		case ok of
+			_ when P#dp.evterm < LastTerm ->
+				true;
+			_ when P#dp.evterm > LastTerm ->
+				false;
+			_ when P#dp.evnum < LastEvnum ->
+				true;
+			_ when P#dp.evnum > LastEvnum ->
+				false;
+			_ ->
+				true
+		end,
+	Follower = lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes),
+	case Follower of
+		false when P#dp.mors == master ->
+			?DBG("Adding node to follower list ~p",[Candidate]),
+			state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Candidate}));
+		_ ->
+			case ok of
+				% Candidates term is lower than current_term, ignore.
+				_ when NewTerm < P#dp.current_term ->
+					DoElection = (P#dp.mors == master andalso P#dp.verified == true),
+					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
+					NP = P;
+				% We've already seen this term, only vote yes if we have not voted
+				%  or have voted for this candidate already.
+				_ when NewTerm == P#dp.current_term ->
+					case (P#dp.voted_for == undefined orelse P#dp.voted_for == Candidate) of
+						true when Uptodate ->
 							DoElection = false,
 							reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
-                      election = actordb_sqlprocutil:election_timer(P#dp.election),
-											masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined});
-						% Higher term, but not as up to date. We can not vote for him.
-						% We do have to remember new term index though.
-						_ ->
+							election = actordb_sqlprocutil:election_timer(P#dp.election),
+							masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined});
+						true ->
 							DoElection = (P#dp.mors == master andalso P#dp.verified == true),
 							reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
-							case ok of
-								_ when element(1,P#dp.db) == connection ->
-									ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
-									ok = actordb_sqlite:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,NewTerm}),ReplType);
-								_ ->
-									ok
-							end,
-							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,
-								election = actordb_sqlprocutil:election_timer(P#dp.election)})
+							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm});
+						false ->
+							DoElection =(P#dp.mors == master andalso P#dp.verified == true),
+							reply(From,{alreadyvoted,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
+							NP = P
+					end;
+				% New candidates term is higher than ours, is he as up to date?
+				_ when Uptodate ->
+					DoElection = false,
+					reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
+					election = actordb_sqlprocutil:election_timer(P#dp.election),
+					masternode = undefined, without_master_since = os:timestamp(), masternodedist = undefined});
+				% Higher term, but not as up to date. We can not vote for him.
+				% We do have to remember new term index though.
+				_ ->
+					DoElection = (P#dp.mors == master andalso P#dp.verified == true),
+					reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
+					case ok of
+						_ when element(1,P#dp.db) == connection ->
+							ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
+							ok = actordb_sqlite:replicate_opts(P#dp.db,term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,NewTerm}),ReplType);
+						_ ->
+							ok
 					end,
-					% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
-					% If the other node is actually more up to date, vote was yes and we do not do election.
-					?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
-							[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
-					{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}}
-			end;
-		{set_dbfile,Bin} ->
-			spawn(fun() -> ok = prim_file:write_file(P#dp.fullpath,actordb_sqlite:lz4_decompress(Bin,?PAGESIZE)) end),
-			{reply,ok,P#dp{}};
-		% Hint from a candidate that this node should start new election, because
-		%  it is more up to date.
-		% doelection ->
-		% 	?DBG("Doelection hint ~p",[{P#dp.verified,P#dp.election}]),
-		% 	reply(From,ok),
-		% 	case is_pid(P#dp.election) orelse is_reference(P#dp.election) of
-		% 		false ->
-		% 			{noreply,actordb_sqlprocutil:start_verify(P,false)};
-		% 		_ ->
-		% 			{noreply,P}
-		% 	end;
-		{delete,MovedToNode} ->
-			reply(From,ok),
-			% actordb_sqlite:stop(P#dp.db),
-			% ?DBG("Received delete call"),
-			% actordb_sqlprocutil:delactorfile(P#dp{movedtonode = MovedToNode}),
-			% {stop,normal,P#dp{db = undefined}};
-			{reply,ok,P#dp{movedtonode = MovedToNode}};
-		checkpoint ->
-			actordb_sqlprocutil:do_checkpoint(P),
-			{reply,ok,P}
-	end.
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,
+						election = actordb_sqlprocutil:election_timer(P#dp.election)})
+			end,
+			% If voted no and we are leader, start a new term, which causes a new write and gets all nodes synchronized.
+			% If the other node is actually more up to date, vote was yes and we do not do election.
+			?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
+					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
+			{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}}
+	end;
+state_rw_call({delete,MovedToNode},From,P) ->
+	reply(From,ok),
+	{reply,ok,P#dp{movedtonode = MovedToNode}};
+state_rw_call(checkpoint,_From,P) ->
+	actordb_sqlprocutil:do_checkpoint(P),
+	{reply,ok,P}.
 
 read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
