@@ -216,30 +216,30 @@ send_empty_ae(P,F) ->
 	F#flw{wait_for_response_since = os:timestamp()}.
 
 reopen_db(#dp{mors = master} = P) ->
-	Driver = actordb_conf:driver(),
+	% Driver = actordb_conf:driver(),
 	case ok of
-		_ when Driver == actordb_driver, P#dp.db == undefined  ->
+		_ when P#dp.db == undefined  ->
 			init_opendb(P);
-		_ when Driver == actordb_driver ->
+		_ ->
 			case actordb_sqlite:exec(P#dp.db,<<"SeLECT * FROM __adb;">>,read) of
 				{ok,[{columns,_},{rows,[_|_] = Rows}]} ->
 					read_db_state(P,Rows);
 				_XX ->
 					?DBG("Read __adb result ~p",[_XX]),
 					P
-			end;
-		% we are master but db not open or open as file descriptor to -wal file
-		_ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
-			file:close(P#dp.db),
-			garbage_collect(),
-			init_opendb(P);
-		_ ->
-			case P#dp.wal_from == {0,0} of
-				true ->
-					P#dp{wal_from = wal_from([P#dp.fullpath,"-wal"])};
-				false ->
-					P
 			end
+		% we are master but db not open or open as file descriptor to -wal file
+		% _ when element(1,P#dp.db) == file_descriptor; P#dp.db == undefined ->
+		% 	file:close(P#dp.db),
+		% 	garbage_collect(),
+		% 	init_opendb(P);
+		% _ ->
+		% 	case P#dp.wal_from == {0,0} of
+		% 		true ->
+		% 			P#dp{wal_from = wal_from([P#dp.fullpath,"-wal"])};
+		% 		false ->
+		% 			P
+		% 	end
 	end;
 reopen_db(P) ->
 	Driver = actordb_conf:driver(),
@@ -250,19 +250,19 @@ reopen_db(P) ->
 			NP;
 		_ when Driver == actordb_driver ->
 			actordb_sqlite:replicate_opts(P#dp.db,<<>>),
-			P;
-		_ when element(1,P#dp.db) == connection; P#dp.db == undefined ->
-			actordb_sqlite:stop(P#dp.db),
-			{ok,F} = file:open([P#dp.fullpath,"-wal"],[read,write,binary,raw]),
-			case file:position(F,eof) of
-				{ok,0} ->
-					ok = file:write(F,actordb_sqlite:make_wal_header(?PAGESIZE));
-				{ok,_WalSize} ->
-					ok
-			end,
-			P#dp{db = F};
-		_ ->
 			P
+		% _ when element(1,P#dp.db) == connection; P#dp.db == undefined ->
+		% 	actordb_sqlite:stop(P#dp.db),
+		% 	{ok,F} = file:open([P#dp.fullpath,"-wal"],[read,write,binary,raw]),
+		% 	case file:position(F,eof) of
+		% 		{ok,0} ->
+		% 			ok = file:write(F,actordb_sqlite:make_wal_header(?PAGESIZE));
+		% 		{ok,_WalSize} ->
+		% 			ok
+		% 	end,
+		% 	P#dp{db = F};
+		% _ ->
+		% 	P
 	end.
 
 init_opendb(P) ->
@@ -325,33 +325,34 @@ set_followers(HaveSchema,P) ->
 					lists:keymember(Nd,#flw.node,P#dp.follower_indexes) == false]}.
 
 % Find first valid evnum,evterm in wal (from beginning)
-wal_from([_|_] = Path) ->
-	case actordb_conf:driver() of
-		actordb_driver ->
-			{0,0};
-		_ ->
-			case file:open(Path,[read,binary,raw]) of
-				{ok,F} ->
-					{ok,_} = file:position(F,32),
-					wal_from(F);
-				_ ->
-					{0,0}
-			end
-	end;
-wal_from(F) ->
-	case file:read(F,40) of
-		eof ->
-			file:close(F),
-			{0,0};
-		% Non commit page
-		{ok,<<_:32,0:32,_/binary>>} ->
-			{ok,_} = file:position(F,{cur,?PAGESIZE}),
-			wal_from(F);
-		% Commit page, we can read evnum evterm safely
-		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
-			file:close(F),
-			{Evnum,Evterm}
-	end.
+wal_from([_|_] = _Path) ->
+	{0,0}.
+	% case actordb_conf:driver() of
+	% 	actordb_driver ->
+	% 		{0,0};
+	% 	_ ->
+	% 		case file:open(Path,[read,binary,raw]) of
+	% 			{ok,F} ->
+	% 				{ok,_} = file:position(F,32),
+	% 				wal_from(F);
+	% 			_ ->
+	% 				{0,0}
+	% 		end
+	% end;
+% wal_from(F) ->
+% 	case file:read(F,40) of
+% 		eof ->
+% 			file:close(F),
+% 			{0,0};
+% 		% Non commit page
+% 		{ok,<<_:32,0:32,_/binary>>} ->
+% 			{ok,_} = file:position(F,{cur,?PAGESIZE}),
+% 			wal_from(F);
+% 		% Commit page, we can read evnum evterm safely
+% 		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
+% 			file:close(F),
+% 			{Evnum,Evterm}
+% 	end.
 
 try_wal_recover(P,F) when F#flw.file /= undefined ->
 	case F#flw.file of
@@ -362,85 +363,85 @@ try_wal_recover(P,F) when F#flw.file /= undefined ->
 	end,
 	try_wal_recover(P,F#flw{file = undefined});
 try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
-	case actordb_conf:driver() of
-		actordb_driver ->
-			case F#flw.match_index of
-				0 ->
-					Evnum = 1;
-				Evnum ->
-					ok
-			end,
-			case actordb_driver:iterate_wal(P#dp.db,Evnum,F#flw.match_term) of
-				{ok,Iter2,Bin,_IsActiveWal} ->
-					NF = F#flw{file = Iter2,pagebuf = Bin},
-					{true,store_follower(P,NF),NF};
-				{ok,Term} ->
-					NF = F#flw{match_term = Term},
-					{true,store_follower(P,NF),NF};
-				done ->
-					{false,P,F}
-			end;
-		_ ->
-			case wal_from([P#dp.fullpath,"-wal"]) of
-				{0,0} ->
-					{false,store_follower(P,F),F};
-				WF ->
-					try_wal_recover(P#dp{wal_from = WF},F)
-			end
-	end;
-try_wal_recover(P,F) ->
-	?DBG("Try_wal_recover for=~p, myev=~p MatchIndex=~p MyEvFrom=~p",
-		[F#flw.node,P#dp.evnum,F#flw.match_index,element(1,P#dp.wal_from)]),
-	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
-	% Compare match_index not next_index because we need to send prev term as well
-	case F#flw.match_index >= WalEvfrom andalso F#flw.match_index > 0 andalso F#flw.match_index < P#dp.evnum of
-		% We can recover from wal if terms match
-		true ->
-			{File,PrevNum,PrevTerm} = open_wal_at(P,F#flw.next_index),
-			case PrevNum == 1 andalso F#flw.match_index == 0 of
-				true ->
-					Res = true,
-					NF = F#flw{file = File};
-				_ ->
-					case PrevNum == F#flw.match_index andalso PrevTerm == F#flw.match_term of
-						true ->
-							Res = true,
-							NF = F#flw{file = File};
-						false ->
-							% follower in conflict
-							% this will cause a failed appendentries_start and a rewind on follower
-							Res = true,
-							NF = F#flw{file = File, match_term = PrevTerm, match_index = PrevNum}
-					end
-			end;
-		% Too far behind. Send entire db.
-		false ->
-			?INF("Too far behind, can not recover from wal match=~p, wal_from=~p, evnum=~p, sending entire db to node.",
-					[F#flw.match_index,WalEvfrom,P#dp.evnum]),
-			Res = false,
-			NF = F
+	% case actordb_conf:driver() of
+	% 	actordb_driver ->
+	case F#flw.match_index of
+		0 ->
+			Evnum = 1;
+		Evnum ->
+			ok
 	end,
-	{Res,store_follower(P,NF),NF}.
-
-open_wal_at(P,Index) ->
-	{ok,F} = file:open([P#dp.fullpath,"-wal"],[read,binary,raw]),
-	{ok,_} = file:position(F,32),
-	open_wal_at(P,Index,F,undefined,undefined).
-open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
-	case file:read(F,40) of
-		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} when Index == Evnum ->
-			{ok,_} = file:position(F,{cur,-40}),
-			case PrevNum == undefined of
-				true ->
-					{F,Evnum,Evterm};
-				false ->
-					{F,PrevNum,PrevTerm}
-			end;
-		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
-			{ok,_NPos} = file:position(F,{cur,?PAGESIZE}),
-			?DBG("open wal, atoffset=~p, looking_for_index=~p, went_past=~p",[_NPos,Index,Evnum]),
-			open_wal_at(P,Index,F,Evnum,Evterm)
+	case actordb_driver:iterate_wal(P#dp.db,F#flw.match_term,Evnum) of
+		{ok,Iter2,Bin,Head,Done} ->
+			NF = F#flw{file = Iter2, pagebuf = {Bin,Head,Done}},
+			{true,store_follower(P,NF),NF};
+		% {ok,Term} ->
+		% 	NF = F#flw{match_term = Term},
+		% 	{true,store_follower(P,NF),NF};
+		done ->
+			{false,P,F}
 	end.
+	% 	_ ->
+	% 		case wal_from([P#dp.fullpath,"-wal"]) of
+	% 			{0,0} ->
+	% 				{false,store_follower(P,F),F};
+	% 			WF ->
+	% 				try_wal_recover(P#dp{wal_from = WF},F)
+	% 		end
+	% end;
+% try_wal_recover(P,F) ->
+% 	?DBG("Try_wal_recover for=~p, myev=~p MatchIndex=~p MyEvFrom=~p",
+% 		[F#flw.node,P#dp.evnum,F#flw.match_index,element(1,P#dp.wal_from)]),
+% 	{WalEvfrom,_WalTermfrom} = P#dp.wal_from,
+% 	% Compare match_index not next_index because we need to send prev term as well
+% 	case F#flw.match_index >= WalEvfrom andalso F#flw.match_index > 0 andalso F#flw.match_index < P#dp.evnum of
+% 		% We can recover from wal if terms match
+% 		true ->
+% 			{File,PrevNum,PrevTerm} = open_wal_at(P,F#flw.next_index),
+% 			case PrevNum == 1 andalso F#flw.match_index == 0 of
+% 				true ->
+% 					Res = true,
+% 					NF = F#flw{file = File};
+% 				_ ->
+% 					case PrevNum == F#flw.match_index andalso PrevTerm == F#flw.match_term of
+% 						true ->
+% 							Res = true,
+% 							NF = F#flw{file = File};
+% 						false ->
+% 							% follower in conflict
+% 							% this will cause a failed appendentries_start and a rewind on follower
+% 							Res = true,
+% 							NF = F#flw{file = File, match_term = PrevTerm, match_index = PrevNum}
+% 					end
+% 			end;
+% 		% Too far behind. Send entire db.
+% 		false ->
+% 			?INF("Too far behind, can not recover from wal match=~p, wal_from=~p, evnum=~p, sending entire db to node.",
+% 					[F#flw.match_index,WalEvfrom,P#dp.evnum]),
+% 			Res = false,
+% 			NF = F
+% 	end,
+% 	{Res,store_follower(P,NF),NF}.
+
+% open_wal_at(P,Index) ->
+% 	{ok,F} = file:open([P#dp.fullpath,"-wal"],[read,binary,raw]),
+% 	{ok,_} = file:position(F,32),
+% 	open_wal_at(P,Index,F,undefined,undefined).
+% open_wal_at(P,Index,F,PrevNum,PrevTerm) ->
+% 	case file:read(F,40) of
+% 		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} when Index == Evnum ->
+% 			{ok,_} = file:position(F,{cur,-40}),
+% 			case PrevNum == undefined of
+% 				true ->
+% 					{F,Evnum,Evterm};
+% 				false ->
+% 					{F,PrevNum,PrevTerm}
+% 			end;
+% 		{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned,_/binary>>} ->
+% 			{ok,_NPos} = file:position(F,{cur,?PAGESIZE}),
+% 			?DBG("open wal, atoffset=~p, looking_for_index=~p, went_past=~p",[_NPos,Index,Evnum]),
+% 			open_wal_at(P,Index,F,Evnum,Evterm)
+% 	end.
 
 continue_maybe(P,F,true) ->
 	store_follower(P,F);
@@ -515,19 +516,21 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 	case F#flw.pagebuf of
 		<<>> ->
 			case actordb_driver:iterate_wal(P#dp.db,F#flw.file) of
-				{ok,Iter,<<Header:144/binary,Page/binary>>,_IsLastWal} ->
+				% {ok,Iter,<<Header:144/binary,Page/binary>>,_IsLastWal} ->
+				{ok,Iter,PageCompressed,Header,Commit} ->
 					ok;
 				done ->
 					?ERR("Detected disk corruption while trying to replicate to stale follower. Stepping down as leader."),
 					throw(wal_corruption),
-					Iter = Header = Page = undefined
+					Commit = Iter = Header = PageCompressed = undefined
 			end;
-		<<Header:144/binary,Page/binary>> ->
+		% <<Header:144/binary,Page/binary>> ->
+		{PageCompressed,Header,Commit} ->
 			Iter = F#flw.file
 	end,
-	<<_:32,Commit:32,_/binary>> = Header,
-	{Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Page),
-	<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
+	% <<_:32,Commit:32,_/binary>> = Header,
+	% {Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Page),
+	% <<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
 	WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 				{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},
 				[nostart]]}),
@@ -538,72 +541,75 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 			F#flw{file = Iter, pagebuf = <<>>};
 		_ ->
 			error
-	end;
-send_wal(P,#flw{file = File} = F) ->
-	{ok,<<Header:40/binary,Page/binary>>} = file:read(File,40+?PAGESIZE),
-     {HC1,HC2} = actordb_sqlite:wal_checksum(Header,0,0,32),
-     {C1,C2} = actordb_sqlite:wal_checksum(Page,HC1,HC2,byte_size(Page)),
-	case Header of
-		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,
-		  _:32,_:32,Chk1:32/unsigned-big,Chk2:32/unsigned-big,_/binary>> when Evnum == F#flw.next_index ->
-			case ok of
-				_ when C1 == Chk1, C2 == Chk2 ->
-					{Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Page),
-					<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
-					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},
-								[nostart]]}),
-					case WalRes == ok orelse WalRes == done of
-						true when Commit == 0 ->
-							send_wal(P,F);
-						true ->
-							F;
-						_ ->
-							error
-					end;
-				_ ->
-					?ERR("DETECTED DISK CORRUPTION ON WAL LOG! Stepping down as leader for and truncating log"),
-					file:position(File,{cur,-?PAGESIZE-40}),
-					file:truncate(File),
-					exit(wal_corruption)
-			end
 	end.
+% send_wal(P,#flw{file = File} = F) ->
+% 	{ok,<<Header:40/binary,Page/binary>>} = file:read(File,40+?PAGESIZE),
+%      {HC1,HC2} = actordb_sqlite:wal_checksum(Header,0,0,32),
+%      {C1,C2} = actordb_sqlite:wal_checksum(Page,HC1,HC2,byte_size(Page)),
+% 	case Header of
+% 		<<_:32,Commit:32,Evnum:64/big-unsigned,_:64/big-unsigned,
+% 		  _:32,_:32,Chk1:32/unsigned-big,Chk2:32/unsigned-big,_/binary>> when Evnum == F#flw.next_index ->
+% 			case ok of
+% 				_ when C1 == Chk1, C2 == Chk2 ->
+% 					{Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Page),
+% 					<<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
+% 					WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+% 								{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},
+% 								[nostart]]}),
+% 					case WalRes == ok orelse WalRes == done of
+% 						true when Commit == 0 ->
+% 							send_wal(P,F);
+% 						true ->
+% 							F;
+% 						_ ->
+% 							error
+% 					end;
+% 				_ ->
+% 					?ERR("DETECTED DISK CORRUPTION ON WAL LOG! Stepping down as leader for and truncating log"),
+% 					file:position(File,{cur,-?PAGESIZE-40}),
+% 					file:truncate(File),
+% 					exit(wal_corruption)
+% 			end
+% 	end.
 
 
 % Go back one entry
-rewind_wal(P) when element(1,P#dp.db) == actordb_driver ->
-	case actordb_driver:wal_rewind(P#dp.db,P#dp.evnum) of
-		{ok,0} ->
-			P;
-		{ok,_} ->
-			Sql = <<"SElECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
-			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
-			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
-			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-			P#dp{evnum = Evnum, evterm = EvTerm}
-	end;
 rewind_wal(P) ->
-	?DBG("Rewinding wal"),
-	case file:position(P#dp.db,{cur,-(?PAGESIZE+40)}) of
-		{ok,_NPos} ->
-			{ok,<<_:32,Commit:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>>} = file:read(P#dp.db,40),
-			case ok of
-				_ when P#dp.evnum /= Evnum, Commit /= 0 ->
-					?DBG("Rewind at ~p",[Evnum]),
-					{ok,_} = file:position(P#dp.db,{cur,?PAGESIZE}),
-					file:truncate(P#dp.db),
-					P#dp{evnum = Evnum, evterm = Evterm};
-				_ ->
-					{ok,_} = file:position(P#dp.db,{cur,-40}),
-					rewind_wal(P)
-			end;
-		{error,_} ->
-			?DBG("Resetting to zero"),
-			file:close(P#dp.db),
-			file:delete([P#dp.fullpath,"-wal"]),
-			% rewind to 0, causing a complete restore from another node
-			reopen_db(P#dp{evnum = 0, evterm = 0, db = undefined})
-	end.
+	% rewind is automatic.
+	P.
+% rewind_wal(P) when element(1,P#dp.db) == actordb_driver ->
+% 	case actordb_driver:wal_rewind(P#dp.db,P#dp.evnum) of
+% 		{ok,0} ->
+% 			P;
+% 		{ok,_} ->
+% 			Sql = <<"SElECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
+% 			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
+% 			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
+% 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
+% 			P#dp{evnum = Evnum, evterm = EvTerm}
+% 	end;
+% rewind_wal(P) ->
+% 	?DBG("Rewinding wal"),
+% 	case file:position(P#dp.db,{cur,-(?PAGESIZE+40)}) of
+% 		{ok,_NPos} ->
+% 			{ok,<<_:32,Commit:32,Evnum:64/unsigned-big,Evterm:64/unsigned-big,_/binary>>} = file:read(P#dp.db,40),
+% 			case ok of
+% 				_ when P#dp.evnum /= Evnum, Commit /= 0 ->
+% 					?DBG("Rewind at ~p",[Evnum]),
+% 					{ok,_} = file:position(P#dp.db,{cur,?PAGESIZE}),
+% 					file:truncate(P#dp.db),
+% 					P#dp{evnum = Evnum, evterm = Evterm};
+% 				_ ->
+% 					{ok,_} = file:position(P#dp.db,{cur,-40}),
+% 					rewind_wal(P)
+% 			end;
+% 		{error,_} ->
+% 			?DBG("Resetting to zero"),
+% 			file:close(P#dp.db),
+% 			file:delete([P#dp.fullpath,"-wal"]),
+% 			% rewind to 0, causing a complete restore from another node
+% 			reopen_db(P#dp{evnum = 0, evterm = 0, db = undefined})
+% 	end.
 
 save_term(P) ->
 	% ok = butil:savetermfile([P#dp.fullpath,"-term"],{P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm}),
@@ -1211,72 +1217,72 @@ read_num(P) ->
 
 
 checkpoint(P) ->
-	case actordb_conf:driver() of
-		actordb_driver ->
-			P;
-		_ ->
-			{_,NPages} = esqlite3:wal_pages(P#dp.db),
-			DbSize = NPages*(?PAGESIZE+40),
-			case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
-				true ->
-					NotSynced = lists:foldl(fun(F,Count) ->
-						case F#flw.match_index /= P#dp.evnum of
-							true ->
-								Count+1;
-							false ->
-								Count
-						end
-					end,0,P#dp.follower_indexes),
-					case NotSynced of
-						0 ->
-							P#dp{wal_from = do_checkpoint(P)};
-						% If nodes arent synced, tolerate 30MB of wal size.
-						_ when DbSize >= 1024*1024*30 ->
-							P#dp{wal_from = do_checkpoint(P)};
-						_ ->
-							P
-					end;
-				false ->
-					P
-			end
-	end.
+	% case actordb_conf:driver() of
+	% 	actordb_driver ->
+			P.
+		% _ ->
+			% {_,NPages} = esqlite3:wal_pages(P#dp.db),
+			% DbSize = NPages*(?PAGESIZE+40),
+			% case DbSize > 1024*1024 andalso P#dp.dbcopyref == undefined andalso P#dp.dbcopy_to == [] of
+			% 	true ->
+			% 		NotSynced = lists:foldl(fun(F,Count) ->
+			% 			case F#flw.match_index /= P#dp.evnum of
+			% 				true ->
+			% 					Count+1;
+			% 				false ->
+			% 					Count
+			% 			end
+			% 		end,0,P#dp.follower_indexes),
+			% 		case NotSynced of
+			% 			0 ->
+			% 				P#dp{wal_from = do_checkpoint(P)};
+			% 			% If nodes arent synced, tolerate 30MB of wal size.
+			% 			_ when DbSize >= 1024*1024*30 ->
+			% 				P#dp{wal_from = do_checkpoint(P)};
+			% 			_ ->
+			% 				P
+			% 		end;
+			% 	false ->
+			% 		P
+			% end
+	% end.
 
-do_checkpoint(P) ->
-	case actordb_conf:driver() of
-		actordb_driver ->
-			{0,0};
-		_ ->
+do_checkpoint(_P) ->
+	% case actordb_conf:driver() of
+	% 	actordb_driver ->
+			{0,0}.
+		% _ ->
 			% Only do one check point at a time.
-			case catch register(checkpointer,self()) of
-				true ->
-					?DBG("Executing checkpoint ~p",[P#dp.mors]),
-					case P#dp.mors of
-						master ->
-							actordb_sqlite:checkpoint(P#dp.db),
-							save_term(P),
-							unregister(checkpointer),
-							[bkdcore_rpc:cast(F#flw.node,
-										{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}]})
-									 || F <- P#dp.follower_indexes, F#flw.match_index == P#dp.evnum];
-						_ ->
-							{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-							actordb_sqlite:checkpoint(Db),
-							unregister(checkpointer),
-							save_term(P),
-							actordb_sqlite:stop(Db)
-					end,
-					{0,0};
-				_ ->
-					?DBG("Delaying checkpoint ~p",[P#dp.mors]),
-					case P#dp.mors of
-						master ->
-							ok;
-						_ ->
-							erlang:send_after(100,self(),do_checkpoint)
-					end,
-					P#dp.wal_from
-			end
-	end.
+			% case catch register(checkpointer,self()) of
+			% 	true ->
+			% 		?DBG("Executing checkpoint ~p",[P#dp.mors]),
+			% 		case P#dp.mors of
+			% 			master ->
+			% 				actordb_sqlite:checkpoint(P#dp.db),
+			% 				save_term(P),
+			% 				unregister(checkpointer),
+			% 				[bkdcore_rpc:cast(F#flw.node,
+			% 							{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,checkpoint}]})
+			% 						 || F <- P#dp.follower_indexes, F#flw.match_index == P#dp.evnum];
+			% 			_ ->
+			% 				{ok,Db,_SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+			% 				actordb_sqlite:checkpoint(Db),
+			% 				unregister(checkpointer),
+			% 				save_term(P),
+			% 				actordb_sqlite:stop(Db)
+			% 		end,
+			% 		{0,0};
+			% 	_ ->
+			% 		?DBG("Delaying checkpoint ~p",[P#dp.mors]),
+			% 		case P#dp.mors of
+			% 			master ->
+			% 				ok;
+			% 			_ ->
+			% 				erlang:send_after(100,self(),do_checkpoint)
+			% 		end,
+			% 		P#dp.wal_from
+			% end
+	% end.
 
 delete_actor(P) ->
 	?DBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
