@@ -53,7 +53,6 @@ read(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql}) ->
 read(#{actor:= Actor, flags := Flags, statements := Sql}) ->
 	actordb_sqlproc:read(Actor,Flags,Sql,?MODULE).
 
-
 write(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql} = Call) ->
 	case actordb_schema:iskv(Type) of
 		true ->

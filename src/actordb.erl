@@ -232,7 +232,7 @@ exec1(St,BindingValues)->
 		% 	Call = #{type => Type, actor => Actors, flags => Flags, iswrite => failsafe,
 		% 	statements => Statements, bindingvals => []},
 		% 	actordb_multiupdate:multiread(Call);
-		{{[{{Type, [_,_|_] = Actors, Flags},false, Statements}] = Multiread,_}, []} ->
+		{{[{{Type, [_,_|_] = Actors, Flags},false, Statements}] = _Multiread,_}, []} ->
 			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
@@ -247,8 +247,9 @@ exec1(St,BindingValues)->
 
 
 		% Single block, lookup across all actors of type
-		%<<"actor user(*); SELECT * FROM todos;">>
-		{{[{{ Type, $*, Flags}, false, Statements}],_}, []} ->
+		%<<"actor type1(*); {{RESULT}} SELECT * FROM tab;">>
+		%if it does not contains {{result}} it wil return just ok
+		{{[{{ Type, $*, Flags}, false, Statements}],_}, []} ->io:fwrite("Mrs "),
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
@@ -259,27 +260,40 @@ exec1(St,BindingValues)->
 
 
 		% Single block, write across all actors of certain type
-		{{[{{_Type,$*,_Flags},true,_Statements}] = Multiblock,_}, []} ->
-			actordb_multiupdate:exec(Multiblock);
-		{{[{{_Type,$*,_Flags},true,_Statements}],_}, _} ->
-			Multiblock = [{{_Type,$*,_Flags},true,{_Statements, BindingValues}}],
-			actordb_multiupdate:exec(Multiblock);
+		{{[{{Type, $*, Flags}, true, Statements}],_}, []} ->
+			Call = #{type => Type, actor => $*, flags => Flags, iswrite => true,
+			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
+			actordb_multiupdate:exec([Call]);
+		{{[{{Type, $*, Flags}, true, Statements}],_}, _} ->
+			Call = #{type => Type, actor => $*, flags => Flags, iswrite => true,
+			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
+			actordb_multiupdate:exec([Call]);
 
-		% Multiple blocks, that change db
-		{{[_,_|_] = Multiblock,true}, [] } ->
-			actordb_multiupdate:exec(Multiblock);
-			% Multiple blocks, that change db
-		{{[_,_|_] = Multiblock,true}, BindingValues } ->
-			actordb_multiupdate:exec({Multiblock,BindingValues});
-		% Multiple blocks but only reads
+
 
 
 
 		%actordb_sqlparse:parse_statements(<<"actor user(denis); SELECT * FROM todos; actor user(ino); SELECT * FROM todos;">>).
-		{{[_,_|_] = Multiblock,false}, [] } ->
-			actordb_multiupdate:multiread(Multiblock);
-		{{[_,_|_] = Multiblock,false},_} ->
-			actordb_multiupdate:multiread(Multiblock,BindingValues);
+		{{[_,_|_] = Multiblock,false}, []} ->
+			Call = get_multiblock_map(Multiblock),
+			io:fwrite("Call ~p  ~n ",[Call]),
+			actordb_multiupdate:multiread(Call);
+		{{[_,_|_] = Multiblock,false}, _} ->
+			Call = get_multiblock_map(lists:zip(Multiblock,BindingValues)),
+			actordb_multiupdate:multiread(Call);
+
+
+		% Multiple blocks, that change db
+		{{[_,_|_] = Multiblock,true}, []} ->
+			Call = get_multiblock_map(Multiblock),
+			actordb_multiupdate:exec(Call);
+			% Multiple blocks, that change db
+		{{[_,_|_] = Multiblock,true}, _} ->
+			Call = get_multiblock_map(lists:zip(Multiblock,BindingValues)),
+			actordb_multiupdate:exec(Call);
+		% Multiple blocks but only reads
+
+
 		{undefined, _} ->
 			[];
 		{[],_} ->
@@ -288,10 +302,22 @@ exec1(St,BindingValues)->
 			St
  	end.
 
+get_multiblock_map(Multiblock) ->
+	[begin
+			case Block of
+				{{Type, Actor, Flags}, IsWrite, Statements} ->
+					#{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite,
+					statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined};
+				{{Type, Var, Column, Blockvar, Flags}, IsWrite, Statements} ->
+					#{type => Type, actor => undefined, flags => Flags, iswrite => IsWrite,
+					statements => Statements, bindingvals => [], var => Var, column => Column, blockvar => Blockvar}
+			end
+	end	|| Block <- Multiblock].
+
 direct_call(#{actor := undefined}) ->
 	[];
-direct_call(#{actor := Actor, type := Type1, flags := Flags, iswrite := IsWrite, statements := Statements,
-				bindingvals := BindingVals, dorpc := DoRpc} = Call)->
+direct_call(#{actor := Actor, type := Type1, flags := _Flags, iswrite := IsWrite, statements := _Statements,
+				bindingvals := _BindingVals, dorpc := DoRpc} = Call)->
   Type = actordb_util:typeatom(Type1),
 	Where = actordb_shardmngr:find_local_shard(Actor,Type),
 	% ?AINF("direct_call ~p ~p ~p ~p",[Actor,Statements,Where,DoRpc]),
