@@ -371,7 +371,7 @@ try_wal_recover(#dp{wal_from = {0,0}} = P,F) ->
 		Evnum ->
 			ok
 	end,
-	case actordb_driver:iterate_wal(P#dp.db,F#flw.match_term,Evnum) of
+	case actordb_driver:iterate_db(P#dp.db,F#flw.match_term,Evnum) of
 		{ok,Iter2,Bin,Head,Done} ->
 			NF = F#flw{file = Iter2, pagebuf = {Bin,Head,Done}},
 			{true,store_follower(P,NF),NF};
@@ -515,7 +515,7 @@ store_follower(P,NF) ->
 send_wal(P,#flw{file = {iter,_}} = F) ->
 	case F#flw.pagebuf of
 		<<>> ->
-			case actordb_driver:iterate_wal(P#dp.db,F#flw.file) of
+			case actordb_driver:iterate_db(P#dp.db,F#flw.file) of
 				% {ok,Iter,<<Header:144/binary,Page/binary>>,_IsLastWal} ->
 				{ok,Iter,PageCompressed,Header,Commit} ->
 					ok;
@@ -1686,14 +1686,17 @@ dbcopy(P,Home,ActorTo) ->
 				actordb_driver:checkpoint_lock(P#dp.db,0)
 		end
 	end),
-	dbcopy(P,Home,ActorTo,F,0,db).
+	dbcopy(P,Home,ActorTo,F,0,wal).
 dbcopy(P,Home,ActorTo,{iter,_} = Iter,_Bin,wal) ->
 	% case Bin of
 	% 	<<>> ->
-			case actordb_driver:iterate_wal(P#dp.db,Iter) of
-				{ok,Iter1,Bin1,_} ->
-					dbcopy_do(P,Bin1),
+			case actordb_driver:iterate_db(P#dp.db,Iter) of
+				{ok,Iter1,Bin1,Head,Done} when Done == 0 ->
+					dbcopy_do(P,{Bin1,Head}),
 					dbcopy(P,Home,ActorTo,Iter1,<<>>,wal);
+				{ok,_Iter1,Bin1,Head,Done} when Done > 0 ->
+					dbcopy_do(P,{Bin1,Head}),
+					dbcopy_done(P,Home);
 				done ->
 					dbcopy_done(P,Home)
 			end;
@@ -1701,55 +1704,58 @@ dbcopy(P,Home,ActorTo,{iter,_} = Iter,_Bin,wal) ->
 	% 		dbcopy_do(P,Bin),
 	% 		dbcopy(P,Home,ActorTo,Iter,<<>>,wal)
 	% end;
-dbcopy(P,Home,ActorTo,F,Offset,wal) ->
+dbcopy(P,Home,ActorTo,_F,_Offset,wal) ->
 	still_alive(P,Home,ActorTo),
-	case actordb_conf:driver() of
-		actordb_driver ->
-			case actordb_driver:iterate_wal(P#dp.db,Offset) of
-				{ok,Iter,Bin,_} ->
-					dbcopy_do(P,Bin),
+	% case actordb_conf:driver() of
+	% 	actordb_driver ->
+			case actordb_driver:iterate_db(P#dp.db,0,0) of
+				{ok,Iter,Bin,Head,Done} when Done == 0 ->
+					dbcopy_do(P,{Bin,Head}),
 					dbcopy(P,Home,ActorTo,Iter,Iter,wal);
+				{ok,_Iter,Bin,Head,Done} when Done > 0 ->
+					dbcopy_do(P,{Bin,Head}),
+					dbcopy_done(P,Home);
 				done ->
 					dbcopy_done(P,Home)
-			end;
-		_ ->
-			WR = gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}),
-			case WR of
-				{_Walname,Offset,Evnum,Evterm} ->
-					?DBG("dbsend done ",[]),
-					Param = [{bin,<<>>},{status,done},{origin,original},{evnum,Evnum},{evterm,Evterm}],
-					exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));
-				{_Walname,Walsize,_,_} when Offset > Walsize ->
-					?ERR("Offset larger than walsize ~p ~p ~p ~p",[ActorTo,P#dp.actortype,Offset,Walsize]),
-					exit(copyfail);
-				{Walname,Walsize,Evnum,Evterm} ->
-					Readnum = min(1024*1024,Walsize-Offset),
-					case Offset of
-						0 ->
-							{ok,F1} = file:open(Walname,[read,binary,raw]);
-						_ ->
-							F1 = F
-					end,
-					{ok,Bin} = file:read(F1,Readnum),
-					?DBG("dbsend wal ~p",[{Walname,Walsize}]),
-					Param = [{bin,Bin},{status,wal},{origin,original},{evnum,Evnum},{evterm,Evterm}],
-					ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
-					dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
-			end
-	end;
-dbcopy(P,Home,ActorTo,F,0,db) ->
-	still_alive(P,Home,ActorTo),
-	{ok,Bin} = file:read(F,1024*1024),
-	?DBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
-	Param = [{bin,Bin},{status,db},{origin,original}],
-	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
-	case byte_size(Bin) == 1024*1024 of
-		true ->
-			dbcopy(P,Home,ActorTo,F,0,db);
-		false ->
-			file:close(F),
-			dbcopy(P,Home,ActorTo,undefined,0,wal)
-	end.
+			end.
+		% _ ->
+			% WR = gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}),
+			% case WR of
+			% 	{_Walname,Offset,Evnum,Evterm} ->
+			% 		?DBG("dbsend done ",[]),
+			% 		Param = [{bin,<<>>},{status,done},{origin,original},{evnum,Evnum},{evterm,Evterm}],
+			% 		exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));
+			% 	{_Walname,Walsize,_,_} when Offset > Walsize ->
+			% 		?ERR("Offset larger than walsize ~p ~p ~p ~p",[ActorTo,P#dp.actortype,Offset,Walsize]),
+			% 		exit(copyfail);
+			% 	{Walname,Walsize,Evnum,Evterm} ->
+			% 		Readnum = min(1024*1024,Walsize-Offset),
+			% 		case Offset of
+			% 			0 ->
+			% 				{ok,F1} = file:open(Walname,[read,binary,raw]);
+			% 			_ ->
+			% 				F1 = F
+			% 		end,
+			% 		{ok,Bin} = file:read(F1,Readnum),
+			% 		?DBG("dbsend wal ~p",[{Walname,Walsize}]),
+			% 		Param = [{bin,Bin},{status,wal},{origin,original},{evnum,Evnum},{evterm,Evterm}],
+			% 		ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
+			% 		dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
+			% end
+	% end.
+% dbcopy(P,Home,ActorTo,F,0,db) ->
+% 	still_alive(P,Home,ActorTo),
+% 	{ok,Bin} = file:read(F,1024*1024),
+% 	?DBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
+% 	Param = [{bin,Bin},{status,db},{origin,original}],
+% 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
+% 	case byte_size(Bin) == 1024*1024 of
+% 		true ->
+% 			dbcopy(P,Home,ActorTo,F,0,db);
+% 		false ->
+% 			file:close(F),
+% 			dbcopy(P,Home,ActorTo,undefined,0,wal)
+% 	end.
 
 dbcopy_send(Ref,Param) ->
 	F = fun(_F,N) when N < 0 ->
@@ -1806,8 +1812,7 @@ start_copyrec(P) ->
 								end
 						end,
 						StartOpt = [{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},lock,nohibernate,{slave,true},
-													{lockinfo,dbcopy,{P#dp.dbcopyref,P#dp.cbstate,
-																	  P#dp.copyfrom,P#dp.copyreset}}],
+									{lockinfo,dbcopy,{P#dp.dbcopyref,P#dp.cbstate,P#dp.copyfrom,P#dp.copyreset}}],
 						[{ok,_} = rpc(Nd,{actordb_sqlproc,start_copylock,
 									[{P#dp.actorname,P#dp.actortype},StartOpt]}) || Nd <- ConnectedNodes];
 					_ ->
@@ -1828,7 +1833,7 @@ start_copyrec(P) ->
 dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 	receive
 		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
-			[Bin,Status,Origin,Evnum,Evterm] = butil:ds_vals([bin,status,origin,evnum,evterm],Param),
+			[{Bin,Header},Status,Origin,Evnum,Evterm] = butil:ds_vals([bin,status,origin,evnum,evterm],Param),
 			% ?DBG("copy_receive size=~p, origin=~p, status=~p",[byte_size(Bin),Origin,Status]),
 			case Origin of
 				original ->
@@ -1839,70 +1844,72 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 			end,
 			case CurStatus == Status of
 				true ->
-					case element(1,F) of
-						file_descriptor ->
-							ok = file:write(F,Bin);
-						_ ->
+					% case element(1,F) of
+					% 	file_descriptor ->
+					% 		ok = file:write(F,Bin);
+					% 	_ ->
 							<<_:8/binary,Evn:64,_/binary>> = Bin,
 							?DBG("Inject page evnum ~p",[Evn]),
-							ok = actordb_driver:inject_page(F,Bin)
-					end,
+							ok = actordb_driver:inject_page(F,Bin,Header),
+					% end,
 					F1 = F;
-				false when Status == db ->
-					file:delete(P#dp.fullpath++"-wal"),
-					file:delete(P#dp.fullpath++"-shm"),
-					{ok,F1} = file:open(P#dp.fullpath,[write,raw]),
-					?DBG("Writing db file ~p",[byte_size(Bin)]),
-					ok = file:write(F1,Bin);
+				% false when Status == db ->
+				% 	file:delete(P#dp.fullpath++"-wal"),
+				% 	file:delete(P#dp.fullpath++"-shm"),
+				% 	{ok,F1} = file:open(P#dp.fullpath,[write,raw]),
+				% 	?DBG("Writing db file ~p",[byte_size(Bin)]),
+				% 	ok = file:write(F1,Bin);
 				false when Status == wal ->
-					ok = file:close(F),
-					case actordb_conf:driver() of
-						actordb_driver ->
+					% ok = file:close(F),
+					% case actordb_conf:driver() of
+					% 	actordb_driver ->
 							?DBG("Opening new at ~p",[P#dp.dbpath]),
 							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 							% ok = actordb_sqlite:exec(F1,<<"$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>,write),
-							<<_:8/binary,Evn:64,_/binary>> = Bin,
-							?DBG("Inject page evnum ~p",[Evn]),
-							ok = actordb_driver:inject_page(F1,Bin);
-						_ ->
-							{ok,F1} = file:open(P#dp.fullpath++"-wal",[write,raw]),
-							ok = file:write(F1,Bin)
-					end;
+							% <<_:8/binary,Evn:64,_/binary>> = Bin,
+							<<_Evterm:64, Evnum:64,_/binary>> = Header,
+							?DBG("Inject page evnum ~p",[Evnum]),
+							ok = actordb_driver:inject_page(F1,Bin,Header);
+					% 	_ ->
+					% 		{ok,F1} = file:open(P#dp.fullpath++"-wal",[write,raw]),
+					% 		ok = file:write(F1,Bin)
+					% end;
 				false when Status == done ->
-					actordb_sqlite:stop(F),
+					% actordb_sqlite:stop(F),
 					F1 = undefined,
-					case ok of
-						_ when element(1,F) == actordb_driver ->
+					% case ok of
+					% 	_ when element(1,F) == actordb_driver ->
 							case actordb_sqlite:exec(F,<<"select name, sql from sqlite_master where type='table';">>,read) of
 								{ok,[{columns,_},{rows,SchemaTables}]} ->
 									ok;
 								_X ->
 									SchemaTables = []
 							end,
-							Db = F;
-						_ ->
-							{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal)
-					end,
-					Drv = actordb_conf:driver(),
-					case ok of
-						_ when Drv == actordb_driver ->
+							Db = F,
+					% 	_ ->
+					% 		{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal)
+					% end,
+					% Drv = actordb_conf:driver(),
+					% case ok of
+						% _ when Drv == actordb_driver ->
 							Sql = <<"SELECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
 							{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db, Sql,read),
 							Evnum1 = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 							Evterm1 = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-							?DBG("Storing evnum=~p, evterm=~p, curterm=~p",[Evnum1,Evterm1,butil:ds_val(curterm,Param)]),
+							<<HEvterm:64,HEvnum:64,_/binary>> = Header,
+							?DBG("Storing evnum=~p, evterm=~p, curterm=~p, hevterm=~p,hevnum=~p",[Evnum1,Evterm1,HEvterm,HEvnum,butil:ds_val(curterm,Param)]),
 							% ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1});
 							% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
 							% 	butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1);
-							store_term(P,undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1);
-						_ when is_integer(Evnum) ->
-							% ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,Evterm,Evnum,Evterm});
-							% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
-							% 	Evterm,Evnum,Evterm);
-							store_term(P,undefined,Evterm,Evnum,Evterm);
-						false ->
-							ok
-					end,
+							store_term(P,undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1),
+						% _ when is_integer(Evnum) ->
+						% 	% ok = butil:savetermfile([P#dp.fullpath,"-term"],{undefined,Evterm,Evnum,Evterm});
+						% 	% ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,undefined,
+						% 	% 	Evterm,Evnum,Evterm);
+						% 	store_term(P,undefined,Evterm,Evnum,Evterm);
+						% false ->
+						% 	ok
+					% end,
 					case SchemaTables of
 						[] ->
 							?ERR("DB open after move without schema?",[]),
