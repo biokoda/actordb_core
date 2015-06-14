@@ -616,13 +616,14 @@ save_term(P) ->
 	%ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
 	store_term(P,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
 	P.
-store_term(P,VotedFor,CurrentTerm,Evnum,EvTerm) ->
-	case actordb_conf:termdb() of
-		false ->
-			ok = butil:savetermfile([P#dp.fullpath,"-term"],{VotedFor,CurrentTerm,Evnum,EvTerm});
-		true ->
-			ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,VotedFor,CurrentTerm,Evnum,EvTerm)
-	end.
+store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->
+	ok = actordb_driver:term_store(P#dp.db, CurrentTerm, VotedFor).
+	% case actordb_conf:termdb() of
+	% 	false ->
+	% 		ok = butil:savetermfile([P#dp.fullpath,"-term"],{VotedFor,CurrentTerm,Evnum,EvTerm});
+	% 	true ->
+	% 		ok = actordb_termstore:store_term_info(P#dp.actorname,P#dp.actortype,VotedFor,CurrentTerm,Evnum,EvTerm)
+	% end.
 
 doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transactionid == undefined, P#dp.locked == [] ->
 	case queue:is_empty(P#dp.callqueue) of
@@ -1564,17 +1565,17 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,#dp{db = cleared} = P) ->
 	end;
 dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
 	% first clear existing db
-	case P#dp.db of
-		_ when element(1,P#dp.db) == actordb_driver ->
-			N = actordb_driver:wal_rewind(P#dp.db,0),
-			?DBG("Start receive rewinding data result=~p",[N]);
-		_ when element(1,P#dp.db) == connection ->
-			actordb_sqlite:stop(P#dp.db);
-		_ when P#dp.db == undefined ->
-			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-			N = actordb_driver:wal_rewind(Db,0),
-			?DBG("Start receive open and rewind data result=~p",[N])
-	end,
+	% case P#dp.db of
+	% 	% _ when element(1,P#dp.db) == actordb_driver ->
+	% 	% 	N = actordb_driver:wal_rewind(P#dp.db,0),
+	% 	% 	?DBG("Start receive rewinding data result=~p",[N]);
+	% 	% _ when element(1,P#dp.db) == connection ->
+	% 	% 	actordb_sqlite:stop(P#dp.db);
+	% 	_ when P#dp.db == undefined ->
+	% 		{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+	% 		% N = actordb_driver:wal_rewind(Db,0),
+	% 		?DBG("Start receive open and rewind data result=~p",[N])
+	% end,
 	dbcopy_call({start_receive,Copyfrom,Ref},CF,P#dp{db = cleared});
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,Data},_CallFrom,P) ->
@@ -1669,14 +1670,14 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 
 dbcopy_done(P,Home) ->
 	gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},done}}),
-	Param = [{bin,<<>>},{status,done},{origin,original},{evnum,0},{evterm,0},{curterm,P#dp.current_term}],
+	Param = [{bin,<<>>},{status,done},{origin,original},{curterm,P#dp.current_term}],
 	exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]})).
 dbcopy_do(P,Bin) ->
-	Param = [{bin,Bin},{status,wal},{origin,original},{evnum,0},{evterm,0},{curterm,P#dp.current_term}],
+	Param = [{bin,Bin},{status,wal},{origin,original},{curterm,P#dp.current_term}],
 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}).
 
 dbcopy(P,Home,ActorTo) ->
-	{ok,F} = file:open(P#dp.fullpath,[read,binary,raw]),
+	% {ok,F} = file:open(P#dp.fullpath,[read,binary,raw]),
 	ok = actordb_driver:checkpoint_lock(P#dp.db,1),
 	Me = self(),
 	spawn(fun() ->
@@ -1686,7 +1687,7 @@ dbcopy(P,Home,ActorTo) ->
 				actordb_driver:checkpoint_lock(P#dp.db,0)
 		end
 	end),
-	dbcopy(P,Home,ActorTo,F,0,wal).
+	dbcopy(P,Home,ActorTo,undefined,0,wal).
 dbcopy(P,Home,ActorTo,{iter,_} = Iter,_Bin,wal) ->
 	% case Bin of
 	% 	<<>> ->
@@ -1833,7 +1834,8 @@ start_copyrec(P) ->
 dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 	receive
 		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
-			[{Bin,Header},Status,Origin,Evnum,Evterm] = butil:ds_vals([bin,status,origin,evnum,evterm],Param),
+			[{Bin,Header},Status,Origin] = butil:ds_vals([bin,status,origin],Param),
+			<<Evterm:64/unsigned, Evnum:64/unsigned,_/binary>> = Header,
 			% ?DBG("copy_receive size=~p, origin=~p, status=~p",[byte_size(Bin),Origin,Status]),
 			case Origin of
 				original ->
@@ -1848,8 +1850,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 					% 	file_descriptor ->
 					% 		ok = file:write(F,Bin);
 					% 	_ ->
-							<<_:8/binary,Evn:64,_/binary>> = Bin,
-							?DBG("Inject page evnum ~p",[Evn]),
+							?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
 							ok = actordb_driver:inject_page(F,Bin,Header),
 					% end,
 					F1 = F;
@@ -1867,8 +1868,8 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 							% ok = actordb_sqlite:exec(F1,<<"$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>,write),
 							% <<_:8/binary,Evn:64,_/binary>> = Bin,
-							<<_Evterm:64, Evnum:64,_/binary>> = Header,
-							?DBG("Inject page evnum ~p",[Evnum]),
+
+							?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
 							ok = actordb_driver:inject_page(F1,Bin,Header);
 					% 	_ ->
 					% 		{ok,F1} = file:open(P#dp.fullpath++"-wal",[write,raw]),

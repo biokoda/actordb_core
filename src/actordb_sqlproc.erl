@@ -1530,54 +1530,32 @@ init([_|_] = Opts) ->
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
-			TermDb = actordb_conf:termdb(),
-			case ok of
-				_ when TermDb ->
-					case actordb_termstore:read_term_info(P#dp.actorname,P#dp.actortype) of
-						{_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
+			% TermDb = actordb_conf:termdb(),
+			% case ok of
+			% 	_ when TermDb ->
+					% case actordb_termstore:read_term_info(P#dp.actorname,P#dp.actortype) of
+					case actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)) of
+						% {_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
+						{_,_,VoteEvTerm,VoteEvnum,_,_,VotedCurrentTerm,VotedFor} ->
 							ok;
 						_ ->
 							VotedFor = undefined,
 							VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
-					end;
-				_ ->
-					case butil:readtermfile([P#dp.fullpath,"-term"]) of
-						{ok, VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
-							ok;
-						_ ->
-							VotedFor = undefined,
-							VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
-					end
-			end,
+					end,
+			% 	_ ->
+			% 		case butil:readtermfile([P#dp.fullpath,"-term"]) of
+			% 			{ok, VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
+			% 				ok;
+			% 			_ ->
+			% 				VotedFor = undefined,
+			% 				VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
+			% 		end
+			% end,
 			Driver = actordb_conf:driver(),
 			case ok of
 				_ when P#dp.mors == slave, Driver == actordb_driver ->
 					{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
 								voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})};
-				_ when P#dp.mors == slave ->
-					% Read evnum and evterm from wal file if it exists
-					case file:open([P#dp.fullpath,"-wal"],[read,binary,raw]) of
-						{ok,F} ->
-							case file:position(F,eof) of
-								{ok,WalSize} when WalSize > 32+40+?PAGESIZE ->
-									{ok,_} = file:position(F,{cur,-(?PAGESIZE+40)}),
-									{ok,<<_:32,_:32,Evnum:64/big-unsigned,Evterm:64/big-unsigned>>} =
-										file:read(F,24),
-									file:close(F),
-									?DBG("Actor start slave, with {Evnum,Evterm}=~p",[{Evnum,Evterm}]),
-									{ok,P#dp{current_term = VotedCurrentTerm, voted_for = VotedFor,
-												% election = actordb_sqlprocutil:election_timer(undefined),
-												evnum = Evnum, evterm = Evterm}};
-								{ok,_} ->
-									file:close(F),
-									{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
-													% election = actordb_sqlprocutil:election_timer(undefined),
-													voted_for = VotedFor, evnum = VoteEvnum, evterm = VoteEvTerm})}
-							end;
-						{error,enoent} ->
-							{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
-										voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})}
-					end;
 				_ when MovedToNode == undefined; RightCluster ->
 					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(
 								P#dp{current_term = VotedCurrentTerm,voted_for = VotedFor, evnum = VoteEvnum,
