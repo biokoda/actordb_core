@@ -52,7 +52,7 @@
 -record(write,{sql, flags = [], mfa, transaction, records = [], adb_recs = []}).
 -record(read,{sql, flags = []}).
 -record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0,
-              file, wait_for_response_since, last_seen = {0,0,0}, pagebuf = <<>>}).
+			  file, wait_for_response_since, last_seen = {0,0,0}, pagebuf = <<>>}).
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
@@ -63,52 +63,50 @@
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]
 	current_term = 0,voted_for, follower_indexes = [],
-	% EvNum,EvTerm of first item in wal
-	wal_from = {0,0},
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
 	locked = [],inrecovery = false, recovery_age = {0,0,0},
 	% Multiupdate id, set to {Multiupdateid,TransactionNum,OriginNode} if in the middle of a distributed transaction
 	transactioninfo,transactionid, transactioncheckref,
-  % actordb_sqlproc is not used directly, it always has a callback module that sits in front of it,
-  %  providing an external interface
-  %  to a sqlite backed process.
-  cbmod, cbstate,cbinit = false,
-  % callfrom is who is calling,
-  % callres result of sqlite call (need to replicate before replying)
-  callfrom,callres,
-  % queue which holds gen_server:calls that can not be processed immediately because db has not
-  %  been verified, is in the middle of a 2phase commit
-  %  or is being restored from another node.
-  callqueue,
-  % (short for masterorslave): slave/master
-  % mors = slave                     -> follower
-  % mors = master, verified == false -> candidate
-  % mors == master, verified == true -> leader
-  mors,
-  % Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
-  % If local db is being restored, verified will be on false.
-  % Possible values: true, false, failed (there is no majority of nodes with the same db state)
-  verified = false,
-  % PID of election process if in progress, time of last seen election otherwise.
-  election,
-  % Path to sqlite file.
-  dbpath,fullpath,
-  % Which nodes current process is sending dbfile to.
-  % [#cpto{},..]
-  dbcopy_to = [],
-  % If copy/move is unable to execute. Place data here and try later
-  % {TimeOfLastTry,Copy/Move data}
-  copylater,
-  % If node is sending us a complete copy of db, this identifies the operation
-  dbcopyref,
-  % Where is master sqlproc.
-  masternode, masternodedist, without_master_since,
-  % If db has been moved completely over to a new node. All calls will be redirected to that node.
-  % Once this has been set, db files will be deleted on process timeout.
-  movedtonode,
-  % Used when receiving complete actor state from another node.
-  copyfrom,copyreset = false,copyproc}).
-% -define(R2P(Record), butil:rec2prop(Record#dp{writelog = byte_size(P#dp.writelog)}, record_info(fields, dp))).
+	% actordb_sqlproc is not used directly, it always has a callback module that sits in front of it,
+	%  providing an external interface
+	%  to a sqlite backed process.
+	cbmod, cbstate,cbinit = false,
+	% callfrom is who is calling,
+	% callres result of sqlite call (need to replicate before replying)
+	callfrom,callres,
+	% queue which holds gen_server:calls that can not be processed immediately because db has not
+	%  been verified, is in the middle of a 2phase commit
+	%  or is being restored from another node.
+	callqueue,
+	% (short for masterorslave): slave/master
+	% mors = slave                     -> follower
+	% mors = master, verified == false -> candidate
+	% mors == master, verified == true -> leader
+	mors,
+	% Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
+	% If local db is being restored, verified will be on false.
+	% Possible values: true, false, failed (there is no majority of nodes with the same db state)
+	verified = false,
+	% PID of election process if in progress, time of last seen election otherwise.
+	election,
+	% Path to sqlite file.
+	dbpath,fullpath,
+	% Which nodes current process is sending dbfile to.
+	% [#cpto{},..]
+	dbcopy_to = [],
+	% If copy/move is unable to execute. Place data here and try later
+	% {TimeOfLastTry,Copy/Move data}
+	copylater,
+	% If node is sending us a complete copy of db, this identifies the operation
+	dbcopyref,
+	% Where is master sqlproc.
+	masternode, masternodedist, without_master_since,
+	% If db has been moved completely over to a new node. All calls will be redirected to that node.
+	% Once this has been set, db files will be deleted on process timeout.
+	movedtonode,
+	% Used when receiving complete actor state from another node.
+	copyfrom,copyreset = false,copyproc}).
+
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 

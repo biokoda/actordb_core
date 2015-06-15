@@ -540,7 +540,6 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 		_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
 			?ERR("AE start attempt failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 						[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
-			% case P#dp.evnum > PrevEvnum andalso  of
 			case ok of
 				% Node is conflicted, delete last entry
 				_ when PrevEvnum > 0, AEType == recover ->
@@ -770,7 +769,7 @@ state_rw_call({delete,MovedToNode},From,P) ->
 	reply(From,ok),
 	{reply,ok,P#dp{movedtonode = MovedToNode}};
 state_rw_call(checkpoint,_From,P) ->
-	actordb_sqlprocutil:do_checkpoint(P),
+	actordb_sqlprocutil:checkpoint(P),
 	{reply,ok,P}.
 
 read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
@@ -1181,14 +1180,6 @@ handle_info(check_locks,P) ->
 			erlang:send_after(1000,self(),check_locks),
 			{noreply, actordb_sqlprocutil:check_locks(P,P#dp.locked,[])}
 	end;
-handle_info(do_checkpoint,P) ->
-	case P#dp.locked of
-		[ae] ->
-			erlang:send_after(100,self(),do_checkpoint);
-		_ ->
-			actordb_sqlprocutil:do_checkpoint(P)
-	end,
-	{noreply,P};
 % handle_info({inactivity_timer,N},P) ->
 % 	handle_info({check_inactivity,N},P#dp{timerref = {undefined,N}});
 % handle_info({check_inactivity,N}, P) ->
