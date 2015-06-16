@@ -317,7 +317,7 @@ do_multiupdate(P,[#{type := Type1, actor := Actors, flags := Flags, var := undef
 						_ ->
 							IsMulti = true
 					end,
-					do_block(P,IsMulti,H,Varlist)
+					do_block(P,IsMulti,H#{statements := StBin},Varlist)
 			end,
 			do_multiupdate(P,T)
 	end;
@@ -333,7 +333,7 @@ do_multiupdate(P,[#{type := Type1, var := Gvar, column := Column, blockvar := Bl
 			case findpos(1,Column,Columns) of
 				N when is_integer(N) ->
 					NRows = get({Gvar,nrows}),
-					do_foreach(P,H#{type := Type, statements := Statements, var := N},{0,NRows}),
+					do_foreach(P,N,H#{type := Type},{0,NRows}),
 					do_multiupdate(P,T);
 				_ ->
 					?AERR("global var column not found ~p ~p",[Column,Columns]),
@@ -375,6 +375,7 @@ move_over_shards(H, P, Varlist, {Shard,_UpperLimit,Nd,Left,Right}) ->
 % Next = shard that is splitting (integer type), or name of node where shard is moving
 move_over_shard_actors(Nd, H, Shard, [], 1000, CountAll, P, Varlist, NextShard) when NextShard /= undefined ->
 	move_over_shard_actors(Nd, H, Shard, [],1000, CountAll, P, Varlist, undefined);
+
 move_over_shard_actors(Nd,#{type := Type, statements := [count]} = _H, Shard, [], _CountNow, _CountAll, _P, _Varlist, _NextShard) ->
 	case get({<<"RESULT">>,cols}) of
 		undefined ->
@@ -450,17 +451,18 @@ move_over_shard_actors(Nd,#{statements := [list]} = H,
 move_over_shard_actors(Nd,#{type := Type, flags := Flags, statements := StBin, iswrite := IsWrite} = H,
 		Shard, Actors, CountNow, CountAll, P, Varlist, Next) ->
 	Count = lists:foldl(fun({Actor},Cnt) ->
-				do_actor(P,true,H#{ actor := Actor},Varlist),
+				do_actor(P,true,H#{ actor => Actor},Varlist),
 				Cnt+1
 			end,0,Actors),
 	move_over_shard_actors(Nd,H,Shard,[],CountNow+Count,CountAll+Count,P,Varlist,Next).
 
+
 %
 % 			TYPE 2 - looping over a list with for
 %
-do_foreach(P,_,{N,N}) ->
+do_foreach(P,_,_,{N,N}) ->
 	P;
-do_foreach(P,#{type := Type, flags := Flags, actor := ActorColumn, var := Gvar, blockvar := Blockvar,
+do_foreach(P,ActorColumn, #{type := Type, flags := Flags, var := Gvar, blockvar := Blockvar,
 	iswrite := IsWrite, statements := Statements} = H,{N,Max}) ->
 	case get({Gvar,N}) of
 		undefined ->
@@ -472,7 +474,7 @@ do_foreach(P,#{type := Type, flags := Flags, actor := ActorColumn, var := Gvar, 
 			?ADBG("do_foreach ~p ~p",[N,Ac]),
 			{StBin,Varlist} = statements_to_binary(Ac,Statements,<<>>,[]),
 			do_actor(P,true,H#{actor := Ac, statements := StBin},Varlist),
-			do_foreach(P,H,{N+1,Max})
+			do_foreach(P,ActorColumn,H,{N+1,Max})
 	end.
 
 
@@ -488,15 +490,19 @@ do_block(P,IsMulti,#{type := Type, flags := Flags, actor := [Actor|T], iswrite :
 	end,
 	do_actor(P,IsMulti,H#{ actor := Actor1},Varlist),
 	do_block(P,IsMulti,H#{ actor := T},Varlist);
+
 do_block(_,_,#{actor := []},_) ->
 	ok.
+
+
 
 do_actor(_,_,#{statement := <<>>},_) ->
 	ok;
 do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := IsWrite, statements := Statements1} = H,curactor) ->
 	{StBin,Varlist} = statements_to_binary(Actor,Statements1,<<>>,[]),
 	do_actor(P, IsMulti, H#{statements := StBin}, Varlist);
-do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := IsWrite, statements := Statements1} = H,Varlist) ->
+
+do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := IsWrite, statements := Statements1},Varlist) ->
 	%todo check statemnts1 for bindingvals
 	Call = #{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite, dorpc => true, bindingvals => []},
 	case is_tuple(P) of
@@ -518,7 +524,7 @@ do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := Is
 			end;
 		_ ->
 			?ADBG("do_actor read ~p ~p",[Actor,Statements1]),
-			Res = actordb:direct_call(Call#{statements => Statements1})
+			Res = actordb:direct_call(Call#{ statements => Statements1 })
 	end,
 	?ADBG("do_actor varlist ~p",[Varlist]),
 	case Res of
