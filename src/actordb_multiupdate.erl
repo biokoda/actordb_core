@@ -329,7 +329,8 @@ do_multiupdate(P,[#{type := Type1, var := Gvar, column := Column, blockvar := Bl
 		undefined ->
 			?AERR("global var columns not found ~p",[Gvar]),
 			do_multiupdate(P,[]);
-		Columns ->?AERR("Columns ~p",[Columns]),
+		Columns ->
+			?AERR("Columns ~p",[Columns]),
 			case findpos(1,Column,Columns) of
 				N when is_integer(N) ->
 					NRows = get({Gvar,nrows}),
