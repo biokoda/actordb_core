@@ -673,9 +673,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,Matc
 														[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 														{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
 										ok ->
-											actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,
-																						P#dp.actorname}},
-																			From,NP);
+											actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,P#dp.actorname}},From,NP);
 										_Err ->
 											?ERR("Unable to send db ~p",[_Err]),
 											{reply,false,P}
@@ -1513,6 +1511,7 @@ init([_|_] = Opts) ->
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
 				{lockinfo,wait} ->
+					?DBG("Starting actor lock wait ~p",[P]),
 					{ok,P}
 			end;
 		P when P#dp.copyfrom == undefined ->
@@ -1521,27 +1520,16 @@ init([_|_] = Opts) ->
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
-			% TermDb = actordb_conf:termdb(),
-			% case ok of
-			% 	_ when TermDb ->
-					% case actordb_termstore:read_term_info(P#dp.actorname,P#dp.actortype) of
-					case actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)) of
-						% {_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
-						{_,_,VoteEvTerm,VoteEvnum,_,_,VotedCurrentTerm,VotedFor} ->
-							ok;
-						_ ->
-							VotedFor = undefined,
-							VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
-					end,
-			% 	_ ->
-			% 		case butil:readtermfile([P#dp.fullpath,"-term"]) of
-			% 			{ok, VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
-			% 				ok;
-			% 			_ ->
-			% 				VotedFor = undefined,
-			% 				VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
-			% 		end
-			% end,
+			case actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)) of
+				% {_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
+				{_,_,VoteEvTerm,VoteEvnum,_,_,VotedCurrentTerm,<<>>} ->
+					VotedFor = undefined;
+				{_,_,VoteEvTerm,VoteEvnum,_,_,VotedCurrentTerm,VotedFor} ->
+					ok;
+				_ ->
+					VotedFor = undefined,
+					VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
+			end,
 			Driver = actordb_conf:driver(),
 			case ok of
 				_ when P#dp.mors == slave, Driver == actordb_driver ->
