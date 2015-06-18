@@ -147,6 +147,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 			% test_mon_stop(),
 			Res
 	end.
+
 startactor(Name,Start,Flags) ->
 	case Start of
 		{Mod,Func,Args} ->
