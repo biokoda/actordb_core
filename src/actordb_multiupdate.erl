@@ -8,14 +8,10 @@
 -export([start/1, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 % -compile(export_all).
 % -export([cb_schema/3,cb_path/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2]).
--export([multiread/1,multiread/2,exec/1,exec/2,get_schema/1,transaction_state/2]).
+-export([multiread/1,exec/1,exec/2,get_schema/1,transaction_state/2]).
 -include_lib("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 
-% -record(dp,{id,recovering = false}).
-
-exec({S,BindingValues}) ->
-	exec([{AInfo,IsWrite,{Statements,[BinVal]}}||{{AInfo,IsWrite,Statements},BinVal} <- lists:zip(S,BindingValues)]);
 exec(S) ->
 	exec(actordb_local:pick_mupdate(),S).
 exec(Name,S) when is_integer(Name) ->
@@ -74,7 +70,7 @@ sqlname(P) ->
 	{P#dp.name,?MULTIUPDATE_TYPE}.
 
 handle_call({transaction_state,Id},_From,P) ->
-	case actordb_actor:read(sqlname(P),[create],{<<"#d06;">>,[[[butil:toint(Id)]]]}) of
+	case actordb_actor:read(#{actor => sqlname(P), flags => [create], statements => {<<"#d06;">>,[[[butil:toint(Id)]]]}}) of
 		{ok,[{columns,_},{rows,[{_,Commited}]}]} ->
 			{reply,{ok,Commited},P};
 		{ok,[_,{rows,[]}]} ->
@@ -85,7 +81,8 @@ handle_call({transaction_state,Id},_From,P) ->
 	end;
 handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
-	case actordb_actor:write(sqlname(P),[create],<<"#d07;">>) of
+	case actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => <<"#d07;">>}) of
+	%case actordb_actor:write(sqlname(P),#{flags => [create], statements => <<"#d07;">>}) of
 		{ok,{changes,Num,_}} ->
 			ok;
 		{ok,{rowid,Num}} ->
@@ -105,7 +102,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				%  if transaction is set to commited or not. If commited is set and they have not commited, they will execute their sql
 				%  which they have saved locally.
 				ok = actordb_sqlite:okornot(
-						actordb_actor:write(sqlname(P),[create],{<<"#s08;">>,[[[Num]]]})),
+						actordb_actor:write(#{actor => sqlname(P),flags => [create], statements => {<<"#s08;">>,[[[Num]]]}})),
 				% Inform all actors that they should commit.
 				% case S of
 				% 	[{_,_,[delete]}|_] ->
@@ -133,7 +130,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.
 				% Once commited is set to 1 or -1 it is final.
-				ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(Num))),
+				ok = actordb_sqlite:okornot(actordb_actor:write(#{ actor => sqlname(P), flags => [create], statements => abandon_sql(Num)})),
 				exit(abandoned)
 		end
 	end),
@@ -166,7 +163,7 @@ handle_info({'DOWN',_Monitor,_Ref,PID,Result}, #dp{execproc = PID} = P) ->
 		abandoned ->
 			ok;
 		_ ->
-			ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(P#dp.curnum)))
+			ok = actordb_sqlite:okornot(actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => abandon_sql(P#dp.curnum)}))
 	end,
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
@@ -208,9 +205,9 @@ init(Name1) ->
 			{ok,_} = actordb_actor:start(P#dp.name,?MULTIUPDATE_TYPE,[create]),
 			ok = actordb_local:reg_mupdater(P#dp.name,self()),
 			erlang:send_after(1000,self(),timeout),
-			case actordb_actor:read(sqlname(P),[create],<<"SELECT max(id),commited FROM transactions;">>) of
+			case actordb_actor:read(#{actor => sqlname(P), flags => [create], statements => <<"SELECT max(id),commited FROM transactions;">>}) of
 				{ok,[{columns,_},{rows,[{Id,0}]}]} ->
-					ok = actordb_sqlite:okornot(actordb_actor:write(sqlname(P),[create],abandon_sql(Id)));
+					ok = actordb_sqlite:okornot(actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => abandon_sql(Id)}));
 				{ok,_} ->
 					ok
 			end,
@@ -249,9 +246,6 @@ schema(1) ->
 % [{VariableName,cols},{gvar,GlobalVarName,GlobalVarIndex}]
 % It also stores every node where an actor lives: [{{node,Nodename},true},...]
 
-multiread(L,BindingValues) ->
-	multiread([{AInfo,IsWrite,{Statements,[BinVal]}}||{{AInfo,IsWrite,Statements},BinVal} <- lists:zip(L,BindingValues)]).
-
 multiread(L) ->
 	ExistingPD = get(),
 	erase(),
@@ -289,97 +283,101 @@ read_mr_rows(N,L) ->
 %
 % 		LOOP OVER BLOCKS (1 block is: "use actortype(....);statement1;statement2;statementN")
 %
-do_multiupdate(P,[{AInfo,IsWrite,Statements}|T]) ->
-	case AInfo of
-		{Type1,Gvar,Column,BlockVar,Flags} ->
-			Type = actordb_util:typeatom(Type1),
-			case get({Gvar,cols}) of
-				undefined ->
-					?AERR("global var columns not found ~p",[Gvar]),
-					do_multiupdate(P,[]);
-				Columns ->
-					case findpos(1,Column,Columns) of
-						N when is_integer(N) ->
-							NRows = get({Gvar,nrows}),
-							do_foreach(P,Type,Flags,N,Gvar,BlockVar,IsWrite,Statements,{0,NRows}),
-							do_multiupdate(P,T);
-						_ ->
-							?AERR("global var column not found ~p ~p",[Column,Columns]),
-							% TODO: error
-							do_multiupdate(P,[])
-					end
-			end;
-		{Type1,Actors,Flags} ->
-			Type = actordb_util:typeatom(Type1),
-			case statements_to_binary(undefined,Statements,<<>>,[]) of
-				undefined ->
-					do_multiupdate(P,[]);
-				curactor ->
+do_multiupdate(P,[#{type := Type1, actor := Actors, flags := Flags, var := undefined, column := undefined, blockvar := undefined } = H |T]) ->
+	Type = actordb_util:typeatom(Type1),
+	Statements = maps:get(statements, H),
+	IsWrite = maps:get(iswrite, H),
+	case statements_to_binary(undefined,Statements,<<>>,[]) of
+		undefined ->
+			do_multiupdate(P,[]);
+		curactor ->
+			case Actors of
+				$* ->
+					% ?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
+					move_over_shards(H, P, curactor, actordb_shardtree:all());
+				_ ->
 					case Actors of
-						$* ->
-							% ?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
-							move_over_shards(Type,Flags,P,IsWrite,Statements,curactor,actordb_shardtree:all());
+						[_] ->
+							IsMulti = false;
 						_ ->
-							case Actors of
-								[_] ->
-									IsMulti = false;
-								_ ->
-									IsMulti = true
-							end,
-							do_block(P,IsMulti,Type,Flags,Actors,IsWrite,Statements,curactor)
+							IsMulti = true
 					end,
+					do_block(P,IsMulti,H,curactor)
+			end,
+			do_multiupdate(P,T);
+		{StBin,Varlist} ->
+			case Actors of
+				$* ->
+					?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
+					move_over_shards(H#{statements := StBin}, P, Varlist, actordb_shardtree:all());
+				_ ->
+					case Actors of
+						[_] ->
+							IsMulti = false;
+						_ ->
+							IsMulti = true
+					end,
+					do_block(P,IsMulti,H#{statements := StBin},Varlist)
+			end,
+			do_multiupdate(P,T)
+	end;
+do_multiupdate(P,[#{type := Type1, var := Gvar, column := Column, blockvar := BlockVar, flags := Flags} = H|T]) ->
+	Type = actordb_util:typeatom(Type1),
+	Statements = maps:get(statements, H),
+	IsWrite = maps:get(iswrite, H),
+	case get({Gvar,cols}) of
+		undefined ->
+			?AERR("global var columns not found ~p",[Gvar]),
+			do_multiupdate(P,[]);
+		Columns ->
+			?AERR("Columns ~p",[Columns]),
+			case findpos(1,Column,Columns) of
+				N when is_integer(N) ->
+					NRows = get({Gvar,nrows}),
+					do_foreach(P,N,H#{type := Type},{0,NRows}),
 					do_multiupdate(P,T);
-				{StBin,Varlist} ->
-					case Actors of
-						$* ->
-							% ?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
-							move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,actordb_shardtree:all());
-						_ ->
-							case Actors of
-								[_] ->
-									IsMulti = false;
-								_ ->
-									IsMulti = true
-							end,
-							do_block(P,IsMulti,Type,Flags,Actors,IsWrite,StBin,Varlist)
-					end,
-					do_multiupdate(P,T)
+				_ ->
+					?AERR("global var column not found ~p ~p",[Column,Columns]),
+					% TODO: error
+					do_multiupdate(P,[])
 			end
 	end;
+
 do_multiupdate(_,[]) ->
 	ok.
 
 %
 % 			TYPE 1 - moving over all actors for type by traversing shard tree
 %
-move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,{Shard,_UpperLimit,Nd,Left,Right}) ->
+move_over_shards(H, P, Varlist, {Shard,_UpperLimit,Nd,Left,Right}) ->
 	% A bit of an ugly hack with proc. dictionary. The problem is a shard might get visited
 	%  more then once without this failsafe. If a node has too few shards, it will split them in half
 	%  thus doubling it's shard count. If this happens during a query a shard is likely to get visited twice.
 	case get({shard_visited,Shard}) of
 		undefined ->
 			put({shard_visited,Shard},true),
-			move_over_shard_actors(Nd,Type,Flags,Shard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
+			move_over_shard_actors(Nd, H, Shard, [], 0, 0, P, Varlist, undefined);
 		_ ->
 			ok
 	end,
 	case Left of
 		undefined when Right /= undefined ->
-			move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,Right);
+			move_over_shards(H, P, Varlist, Right);
 		undefined ->
 			ok;
 		_ when Right == undefined ->
-			move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,Left);
+			move_over_shards(H, P, Varlist, Left);
 		_ ->
-			move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,Left),
-			move_over_shards(Type,Flags,P,IsWrite,StBin,Varlist,Right)
+			move_over_shards(H, P, Varlist, Left),
+			move_over_shards(H ,P, Varlist, Right)
 	end.
 
 
 % Next = shard that is splitting (integer type), or name of node where shard is moving
-move_over_shard_actors(Nd,Type,Flags,Shard,[],1000,CountAll,P,IsWrite,StBin,Varlist,NextShard) when NextShard /= undefined ->
-	move_over_shard_actors(Nd,Type,Flags,Shard,[],1000,CountAll,P,IsWrite,StBin,Varlist,undefined);
-move_over_shard_actors(Nd,Type,_Flags,Shard,[],_CountNow,_CountAll,_P,_IsWrite,[count],_Varlist,_NextShard) ->
+move_over_shard_actors(Nd, H, Shard, [], 1000, CountAll, P, Varlist, NextShard) when NextShard /= undefined ->
+	move_over_shard_actors(Nd, H, Shard, [],1000, CountAll, P, Varlist, undefined);
+
+move_over_shard_actors(Nd,#{type := Type, statements := [count]} = _H, Shard, [], _CountNow, _CountAll, _P, _Varlist, _NextShard) ->
 	case get({<<"RESULT">>,cols}) of
 		undefined ->
 			put({<<"RESULT">>,cols},{<<"count">>}),
@@ -397,11 +395,12 @@ move_over_shard_actors(Nd,Type,_Flags,Shard,[],_CountNow,_CountAll,_P,_IsWrite,[
 	end,
 	put({<<"RESULT">>,0},{CurCount+Count}),
 	ok;
-move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,Varlist,Next) ->
+move_over_shard_actors(Nd,#{type := Type, flags := Flags, statements := StBin, iswrite := IsWrite} = H,
+				Shard, [], CountNow, CountAll, P, Varlist, Next) ->
 	Iskv = actordb_schema:iskv(Type),
 	case ok of
 		_ when Iskv ->
-			do_actor(P,true,Type,Flags,{Shard,1},IsWrite,StBin,Varlist);
+			do_actor(P,true,H#{actor := {Shard,1}},Varlist);
 		_ when CountNow == 0; CountNow == 1000 ->
 			case bkdcore:node_name() == Nd of
 				true ->
@@ -414,11 +413,11 @@ move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,
 				{ok,[]} ->
 					ok;
 				{ok,L} ->
-					move_over_shard_actors(Nd,Type,Flags,Shard,L,0,CountAll,P,IsWrite,StBin,Varlist,Next);
+					move_over_shard_actors(Nd, H, Shard, L, 0, CountAll, P, Varlist, Next);
 				{ok,[],NextShard,NextShardNode} ->
-					move_over_shard_actors(NextShardNode,Type,Flags,NextShard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
+					move_over_shard_actors(NextShardNode, H, NextShard,[], 0, 0, P, Varlist, undefined);
 				{ok,L,NextShard1,NextShardNode1} ->
-					move_over_shard_actors(Nd,Type,Flags,Shard,L,0,CountAll,P,IsWrite,StBin,Varlist,{NextShard1,NextShardNode1})
+					move_over_shard_actors(Nd, H, Shard, L, 0, CountAll, P, Varlist,{NextShard1, NextShardNode1})
 			end;
 		_ ->
 			case Next of
@@ -428,13 +427,14 @@ move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow,CountAll,P,IsWrite,StBin,
 					case get({shard_visited,NextShard}) of
 						undefined ->
 							put({shard_visited,NextShard},true),
-							move_over_shard_actors(NextShardNode,Type,Flags,NextShard,[],0,0,P,IsWrite,StBin,Varlist,undefined);
+							move_over_shard_actors(NextShardNode, H, NextShard, [], 0, 0, P, Varlist, undefined);
 						_ ->
 							ok
 					end
 			end
 	end;
-move_over_shard_actors(Nd,Type,Flags,Shard,Actors,CountNow,CountAll,P,IsWrite,[list],Varlist,Next) ->
+move_over_shard_actors(Nd,#{statements := [list]} = H,
+			Shard, Actors, CountNow, CountAll, P, Varlist, Next) ->
 	case get({<<"RESULT">>,cols}) of
 		undefined ->
 			put({<<"RESULT">>,cols},{<<"actor">>}),
@@ -448,20 +448,23 @@ move_over_shard_actors(Nd,Type,Flags,Shard,Actors,CountNow,CountAll,P,IsWrite,[l
 				Cnt+1
 			end,0,Actors),
 	put({<<"RESULT">>,nrows},CurNRows+Count),
-	move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow+Count,CountAll+Count,P,IsWrite,[list],Varlist,Next);
-move_over_shard_actors(Nd,Type,Flags,Shard,Actors,CountNow,CountAll,P,IsWrite,StBin,Varlist,Next) ->
+	move_over_shard_actors(Nd,H,Shard,[],CountNow+Count,CountAll+Count,P,Varlist,Next);
+move_over_shard_actors(Nd,#{type := Type, flags := Flags, statements := StBin, iswrite := IsWrite} = H,
+		Shard, Actors, CountNow, CountAll, P, Varlist, Next) ->
 	Count = lists:foldl(fun({Actor},Cnt) ->
-				do_actor(P,true,Type,Flags,Actor,IsWrite,StBin,Varlist),
+				do_actor(P,true,H#{ actor => Actor},Varlist),
 				Cnt+1
 			end,0,Actors),
-	move_over_shard_actors(Nd,Type,Flags,Shard,[],CountNow+Count,CountAll+Count,P,IsWrite,StBin,Varlist,Next).
+	move_over_shard_actors(Nd,H,Shard,[],CountNow+Count,CountAll+Count,P,Varlist,Next).
+
 
 %
 % 			TYPE 2 - looping over a list with for
 %
-do_foreach(P,_,_,_,_,_,_,_,{N,N}) ->
+do_foreach(P,_,_,{N,N}) ->
 	P;
-do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N,Max}) ->
+do_foreach(P,ActorColumn, #{type := Type, flags := Flags, var := Gvar, blockvar := Blockvar,
+	iswrite := IsWrite, statements := Statements} = H,{N,Max}) ->
 	case get({Gvar,N}) of
 		undefined ->
 			?ADBG("do_foreach no gvar for ~p",[N]),
@@ -471,52 +474,58 @@ do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N,Max}) ->
 			Ac = butil:tobin(element(ActorColumn,Row)),
 			?ADBG("do_foreach ~p ~p",[N,Ac]),
 			{StBin,Varlist} = statements_to_binary(Ac,Statements,<<>>,[]),
-			do_actor(P,true,Type,Flags,Ac,IsWrite,StBin,Varlist),
-			do_foreach(P,Type,Flags,ActorColumn,Gvar,Blockvar,IsWrite,Statements,{N+1,Max})
+			do_actor(P,true,H#{actor := Ac, statements := StBin},Varlist),
+			do_foreach(P,ActorColumn,H,{N+1,Max})
 	end.
 
 
 %
 % 			TYPE 3 - regular query on single or list of actors
 %
-do_block(P,IsMulti,Type,Flags,[Actor|T],IsWrite,Statements,Varlist) ->
+do_block(P,IsMulti,#{type := Type, flags := Flags, actor := [Actor|T], iswrite := IsWrite, statements := Statements} = H,Varlist) ->
 	case Actor of
 		{Var,Column} ->
 			Actor1 = get_pd_column(Var,Column);
 		_ ->
 			Actor1 = Actor
 	end,
-	do_actor(P,IsMulti,Type,Flags,Actor1,IsWrite,Statements,Varlist),
-	do_block(P,IsMulti,Type,Flags,T,IsWrite,Statements,Varlist);
-do_block(_,_,_,_,[],_,_,_) ->
+	do_actor(P,IsMulti,H#{ actor := Actor1},Varlist),
+	do_block(P,IsMulti,H#{ actor := T},Varlist);
+
+do_block(_,_,#{actor := []},_) ->
 	ok.
 
-do_actor(_,_,_,_,_,_,<<>>,_) ->
+
+
+do_actor(_,_,#{statement := <<>>},_) ->
 	ok;
-do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,curactor) ->
+do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := IsWrite, statements := Statements1} = H,curactor) ->
 	{StBin,Varlist} = statements_to_binary(Actor,Statements1,<<>>,[]),
-	do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,StBin,Varlist);
-do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
+	do_actor(P, IsMulti, H#{statements := StBin}, Varlist);
+
+do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := IsWrite, statements := Statements1},Varlist) ->
+	%todo check statemnts1 for bindingvals
+	Call = #{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite, dorpc => true, bindingvals => []},
 	case is_tuple(P) of
 		true when IsWrite  ->
 			case Statements1 of
 				[Pragma] when is_atom(Pragma) ->
-					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()},[Pragma]};
+					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()}, [Pragma]};
 				_ ->
-					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()},Statements1}
+					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()}, Statements1}
 			end,
 			?ADBG("do_actor write ~p ~p",[Actor,Statements]),
 			case P#dp.confirming of
 				undefined ->
-					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,Statements,true);
+					Res = actordb:direct_call(Call#{statements => Statements});
 				true ->
-					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,{{P#dp.currow,P#dp.name,bkdcore:node_name()},commit},true);
+					Res = actordb:direct_call(Call#{statements => {{P#dp.currow,P#dp.name,bkdcore:node_name()},commit}});
 				false ->
-					Res = actordb:direct_call(Actor,Type,Flags,IsWrite,{{P#dp.currow,P#dp.name,bkdcore:node_name()},abort},true)
+					Res = actordb:direct_call(Call#{statements => {{P#dp.currow,P#dp.name,bkdcore:node_name()},abort}})
 			end;
 		_ ->
 			?ADBG("do_actor read ~p ~p",[Actor,Statements1]),
-			Res = actordb:direct_call(Actor,Type,Flags,IsWrite,Statements1,true)
+			Res = actordb:direct_call(Call#{ statements => Statements1 })
 	end,
 	?ADBG("do_actor varlist ~p",[Varlist]),
 	case Res of
@@ -532,6 +541,7 @@ do_actor(P,IsMulti,Type,Flags,Actor,IsWrite,Statements1,Varlist) ->
 		{sql_error,Str,SqlRes} ->
 			exit({sql_error,Str,SqlRes});
 		{ok,[{columns,_},{rows,_}] = L} ->
+			?AINF("Res store vars =~p",[{IsMulti,Actor,Varlist,[L]}]),
 			store_vars(IsMulti,Actor,Varlist,[L]);
 		{ok,[_|_] = L} ->
 			store_vars(IsMulti,Actor,Varlist,L);

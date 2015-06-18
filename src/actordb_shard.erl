@@ -271,7 +271,6 @@ count_actors(ShardName,Type1) ->
 	{ok,[{columns,_},{rows,[{C}]}]} = actordb_sqlproc:read({ShardName,Type},[create],<<"SELECT count(*) FROM actors;">>,?MODULE),
 	C.
 
-
 list_actors(ShardName,Type1,From,Limit) ->
 	Type = butil:toatom(Type1),
 	R = actordb_sqlproc:read({ShardName,Type},[create],{?MODULE,cb_list_actors,[From,Limit]},?MODULE),
