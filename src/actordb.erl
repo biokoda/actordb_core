@@ -16,6 +16,27 @@
 -export([direct_call/1,actor_id_type/1,configfiles/0,exec1/1,
 		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
 -include("actordb.hrl").
+-export ([get_multiblock_map/1]).
+%Maps are used for carrying query statements information:
+% type => type of an actor selected (check schema)
+% actor => select an actor with ID
+% flags => [Create]
+% iswrite => Is the statement writing to DB or reading
+% statements => [{<<"RESULT">>,<<"SELECT * FROM thread;">>}]
+% bindingvals => For prepared statements [[table, value1, value2, ...]]
+%
+%
+%
+%  when
+%  ACTOR thread(1);
+%  {{RESULT}}SELECT * FROM thread;
+%  ACTOR user(for X.userid in RESULT);
+%  {{INFO}}SELECT * FROM userinfo WHERE id=1;
+%  {{X.username=INFO.name}}
+% var => <<"RESULT">>}
+% column => <<"userid">>
+% blockvar => <<"X">>
+
 
 
 is_ready() ->
@@ -223,15 +244,7 @@ exec1(St,BindingValues)->
 			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => true,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:exec(Call);
-
-
-
 		% Single block, lookup across multiple actors
-		%<<"actor user(denis,ino); SELECT * FROM todos;">>
-		% {{[{{Type,[_,_|_] = Actors,Flags},false,Statements}],_}, []} ->
-		% 	Call = #{type => Type, actor => Actors, flags => Flags, iswrite => failsafe,
-		% 	statements => Statements, bindingvals => []},
-		% 	actordb_multiupdate:multiread(Call);
 		{{[{{Type, [_,_|_] = Actors, Flags},false, Statements}] = _Multiread,_}, []} ->
 			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
@@ -241,15 +254,10 @@ exec1(St,BindingValues)->
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
 		% Single block, lookup across all actors of certain type
-
-
-
-
-
 		% Single block, lookup across all actors of type
 		%<<"actor type1(*); {{RESULT}} SELECT * FROM tab;">>
 		%if it does not contains {{result}} it wil return just ok
-		{{[{{ Type, $*, Flags}, false, Statements}],_}, []} ->io:fwrite("Mrs "),
+		{{[{{ Type, $*, Flags}, false, Statements}],_}, []} ->
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
@@ -257,8 +265,6 @@ exec1(St,BindingValues)->
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
-
-
 		% Single block, write across all actors of certain type
 		{{[{{Type, $*, Flags}, true, Statements}],_}, []} ->
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => true,
@@ -268,21 +274,13 @@ exec1(St,BindingValues)->
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => true,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:exec([Call]);
-
-
-
-
-
 		%actordb_sqlparse:parse_statements(<<"actor user(denis); SELECT * FROM todos; actor user(ino); SELECT * FROM todos;">>).
 		{{[_,_|_] = Multiblock,false}, []} ->
 			Call = get_multiblock_map(Multiblock),
-			io:fwrite("Call ~p  ~n ",[Call]),
 			actordb_multiupdate:multiread(Call);
 		{{[_,_|_] = Multiblock,false}, _} ->
 			Call = get_multiblock_map(lists:zip(Multiblock,BindingValues)),
 			actordb_multiupdate:multiread(Call);
-
-
 		% Multiple blocks, that change db
 		{{[_,_|_] = Multiblock,true}, []} ->
 			Call = get_multiblock_map(Multiblock),
@@ -292,9 +290,7 @@ exec1(St,BindingValues)->
 			Call = get_multiblock_map(lists:zip(Multiblock,BindingValues)),
 			actordb_multiupdate:exec(Call);
 		% Multiple blocks but only reads
-
-
-		{undefined, _} ->
+  	{undefined, _} ->
 			[];
 		{[],_} ->
 			[];
