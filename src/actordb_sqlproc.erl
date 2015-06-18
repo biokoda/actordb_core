@@ -587,11 +587,12 @@ state_rw_call({appendentries_wal,Term,Header,Body,AEType,CallCount},From,P) ->
 					case Header of
 						% dbsize == 0, not last page
 						<<_:20/binary,0:32>> ->
+							?DBG("AE append"),
 							{reply,ok,P#dp{locked = [ae]}};
 						% last page
-						<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> ->
-							?DBG("AE WAL done evnum=~p, evterm=~p aetype=~p queueempty=~p, masternd=~p",
-									[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
+						<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,Pgno:32,Commit:32>> ->
+							?DBG("AE WAL done evnum=~p, evterm=~p aetype=~p queueempty=~p, masternd=~p, pgno=~p, commit=~p",
+									[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode,Pgno,Commit]),
 							% Prevent any timeouts on next ae since recovery process is progressing.
 							case P#dp.inrecovery of
 								true ->

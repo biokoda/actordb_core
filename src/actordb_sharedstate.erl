@@ -681,7 +681,7 @@ cb_nodelist(S,true,{ok,[{columns,_},{rows,Rows}]} = ReadResult) ->
 return_mg(S,Nodes) ->
 	case lists:member(actordb_conf:node_name(),Nodes) of
 		true ->
-			{ok,S#st{current_write = [{master_group,Nodes}|S#st.current_write],
+			{ok,S#st{current_write = lists:keystore(master_group,1,S#st.current_write,{master_group,Nodes}),
 					 master_group = Nodes},
 			    Nodes -- [actordb_conf:node_name()]};
 		false ->
