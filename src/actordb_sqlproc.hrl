@@ -90,7 +90,7 @@
 	% PID of election process if in progress, time of last seen election otherwise.
 	election,
 	% Path to sqlite file.
-	dbpath,fullpath,
+	dbpath,
 	% Which nodes current process is sending dbfile to.
 	% [#cpto{},..]
 	dbcopy_to = [],

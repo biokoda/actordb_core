@@ -8,7 +8,7 @@
 
 % It brings some order to the election process. Since we can have a large number of actors
 % all doing elections (at least on startup), election timeouts can be impossible to set correctly
-% and actors will timeout too soon. 
+% and actors will timeout too soon.
 
 
 pid() ->
@@ -95,9 +95,9 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(_, P) -> 
+handle_info(_, P) ->
 	{noreply, P}.
-	
+
 terminate(_, _) ->
 	ok.
 code_change(_, P, _) ->
@@ -128,7 +128,7 @@ doelection(E1) ->
 			{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
 				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]]});
 		_ ->
-			Nodes = [F#flw.distname || F <- E#election.followers],
+			Nodes = [F#flw.distname || F <- E#election.followers, lists:member(F#flw.distname,nodes())],
 			{Results,_GetFailed} = rpc:multicall(Nodes,actordb_sqlproc,call_slave,
 				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]],2000)
 	end,

@@ -419,13 +419,11 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 					throw(wal_corruption),
 					Commit = Iter = Header = PageCompressed = undefined
 			end;
-		% <<Header:144/binary,Page/binary>> ->
 		{PageCompressed,Header,Commit} ->
 			Iter = F#flw.file
 	end,
-	% <<_:32,Commit:32,_/binary>> = Header,
-	% {Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Page),
-	% <<PageCompressed:CompressedSize/binary,_/binary>> = Compressed,
+	<<ET:64,EN:64,Pgno:32,_:32>> = Header,
+	?DBG("send_wal et=~p, en=~p, pgno=~p, commit=~p",[ET,EN,Pgno,Commit]),
 	WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 				{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},
 				[nostart]]}),
@@ -713,6 +711,7 @@ check_for_resync1(P,[F|L],_Action,Now) ->
 		_ ->
 			Wait = timer:now_diff(Now,F#flw.wait_for_response_since)
 	end,
+	?DBG("check_resync nd=~p, alive=~p",[F#flw.node,IsAlive]),
 	LastSeen = timer:now_diff(Now,F#flw.last_seen),
 	case ok of
 		_ when Wait > 1000000, IsAlive ->
@@ -1050,7 +1049,14 @@ read_num(P) ->
 			end
 	end.
 
+% checkpoint(P) ->
 checkpoint(P) ->
+	% case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.evnum] of
+	% 	[] ->
+	% 		ok;
+	% 	Behind ->
+	% 		ok
+	% end,
 	P.
 
 delete_actor(P) ->
@@ -1215,14 +1221,7 @@ parse_opts(P,[]) ->
 									[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
 									butil:encode_percent(butil:tolist(P#dp.actorname))++"."++
 									butil:encode_percent(butil:tolist(P#dp.actortype)),
-			case actordb_conf:driver() of
-				actordb_driver ->
-					ThreadNum = actordb_util:hash(DbPath) rem length(actordb_conf:paths()),
-					FullPath = lists:nth(ThreadNum+1,actordb_conf:paths())++"/"++DbPath;
-				_ ->
-					FullPath = DbPath
-			end,
-			P#dp{dbpath = DbPath,fullpath = FullPath,activity_now = actor_start(P), netchanges = actordb_local:net_changes()};
+			P#dp{dbpath = DbPath,activity_now = actor_start(P), netchanges = actordb_local:net_changes()};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.
@@ -1344,20 +1343,10 @@ dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
 	end,
 	dbcopy_call({start_receive,Copyfrom,Ref},CF,P#dp{db = cleared});
 % Read chunk of wal log.
-dbcopy_call({wal_read,From1,Data},_CallFrom,P) ->
+dbcopy_call({wal_read,From1,done},_CallFrom,P) ->
 	{FromPid,Ref} = From1,
-	Size = filelib:file_size([P#dp.fullpath,"-wal"]),
-	case ok of
-		_ when Data == done orelse Size =< Data -> %when P#dp.transactionid == undefined ->
-			erlang:send_after(1000,self(),check_locks),
-			{reply,{[P#dp.fullpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},
-				P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
-		% true ->
-		% 	{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
-		_ ->
-			?DBG("wal_size from=~p, insize=~p, filesize=~p",[From1,Data,Size]),
-			{reply,{[P#dp.fullpath,"-wal"],Size,P#dp.evnum,P#dp.current_term},P}
-	end;
+	erlang:send_after(1000,self(),check_locks),
+	{reply,ok,P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 dbcopy_call({checksplit,Data},_,P) ->
 	{M,F,A} = Data,
 	{reply,apply(M,F,[P#dp.cbstate,check|A]),P};
@@ -1454,74 +1443,24 @@ dbcopy(P,Home,ActorTo) ->
 	end),
 	dbcopy(P,Home,ActorTo,undefined,0,wal).
 dbcopy(P,Home,ActorTo,{iter,_} = Iter,_Bin,wal) ->
-	% case Bin of
-	% 	<<>> ->
-			case actordb_driver:iterate_db(P#dp.db,Iter) of
-				{ok,Iter1,Bin1,Head,Done} when Done == 0 ->
-					dbcopy_do(P,{Bin1,Head}),
-					dbcopy(P,Home,ActorTo,Iter1,<<>>,wal);
-				{ok,_Iter1,Bin1,Head,Done} when Done > 0 ->
-					dbcopy_do(P,{Bin1,Head}),
-					dbcopy_done(P,Head,Home)
-				% done ->
-				% 	dbcopy_done(P,<<>>,Home)
-			end;
-	% 	_ ->
-	% 		dbcopy_do(P,Bin),
-	% 		dbcopy(P,Home,ActorTo,Iter,<<>>,wal)
-	% end;
+	case actordb_driver:iterate_db(P#dp.db,Iter) of
+		{ok,Iter1,Bin1,Head,Done} when Done == 0 ->
+			dbcopy_do(P,{Bin1,Head}),
+			dbcopy(P,Home,ActorTo,Iter1,<<>>,wal);
+		{ok,_Iter1,Bin1,Head,Done} when Done > 0 ->
+			dbcopy_do(P,{Bin1,Head}),
+			dbcopy_done(P,Head,Home)
+	end;
 dbcopy(P,Home,ActorTo,_F,_Offset,wal) ->
 	still_alive(P,Home,ActorTo),
-	% case actordb_conf:driver() of
-	% 	actordb_driver ->
-			case actordb_driver:iterate_db(P#dp.db,0,0) of
-				{ok,Iter,Bin,Head,Done} when Done == 0 ->
-					dbcopy_do(P,{Bin,Head}),
-					dbcopy(P,Home,ActorTo,Iter,Iter,wal);
-				{ok,_Iter,Bin,Head,Done} when Done > 0 ->
-					dbcopy_do(P,{Bin,Head}),
-					dbcopy_done(P,Head,Home)
-				% done ->
-				% 	dbcopy_done(P,Home)
-			end.
-		% _ ->
-			% WR = gen_server:call(Home,{dbcopy,{wal_read,{self(),P#dp.dbcopyref},Offset}}),
-			% case WR of
-			% 	{_Walname,Offset,Evnum,Evterm} ->
-			% 		?DBG("dbsend done ",[]),
-			% 		Param = [{bin,<<>>},{status,done},{origin,original},{evnum,Evnum},{evterm,Evterm}],
-			% 		exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));
-			% 	{_Walname,Walsize,_,_} when Offset > Walsize ->
-			% 		?ERR("Offset larger than walsize ~p ~p ~p ~p",[ActorTo,P#dp.actortype,Offset,Walsize]),
-			% 		exit(copyfail);
-			% 	{Walname,Walsize,Evnum,Evterm} ->
-			% 		Readnum = min(1024*1024,Walsize-Offset),
-			% 		case Offset of
-			% 			0 ->
-			% 				{ok,F1} = file:open(Walname,[read,binary,raw]);
-			% 			_ ->
-			% 				F1 = F
-			% 		end,
-			% 		{ok,Bin} = file:read(F1,Readnum),
-			% 		?DBG("dbsend wal ~p",[{Walname,Walsize}]),
-			% 		Param = [{bin,Bin},{status,wal},{origin,original},{evnum,Evnum},{evterm,Evterm}],
-			% 		ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
-			% 		dbcopy(P,Home,ActorTo,F1,Offset+Readnum,wal)
-			% end
-	% end.
-% dbcopy(P,Home,ActorTo,F,0,db) ->
-% 	still_alive(P,Home,ActorTo),
-% 	{ok,Bin} = file:read(F,1024*1024),
-% 	?DBG("dbsend ~p ~p",[P#dp.dbcopyref,byte_size(Bin)]),
-% 	Param = [{bin,Bin},{status,db},{origin,original}],
-% 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}),
-% 	case byte_size(Bin) == 1024*1024 of
-% 		true ->
-% 			dbcopy(P,Home,ActorTo,F,0,db);
-% 		false ->
-% 			file:close(F),
-% 			dbcopy(P,Home,ActorTo,undefined,0,wal)
-% 	end.
+	case actordb_driver:iterate_db(P#dp.db,0,0) of
+		{ok,Iter,Bin,Head,Done} when Done == 0 ->
+			dbcopy_do(P,{Bin,Head}),
+			dbcopy(P,Home,ActorTo,Iter,Iter,wal);
+		{ok,_Iter,Bin,Head,Done} when Done > 0 ->
+			dbcopy_do(P,{Bin,Head}),
+			dbcopy_done(P,Head,Home)
+	end.
 
 dbcopy_send(Ref,Param) ->
 	F = fun(_F,N) when N < 0 ->
@@ -1659,8 +1598,9 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 					case SchemaTables of
 						[] ->
 							?ERR("DB open after move without schema?",[]),
+							actordb_driver:wal_rewind(Db,0),
 							actordb_sqlite:stop(Db),
-							actordb_sqlite:move_to_trash(P#dp.fullpath),
+							% actordb_sqlite:move_to_trash(P#dp.fullpath),
 							exit(copynoschema);
 						_ ->
 							?DBG("Copyreceive done ~p ~p ~p",[SchemaTables,

@@ -459,15 +459,15 @@ commit_call(Doit,Id,From,P) ->
 	end.
 
 
-state_rw_call(actornum,From,P) ->
-	case P#dp.mors of
-		master ->
-			{reply,{ok,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},P};
-		slave when P#dp.masternode /= undefined ->
-			actordb_sqlprocutil:redirect_master(P);
-		slave ->
-			{noreply, P#dp{callqueue = queue:in_r({From,{state_rw,actornum}},P#dp.callqueue)}}
-	end;
+% state_rw_call(actornum,From,P) ->
+% 	case P#dp.mors of
+% 		master ->
+% 			{reply,{ok,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},P};
+% 		slave when P#dp.masternode /= undefined ->
+% 			actordb_sqlprocutil:redirect_master(P);
+% 		slave ->
+% 			{noreply, P#dp{callqueue = queue:in_r({From,{state_rw,actornum}},P#dp.callqueue)}}
+% 	end;
 state_rw_call(donothing,_From,P) ->
 	{reply,ok,P};
 state_rw_call(recovered,_From,P) ->
@@ -1146,8 +1146,8 @@ handle_info(doelection1,P) ->
 				false when P#dp.without_master_since == undefined ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined,
-              without_master_since = os:timestamp()},false)};
+					NP = P#dp{election = undefined,without_master_since = os:timestamp()},
+					{noreply,actordb_sqlprocutil:start_verify(NP,false)};
 				false ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
@@ -1480,9 +1480,9 @@ init([_|_] = Opts) ->
 		{registered,Pid} ->
 			explain({registered,Pid},Opts),
 			{stop,normal};
-		P when (P#dp.flags band ?FLAG_ACTORNUM) > 0 ->
-			explain({actornum,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},Opts),
-			{stop,normal};
+		% P when (P#dp.flags band ?FLAG_ACTORNUM) > 0 ->
+		% 	explain({actornum,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},Opts),
+		% 	{stop,normal};
 		P when (P#dp.flags band ?FLAG_EXISTS) > 0 ->
 			case P#dp.movedtonode of
 				deleted ->
@@ -1524,9 +1524,9 @@ init([_|_] = Opts) ->
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
 			case actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)) of
 				% {_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
-				{_,_,VoteEvTerm,VoteEvnum,_,_,VotedCurrentTerm,<<>>} ->
+				{_FirstComplete,{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,<<>>} ->
 					VotedFor = undefined;
-				{_,_,VoteEvTerm,VoteEvnum,_,_,VotedCurrentTerm,VotedFor} ->
+				{_FirstComplete,{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,VotedFor} ->
 					ok;
 				_ ->
 					VotedFor = undefined,
