@@ -229,27 +229,14 @@ reopen_db(#dp{mors = master} = P) ->
 			end
 	end;
 reopen_db(P) ->
-	Driver = actordb_conf:driver(),
 	case ok of
-		_ when Driver == actordb_driver, P#dp.db == undefined  ->
+		_ when P#dp.db == undefined  ->
 			NP = init_opendb(P),
 			actordb_sqlite:replicate_opts(NP#dp.db,<<>>),
 			NP;
-		_ when Driver == actordb_driver ->
+		_ ->
 			actordb_sqlite:replicate_opts(P#dp.db,<<>>),
 			P
-		% _ when element(1,P#dp.db) == connection; P#dp.db == undefined ->
-		% 	actordb_sqlite:stop(P#dp.db),
-		% 	{ok,F} = file:open([P#dp.fullpath,"-wal"],[read,write,binary,raw]),
-		% 	case file:position(F,eof) of
-		% 		{ok,0} ->
-		% 			ok = file:write(F,actordb_sqlite:make_wal_header(?PAGESIZE));
-		% 		{ok,_WalSize} ->
-		% 			ok
-		% 	end,
-		% 	P#dp{db = F};
-		% _ ->
-		% 	P
 	end.
 
 init_opendb(P) ->
@@ -1051,13 +1038,14 @@ read_num(P) ->
 
 % checkpoint(P) ->
 checkpoint(P) ->
-	% case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.evnum] of
-	% 	[] ->
-	% 		ok;
-	% 	Behind ->
-	% 		ok
-	% end,
 	P.
+	% case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.evnum] of
+	% 	[] when P#dp.last_checkpoint < P#dp.evnum-3 ->
+	% 		actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3),
+	% 		P#dp{last_checkpoint = P#dp.evnum-3};
+	% 	_Behind ->
+	% 		P
+	% end.
 
 delete_actor(P) ->
 	?DBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
@@ -1550,35 +1538,14 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 			end,
 			case CurStatus == Status of
 				true ->
-					% case element(1,F) of
-					% 	file_descriptor ->
-					% 		ok = file:write(F,Bin);
-					% 	_ ->
-							?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
-							ok = actordb_driver:inject_page(F,Bin,Header),
-					% end,
+					?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
+					ok = actordb_driver:inject_page(F,Bin,Header),
 					F1 = F;
-				% false when Status == db ->
-				% 	file:delete(P#dp.fullpath++"-wal"),
-				% 	file:delete(P#dp.fullpath++"-shm"),
-				% 	{ok,F1} = file:open(P#dp.fullpath,[write,raw]),
-				% 	?DBG("Writing db file ~p",[byte_size(Bin)]),
-				% 	ok = file:write(F1,Bin);
 				false when Status == wal ->
-					% ok = file:close(F),
-					% case actordb_conf:driver() of
-					% 	actordb_driver ->
-							?DBG("Opening new at ~p",[P#dp.dbpath]),
-							{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-							% ok = actordb_sqlite:exec(F1,<<"$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>,write),
-							% <<_:8/binary,Evn:64,_/binary>> = Bin,
-
-							?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
-							ok = actordb_driver:inject_page(F1,Bin,Header);
-					% 	_ ->
-					% 		{ok,F1} = file:open(P#dp.fullpath++"-wal",[write,raw]),
-					% 		ok = file:write(F1,Bin)
-					% end;
+					?DBG("Opening new at ~p",[P#dp.dbpath]),
+					{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
+					ok = actordb_driver:inject_page(F1,Bin,Header);
 				false when Status == done ->
 					F1 = undefined,
 					case actordb_sqlite:exec(F,<<"select name, sql from sqlite_master where type='table';">>,read) of

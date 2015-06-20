@@ -1532,9 +1532,8 @@ init([_|_] = Opts) ->
 					VotedFor = undefined,
 					VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
 			end,
-			Driver = actordb_conf:driver(),
 			case ok of
-				_ when P#dp.mors == slave, Driver == actordb_driver ->
+				_ when P#dp.mors == slave ->
 					{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
 								voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})};
 				_ when MovedToNode == undefined; RightCluster ->

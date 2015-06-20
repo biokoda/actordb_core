@@ -127,23 +127,31 @@ prestart() ->
 								  end
 						  end, [], Files),
 							ActorParam = butil:ds_val(actordb_core,L),
-							[Main,Extra,Level,_Journal,Sync,NumMngrs,QueryTimeout1,PagesPerWal1] =
-								butil:ds_vals([main_db_folder,extra_db_folders,level_size,
-													journal_mode,sync,num_transaction_managers,query_timeout,pages_per_wal],ActorParam,
-												["db",[],0,wal,0,12,60000,1024*3]),
+							[Main,Extra,Sync1,NumMngrs,QueryTimeout1] =
+								butil:ds_vals([main_db_folder,extra_db_folders,
+												sync,num_transaction_managers,query_timeout],ActorParam,
+												["db",[],true,12,60000]),
 							case QueryTimeout1 of
 								0 ->
 									QueryTimeout = infinity;
 								QueryTimeout ->
 									ok
 							end,
-							case ok  of
-								_ when PagesPerWal1 < 100 ->
-									PagesPerWal = 100;
-								_ when PagesPerWal1 > 100000 ->
-									PagesPerWal = 100000;
-								_ ->
-									PagesPerWal = PagesPerWal1
+							Sync = case Sync1 of
+								0 ->
+									0;
+								1 ->
+									1;
+								on ->
+									1;
+								off ->
+									0;
+								true ->
+									1;
+								false ->
+									0;
+								_ when is_integer(Sync1) ->
+									1
 							end,
 							application:set_env(actordb_core,num_transaction_managers,NumMngrs),
 							Statep = butil:expand_path(butil:tolist(Main)),
@@ -163,37 +171,25 @@ prestart() ->
 								_ ->
 									application:set_env(bkdcore,statepath,Statep)
 							end,
-							case filelib:wildcard(Main++"/*.wal") of
-								[] ->
-									case filelib:wildcard(Main++"/shards/*-wal") of
-										[] ->
-											Driver = actordb_driver;
-										_ ->
-											Driver = esqlite3
-									end;
-								_ ->
-									Driver = actordb_driver
-							end,
-							case filelib:wildcard(Main++"/shards/*-term") of
-								[] ->
-									TermDb = true;
-								_ ->
-									TermDb = false
-							end,
-							actordb_util:createcfg(Main,Extra,Level,wal,butil:tobin(Sync),QueryTimeout,Driver,TermDb,Name),
-							ensure_folders(actordb_conf:paths(),Level);
+							% case filelib:wildcard(Main++"/*.wal") of
+							% 	[] ->
+							% 		case filelib:wildcard(Main++"/shards/*-wal") of
+							% 			[] ->
+							% 				Driver = actordb_driver;
+							% 			_ ->
+							% 				Driver = esqlite3
+							% 		end;
+							% 	_ ->
+							% 		Driver = actordb_driver
+							% end,
+							actordb_util:createcfg(Main,Extra,Sync,QueryTimeout,Name),
+							ensure_folders(actordb_conf:paths());
 				_ ->
-					PagesPerWal = 1000,
+					Sync = 1,
 					?AERR("No app.config file in parameters! ~p",[init:get_arguments()]),
 					init:stop()
 			end,
-			NProcs = length(actordb_conf:paths()),
-			case actordb_conf:driver() of
-				esqlite3 ->
-					esqlite3:init({NProcs,actordb_sqlprocutil:static_sqls()});
-				actordb_driver ->
-					ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls(),PagesPerWal})
-			end,
+			ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls(),Sync}),
 			emurmur3:init()
 	end.
 
@@ -241,33 +237,11 @@ start(_Type, _Args) ->
 stop(_State) ->
 	ok.
 
-ensure_folders([], _Level)->
+ensure_folders([])->
 	ok;
-ensure_folders([H|T], Level)->
-	case filelib:ensure_dir(H++"/actors/") of
-		ok ->
-			case Level > 0 of
-				true ->
-					[ok = filelib:ensure_dir(H++"/actors/"++butil:tolist(N)++"/") || N <- lists:seq(0,Level)];
-				false ->
-					ok
-			end;
-		Errx1 ->
-			throw({path_invalid,H++"/actors/",Errx1})
-	end,
-	case  filelib:ensure_dir(H++"/shards/") of
-		ok ->
-			ok;
-		Errx2 ->
-			throw({path_invalid,H++"/shards/",Errx2})
-	end,
-	case  filelib:ensure_dir(H++"/state/") of
-		ok ->
-			ok;
-		Errx3 ->
-			throw({path_invalid,H++"/state/",Errx3})
-	end,
-	ensure_folders(T, Level).
+ensure_folders([H|T])->
+	ok = filelib:ensure_dir(H),
+	ensure_folders(T).
 
 get_network_interface()->
 	case application:get_env(actordb_core, network_interface) of

@@ -484,12 +484,7 @@ split_statements(Bin1) ->
 	end.
 
 parse_helper(Bin,Offset1) ->
-	case actordb_conf:driver() of
-		actordb_driver ->
-			actordb_driver:parse_helper(Bin,Offset1);
-		_ ->
-			esqlite3:parse_helper(Bin,Offset1)
-	end.
+	actordb_driver:parse_helper(Bin,Offset1).
 
 find_ending(Bin,Offset1,Prev,IsIolist) ->
 	case parse_helper(Bin,Offset1) of
