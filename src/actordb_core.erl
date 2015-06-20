@@ -107,91 +107,93 @@ prestart() ->
 		[_|_] ->
 			ok;
 		_ ->
-			% ?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
-			% Read args file manually to get paths for state.
 			case init:get_argument(config) of
 				{ok, Files} ->
-				 [Name1|_] = string:tokens(butil:tolist(node()),"@"),
-				 Name = butil:tobin(Name1),
-				 L = lists:foldl(
-						  fun([File], Env) ->
-								  BFName = filename:basename(File,".config"),
-								  FName = filename:join(filename:dirname(File),
-														BFName ++ ".config"),
-								  case file:consult(FName) of
-									  {ok, [L]} ->
-										  L++Env;
-									  _ ->
-									   ?AERR("Error in config ~p",[FName]),
-									   init:stop()
-								  end
-						  end, [], Files),
-							ActorParam = butil:ds_val(actordb_core,L),
-							[Main,Extra,Sync1,NumMngrs,QueryTimeout1] =
-								butil:ds_vals([main_db_folder,extra_db_folders,
-												sync,num_transaction_managers,query_timeout],ActorParam,
-												["db",[],true,12,60000]),
-							case QueryTimeout1 of
-								0 ->
-									QueryTimeout = infinity;
-								QueryTimeout ->
-									ok
-							end,
-							Sync = case Sync1 of
-								0 ->
-									0;
-								1 ->
-									1;
-								on ->
-									1;
-								off ->
-									0;
-								true ->
-									1;
-								false ->
-									0;
-								_ when is_integer(Sync1) ->
-									1
-							end,
-							application:set_env(actordb_core,num_transaction_managers,NumMngrs),
-							Statep = butil:expand_path(butil:tolist(Main)),
-							filelib:ensure_dir(Statep),
-							% ?AINF("State path ~p, ~p",[Main,Statep]),
-							% No etc folder. config files are provided manually.
-							BkdcoreParam = butil:ds_val(bkdcore,L),
-							case butil:ds_val(etc,BkdcoreParam) of
-								undefined ->
-									application:set_env(bkdcore,etc,none);
-								_ ->
-									ok
-							end,
-							case application:get_env(bkdcore,statepath) of
-								{ok,_} ->
-									ok;
-								_ ->
-									application:set_env(bkdcore,statepath,Statep)
-							end,
-							% case filelib:wildcard(Main++"/*.wal") of
-							% 	[] ->
-							% 		case filelib:wildcard(Main++"/shards/*-wal") of
-							% 			[] ->
-							% 				Driver = actordb_driver;
-							% 			_ ->
-							% 				Driver = esqlite3
-							% 		end;
-							% 	_ ->
-							% 		Driver = actordb_driver
-							% end,
-							actordb_util:createcfg(Main,Extra,Sync,QueryTimeout,Name),
-							ensure_folders(actordb_conf:paths());
+					prestart1(Files);
 				_ ->
-					Sync = 1,
 					?AERR("No app.config file in parameters! ~p",[init:get_arguments()]),
 					init:stop()
-			end,
-			ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls(),Sync}),
-			emurmur3:init()
+			end
 	end.
+prestart1(Files) ->
+	% ?AINF("Starting actordb ~p ~p",[butil:ds_val(config,Args),file:get_cwd()]),
+	% Read args file manually to get paths for state.
+	[Name1|_] = string:tokens(butil:tolist(node()),"@"),
+	Name = butil:tobin(Name1),
+	L = lists:foldl(
+			fun([File], Env) ->
+					BFName = filename:basename(File,".config"),
+					FName = filename:join(filename:dirname(File),
+											BFName ++ ".config"),
+					case file:consult(FName) of
+						{ok, [L]} ->
+							L++Env;
+						_ ->
+						?AERR("Error in config ~p",[FName]),
+						init:stop()
+					end
+			end, [], Files),
+	ActorParam = butil:ds_val(actordb_core,L),
+	[Main,Extra,Sync1,NumMngrs,QueryTimeout1,Repl] =
+		butil:ds_vals([main_db_folder,extra_db_folders,
+						sync,num_transaction_managers,
+						query_timeout,max_replication_space],ActorParam,
+						["db",[],true,12,60000,{5000,0.1}]),
+	case QueryTimeout1 of
+		0 ->
+			QueryTimeout = infinity;
+		QueryTimeout ->
+			ok
+	end,
+	Sync = case Sync1 of
+		0 ->
+			0;
+		1 ->
+			1;
+		on ->
+			1;
+		off ->
+			0;
+		true ->
+			1;
+		false ->
+			0;
+		_ when is_integer(Sync1) ->
+			1
+	end,
+	application:set_env(actordb_core,num_transaction_managers,NumMngrs),
+	Statep = butil:expand_path(butil:tolist(Main)),
+	filelib:ensure_dir(Statep),
+	% ?AINF("State path ~p, ~p",[Main,Statep]),
+	% No etc folder. config files are provided manually.
+	BkdcoreParam = butil:ds_val(bkdcore,L),
+	case butil:ds_val(etc,BkdcoreParam) of
+		undefined ->
+			application:set_env(bkdcore,etc,none);
+		_ ->
+			ok
+	end,
+	case application:get_env(bkdcore,statepath) of
+		{ok,_} ->
+			ok;
+		_ ->
+			application:set_env(bkdcore,statepath,Statep)
+	end,
+	% case filelib:wildcard(Main++"/*.wal") of
+	% 	[] ->
+	% 		case filelib:wildcard(Main++"/shards/*-wal") of
+	% 			[] ->
+	% 				Driver = actordb_driver;
+	% 			_ ->
+	% 				Driver = esqlite3
+	% 		end;
+	% 	_ ->
+	% 		Driver = actordb_driver
+	% end,
+	actordb_util:createcfg(Main,Extra,Sync,QueryTimeout,Repl,Name),
+	ensure_folders(actordb_conf:paths()),
+	ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls(),Sync}),
+	emurmur3:init().
 
 start() ->
 	% ?AINF("Starting actordb"),

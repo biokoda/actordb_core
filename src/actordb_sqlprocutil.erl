@@ -1036,16 +1036,37 @@ read_num(P) ->
 			end
 	end.
 
-% checkpoint(P) ->
+% Checkpoint should not be called too often (wasting resources and no replication space),
+% or not often enough (too much disk space wasted).
+% The main problem scenario is one of the nodes being offline. Then it can fall far behind.
+% Current formula is max(XPages,X*DBSIZE). Default values: XPages=5000, X=0.1
+% This way if a large DB, replication space is max 10%. Or if small DB, max 5000 pages.
+% Page is 4096 bytes max, but with compression it is usually much smaller.
+checkpoint(P) when P#dp.last_checkpoint == P#dp.evnum orelse P#dp.last_checkpoint+6 =< P#dp.evnum ->
+	case P#dp.mors of
+		master ->
+			case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.last_checkpoint] of
+				[] ->
+					actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3);
+				_ ->
+					% One of the followers is at least 6 events behind
+					{_,_,_,MxPage,AllPages,_,_} = actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)),
+					{MxPages,MxFract} = actordb_conf:replication_space(),
+					Diff = AllPages - MxPage,
+					case Diff > max(MxPages,0.1*MxFract) of
+						true ->
+							actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3);
+						false ->
+							ok
+					end
+			end;
+		slave ->
+			actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3)
+	end,
+	% This way checkpoint gets executed every 6 writes.
+	P#dp{last_checkpoint = P#dp.evnum};
 checkpoint(P) ->
 	P.
-	% case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.evnum] of
-	% 	[] when P#dp.last_checkpoint < P#dp.evnum-3 ->
-	% 		actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3),
-	% 		P#dp{last_checkpoint = P#dp.evnum-3};
-	% 	_Behind ->
-	% 		P
-	% end.
 
 delete_actor(P) ->
 	?DBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),

@@ -1524,22 +1524,23 @@ init([_|_] = Opts) ->
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
 			case actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)) of
 				% {_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
-				{_FirstComplete,{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,<<>>} ->
+				{{_FCT,LastCheck},{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,<<>>} ->
 					VotedFor = undefined;
-				{_FirstComplete,{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,VotedFor} ->
+				{{_FCT,LastCheck},{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,VotedFor} ->
 					ok;
 				_ ->
 					VotedFor = undefined,
-					VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
+					LastCheck = VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
 			end,
 			case ok of
 				_ when P#dp.mors == slave ->
 					{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
-								voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})};
+					voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm,
+					last_checkpoint = LastCheck})};
 				_ when MovedToNode == undefined; RightCluster ->
-					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(
-								P#dp{current_term = VotedCurrentTerm,voted_for = VotedFor, evnum = VoteEvnum,
-										evterm = VoteEvTerm}),true)};
+					NP = P#dp{current_term = VotedCurrentTerm,voted_for = VotedFor, evnum = VoteEvnum,
+							evterm = VoteEvTerm, last_checkpoint = LastCheck},
+					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(NP),true)};
 				_ ->
 					?DBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode}}
