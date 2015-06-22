@@ -283,18 +283,16 @@ read_mr_rows(N,L) ->
 %
 % 		LOOP OVER BLOCKS (1 block is: "use actortype(....);statement1;statement2;statementN")
 %
-do_multiupdate(P,[#{type := Type1, actor := Actors, flags := Flags, var := undefined, column := undefined, blockvar := undefined } = H |T]) ->
-	Type = actordb_util:typeatom(Type1),
+do_multiupdate(P,[#{type := Type1, actor := Actors, flags := _Flags, var := undefined, column := undefined, blockvar := undefined } = H |T]) ->
 	Statements = maps:get(statements, H),
-	IsWrite = maps:get(iswrite, H),
 	case statements_to_binary(undefined,Statements,<<>>,[]) of
 		undefined ->
 			do_multiupdate(P,[]);
 		curactor ->
 			case Actors of
 				$* ->
-					% ?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
-					move_over_shards(H, P, curactor, actordb_shardtree:all());
+					?AINF("Move over shards1 ~p~n",[actordb_shardtree:all()]),
+					move_over_shards(H#{type := actordb_util:typeatom(Type1)}, P, curactor, actordb_shardtree:all());
 				_ ->
 					case Actors of
 						[_] ->
@@ -308,8 +306,8 @@ do_multiupdate(P,[#{type := Type1, actor := Actors, flags := Flags, var := undef
 		{StBin,Varlist} ->
 			case Actors of
 				$* ->
-					?AINF("Move over shards ~p~n",[actordb_shardtree:all()]),
-					move_over_shards(H#{statements := StBin}, P, Varlist, actordb_shardtree:all());
+					?AINF("Move over shards2 ~p~n",[actordb_shardtree:all()]),
+					move_over_shards(H#{statements := StBin, type := actordb_util:typeatom(Type1)}, P, Varlist, actordb_shardtree:all());
 				_ ->
 					case Actors of
 						[_] ->
@@ -321,10 +319,8 @@ do_multiupdate(P,[#{type := Type1, actor := Actors, flags := Flags, var := undef
 			end,
 			do_multiupdate(P,T)
 	end;
-do_multiupdate(P,[#{type := Type1, var := Gvar, column := Column, blockvar := BlockVar, flags := Flags} = H|T]) ->
+do_multiupdate(P,[#{type := Type1, var := Gvar, column := Column, blockvar := _BlockVar, flags := _Flags} = H|T]) ->
 	Type = actordb_util:typeatom(Type1),
-	Statements = maps:get(statements, H),
-	IsWrite = maps:get(iswrite, H),
 	case get({Gvar,cols}) of
 		undefined ->
 			?AERR("global var columns not found ~p",[Gvar]),
@@ -395,7 +391,7 @@ move_over_shard_actors(Nd,#{type := Type, statements := [count]} = _H, Shard, []
 	end,
 	put({<<"RESULT">>,0},{CurCount+Count}),
 	ok;
-move_over_shard_actors(Nd,#{type := Type, flags := Flags, statements := StBin, iswrite := IsWrite} = H,
+move_over_shard_actors(Nd,#{type := Type, flags := _Flags, statements := _StBin, iswrite := _IsWrite} = H,
 				Shard, [], CountNow, CountAll, P, Varlist, Next) ->
 	Iskv = actordb_schema:iskv(Type),
 	case ok of
@@ -408,7 +404,7 @@ move_over_shard_actors(Nd,#{type := Type, flags := Flags, statements := StBin, i
 				false ->
 					List = actordb:rpc(Nd,Shard,{actordb_shard,list_actors,[Shard,Type,CountAll,1000]})
 			end,
-			?ADBG("Moving over shard ~p ~p ~p",[Shard,Type,List]),
+			?ADBG("Moving over shard here ~p ~p ~p",[Shard,Type,List]),
 			case List of
 				{ok,[]} ->
 					ok;
@@ -449,7 +445,7 @@ move_over_shard_actors(Nd,#{statements := [list]} = H,
 			end,0,Actors),
 	put({<<"RESULT">>,nrows},CurNRows+Count),
 	move_over_shard_actors(Nd,H,Shard,[],CountNow+Count,CountAll+Count,P,Varlist,Next);
-move_over_shard_actors(Nd,#{type := Type, flags := Flags, statements := StBin, iswrite := IsWrite} = H,
+move_over_shard_actors(Nd,#{type := _Type, flags := _Flags, statements := _StBin, iswrite := _IsWrite} = H,
 		Shard, Actors, CountNow, CountAll, P, Varlist, Next) ->
 	Count = lists:foldl(fun({Actor},Cnt) ->
 				do_actor(P,true,H#{ actor => Actor},Varlist),
@@ -463,8 +459,8 @@ move_over_shard_actors(Nd,#{type := Type, flags := Flags, statements := StBin, i
 %
 do_foreach(P,_,_,{N,N}) ->
 	P;
-do_foreach(P,ActorColumn, #{type := Type, flags := Flags, var := Gvar, blockvar := Blockvar,
-	iswrite := IsWrite, statements := Statements} = H,{N,Max}) ->
+do_foreach(P,ActorColumn, #{type := _Type, flags := _Flags, var := Gvar, blockvar := Blockvar,
+	iswrite := _IsWrite, statements := Statements} = H,{N,Max}) ->
 	case get({Gvar,N}) of
 		undefined ->
 			?ADBG("do_foreach no gvar for ~p",[N]),
@@ -482,7 +478,7 @@ do_foreach(P,ActorColumn, #{type := Type, flags := Flags, var := Gvar, blockvar 
 %
 % 			TYPE 3 - regular query on single or list of actors
 %
-do_block(P,IsMulti,#{type := Type, flags := Flags, actor := [Actor|T], iswrite := IsWrite, statements := Statements} = H,Varlist) ->
+do_block(P,IsMulti,#{type := _Type, flags := _Flags, actor := [Actor|T], iswrite := _IsWrite, statements := _Statements} = H,Varlist) ->
 	case Actor of
 		{Var,Column} ->
 			Actor1 = get_pd_column(Var,Column);
@@ -499,7 +495,7 @@ do_block(_,_,#{actor := []},_) ->
 
 do_actor(_,_,#{statement := <<>>},_) ->
 	ok;
-do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := IsWrite, statements := Statements1} = H,curactor) ->
+do_actor(P,IsMulti,#{type := _Type, flags := _Flags, actor := Actor, iswrite := _IsWrite, statements := Statements1} = H,curactor) ->
 	{StBin,Varlist} = statements_to_binary(Actor,Statements1,<<>>,[]),
 	do_actor(P, IsMulti, H#{statements := StBin}, Varlist);
 
