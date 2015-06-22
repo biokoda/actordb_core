@@ -203,6 +203,7 @@ start(_Type, _Args) ->
 	prestart(),
 	bkdcore:start(actordb:configfiles()),
 	butil:wait_for_app(bkdcore),
+
 	Pth1 = [actordb_sharedstate:cb_path(undefined,undefined,undefined),
 			butil:tolist(?STATE_NM_GLOBAL),".",butil:tolist(?STATE_TYPE)],
 	case file:read_file_info(Pth1) of
@@ -219,7 +220,13 @@ start(_Type, _Args) ->
 			{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(StPth,wal),
 			case SchemaTables of
 				[] ->
-					StateStart = wait;
+					case file:list_dir(actordb_conf:db_path()++"/shards/") of
+						{ok,[_|_]} ->
+							import_legacy(actordb_conf:paths()),
+							StateStart = normal;
+						_ ->
+							StateStart = wait
+					end;
 				[_|_] ->
 					StateStart = normal
 			end
@@ -242,7 +249,7 @@ stop(_State) ->
 ensure_folders([])->
 	ok;
 ensure_folders([H|T])->
-	ok = filelib:ensure_dir(H),
+	ok = filelib:ensure_dir(H++"/"),
 	ensure_folders(T).
 
 get_network_interface()->
@@ -271,4 +278,68 @@ get_network_interface()->
 		[];
 	  _ ->
 		IPAddress
+	end.
+
+import_legacy([H|T]) ->
+	case file:read_file_info(H++"/termstore") of
+		{ok,_} ->
+			import_db(H++"/termstore","termstore");
+		_ ->
+			ok
+	end,
+	Actors = [A || A <- element(2,file:list_dir(H++"/actors")), is_dbfile(A)],
+	Shards = [A || A <- element(2,file:list_dir(H++"/shards")), is_dbfile(A)],
+	State = [A || A <- element(2,file:list_dir(H++"/state")), is_dbfile(A)],
+	% {ok,Actors} = file:list_dir(H++"/actors"),
+	import_dbs(H,"actors",Actors),
+	import_dbs(H,"shards",Shards),
+	import_dbs(H,butil:tolist("state"),State),
+	import_legacy(T);
+import_legacy([]) ->
+	ok.
+
+
+is_dbfile(Nm) ->
+	case lists:reverse(Nm) of
+		"law-"++_ ->
+			false;
+		"mret-"++_ ->
+			false;
+		"mhs-"++_ ->
+			false;
+		_ ->
+			true
+	end.
+
+import_dbs(Root,Sub,[H|T]) ->
+	?AINF("~p",[H]),
+	import_db(Root++"/"++Sub++"/"++H,Sub++"/"++H),
+	import_dbs(Root,Sub,T);
+import_dbs(_,_,[]) ->
+	ok.
+
+import_db(Pth,Name) ->
+	{ok,F} = file:open(Pth,[read,binary,raw]),
+	{ok,Db} = actordb_driver:open(Name,actordb_util:hash(Name),wal),
+	Size = filelib:file_size(Pth),
+	cp_dbfile(F,Db,1,Size),
+	file:close(F),
+	{ok,X} = actordb_driver:exec_script("select * from sqlite_master;",Db),
+	?AINF("~p",[X]),
+	ok.
+
+cp_dbfile(F,Db,Pgno,Size) ->
+	case file:read(F,4096) of
+		{ok,Bin} ->
+			case Size - Pgno*4096 > 0 of
+				true ->
+					Commit = 0;
+				false ->
+					Commit = Pgno
+			end,
+			Head = <<1:64,1:64,Pgno:32/unsigned,Commit:32/unsigned>>,
+			ok = actordb_driver:inject_page(Db,Bin,Head),
+			cp_dbfile(F,Db,Pgno+1,Size);
+		_ ->
+			ok
 	end.
