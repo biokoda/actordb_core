@@ -163,39 +163,13 @@ actor_ae_stream(ActorPid,Count) ->
 
 
 shard_path(Name) ->
-	case actordb_conf:driver() of
-		actordb_driver ->
-			"shards/";
-		_ ->
-			[drive(Name), "/shards/"]
-	end.
+	"shards/".
 
 actorpath(Actor) ->
-	case actordb_conf:driver() of
-		actordb_driver ->
-			Path = "";
-		_ ->
-			Path = [drive(Actor),"/"]
-	end,
-	case actordb_conf:level_size() of
-		0 ->
-			[Path, "actors/"];
-		Max ->
-			[Path,"actors/", butil:tolist(hash(["db_level",butil:tobin(Actor)]) rem Max), "/"]
-	end.
+	["actors/"].
 
 drive(Actor) ->
-	case actordb_conf:driver() of
-		esqlite3 ->
-			case actordb_conf:paths() of
-				[Path] ->
-					Path;
-				Paths ->
-					actordb:hash_pick(Actor,Paths)
-			end;
-		_ ->
-			[]
-	end.
+	[].
 
 split_point(From,To) ->
 	From + ((To-From) div 2).
@@ -215,16 +189,11 @@ type_schema(Type,Version) ->
 			{Version,[]}
 	end.
 
-createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,UseTermDb,Driver) ->
-	createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver,UseTermDb,bkdcore:node_name()).
-createcfg(Main,Extra,Level,Journal,Sync,QueryTimeout,Driver,UseTermDb,Name) ->
-	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{level_size,butil:toint(Level)},{cfgtime,os:timestamp()},{termdb,UseTermDb},
-								   {journal_mode,Journal},{sync,Sync},{query_timeout,QueryTimeout},{node_name,Name},{driver,Driver}]).
-
-change_journal(Journal,Sync) ->
-	bkdcore:mkmodule(actordb_conf,[{db_path,actordb_conf:db_path()},{paths,actordb_conf:paths()},{node_name,bkdcore:node_name()},
-								   {level_size,actordb_conf:level_size()},{journal_mode,Journal},{driver,actordb_conf:driver()},
-								   {sync,butil:tobin(Sync)},{query_timeout,actordb_conf:query_timeout()}]).
+createcfg(Main,Extra,Sync,QueryTimeout,Repl) ->
+	createcfg(Main,Extra,Sync,QueryTimeout,Repl,bkdcore:node_name()).
+createcfg(Main,Extra,Sync,QueryTimeout,Repl,Name) ->
+	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{cfgtime,os:timestamp()},
+				{replication_space,Repl},{sync,Sync},{query_timeout,QueryTimeout},{node_name,Name}]).
 
 % Out of schema.cfg create module with functions:
 % types() -> [actortype1,actortype2,...]

@@ -459,15 +459,15 @@ commit_call(Doit,Id,From,P) ->
 	end.
 
 
-state_rw_call(actornum,From,P) ->
-	case P#dp.mors of
-		master ->
-			{reply,{ok,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},P};
-		slave when P#dp.masternode /= undefined ->
-			actordb_sqlprocutil:redirect_master(P);
-		slave ->
-			{noreply, P#dp{callqueue = queue:in_r({From,{state_rw,actornum}},P#dp.callqueue)}}
-	end;
+% state_rw_call(actornum,From,P) ->
+% 	case P#dp.mors of
+% 		master ->
+% 			{reply,{ok,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},P};
+% 		slave when P#dp.masternode /= undefined ->
+% 			actordb_sqlprocutil:redirect_master(P);
+% 		slave ->
+% 			{noreply, P#dp{callqueue = queue:in_r({From,{state_rw,actornum}},P#dp.callqueue)}}
+% 	end;
 state_rw_call(donothing,_From,P) ->
 	{reply,ok,P};
 state_rw_call(recovered,_From,P) ->
@@ -587,11 +587,12 @@ state_rw_call({appendentries_wal,Term,Header,Body,AEType,CallCount},From,P) ->
 					case Header of
 						% dbsize == 0, not last page
 						<<_:20/binary,0:32>> ->
+							?DBG("AE append"),
 							{reply,ok,P#dp{locked = [ae]}};
 						% last page
-						<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> ->
-							?DBG("AE WAL done evnum=~p, evterm=~p aetype=~p queueempty=~p, masternd=~p",
-									[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode]),
+						<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,Pgno:32,Commit:32>> ->
+							?DBG("AE WAL done evnum=~p, evterm=~p aetype=~p queueempty=~p, masternd=~p, pgno=~p, commit=~p",
+									[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode,Pgno,Commit]),
 							% Prevent any timeouts on next ae since recovery process is progressing.
 							case P#dp.inrecovery of
 								true ->
@@ -674,9 +675,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,EvNum,EvTerm,Matc
 														[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 														{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
 										ok ->
-											actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,
-																						P#dp.actorname}},
-																			From,NP);
+											actordb_sqlprocutil:dbcopy_call({send_db,{NF#flw.node,Ref,false,P#dp.actorname}},From,NP);
 										_Err ->
 											?ERR("Unable to send db ~p",[_Err]),
 											{reply,false,P}
@@ -1147,8 +1146,8 @@ handle_info(doelection1,P) ->
 				false when P#dp.without_master_since == undefined ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined,
-              without_master_since = os:timestamp()},false)};
+					NP = P#dp{election = undefined,without_master_since = os:timestamp()},
+					{noreply,actordb_sqlprocutil:start_verify(NP,false)};
 				false ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
@@ -1481,9 +1480,9 @@ init([_|_] = Opts) ->
 		{registered,Pid} ->
 			explain({registered,Pid},Opts),
 			{stop,normal};
-		P when (P#dp.flags band ?FLAG_ACTORNUM) > 0 ->
-			explain({actornum,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},Opts),
-			{stop,normal};
+		% P when (P#dp.flags band ?FLAG_ACTORNUM) > 0 ->
+		% 	explain({actornum,P#dp.fullpath,actordb_sqlprocutil:read_num(P)},Opts),
+		% 	{stop,normal};
 		P when (P#dp.flags band ?FLAG_EXISTS) > 0 ->
 			case P#dp.movedtonode of
 				deleted ->
@@ -1514,6 +1513,7 @@ init([_|_] = Opts) ->
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
 				{lockinfo,wait} ->
+					?DBG("Starting actor lock wait ~p",[P]),
 					{ok,P}
 			end;
 		P when P#dp.copyfrom == undefined ->
@@ -1522,36 +1522,25 @@ init([_|_] = Opts) ->
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
-			% TermDb = actordb_conf:termdb(),
-			% case ok of
-			% 	_ when TermDb ->
-					% case actordb_termstore:read_term_info(P#dp.actorname,P#dp.actortype) of
-					case actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)) of
-						% {_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
-						{_,_,VoteEvTerm,VoteEvnum,_,_,VotedCurrentTerm,VotedFor} ->
-							ok;
-						_ ->
-							VotedFor = undefined,
-							VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
-					end,
-			% 	_ ->
-			% 		case butil:readtermfile([P#dp.fullpath,"-term"]) of
-			% 			{ok, VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
-			% 				ok;
-			% 			_ ->
-			% 				VotedFor = undefined,
-			% 				VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
-			% 		end
-			% end,
-			Driver = actordb_conf:driver(),
+			case actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)) of
+				% {_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
+				{{_FCT,LastCheck},{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,<<>>} ->
+					VotedFor = undefined;
+				{{_FCT,LastCheck},{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,VotedFor} ->
+					ok;
+				_ ->
+					VotedFor = undefined,
+					LastCheck = VoteEvnum = VotedCurrentTerm = VoteEvTerm = 0
+			end,
 			case ok of
-				_ when P#dp.mors == slave, Driver == actordb_driver ->
+				_ when P#dp.mors == slave ->
 					{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
-								voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm})};
+					voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm,
+					last_checkpoint = LastCheck})};
 				_ when MovedToNode == undefined; RightCluster ->
-					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(
-								P#dp{current_term = VotedCurrentTerm,voted_for = VotedFor, evnum = VoteEvnum,
-										evterm = VoteEvTerm}),true)};
+					NP = P#dp{current_term = VotedCurrentTerm,voted_for = VotedFor, evnum = VoteEvnum,
+							evterm = VoteEvTerm, last_checkpoint = LastCheck},
+					{ok,actordb_sqlprocutil:start_verify(actordb_sqlprocutil:init_opendb(NP),true)};
 				_ ->
 					?DBG("Actor moved ~p ~p ~p",[P#dp.actorname,P#dp.actortype,MovedToNode]),
 					{ok, P#dp{verified = true, movedtonode = MovedToNode}}

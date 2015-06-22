@@ -63,6 +63,8 @@
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]
 	current_term = 0,voted_for, follower_indexes = [],
+	% evnum of last checkpoint
+	last_checkpoint = 0,
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
 	locked = [],inrecovery = false, recovery_age = {0,0,0},
 	% Multiupdate id, set to {Multiupdateid,TransactionNum,OriginNode} if in the middle of a distributed transaction
@@ -90,7 +92,7 @@
 	% PID of election process if in progress, time of last seen election otherwise.
 	election,
 	% Path to sqlite file.
-	dbpath,fullpath,
+	dbpath,
 	% Which nodes current process is sending dbfile to.
 	% [#cpto{},..]
 	dbcopy_to = [],

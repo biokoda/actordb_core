@@ -516,14 +516,7 @@ schema_version() ->
 	1.
 
 cb_path(_,_Name,_Type) ->
-	case actordb_conf:driver() of
-		esqlite3 ->
-			P = [bkdcore:statepath(),"/state/"],
-			filelib:ensure_dir(P);
-		_ ->
-			P = "state/"
-	end,
-	P.
+	"state/".
 
 % Start or get pid of slave process for actor (executed on slave nodes in cluster)
 cb_slave_pid(Name,Type) ->
@@ -681,7 +674,7 @@ cb_nodelist(S,true,{ok,[{columns,_},{rows,Rows}]} = ReadResult) ->
 return_mg(S,Nodes) ->
 	case lists:member(actordb_conf:node_name(),Nodes) of
 		true ->
-			{ok,S#st{current_write = [{master_group,Nodes}|S#st.current_write],
+			{ok,S#st{current_write = lists:keystore(master_group,1,S#st.current_write,{master_group,Nodes}),
 					 master_group = Nodes},
 			    Nodes -- [actordb_conf:node_name()]};
 		false ->
