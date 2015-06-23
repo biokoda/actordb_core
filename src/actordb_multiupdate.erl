@@ -255,8 +255,15 @@ multiread(L) ->
 			case get({<<"RESULT">>,cols}) of
 				undefined ->
 					?ADBG("Nothing in result? ~p",[get()]),
+					Result = case [B||{{empty_shard,_},B}<-get()] of
+						[_|_] ->
+							erase(),
+							{ok,[{columns,[]},{rows,[]}]};
+						_ ->
+							ok
+					end,
 					[put(K,V) || {K,V} <- ExistingPD],
-					ok;
+					Result;
 				Cols ->
 					Rows = read_mr_rows(get({<<"RESULT">>,nrows})-1,[]),
 					erase(),
@@ -404,9 +411,10 @@ move_over_shard_actors(Nd,#{type := Type, flags := _Flags, statements := _StBin,
 				false ->
 					List = actordb:rpc(Nd,Shard,{actordb_shard,list_actors,[Shard,Type,CountAll,1000]})
 			end,
-			?ADBG("Moving over shard here ~p ~p ~p",[Shard,Type,List]),
+			?ADBG("Moving over shard ~p ~p ~p",[Shard,Type,List]),
 			case List of
 				{ok,[]} ->
+					put({empty_shard,Shard},[]),
 					ok;
 				{ok,L} ->
 					move_over_shard_actors(Nd, H, Shard, L, 0, CountAll, P, Varlist, Next);
