@@ -71,9 +71,6 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 			call(Name,[wait_election|Flags],#write{mfa = MFA, sql = iolist_to_binary(Sql), flags = Flags},Start)
 	end;
 write(Name,Flags,[delete],Start) ->
-	% Delete actor calls are placed in a fake multi-actor transaction.
-	% This way if the intent to delete is written, then actor will actually delete itself.
-	% call(Name,Flags,#write{sql = delete,transaction = {0,0,<<>>}},Start);
 	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
 write(Name,Flags,{Sql,Records},Start) ->
 	call(Name,[wait_election|Flags],#write{sql = iolist_to_binary(Sql), records = Records, flags = Flags},Start);
@@ -766,6 +763,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 			{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}}
 	end;
 state_rw_call({delete,MovedToNode},From,P) ->
+	ok = actordb_driver:wal_rewind(P#dp.db,0),
 	reply(From,ok),
 	{reply,ok,P#dp{movedtonode = MovedToNode}};
 state_rw_call(checkpoint,_From,P) ->

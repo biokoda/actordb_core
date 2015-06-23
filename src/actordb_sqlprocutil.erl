@@ -277,13 +277,15 @@ read_db_state(P,Rows) ->
 				movedtonode = MovedToNode}).
 
 actually_delete(P) ->
-	% Delete just means adding deleted flag. But if we get a query with create, this means
-	% we must delete all data. Drop everything except __adb. This way evnum and evterm continue where they left off.
-	{ok,[{columns,_},{rows,Tables}]} = actordb_sqlite:exec(P#dp.db,<<"SELECT NAME FROM sqlite_master WHERE type='table';">>,read),
-	Drops = [<<"$DROP TABLE ",Name/binary,";">> || {Name} <- Tables, Name /= <<"__adb">> andalso Name /= <<"sqlite_sequence">>],
-	?DBG("Drop tables in deleted=~p",[Drops]),
-	#write{sql = ["$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?MOVEDTO,",'');",
-				  "$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?BASE_SCHEMA_VERS,",0);",Drops], records = []}.
+	% -> This function should no longer get called. With updated driver actor is actually safely deleted
+	%  on first call.
+	ok = actordb_driver:wal_rewind(P#dp.db,0),
+	[].
+	% {ok,[{columns,_},{rows,Tables}]} = actordb_sqlite:exec(P#dp.db,<<"SELECT NAME FROM sqlite_master WHERE type='table';">>,read),
+	% Drops = [<<"$DROP TABLE ",Name/binary,";">> || {Name} <- Tables, Name /= <<"__adb">> andalso Name /= <<"sqlite_sequence">>],
+	% ?DBG("Drop tables in deleted=~p",[Drops]),
+	% #write{sql = ["$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?MOVEDTO,",'');",
+	% 			  "$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?BASE_SCHEMA_VERS,",0);",Drops], records = []}.
 
 set_followers(HaveSchema,P) ->
 	case apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,HaveSchema]) of
@@ -425,7 +427,7 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 
 % Go back one entry
 rewind_wal(P) ->
-	actordb_driver:wal_rewind(P#dp.db,P#dp.evnum),
+	ok = actordb_driver:wal_rewind(P#dp.db,P#dp.evnum),
 	% case actordb_driver:wal_rewind(P#dp.db,P#dp.evnum) of
 	% 	{ok,0} ->
 	% 		P;
@@ -1086,6 +1088,7 @@ delete_actor(P) ->
 			ok
 	end,
 	% ?DBG("Deleted from shard ~p",[P#dp.follower_indexes]),
+	ok = actordb_driver:wal_rewind(P#dp.db,0),
 	case P#dp.follower_indexes of
 		[] ->
 			ok;
