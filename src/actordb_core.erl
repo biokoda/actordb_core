@@ -222,7 +222,10 @@ start(_Type, _Args) ->
 				[] ->
 					case file:list_dir(actordb_conf:db_path()++"/shards/") of
 						{ok,[_|_]} ->
-							import_legacy(actordb_conf:paths()),
+							GL = get(),
+							import_legacy(actordb_conf:paths(),0),
+							erase(),
+							[put(K,V) || {K,V} <- GL],
 							StateStart = normal;
 						_ ->
 							StateStart = wait
@@ -280,53 +283,145 @@ get_network_interface()->
 		IPAddress
 	end.
 
-import_legacy([H|T]) ->
+import_legacy([H|T],Thr) ->
+	erase(),
 	case file:read_file_info(H++"/termstore") of
 		{ok,_} ->
-			import_db(H++"/termstore","termstore");
+			import_db(H++"/termstore","termstore",Thr),
+			[big_wal(Pth) || Pth <- lists:sort(fun actordb_core:walsort/2, filelib:wildcard(H++"/wal.*"))];
 		_ ->
 			ok
 	end,
 	Actors = [A || A <- element(2,file:list_dir(H++"/actors")), is_dbfile(A)],
 	Shards = [A || A <- element(2,file:list_dir(H++"/shards")), is_dbfile(A)],
-	State = [A || A <- element(2,file:list_dir(H++"/state")), is_dbfile(A)],
+	case [A || A <- element(2,file:list_dir(H++"/state")), is_dbfile(A)] of
+		[] ->
+			State = [A || A <- element(2,file:list_dir(H++"/"++butil:tolist(bkdcore:node_name())++"/state")), is_dbfile(A)];
+		State ->
+			ok
+	end,
 	% {ok,Actors} = file:list_dir(H++"/actors"),
-	import_dbs(H,"actors",Actors),
-	import_dbs(H,"shards",Shards),
-	import_dbs(H,butil:tolist("state"),State),
-	import_legacy(T);
-import_legacy([]) ->
+	import_dbs(H,"actors",Thr,Actors),
+	import_dbs(H,"shards",Thr,Shards),
+	import_dbs(H,"state",Thr,State),
+	[big_wal(Pth) || Pth <- lists:sort(fun actordb_core:walsort/2, filelib:wildcard(H++"/wal.*"))],
+	case get(<<"termstore">>) of
+		undefined ->
+			ok;
+		TermDb ->
+			{ok,[[{columns,_},{rows,R}]]} = actordb_driver:exec_script(<<"select * from terms;">>,TermDb),
+			[begin
+				case VF of
+					undefined ->
+						VotedFor = <<>>;
+					VotedFor ->
+						ok
+				end,
+				Nm = butil:tobin(butil:encode_percent(butil:tolist(Actor))++"."++
+				butil:encode_percent(butil:tolist(Type))),
+				case get(<<"actors/",Nm/binary>>) of
+					undefined ->
+						ok;
+					_ ->
+						ok = actordb_driver:term_store(<<"actors/",Nm/binary>>, CT, VotedFor, Thr)
+				end,
+				case get(<<"shards/",Nm/binary>>) of
+					undefined ->
+						ok;
+					_ ->
+						ok = actordb_driver:term_store(<<"shards/",Nm/binary>>, CT, VotedFor, Thr)
+				end,
+				case get(<<"state/",Nm/binary>>) of
+					undefined ->
+						ok;
+					_ ->
+						ok = actordb_driver:term_store(<<"state/",Nm/binary>>, CT, VotedFor, Thr)
+				end
+			end || {Actor,Type,VF,CT,_EN,_ET} <- R]
+	end,
+	import_legacy(T,Thr+1);
+import_legacy([],_) ->
 	ok.
 
-
-is_dbfile(Nm) ->
-	case lists:reverse(Nm) of
-		"law-"++_ ->
-			false;
-		"mret-"++_ ->
-			false;
-		"mhs-"++_ ->
-			false;
-		_ ->
-			true
-	end.
-
-import_dbs(Root,Sub,[H|T]) ->
-	?AINF("~p",[H]),
-	import_db(Root++"/"++Sub++"/"++H,Sub++"/"++H),
-	import_dbs(Root,Sub,T);
-import_dbs(_,_,[]) ->
+import_dbs(Root,Sub,Thr,[H|T]) ->
+	?AINF("Import actor ~p",[H]),
+	import_db(Root++"/"++Sub++"/"++H,Sub++"/"++H,Thr),
+	import_dbs(Root,Sub,Thr,T);
+import_dbs(_,_,_,[]) ->
 	ok.
 
-import_db(Pth,Name) ->
+import_db(Pth,Name,Thr) ->
 	{ok,F} = file:open(Pth,[read,binary,raw]),
 	{ok,Db} = actordb_driver:open(Name,actordb_util:hash(Name),wal),
 	Size = filelib:file_size(Pth),
 	cp_dbfile(F,Db,1,Size),
+	put(butil:tobin(Name),Db),
 	file:close(F),
-	{ok,X} = actordb_driver:exec_script("select * from sqlite_master;",Db),
-	?AINF("~p",[X]),
+	case file:open(Pth++"-wal",[read,binary,raw]) of
+		{ok,Wal} ->
+			try begin {ok,_} = file:read(Wal,32),
+				file:read(Wal,40+4096) end of
+			{ok,Bin} ->
+				small_wal(Db,Wal,Bin),
+				case butil:readtermfile(Pth++"-term") of
+					undefined ->
+						ok;
+					{VotedFor,CurTerm,_} ->
+						?AINF("Votedfor ~p, curterm=~p",[VotedFor,CurTerm]),
+						actordb_driver:term_store(butil:tobin(Name), CurTerm, VotedFor, Thr);
+					{VotedFor,CurTerm,_,_} ->
+						?AINF("Votedfor ~p, curterm=~p",[VotedFor,CurTerm]),
+						actordb_driver:term_store(butil:tobin(Name), CurTerm, VotedFor, Thr)
+				end
+			catch
+				_:_ ->
+					ok
+			end;
+		_ ->
+			ok
+	end,
+	% {ok,X} = actordb_driver:exec_script("select * from sqlite_master;",Db),
+	% ?AINF("~p",[X]),
 	ok.
+
+big_wal(Name) ->
+	{ok,F} = file:open(Name,[read,binary,raw]),
+	{ok,_} = file:read(F,40),
+	{ok,Bin} = file:read(F,144+4096),
+	big_wal(F,Bin),
+	file:close(F).
+big_wal(F,<<Pgno:32/unsigned,DbSize:32/unsigned,WN:64,WTN:64,_:32,_:32,_:32,Name1:92/binary,_:16/binary,Page:4096/binary>>) ->
+	[Name|_] = binary:split(Name1,<<0>>),
+	case get(Name) of
+		undefined ->
+			ok;
+		Db ->
+			?AINF("Wal inject for ~p",[Name]),
+			Head = <<WTN:64,WN:64,Pgno:32/unsigned,DbSize:32/unsigned>>,
+			ok = actordb_driver:inject_page(Db,Page,Head)
+	end,
+	case file:read(F,144+4096) of
+		{ok,Bin} ->
+			big_wal(F,Bin);
+		_ ->
+			ok
+	end.
+
+small_wal(Db,F,<<Pgno:32/unsigned,DbSize:32/unsigned,WN:64,WTN:64,_:16/binary,Page:4096/binary>>) ->
+	Head = <<WTN:64,WN:64,Pgno:32/unsigned,DbSize:32/unsigned>>,
+	?AINF("term=~p num=~p pgno=~p size=~p",[WTN,WN,Pgno,DbSize]),
+	case WTN+WN > 0 of
+		true ->
+			ok = actordb_driver:inject_page(Db,Page,Head);
+		_ ->
+			ok
+	end,
+	case file:read(F,40+4096) of
+		{ok,Bin} ->
+			small_wal(Db,F,Bin);
+		_ ->
+			ok
+	end.
 
 cp_dbfile(F,Db,Pgno,Size) ->
 	case file:read(F,4096) of
@@ -342,4 +437,20 @@ cp_dbfile(F,Db,Pgno,Size) ->
 			cp_dbfile(F,Db,Pgno+1,Size);
 		_ ->
 			ok
+	end.
+
+walsort(A,B) ->
+	[_,AN] = string:tokens(A,"."),
+	[_,BN] = string:tokens(B,"."),
+	butil:toint(AN) < butil:toint(BN).
+is_dbfile(Nm) ->
+	case lists:reverse(Nm) of
+		"law-"++_ ->
+			false;
+		"mret-"++_ ->
+			false;
+		"mhs-"++_ ->
+			false;
+		_ ->
+			true
 	end.
