@@ -444,7 +444,7 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 
 % Go back one entry
 rewind_wal(P) ->
-	ok = actordb_driver:wal_rewind(P#dp.db,P#dp.evnum),
+	actordb_driver:wal_rewind(P#dp.db,P#dp.evnum),
 	% case actordb_driver:wal_rewind(P#dp.db,P#dp.evnum) of
 	% 	{ok,0} ->
 	% 		P;
