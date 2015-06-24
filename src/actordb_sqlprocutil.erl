@@ -142,8 +142,8 @@ reply_maybe(P,N,[]) ->
 			?DBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
 			case P#dp.movedtonode of
 				deleted ->
-					actordb_sqlprocutil:delete_actor(P);
-					% spawn(fun() -> actordb_sqlproc:stop(Me) end);
+					actordb_sqlprocutil:delete_actor(P),
+					spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
 					ok
 			end,
@@ -170,9 +170,9 @@ reply_maybe(P,N,[]) ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
 			case P#dp.movedtonode of
 				deleted ->
-					%Me = self(),
-					actordb_sqlprocutil:delete_actor(P);
-					% spawn(fun() -> actordb_sqlproc:stop(Me) end);
+					Me = self(),
+					actordb_sqlprocutil:delete_actor(P),
+					spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
 					ok
 			end,

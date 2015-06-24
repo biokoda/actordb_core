@@ -898,14 +898,14 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	case Sql of
 		delete ->
-			case P#dp.follower_indexes of
-				[] ->
-					Me = self(),
-					actordb_sqlprocutil:delete_actor(P),
-					spawn(fun() -> ?DBG("Stopping in write"), stop(Me) end);
-				_ ->
-					ok
-			end,
+			% case P#dp.follower_indexes of
+			% 	[] ->
+			% 		Me = self(),
+			% 		actordb_sqlprocutil:delete_actor(P),
+			% 		spawn(fun() -> ?DBG("Stopping in write"), stop(Me) end);
+			% 	_ ->
+			% 		ok
+			% end,
 			% reply(From,ok),
 			?DBG("Write delete"),
 			% {stop,normal,P#dp{db = undefined}};

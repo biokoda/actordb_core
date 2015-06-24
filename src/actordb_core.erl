@@ -409,7 +409,7 @@ big_wal(F,<<Pgno:32/unsigned,DbSize:32/unsigned,WN:64,WTN:64,_:32,_:32,_:32,Name
 
 small_wal(Db,F,<<Pgno:32/unsigned,DbSize:32/unsigned,WN:64,WTN:64,_:16/binary,Page:4096/binary>>) ->
 	Head = <<WTN:64,WN:64,Pgno:32/unsigned,DbSize:32/unsigned>>,
-	?AINF("term=~p num=~p pgno=~p size=~p",[WTN,WN,Pgno,DbSize]),
+	?AINF("Wal inject term=~p num=~p pgno=~p size=~p",[WTN,WN,Pgno,DbSize]),
 	case WTN+WN > 0 of
 		true ->
 			ok = actordb_driver:inject_page(Db,Page,Head);
