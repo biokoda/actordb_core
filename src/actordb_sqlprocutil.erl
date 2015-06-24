@@ -774,7 +774,7 @@ start_verify(P,JustStarted) ->
 						true ->
 							actordb_local:actor_mors(slave,LeaderNode),
 							doqueue(reopen_db(P#dp{masternode = LeaderNode, election = undefined,
-								masternodedist = DistName,
+								masternodedist = DistName, mors = slave,
 								callfrom = undefined, callres = undefined,
 								verified = true, activity = make_ref()}));
 						_ ->
