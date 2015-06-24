@@ -417,8 +417,9 @@ commit_call(Doit,Id,From,P) ->
 					% This will send the remaining WAL pages to followers that have commit flag set.
 					% Followers will then rpc back appendentries_response.
 					% We can also set #dp.evnum now.
+					VarHeader = actordb_sqlprocutil:create_var_header(P),
 					actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>,
-												P#dp.evterm,EvNum,<<>>)),
+												P#dp.evterm,EvNum,VarHeader)),
 					{noreply,ae_timer(P#dp{callfrom = From, activity = make_ref(),
 								  callres = ok,evnum = EvNum,movedtonode = Moved,
 								  follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
@@ -584,7 +585,7 @@ state_rw_call({appendentries_wal,Term,Header,Body,AEType,CallCount},From,P) ->
 					case Header of
 						% dbsize == 0, not last page
 						<<_:20/binary,0:32>> ->
-							?DBG("AE append"),
+							?DBG("AE append ~p",[AEType]),
 							{reply,ok,P#dp{locked = [ae]}};
 						% last page
 						<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,Pgno:32,Commit:32>> ->
@@ -765,7 +766,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 state_rw_call({delete,MovedToNode},From,P) ->
 	ok = actordb_driver:wal_rewind(P#dp.db,0),
 	reply(From,ok),
-	{reply,ok,P#dp{movedtonode = MovedToNode}};
+	{stop,normal,P};
 state_rw_call(checkpoint,_From,P) ->
 	actordb_sqlprocutil:checkpoint(P),
 	{reply,ok,P}.
@@ -924,12 +925,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 					 ],
 			Records = W#write.records++[W#write.adb_recs++[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 			% ?AINF("Doing write ~p ~p",[iolist_to_binary(ComplSql),Records]),
-			case P#dp.flags band ?FLAG_SEND_DB > 0 of
-				true ->
-					VarHeader = actordb_sqlprocutil:create_var_header_with_db(P);
-				_ ->
-					VarHeader = actordb_sqlprocutil:create_var_header(P)
-			end,
+			VarHeader = actordb_sqlprocutil:create_var_header(P),
 			% T1 = os:timestamp(),
 			Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
 			% T2 = os:timestamp(),

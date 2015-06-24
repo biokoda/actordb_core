@@ -82,7 +82,7 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 						end,
 						erlang:monitor(process,ActorPid),
 						% ?ADBG("Have pid for ae ~p.~p",[Actor,Type]),
-						actor_ae_stream(ActorPid,undefined)
+						actor_ae_stream(ActorPid,undefined,Actor,Type)
 					end),
 					receive
 						{ok,Ref} ->
@@ -101,9 +101,10 @@ tunnel_bin(Pid,Bin) ->
 	?AERR("Tunnel invalid data ~p",[Bin]),
 	Pid.
 
-actor_ae_stream(ActorPid,Count) ->
+actor_ae_stream(ActorPid,Count,AD,TD) ->
 	receive
 		{start,Cb,Actor,Type,Term,VarPrefix} ->
+			check_actor(AD,TD,Actor,Type),
 			% ?ADBG("AE stream proc start ~p.~p",[Actor,Type]),
 			case binary_to_term(VarPrefix) of
 				{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
@@ -122,7 +123,7 @@ actor_ae_stream(ActorPid,Count) ->
 					% Special case when nodes are added at run time.
 					Count1 = {PrevEvnum,PrevTerm}
 			end,
-			% ?ADBG("AE stream proc call ~p.~p",[Actor,Type]),
+			?ADBG("AE stream proc call ~p.~p",[Actor,Type]),
 			case actordb_sqlproc:call_slave(Cb,Actor,Type,
 					{state_rw,{appendentries_start,Term,Leader,PrevEvnum,PrevTerm,head,Count1}}) of
 				ok ->
@@ -133,9 +134,10 @@ actor_ae_stream(ActorPid,Count) ->
 						_ ->
 							ok
 					end,
-					% ?ADBG("AE stream proc ok! ~p.~p",[Actor,Type]),
-					actor_ae_stream(ActorPid,Count1);
+					?ADBG("AE stream proc ok! ~p.~p",[Actor,Type]),
+					actor_ae_stream(ActorPid,Count1,AD,TD);
 				_ ->
+					?ADBG("AE die"),
 					% Die off if we should not continue
 					% All subsequent WAL messages are thus discarded and process is restarted
 					%  on next ae start.
@@ -144,12 +146,13 @@ actor_ae_stream(ActorPid,Count) ->
 		{'DOWN',_,_,ActorPid,_} ->
 			ok;
 		{call_slave,Cb,Actor,Type,Term,Header,Page} ->
-			% ?ADBG("Calling slave ~p",[Actor]),
+			check_actor(AD,TD,Actor,Type),
+			?ADBG("Calling slave ~p",[Actor]),
 			case actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,Count}},[nostart]) of
 				ok ->
-					actor_ae_stream(ActorPid,Count);
+					actor_ae_stream(ActorPid,Count,AD,TD);
 				done ->
-					actor_ae_stream(ActorPid,Count);
+					actor_ae_stream(ActorPid,Count,AD,TD);
 				_Err ->
 					% Same as start ae. Die off.
 					ok
@@ -160,15 +163,19 @@ actor_ae_stream(ActorPid,Count) ->
 		distreg:unreg(self()),
 		erlang:send_after(3000,self(),stop)
 	end.
+check_actor(Actor,Type,Actor,Type) ->
+	ok;
+check_actor(AD,TD,Actor,Type) ->
+	?AERR("Tunnel calling another actor, is={~p,~p}, input={~p,~p}",[AD,TD,Actor,Type]),
+	throw(badcall).
 
-
-shard_path(Name) ->
+shard_path(_Name) ->
 	"shards/".
 
-actorpath(Actor) ->
+actorpath(_Actor) ->
 	["actors/"].
 
-drive(Actor) ->
+drive(_Actor) ->
 	[].
 
 split_point(From,To) ->

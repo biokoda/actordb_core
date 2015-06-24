@@ -325,8 +325,8 @@ try_wal_recover(P,F) ->
 		% Term conflict. We found evnum, but term is different. Store this term for follower and send it.
 		% Follower will reject and rewind and they will move one write back.
 		{ok,Term} ->
-			NF = F#flw{match_term = Term},
-			{true,store_follower(P,NF),NF};
+			NF = F#flw{match_term = Term, file = 1},
+			{false,store_follower(P,NF),NF};
 		done ->
 			{false,P,F}
 	end.
@@ -364,28 +364,44 @@ continue_maybe(P,F,SuccessHead) ->
 			case StartRes of
 				ok when F#flw.file /= undefined ->
 					% Send wal
-					case catch send_wal(P,F) of
+					SendResp = (catch send_wal(P,F)),
+					case F#flw.file of
+						{iter,_} ->
+							actordb_driver:iterate_close(F#flw.file);
+						_ ->
+							ok
+					end,
+					case SendResp of
 						wal_corruption ->
-							store_follower(P,F#flw{wait_for_response_since = os:timestamp()});
+							store_follower(P,F#flw{file = undefined, wait_for_response_since = os:timestamp()});
 						error ->
 							?ERR("Error iterating wal"),
-							store_follower(P,F#flw{wait_for_response_since = os:timestamp()});
+							store_follower(P,F#flw{file = undefined, wait_for_response_since = os:timestamp()});
 						NF when element(1,NF) == flw ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
-							actordb_driver:iterate_close(NF#flw.file),
 							bkdcore_rpc:cast(NF#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}]}),
 							store_follower(P,NF#flw{file = undefined, wait_for_response_since = os:timestamp()})
 					end;
 				% to be continued in appendentries_response
 				_ ->
-					file:close(F#flw.file),
+					case F#flw.file of
+						{iter,_} ->
+							actordb_driver:iterate_close(F#flw.file);
+						_ ->
+							ok
+					end,
 					store_follower(P,F#flw{file = undefined, pagebuf = <<>>, wait_for_response_since = os:timestamp()})
 			end;
 		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
 			store_follower(P,F);
 		false ->
-			actordb_driver:iterate_close(F#flw.file),
+			case F#flw.file of
+				{iter,_} ->
+					actordb_driver:iterate_close(F#flw.file);
+				_ ->
+					ok
+			end,
 			bkdcore_rpc:cast(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}]}),
 			store_follower(P,F#flw{file = undefined, pagebuf = <<>>})
 	end.
