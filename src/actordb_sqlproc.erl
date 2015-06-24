@@ -540,7 +540,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 						[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
 			case ok of
 				% Node is conflicted, delete last entry
-				_ when PrevEvnum > 0, AEType == recover ->
+				_ when PrevEvnum > 0, AEType == recover, P#dp.evnum > 0 ->
 					NP = actordb_sqlprocutil:rewind_wal(P);
 				% If false this node is behind. If empty this is just check call.
 				% Wait for leader to send an earlier event.

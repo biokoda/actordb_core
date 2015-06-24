@@ -307,15 +307,19 @@ try_wal_recover(P,F) when F#flw.file /= undefined ->
 			ok
 	end,
 	try_wal_recover(P,F#flw{file = undefined});
+try_wal_recover(P,#flw{match_index = 0, match_term = 0} = F) ->
+	{false,P,F};
 try_wal_recover(P,F) ->
-	case F#flw.match_index of
-		0 ->
-			Evnum = 1;
-		Evnum ->
-			ok
-	end,
-	case actordb_driver:iterate_db(P#dp.db,F#flw.match_term,Evnum) of
+	% case F#flw.match_index of
+	% 	0 ->
+	% 		Evterm = 1,
+	% 		Evnum = 1;
+	% 	Evnum ->
+	% 		Evterm = F#flw.match_term
+	% end,
+	case actordb_driver:iterate_db(P#dp.db,F#flw.match_index,F#flw.match_term) of
 		{ok,Iter2,Bin,Head,Done} ->
+			% , match_term = Evterm, match_index = Evnum
 			NF = F#flw{file = Iter2, pagebuf = {Bin,Head,Done}},
 			{true,store_follower(P,NF),NF};
 		% Term conflict. We found evnum, but term is different. Store this term for follower and send it.
@@ -368,7 +372,9 @@ continue_maybe(P,F,SuccessHead) ->
 							store_follower(P,F#flw{wait_for_response_since = os:timestamp()});
 						NF when element(1,NF) == flw ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
-							store_follower(P,NF#flw{wait_for_response_since = os:timestamp()})
+							actordb_driver:iterate_close(NF#flw.file),
+							bkdcore_rpc:cast(NF#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}]}),
+							store_follower(P,NF#flw{file = undefined, wait_for_response_since = os:timestamp()})
 					end;
 				% to be continued in appendentries_response
 				_ ->
@@ -379,12 +385,7 @@ continue_maybe(P,F,SuccessHead) ->
 		false when F#flw.file == undefined ->
 			store_follower(P,F);
 		false ->
-			case element(1,F#flw.file) of
-				iter ->
-					actordb_driver:iterate_close(F#flw.file);
-				_ ->
-					file:close(F#flw.file)
-			end,
+			actordb_driver:iterate_close(F#flw.file),
 			bkdcore_rpc:cast(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}]}),
 			store_follower(P,F#flw{file = undefined, pagebuf = <<>>})
 	end.
