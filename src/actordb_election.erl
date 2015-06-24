@@ -128,7 +128,7 @@ doelection(E1) ->
 			{Results,_GetFailed} = bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
 				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]]});
 		_ ->
-			Nodes = [F#flw.distname || F <- E#election.followers, lists:member(F#flw.distname,nodes())],
+			Nodes = [F#flw.distname || F <- E#election.followers, lists:member(F#flw.distname,[node()|nodes()])],
 			{Results,_GetFailed} = rpc:multicall(Nodes,actordb_sqlproc,call_slave,
 				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]],2000)
 	end,
