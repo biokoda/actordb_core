@@ -240,8 +240,15 @@ reopen_db(P) ->
 	end.
 
 init_opendb(P) ->
-	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-	NP = P#dp{db = Db},
+	case P#dp.db of
+		undefined ->
+			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+			NP = P#dp{db = Db};
+		_ ->
+			Sql = <<"select name, sql from sqlite_master where type='table';">>,
+			{ok,[[{columns,_},{rows,SchemaTables}]]} = actordb_sqlite:exec(P#dp.db,Sql),
+			NP = P
+	end,
 	case SchemaTables of
 		[_|_] ->
 			?DBG("Opening HAVE schema",[]),
@@ -1347,30 +1354,38 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}}
 	end;
 % Initial call on node that is destination of copy
-dbcopy_call({start_receive,Copyfrom,Ref},_,#dp{db = cleared} = P) ->
+dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 	?DBG("start receive entire db ~p ~p",[Copyfrom,P#dp.db]),
-	% clean up any old sqlite handles.
-	garbage_collect(),
-	% If move, split or copy actor to a new actor this must be called on master.
-	case is_tuple(Copyfrom) of
-		true when P#dp.mors /= master ->
-			redirect_master(P);
-		_ ->
-			{ok,RecvPid} = start_copyrec(P#dp{copyfrom = Copyfrom, dbcopyref = Ref}),
-			{reply,ok,P#dp{db = undefined, mors = slave,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
-	end;
-dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
-	% first clear existing db
 	case P#dp.db of
 		_ when element(1,P#dp.db) == actordb_driver ->
 			N = actordb_driver:wal_rewind(P#dp.db,0),
-			?DBG("Start receive rewinding data result=~p",[N]);
+			?DBG("Start receive rewinding data result=~p",[N]),
+			Db = P#dp.db;
 		_ when P#dp.db == undefined ->
 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 			N = actordb_driver:wal_rewind(Db,0),
 			?DBG("Start receive open and rewind data result=~p",[N])
 	end,
-	dbcopy_call({start_receive,Copyfrom,Ref},CF,P#dp{db = cleared});
+	% If move, split or copy actor to a new actor this must be called on master.
+	case is_tuple(Copyfrom) of
+		true when P#dp.mors /= master ->
+			redirect_master(P);
+		_ ->
+			{ok,RecvPid} = start_copyrec(P#dp{db = Db, copyfrom = Copyfrom, dbcopyref = Ref}),
+			{reply,ok,P#dp{db = Db, mors = slave,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
+	end;
+% dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
+% 	% first clear existing db
+% 	case P#dp.db of
+% 		_ when element(1,P#dp.db) == actordb_driver ->
+% 			N = actordb_driver:wal_rewind(P#dp.db,0),
+% 			?DBG("Start receive rewinding data result=~p",[N]);
+% 		_ when P#dp.db == undefined ->
+% 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+% 			N = actordb_driver:wal_rewind(Db,0),
+% 			?DBG("Start receive open and rewind data result=~p",[N])
+% 	end,
+% 	dbcopy_call({start_receive,Copyfrom,Ref},CF,P#dp{db = cleared});
 % Read chunk of wal log.
 dbcopy_call({wal_read,From1,done},_CallFrom,P) ->
 	{FromPid,Ref} = From1,
@@ -1552,7 +1567,7 @@ start_copyrec(P) ->
 					_ ->
 						ConnectedNodes = []
 				end,
-				dbcopy_receive(Home,P,undefined,undefined,ConnectedNodes);
+				dbcopy_receive(Home,P,undefined,ConnectedNodes);
 			name_exists ->
 				Home ! {StartRef,distreg:whereis({copyproc,P#dp.dbcopyref})}
 		end
@@ -1564,7 +1579,7 @@ start_copyrec(P) ->
 		exit(dbcopy_receive_error)
 	end.
 
-dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
+dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 	receive
 		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
 			[{Bin,Header},Status,Origin] = butil:ds_vals([bin,status,origin],Param),
@@ -1580,40 +1595,35 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 			case CurStatus == Status of
 				true ->
 					?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
-					ok = actordb_driver:inject_page(F,Bin,Header),
-					F1 = F;
+					ok = actordb_driver:inject_page(P#dp.db,Bin,Header);
 				false when Status == wal ->
 					?DBG("Opening new at ~p",[P#dp.dbpath]),
-					{ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					% {ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 					?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
-					ok = actordb_driver:inject_page(F1,Bin,Header);
+					ok = actordb_driver:inject_page(P#dp.db,Bin,Header);
 				false when Status == done ->
-					F1 = undefined,
-					case actordb_sqlite:exec(F,<<"select name, sql from sqlite_master where type='table';">>,read) of
+					case actordb_sqlite:exec(P#dp.db,<<"select name, sql from sqlite_master where type='table';">>,read) of
 						{ok,[{columns,_},{rows,SchemaTables}]} ->
 							ok;
 						_X ->
 							SchemaTables = []
 					end,
-					Db = F,
 					Sql = <<"SELECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
-					{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(Db, Sql,read),
+					{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
 					Evnum1 = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 					Evterm1 = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
 					<<HEvterm:64,HEvnum:64,_/binary>> = Header,
 					?DBG("Storing evnum=~p, evterm=~p, curterm=~p, hevterm=~p,hevnum=~p",[Evnum1,Evterm1,HEvterm,HEvnum,butil:ds_val(curterm,Param)]),
-					store_term(P#dp{db = Db},undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1),
+					store_term(P,undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1),
 					case SchemaTables of
 						[] ->
 							?ERR("DB open after move without schema?",[]),
-							actordb_driver:wal_rewind(Db,0),
-							actordb_sqlite:stop(Db),
+							actordb_driver:wal_rewind(P#dp.db,0),
 							% actordb_sqlite:move_to_trash(P#dp.fullpath),
 							exit(copynoschema);
 						_ ->
 							?DBG("Copyreceive done ~p ~p ~p",[SchemaTables,
-								 {Origin,P#dp.copyfrom},actordb_sqlite:exec(Db,"SELEcT * FROM __adb;")]),
-							actordb_sqlite:stop(Db),
+								 {Origin,P#dp.copyfrom},actordb_sqlite:exec(P#dp.db,"SELEcT * FROM __adb;")]),
 							Source ! {Ref,self(),ok},
 							case Origin of
 								original ->
@@ -1625,7 +1635,7 @@ dbcopy_receive(Home,P,F,CurStatus,ChildNodes) ->
 					end
 			end,
 			Source ! {Ref,self(),ok},
-			dbcopy_receive(Home,P,F1,Status,ChildNodes);
+			dbcopy_receive(Home,P,Status,ChildNodes);
 		X ->
 			?ERR("dpcopy_receive ~p received invalid msg ~p",[P#dp.dbcopyref,X])
 	after 30000 ->

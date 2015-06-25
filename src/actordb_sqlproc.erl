@@ -1503,7 +1503,8 @@ init([_|_] = Opts) ->
 			case lists:keyfind(lockinfo,1,Opts) of
 				{lockinfo,dbcopy,{Ref,CbState,CpFrom,CpReset}} ->
 					?DBG("Starting actor slave lock for copy on ref ~p",[Ref]),
-					{ok,Pid} = actordb_sqlprocutil:start_copyrec(P#dp{mors = slave, cbstate = CbState,
+					{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
+					{ok,Pid} = actordb_sqlprocutil:start_copyrec(P#dp{db = Db, mors = slave, cbstate = CbState,
 													dbcopyref = Ref,  copyfrom = CpFrom, copyreset = CpReset}),
 					{ok,P#dp{copyproc = Pid, verified = false,mors = slave, copyfrom = P#dp.copyfrom}};
 				{lockinfo,wait} ->
