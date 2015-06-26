@@ -54,6 +54,28 @@ read_global(Key) ->
 		_ ->
 			butil:ds_val(Key,?GLOBALETS)
 	end.
+
+read_global_auth_index() ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			ets:match(?GLOBALETS,{["auth",'_','$1'],'_'})
+	end.
+read_global_auth() ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			ets:match(?GLOBALETS,{["auth",'$1','_'],'$2'})
+	end.
+read_global_auth(Key) ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			ets:match(?GLOBALETS,{["auth",Key,'_'],'$2'})
+	end.
 read_cluster(Key) ->
 	read(?STATE_NM_LOCAL,Key).
 

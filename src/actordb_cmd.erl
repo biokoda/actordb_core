@@ -154,6 +154,18 @@ cmd(stats,stats,{Node,Pid,Ref}) ->
 cmd(_,_,_) ->
 	{error,?ERR("uncrecognized command.~nSupported commands: ~p, ~p, ~p~n",[init,updateschema,updatenodes])}.
 
+cmd(auth,parse,_Etc,"-a",Actor,Username,Password)->
+	{ok,"Actor of type '" ++ butil:tolist(Actor) ++ "' with authentication username: '" ++ butil:tolist(Username) ++ "' and password: '" ++ butil:tolist(Password) ++ "'"};
+cmd(auth,commit,_Etc,"-a",Actor,Username,Password)->
+	case lists:sort(actordb_sharedstate:read_global_auth_index()) of
+		[] -> Index = 1;
+		Indexes -> Index = hd(lists:last(lists:sort(Indexes))) + 1
+	end,
+	actordb_sharedstate:write_global(["auth", Actor, Index],[butil:sha256(Username++";"++Password)]);
+cmd(_,_,_,_,_,_,_) ->
+	{error,?ERR("uncrecognized command.~nSupported commands: ~p, ~p, ~p~n",[init,updateschema,updatenodes])}.
+
+
 send_stats(Node,Pid,Ref) ->
 	case lists:member(Node,nodes(connected)) of
 		true ->

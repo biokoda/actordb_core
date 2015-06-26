@@ -4,16 +4,25 @@
 -module(actordb_backpressure).
 -behaviour(gen_server).
 -export([start/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
--export([start_caller/0,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
+-export([start_caller/0,start_caller/2,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
 			inc_callcount/0,inc_callcount/1,dec_callcount/0,dec_callcount/1,call_count/0,call_size/0,
 			inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2,
-			save/3,getval/2,delval/2]).
+			save/3,getval/2,delval/2,has_authentication/2]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
-
--record(caller,{ets}).
+-export([groupAuth/1]).
+-record(caller,{ets, auth}).
+start_caller(Username, Password) ->
+	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
+	AuthenticationDict = groupAuth(actordb_sharedstate:read_global_auth()),
+	butil:ds_add(auth,AuthenticationDict,E),
+	butil:ds_add(curcount,0,E),
+	butil:ds_add(cursize,0,E),
+	#caller{ets = E, auth = butil:sha256(Username++";"++Password)}.
 start_caller() ->
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
+	AuthenticationDict = groupAuth(actordb_sharedstate:read_global_auth()),
+	butil:ds_add(auth,AuthenticationDict,E),
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
 	#caller{ets = E}.
@@ -25,6 +34,10 @@ stop_caller(P) ->
 	dec_callsize(Size),
 	ets:delete(Tid),
 	ok.
+
+%we can get all authentications for actor type by calling
+%dict:fetch("some_actor_type",Dict) and member hashes
+groupAuth(L) -> lists:foldr(fun({K,V}, D) -> dict:append(K, V, D) end , dict:new(), [ {Key, Auth} || [Key,Auth] <- L ]).
 
 % Store data inside connection ets (for instance prepared statement info)
 save(#caller{ets = Ets},K,V) ->
@@ -46,7 +59,7 @@ sleep_caller(_P) ->
 	case whereis(backpressure_proc) of
 		undefined ->
 			% Spawn backpressure_proc and wait for it to die
-			{Pid,_} = spawn_monitor(fun() -> 
+			{Pid,_} = spawn_monitor(fun() ->
 								case catch register(backpressure_proc,self()) of
 									true ->
 										?AINF("Backpressure applied."),
@@ -110,6 +123,13 @@ call_count() ->
 call_size() ->
 	butil:ds_val(global_size,bpcounters).
 
+has_authentication(P,ActorType)->
+	DictAuth = butil:ds_val(auth,P#caller.ets),
+	case dict:fetch(ActorType,DictAuth) of
+		[] -> true;
+		AuthList ->
+			lists:member([P#caller.auth], AuthList)
+	end.
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -125,7 +145,7 @@ print_info() ->
 
 -record(dp,{}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
--define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
+-define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
 
 handle_call(print_info,_,P) ->
@@ -149,9 +169,9 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(_, P) -> 
+handle_info(_, P) ->
 	{noreply, P}.
-	
+
 terminate(_, _) ->
 	ok.
 code_change(_, P, _) ->
