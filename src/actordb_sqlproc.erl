@@ -763,7 +763,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
 			{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(P#dp.election)}}
 	end;
-state_rw_call({delete,MovedToNode},From,P) ->
+state_rw_call({delete,_MovedToNode},From,P) ->
 	ok = actordb_driver:wal_rewind(P#dp.db,0),
 	reply(From,ok),
 	{stop,normal,P};

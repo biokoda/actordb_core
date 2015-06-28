@@ -74,9 +74,6 @@ exec(Db,S,read) ->
 exec(Db,S,write) ->
 	actordb_local:report_write(),
 	exec(Db,S);
-exec(Db,Sql,Records) when element(1,Db) == connection ->
-	Res = esqlite3:exec_script(Sql,Records,Db,actordb_conf:query_timeout()),
-	exec_res(Res,Sql);
 exec(Db,Sql,Records) ->
 	Res = actordb_driver:exec_script(Sql,Records,Db,actordb_conf:query_timeout()),
 	exec_res(Res,Sql).
@@ -86,26 +83,15 @@ exec(Db,S,Records,read) ->
 exec(Db,S,Records,write) ->
 	actordb_local:report_write(),
 	exec(Db,S,Records).
-exec(Db,Sql)  when element(1,Db) == connection ->
-	Res = esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout()),
-	exec_res(Res,Sql);
 exec(Db,Sql) ->
 	Res = actordb_driver:exec_script(Sql,Db,actordb_conf:query_timeout()),
 	exec_res(Res,Sql).
-exec(Db,Sql,Evnum,Evterm,VarHeader) when element(1,Db) == connection ->
-	actordb_local:report_write(),
-	Res =  esqlite3:exec_script(Sql,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
-	exec_res(Res,Sql);
 exec(Db,Sql,Evnum,Evterm,VarHeader) ->
 	actordb_local:report_write(),
 	Res =  actordb_driver:exec_script(Sql,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
 	exec_res(Res,Sql).
 exec(Db,Sql,[],Evnum,Evterm,VarHeader) ->
 	exec(Db,Sql,Evnum,Evterm,VarHeader);
-exec(Db,Sql,Records,Evnum,Evterm,VarHeader) when element(1,Db) == connection ->
-	actordb_local:report_write(),
-	Res =  esqlite3:exec_script(Sql,Records,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
-	exec_res(Res,Sql);
 exec(Db,Sql,Records,Evnum,Evterm,VarHeader) ->
 	actordb_local:report_write(),
 	Res =  actordb_driver:exec_script(Sql,Records,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
@@ -116,8 +102,6 @@ exec_res(Res,Sql) ->
 	case Res of
 		{ok,[[{columns,_},_] = Res1]} ->
 			{ok,Res1};
-		{ok,[{rowid,X}]} -> % not used anymore
-			{ok,{rowid,X}};
 		{ok,[{changes,Id,Rows}]} ->
 			{ok,{changes,Id,Rows}};
 		{ok,[ok]} ->
@@ -136,8 +120,6 @@ exec_res(Res,Sql) ->
 okornot(Res) ->
 	case Res of
 		ok ->
-			ok;
-		{rowid,_} ->
 			ok;
 		{changes,_} ->
 			ok;

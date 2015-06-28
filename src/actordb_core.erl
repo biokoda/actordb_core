@@ -216,15 +216,8 @@ start(_Type, _Args) ->
 			% 	_ ->
 			% 		StateStart = wait
 			% end
-			{PID,_} = spawn_monitor(fun() ->
-				StPth = actordb_sharedstate:cb_path(1,2,3)++butil:tolist(?STATE_NM_GLOBAL)++"."++butil:tolist(?STATE_TYPE),
-				{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(StPth,wal),
-				exit(SchemaTables)
-			end),
-			receive
-				{'DOWN',_Monitor,_,PID,SchemaTables} ->
-					ok
-			end,
+			StPth = actordb_sharedstate:cb_path(1,2,3)++butil:tolist(?STATE_NM_GLOBAL)++"."++butil:tolist(?STATE_TYPE),
+			{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(StPth,wal),
 			case SchemaTables of
 				[] ->
 					case file:list_dir(actordb_conf:db_path()++"/shards/") of
