@@ -45,7 +45,8 @@ ae_respond(P,undefined,_Success,_PrevEvnum,_AEType,_CallCount) ->
 	?ERR("Unable to respond for AE because leader is gone"),
 	ok;
 ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
-	Resp = {appendentries_response,actordb_conf:node_name(),P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType,CallCount},
+	Resp = {appendentries_response,actordb_conf:node_name(),
+		P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType,CallCount},
 	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[nostart],
 									{state_rw,Resp},P#dp.cbmod]}).
 
@@ -102,12 +103,11 @@ reply_maybe(P,N,[]) ->
 									[%<<"$SAVEPOINT 'adb';">>,
 									<<"#s00;">>,
 									 NewSql,
-									 % <<"$UPDATE __adb SET val='">>,butil:tobin(EvNumNew),<<"' WHERE id=">>,?EVNUM,";",
-									 % <<"$UPDATE __adb SET val='">>,butil:tobin(P#dp.current_term),<<"' WHERE id=">>,?EVTERM,";"
 									 <<"#s02;">>
 									 ],
 							VarHeader = create_var_header(P),
-							Records = [[[?EVNUMI,butil:tobin(EvNumNew)],[?EVTERMI,butil:tobin(P#dp.current_term)]]++AdbRecs],
+							Records = [[[?EVNUMI,butil:tobin(EvNumNew)],
+								[?EVTERMI,butil:tobin(P#dp.current_term)]]++AdbRecs],
 							Res1 = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.evterm,EvNumNew,VarHeader),
 							Res = {actordb_conf:node_name(),Res1},
 							case actordb_sqlite:okornot(Res1) of
@@ -147,7 +147,8 @@ reply_maybe(P,N,[]) ->
 				_ ->
 					case actordb_conf:sync() of
 						true ->
-							% Some time goes by between write and replication. We are syncing when replication is done.
+							% Some time goes by between write and replication.
+							% We are syncing when replication is done.
 							% Another actor may already have synced and this will be a noop.
 							actordb_driver:fsync(P#dp.db);
 						_ ->
@@ -162,8 +163,9 @@ reply_maybe(P,N,[]) ->
 					checkpoint(NP);
 				_ ->
 					Ref = make_ref(),
-					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
-										{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
+					RpcParam = [{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+								{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod],
+					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,RpcParam}) of
 						ok ->
 							{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
 							NP1;
@@ -183,7 +185,8 @@ reply_maybe(P,N,[]) ->
 				_ ->
 					case actordb_conf:sync() orelse P#dp.force_sync of
 						true ->
-							% Some time goes by between write and replication. We are syncing when replication is done.
+							% Some time goes by between write and replication.
+							% We are syncing when replication is done.
 							% Another actor may already have synced and this will be a noop.
 							actordb_driver:fsync(P#dp.db);
 						_ ->
@@ -302,11 +305,6 @@ actually_delete(P) ->
 	%  on first call.
 	ok = actordb_driver:wal_rewind(P#dp.db,0),
 	[].
-	% {ok,[{columns,_},{rows,Tables}]} = actordb_sqlite:exec(P#dp.db,<<"SELECT NAME FROM sqlite_master WHERE type='table';">>,read),
-	% Drops = [<<"$DROP TABLE ",Name/binary,";">> || {Name} <- Tables, Name /= <<"__adb">> andalso Name /= <<"sqlite_sequence">>],
-	% ?DBG("Drop tables in deleted=~p",[Drops]),
-	% #write{sql = ["$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?MOVEDTO,",'');",
-	% 			  "$INSERT OR REPLACE INTO __adb (id,val) VALUES (",?BASE_SCHEMA_VERS,",0);",Drops], records = []}.
 
 set_followers(HaveSchema,P) ->
 	case apply(P#dp.cbmod,cb_nodelist,[P#dp.cbstate,HaveSchema]) of
@@ -317,8 +315,9 @@ set_followers(HaveSchema,P) ->
 			ok
 	end,
 	P#dp{cbstate = NS,follower_indexes = P#dp.follower_indexes ++
-			[#flw{node = Nd,distname = bkdcore:dist_name(Nd),match_index = 0,next_index = P#dp.evnum+1} || Nd <- NL,
-					lists:keymember(Nd,#flw.node,P#dp.follower_indexes) == false]}.
+			[#flw{node = Nd,distname = bkdcore:dist_name(Nd),match_index = 0,
+			next_index = P#dp.evnum+1} || Nd <- NL,
+			lists:keymember(Nd,#flw.node,P#dp.follower_indexes) == false]}.
 
 try_wal_recover(P,F) when F#flw.file /= undefined ->
 	case F#flw.file of
@@ -370,7 +369,8 @@ continue_maybe(P,F,SuccessHead) ->
 										[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 										{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
 						ok ->
-							{reply,_,NP1} = dbcopy_call({send_db,{F#flw.node,Ref,false,P#dp.actorname}},undefined,NP),
+							Send = {send_db,{F#flw.node,Ref,false,P#dp.actorname}},
+							{reply,_,NP1} = dbcopy_call(Send,undefined,NP),
 							NP1;
 						_Err ->
 							?ERR("Error sending db ~p",[_Err]),
@@ -378,7 +378,8 @@ continue_maybe(P,F,SuccessHead) ->
 					end
 			end;
 		true ->
-			?DBG("Sending AE start on evnum=~p, matchindex=~p, matchterm=~p",[F#flw.next_index,F#flw.match_index,F#flw.match_term]),
+			?DBG("Sending AE start on evnum=~p, matchindex=~p, matchterm=~p",
+				[F#flw.next_index,F#flw.match_index,F#flw.match_term]),
 			StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 				{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 							F#flw.match_index,F#flw.match_term,recover,{F#flw.match_index,F#flw.match_term}}}]}),
@@ -400,7 +401,8 @@ continue_maybe(P,F,SuccessHead) ->
 							store_follower(P,F#flw{file = undefined, wait_for_response_since = os:timestamp()});
 						NF when element(1,NF) == flw ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
-							bkdcore_rpc:cast(NF#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}]}),
+							CP = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}],
+							bkdcore_rpc:cast(NF#flw.node,{actordb_sqlproc,call_slave,CP}),
 							store_follower(P,NF#flw{file = undefined, wait_for_response_since = os:timestamp()})
 					end;
 				% to be continued in appendentries_response
@@ -423,14 +425,16 @@ continue_maybe(P,F,SuccessHead) ->
 				_ ->
 					ok
 			end,
-			bkdcore_rpc:cast(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}]}),
+			CP = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}],
+			bkdcore_rpc:cast(F#flw.node,{actordb_sqlproc,call_slave,CP}),
 			store_follower(P,F#flw{file = undefined, pagebuf = <<>>})
 	end.
 
 store_follower(P,#flw{distname = undefined} = F) ->
 	store_follower(P,F#flw{distname = bkdcore:dist_name(F#flw.node)});
 store_follower(P,NF) ->
-	P#dp{activity = make_ref(),follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
+	P#dp{activity = make_ref(),
+	follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
 
 
 % Read until commit set in header.
@@ -442,7 +446,7 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 				{ok,Iter,PageCompressed,Header,Commit} ->
 					ok;
 				done ->
-					?ERR("Detected disk corruption while trying to replicate to stale follower. Stepping down as leader."),
+					?ERR("Disk corruption while trying to replicate to stale follower. Stepping down as leader."),
 					throw(wal_corruption),
 					Commit = Iter = Header = PageCompressed = undefined
 			end;
@@ -452,7 +456,8 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 	<<ET:64,EN:64,Pgno:32,_:32>> = Header,
 	?DBG("send_wal et=~p, en=~p, pgno=~p, commit=~p",[ET,EN,Pgno,Commit]),
 	WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-				{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,recover,{F#flw.match_index,F#flw.match_term}}},
+				{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,
+					recover,{F#flw.match_index,F#flw.match_term}}},
 				[nostart]]}),
 	case WalRes == ok orelse WalRes == done of
 		true when Commit == 0 ->
@@ -487,7 +492,8 @@ store_term(#dp{db = undefined} = P, VotedFor, CurrentTerm, _EN, _ET) ->
 store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->
 	ok = actordb_driver:term_store(P#dp.db, CurrentTerm, VotedFor).
 
-doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false, P#dp.transactionid == undefined, P#dp.locked == [] ->
+doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false,
+			P#dp.transactionid == undefined, P#dp.locked == [] ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
 			% ?INF("Queue empty"),
@@ -726,7 +732,8 @@ actor_start(P) ->
 % timer -> run normal timer again
 check_for_resync(P,L,Action) ->
 	check_for_resync1(P,L,Action,os:timestamp()).
-check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum, F#flw.wait_for_response_since == undefined ->
+check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum,
+				F#flw.wait_for_response_since == undefined ->
 	check_for_resync1(P,L,Action,Now);
 check_for_resync1(_,[],Action,_) ->
 	Action;
@@ -977,7 +984,8 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 					Callfrom = undefined,
 					MovedToNode = P#dp.movedtonode,
 					ok = actordb_shard:reg_actor(NewShard,P#dp.actorname,P#dp.actortype);
-				% This is node where actor moved from. Check if data is on the other node. If not start copy again.
+				% This is node where actor moved from. Check if data is on the other node.
+				% If not start copy again.
 				false ->
 					?DBG("Have move data on init, check if moved over to ~p",[MoveTo]),
 					Num = actordb_sqlprocutil:read_num(P),
@@ -1042,7 +1050,8 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 		_ ->
 			Sql = [SqlIn,Sql1]
 	end,
-	{P#dp{copyfrom = undefined, copyreset = undefined, movedtonode = MovedToNode, cbstate = NS},Sql,[],[],Callfrom};
+	{P#dp{copyfrom = undefined, copyreset = undefined,
+		movedtonode = MovedToNode, cbstate = NS},Sql,[],[],Callfrom};
 post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], Copyfrom /= undefined ->
 	% Combine sqls for transaction and copy.
 	case post_election_sql(P,Transaction,undefined,Sql,Callfrom) of
@@ -1110,7 +1119,9 @@ checkpoint(P) ->
 
 delete_actor(P) ->
 	?DBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
-	case ((P#dp.flags band ?FLAG_TEST == 0) andalso P#dp.movedtonode == undefined) orelse P#dp.movedtonode == deleted of
+	case ((P#dp.flags band ?FLAG_TEST == 0) andalso
+		P#dp.movedtonode == undefined) orelse
+		P#dp.movedtonode == deleted of
 		true ->
 			case actordb_shardmngr:find_local_shard(P#dp.actorname,P#dp.actortype) of
 				{redirect,Shard,Node} ->
@@ -1189,7 +1200,8 @@ has_schema_updated(P,Sql) ->
 				{NewVers,SchemaUpdate} ->
 					?DBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
 					{NewVers,iolist_to_binary([SchemaUpdate,
-						<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,"' WHERE id=",?SCHEMA_VERS/binary,";">>])}
+						<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,
+						"' WHERE id=",?SCHEMA_VERS/binary,";">>])}
 			end
 	end.
 
@@ -1319,9 +1331,10 @@ retry_copy(P) ->
 			end,
 			Ref = make_ref(),
 			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
-														{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
+					{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
 				ok ->
-					{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},undefined,P),
+					SDB = {send_db,{Node,Ref,IsMove,NewActor}},
+					{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call(SDB,undefined,P),
 					NP1#dp{copylater = undefined};
 				_ ->
 					erlang:send_after(3000,self(),retry_copy),
@@ -1349,9 +1362,9 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 					{Pid,_} = spawn_monitor(fun() ->
 							dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
 					{reply,{ok,Ref},P#dp{db = Db,
-										dbcopy_to = [#cpto{node = Node, pid = Pid, ref = Ref, ismove = IsMove,
-															actorname = ActornameToCopyto}|P#dp.dbcopy_to],
-										activity = make_ref()}};
+							dbcopy_to = [#cpto{node = Node, pid = Pid, ref = Ref, ismove = IsMove,
+							actorname = ActornameToCopyto}|P#dp.dbcopy_to],
+							activity = make_ref()}};
 				{_,_Pid,Ref,_} ->
 					?DBG("senddb already exists with same ref!"),
 					{reply,{ok,Ref},P}
@@ -1386,7 +1399,8 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 			redirect_master(P);
 		_ ->
 			{ok,RecvPid} = start_copyrec(P#dp{db = Db, copyfrom = Copyfrom, dbcopyref = Ref}),
-			{reply,ok,P#dp{db = Db, mors = slave,dbcopyref = Ref, copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
+			{reply,ok,P#dp{db = Db, mors = slave,dbcopyref = Ref,
+				copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
 	end;
 % dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
 % 	% first clear existing db
@@ -1443,7 +1457,8 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 								_ ->
 									?DBG("Queing write call"),
 									CQ = queue:in_r({CallFrom,WriteMsg},P#dp.callqueue),
-									{noreply,P#dp{locked = WithoutLock,cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
+									{noreply,P#dp{locked = WithoutLock,
+										cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
 							end;
 						_ ->
 							?DBG("Copy done at evnum=~p",[P#dp.evnum]),
@@ -1457,8 +1472,8 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 										Flw when is_tuple(Flw) ->
 											CQ = queue:in_r({CallFrom,#write{sql = <<>>}},P#dp.callqueue),
 											{reply,ok,reply_maybe(store_follower(NP#dp{callqueue = CQ},
-														Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm,
-																	next_index = P#dp.evnum+1}))};
+												Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm,
+														next_index = P#dp.evnum+1}))};
 										_ ->
 											{reply,ok,NP}
 									end;
@@ -1562,12 +1577,12 @@ start_copyrec(P) ->
 					% if copyfrom tuple, it's moving/copying from one cluster to another
 					%  or one actor to another.
 					_ when P#dp.mors == master, is_tuple(P#dp.copyfrom) ->
-						ConnectedNodes = [bkdcore:name_from_dist_name(Nd) || Nd <- bkdcore:cluster_nodes_connected()],
-						case ConnectedNodes of
+						CN = [bkdcore:name_from_dist_name(Nd) || Nd <- bkdcore:cluster_nodes_connected()],
+						case CN of
 							[] ->
 								ok;
 							_ ->
-								case (length(ConnectedNodes)+1)*2 > (length(bkdcore:cluster_nodes())+1) of
+								case (length(CN)+1)*2 > (length(bkdcore:cluster_nodes())+1) of
 									true ->
 										true;
 									false ->
@@ -1577,11 +1592,11 @@ start_copyrec(P) ->
 						StartOpt = [{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},lock,nohibernate,{slave,true},
 									{lockinfo,dbcopy,{P#dp.dbcopyref,P#dp.cbstate,P#dp.copyfrom,P#dp.copyreset}}],
 						[{ok,_} = rpc(Nd,{actordb_sqlproc,start_copylock,
-									[{P#dp.actorname,P#dp.actortype},StartOpt]}) || Nd <- ConnectedNodes];
+									[{P#dp.actorname,P#dp.actortype},StartOpt]}) || Nd <- CN];
 					_ ->
-						ConnectedNodes = []
+						CN = []
 				end,
-				dbcopy_receive(Home,P,undefined,ConnectedNodes);
+				dbcopy_receive(Home,P,undefined,CN);
 			name_exists ->
 				Home ! {StartRef,distreg:whereis({copyproc,P#dp.dbcopyref})}
 		end
@@ -1601,7 +1616,7 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 			% ?DBG("copy_receive size=~p, origin=~p, status=~p",[byte_size(Bin),Origin,Status]),
 			case Origin of
 				original ->
-					Param1 = [{bin,{Bin,Header}},{status,Status},{origin,master},	{evnum,Evnum},{evterm,Evterm}],
+					Param1 = [{bin,{Bin,Header}},{status,Status},{origin,master},{evnum,Evnum},{evterm,Evterm}],
 					[ok = rpc(Nd,{?MODULE,dbcopy_send,[Ref,Param1]}) || Nd <- ChildNodes];
 				master ->
 					ok
@@ -1616,7 +1631,8 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 					?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
 					ok = actordb_driver:inject_page(P#dp.db,Bin,Header);
 				false when Status == done ->
-					case actordb_sqlite:exec(P#dp.db,<<"select name, sql from sqlite_master where type='table';">>,read) of
+					SqlSchema = <<"select name, sql from sqlite_master where type='table';">>,
+					case actordb_sqlite:exec(P#dp.db,SqlSchema,read) of
 						{ok,[{columns,_},{rows,SchemaTables}]} ->
 							ok;
 						_X ->
@@ -1627,7 +1643,8 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 					Evnum1 = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 					Evterm1 = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
 					<<HEvterm:64,HEvnum:64,_/binary>> = Header,
-					?DBG("Storing evnum=~p, evterm=~p, curterm=~p, hevterm=~p,hevnum=~p",[Evnum1,Evterm1,HEvterm,HEvnum,butil:ds_val(curterm,Param)]),
+					?DBG("Storing evnum=~p, evterm=~p, curterm=~p, hevterm=~p,hevnum=~p",
+						[Evnum1,Evterm1,HEvterm,HEvnum,butil:ds_val(curterm,Param)]),
 					store_term(P,undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1),
 					case SchemaTables of
 						[] ->
@@ -1672,7 +1689,8 @@ callback_unlock(P) ->
 			ActorName = P#dp.actorname
 	end,
 	% Unlock database on source side. Once unlocked move/copy is complete.
-	case rpc(Node,{actordb_sqlproc,call,[{ActorName,P#dp.actortype},[],{dbcopy,{unlock,P#dp.dbcopyref}},P#dp.cbmod,onlylocal]}) of
+	DBC = {dbcopy,{unlock,P#dp.dbcopyref}},
+	case rpc(Node,{actordb_sqlproc,call,[{ActorName,P#dp.actortype},[],DBC,P#dp.cbmod,onlylocal]}) of
 		ok ->
 			ok;
 		{ok,_} ->
