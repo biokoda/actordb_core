@@ -7,27 +7,31 @@
 -export([parse_statements/1,parse_statements/2,parse_statements/3,split_statements/1, check_flags/2]).
 -export([split_actor/1]).
 -include("actordb.hrl").
--define(R(R),(R == $r orelse R == $R)).
--define(C(C),(C == $c orelse C == $C)).
--define(E(E),(E == $e orelse E == $E)).
 -define(A(A),(A == $a orelse A == $A)).
--define(T(T),(T == $t orelse T == $T)).
--define(I(I),(I == $i orelse I == $I)).
--define(N(N),(N == $n orelse N == $N)).
--define(S(S),(S == $s orelse S == $S)).
--define(O(O),(O == $o orelse O == $O)).
--define(M(M),(M == $m orelse M == $M)).
--define(L(L),(L == $l orelse L == $L)).
 -define(B(B),(B == $b orelse B == $B)).
--define(K(K),(K == $k orelse K == $K)).
--define(X(X),(X == $x orelse X == $X)).
--define(U(U),(U == $u orelse U == $U)).
--define(P(P),(P == $p orelse P == $P)).
--define(W(W),(W == $w orelse W == $W)).
--define(H(H),(H == $h orelse H == $H)).
--define(G(G),(G == $g orelse G == $G)).
+-define(C(C),(C == $c orelse C == $C)).
 -define(D(D),(D == $d orelse D == $D)).
+-define(E(E),(E == $e orelse E == $E)).
+-define(F(F),(F == $f orelse F == $F)).
+-define(G(G),(G == $g orelse G == $G)).
+-define(H(H),(H == $h orelse H == $H)).
+-define(I(I),(I == $i orelse I == $I)).
+-define(K(K),(K == $k orelse K == $K)).
+-define(L(L),(L == $l orelse L == $L)).
+-define(M(M),(M == $m orelse M == $M)).
+-define(N(N),(N == $n orelse N == $N)).
+-define(O(O),(O == $o orelse O == $O)).
+-define(P(P),(P == $p orelse P == $P)).
+-define(R(R),(R == $r orelse R == $R)).
+-define(S(S),(S == $s orelse S == $S)).
+-define(T(T),(T == $t orelse T == $T)).
+-define(U(U),(U == $u orelse U == $U)).
 -define(V(V),(V == $v orelse V == $V)).
+-define(W(W),(W == $w orelse W == $W)).
+-define(X(X),(X == $x orelse X == $X)).
+-define(Y(Y),(Y == $y orelse Y == $Y)).
+
+
 
 % Returns: {[{Actors,IsWrite,Statements},..],IsWrite}
 % Actors: {Type,[Actor1,Actor2,Actor3,...],[Flag1,Flag2]} |
@@ -728,11 +732,21 @@ check_flags(<<"create",Rem/binary>>,L) ->
 	check_flags(Rem,[create|L]);
 check_flags(<<"CREATE",Rem/binary>>,L) ->
 	check_flags(Rem,[create|L]);
+check_flags(<<"Create",Rem/binary>>,L) ->
+	check_flags(Rem,[create|L]);
+check_flags(<<"fsync",Rem/binary>>,L) ->
+	check_flags(Rem,[fsync|L]);
+check_flags(<<"FSYNC",Rem/binary>>,L) ->
+	check_flags(Rem,[fsync|L]);
+check_flags(<<"Fsync",Rem/binary>>,L) ->
+	check_flags(Rem,[fsync|L]);
 check_flags(<<";">>,L) ->
 	L;
 check_flags(<<>>,L) ->
 	L;
 check_flags(<<C,R,E,A,T,E,Rem/binary>>,L) when ?C(C) andalso ?R(R) andalso ?E(E) andalso ?A(A) andalso ?T(T) ->
+	check_flags(Rem,[create|L]);
+check_flags(<<F,S,Y,N,C,Rem/binary>>,L) when ?F(F) andalso ?S(S) andalso ?Y(Y) andalso ?N(N) andalso ?C(C) ->
 	check_flags(Rem,[create|L]);
 check_flags(<<_,Rem/binary>>,L) ->
 	check_flags(Rem,L).

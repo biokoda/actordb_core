@@ -4,7 +4,7 @@
 
 -module(actordb_local).
 -behaviour(gen_server).
--export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, 
+-export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2,
 		terminate/2, code_change/3,print_info/0,killactors/0,ulimit/0]).
 % Multiupdaters
 -export([pick_mupdate/0,mupdate_busy/2,get_mupdaters_state/0,reg_mupdater/2,local_mupdaters/0]).
@@ -53,13 +53,13 @@ min_ref_age(Ref,T,Increment,Pos,Age) ->
 	min_ref_age(Ref,T,Increment,Pos+1,Age+Increment).
 
 
-% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
-% 
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+%
 % 						stats
-% 
+%
 % 	- public ETS: runningstats (?STATS)
 % 		[{reads,N} {writes,N}
-% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
 subscribe_stat() ->
 	gen_server:call(?MODULE,{subscribe_stat,self()}).
 report_read() ->
@@ -82,17 +82,17 @@ get_nactors() ->
 		Size ->
 			Size
 	end.
-	
 
-% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
-% 						
+
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+%
 % 									MULTIUPDATERS
-% 
+%
 % - public ETS: multiupdaters
 % {multiupdate_id,true/false} -> is multiupdater free or not
 % 								 multiupdate_id is integer
 % {all,[Updaterid1,Updaterid2,...]} -> all ids
-% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
 
 reg_mupdater(Id,Pid) ->
 	gen_server:call(?MODULE,{regupdater,Id,Pid}).
@@ -127,16 +127,16 @@ get_mupdaters_state() ->
 
 
 
-% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
-% 						
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+%
 % 									ACTOR ACTIVITY TRACKING
-% 
+%
 % - public ETS: actoractivity (ordered_set) -> ref is always incrementing so is perfect for sort key
-%   {make_ref(),Pid} -> activity table of all actors. 
+%   {make_ref(),Pid} -> activity table of all actors.
 % - public ETS: actorsalive (set)
 %   #actor key on pid
 %   #actor with pid of actordb_local holds the cachesize sum of all actors
-% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
 -record(actor,{pid,name,type,now,mors = master,masternode,cachesize=?DEF_CACHE_PAGES*1024,info = []}).
 
 % called from actor
@@ -208,9 +208,9 @@ print_info() ->
 
 
 
--record(dp,{mupdaters = [], mpids = [], updaters_saved = true, 
+-record(dp,{mupdaters = [], mpids = [], updaters_saved = true,
 % Ulimit and memlimit are checked on startup and will influence how many actors to keep in memory
-			ulimit = 1024*100, memlimit = 1024*1024*1024, proclimit, lastcull = {0,0,0}, 
+			ulimit = 1024*100, memlimit = 1024*1024*1024, proclimit, lastcull = {0,0,0},
 			% Every second do make_ref. Since ref is always incrementing it's a simple+fast way
 			%  to find out which actors were active during prev second.
 			prev_sec_from, prev_sec_to,
@@ -219,7 +219,7 @@ print_info() ->
 			% Set element is: NodeName
 			raft_connections = {undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined}}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
--define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
+-define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
 
 handle_call({regupdater,Id,Pid},_,P) ->
@@ -297,21 +297,21 @@ handle_info(read_ref,P) ->
 			Count = ets:select_count(actoractivity,[{{'$1','_'},[{'>','$1',P#dp.prev_sec_to},{'<','$1',Ref}], [true]}]),
 			butil:ds_add(nactive,Count,?STATS),
 			SR = [begin Pid ! {doread,AllReads,AllWrites,AllReads - P#dp.prev_reads,AllWrites - P#dp.prev_writes,Count},
-					Pid 
+					Pid
 		  		  end || Pid <- P#dp.stat_readers, erlang:is_process_alive(Pid)]
 	end,
 	{noreply,P#dp{prev_sec_to = Ref, prev_sec_from = P#dp.prev_sec_to,
 					stat_readers = SR, prev_reads = AllReads, prev_writes = AllWrites}};
 handle_info(check_mem,P) ->
 	erlang:send_after(5000,self(),check_mem),
-	spawn(fun() -> 
+	spawn(fun() ->
 			L = memsup:get_system_memory_data(),
 			[Free,Total,Cached] = butil:ds_vals([free_memory,system_total_memory,cached_memory],L),
 			NProc = ets:info(actoractivity,size),
-			case is_integer(Total) andalso 
-				 is_integer(Free) andalso 
+			case is_integer(Total) andalso
+				 is_integer(Free) andalso
 				 is_integer(Cached) andalso
-				 Total > 0 andalso 
+				 Total > 0 andalso
 				 ((Free+Cached) / Total) < 0.2 andalso
 				 NProc > 100 of
 				true ->
@@ -374,7 +374,7 @@ handle_info({nodedown, Nd},P) ->
 		Nm ->
 			ets:update_counter(?NETCHANGES,netchanges,1),
 			% Some node has gone down, kill all slaves on this node.
-			spawn(fun() -> 
+			spawn(fun() ->
 				L = ets:match(actorsalive, #actor{masternode=Nm, pid = '$1', _='_'}),
 				[actordb_sqlproc:diepls(Pid,nomaster) || [Pid] <- L]
 			end),
@@ -392,7 +392,7 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(_, P) -> 
+handle_info(_, P) ->
 	{noreply, P}.
 
 
@@ -497,24 +497,24 @@ init(_) ->
 			ok
 	end,
 	butil:ds_add(#actor{pid = 0,cachesize = 0},actorsalive),
-	case butil:get_os() of
-		win ->
-			Ulimit = (#dp{})#dp.ulimit;
-		_ ->
-			Ulimit = butil:toint(lists:flatten(string:tokens(os:cmd("ulimit -n"),"\n\r")))
-	end,
+	% case butil:get_os() of
+	% 	win ->
+			Ulimit = (#dp{})#dp.ulimit,
+	% 	_ ->
+	% 		Ulimit = butil:toint(lists:flatten(string:tokens(os:cmd("ulimit -n"),"\n\r")))
+	% end,
 	case memsup:get_memory_data() of
 		{0,0,_} ->
-			Memlimit1 = (#dp{})#dp.memlimit; 
+			Memlimit1 = (#dp{})#dp.memlimit;
 		{Memlimit1,_,_} ->
 			ok
 	end,
-	case ok of
-		_ when Ulimit =< 1024 ->
-			Proclimit = erlang:round(Ulimit*0.5);
-		_ ->
-			Proclimit = erlang:round(Ulimit*0.8)
-	end,
+	% case ok of
+	% 	_ when Ulimit =< 1024 ->
+	% 		Proclimit = erlang:round(Ulimit*0.5);
+	% 	_ ->
+			Proclimit = erlang:round(Ulimit*0.8),
+	% end,
 	case ok of
 		_ when Memlimit1 =< ?GB ->
 			Memlimit = 200*?MB;
@@ -535,7 +535,7 @@ init(_) ->
 start_timer(P) ->
 	case whereis(short_timer) of
 		undefined ->
-			spawn_monitor(fun() -> register(short_timer,self()), 
+			spawn_monitor(fun() -> register(short_timer,self()),
 								timer(#tmr{proclimit = P#dp.proclimit, memlimit = P#dp.memlimit}) end);
 		_ ->
 			ok
@@ -552,7 +552,7 @@ timer(P) ->
 			false ->
 				ok
 		end,
-		
+
 		NProc = ets:info(actoractivity,size),
 		Memsize = (butil:ds_val(0,actorsalive))#actor.cachesize,
 		case NProc < P#tmr.proclimit andalso Memsize < P#tmr.memlimit of
@@ -584,5 +584,3 @@ create_mupdaters(N,L) ->
 			?AERR("Cant create multiupdater ~p",[_E]),
 			L
 	end.
-
-

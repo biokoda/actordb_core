@@ -136,9 +136,9 @@ prestart1(Files) ->
 	ActorParam = butil:ds_val(actordb_core,L),
 	[Main,Extra,Sync1,NumMngrs,QueryTimeout1,Repl] =
 		butil:ds_vals([main_db_folder,extra_db_folders,
-						sync,num_transaction_managers,
+						fsync,num_transaction_managers,
 						query_timeout,max_replication_space],ActorParam,
-						["db",[],true,12,60000,{5000,0.1}]),
+						["db",[],undefined,12,60000,{5000,0.1}]),
 	case QueryTimeout1 of
 		0 ->
 			QueryTimeout = infinity;
@@ -146,20 +146,35 @@ prestart1(Files) ->
 			ok
 	end,
 	Sync = case Sync1 of
+		undefined ->
+			case butil:ds_val(sync,ActorParam) of
+				undefined ->
+					true;
+				true ->
+					true;
+				false ->
+					false
+			end;
 		0 ->
-			0;
+			false;
 		1 ->
-			1;
+			true;
 		on ->
-			1;
+			true;
 		off ->
-			0;
+			false;
 		true ->
-			1;
+			true;
 		false ->
-			0;
+			false;
+		safe ->
+			true;
+		fast ->
+			false;
+		{interval,_} ->
+			Sync1;
 		_ when is_integer(Sync1) ->
-			1
+			true
 	end,
 	application:set_env(actordb_core,num_transaction_managers,NumMngrs),
 	Statep = butil:expand_path(butil:tolist(Main)),
@@ -192,7 +207,7 @@ prestart1(Files) ->
 	% end,
 	actordb_util:createcfg(Main,Extra,Sync,QueryTimeout,Repl,Name),
 	ensure_folders(actordb_conf:paths()),
-	ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls(),Sync}),
+	ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls()}),
 	emurmur3:init().
 
 start() ->
@@ -203,6 +218,12 @@ start(_Type, _Args) ->
 	prestart(),
 	bkdcore:start(actordb:configfiles()),
 	butil:wait_for_app(bkdcore),
+	case actordb_conf:sync() of
+		{interval,Interval} ->
+			bkdcore_task:add_task(Interval,actordbfsync, fun actordb_driver:fsync/0);
+		_ ->
+			ok
+	end,
 
 	Pth1 = [actordb_sharedstate:cb_path(undefined,undefined,undefined),
 			butil:tolist(?STATE_NM_GLOBAL),".",butil:tolist(?STATE_TYPE)],

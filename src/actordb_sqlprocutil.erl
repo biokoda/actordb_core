@@ -145,7 +145,14 @@ reply_maybe(P,N,[]) ->
 					actordb_sqlprocutil:delete_actor(P),
 					spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
-					ok
+					case actordb_conf:sync() of
+						true ->
+							% Some time goes by between write and replication. We are syncing when replication is done.
+							% Another actor may already have synced and this will be a noop.
+							actordb_driver:fsync(P#dp.db);
+						_ ->
+							ok
+					end
 			end,
 			reply(From,Res),
 			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined,
@@ -174,7 +181,14 @@ reply_maybe(P,N,[]) ->
 					actordb_sqlprocutil:delete_actor(P),
 					spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
-					ok
+					case actordb_conf:sync() of
+						true ->
+							% Some time goes by between write and replication. We are syncing when replication is done.
+							% Another actor may already have synced and this will be a noop.
+							actordb_driver:fsync(P#dp.db);
+						_ ->
+							ok
+					end
 			end,
 			reply(P#dp.callfrom,P#dp.callres),
 			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined})));
