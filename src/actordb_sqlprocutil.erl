@@ -181,7 +181,7 @@ reply_maybe(P,N,[]) ->
 					actordb_sqlprocutil:delete_actor(P),
 					spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
-					case actordb_conf:sync() of
+					case actordb_conf:sync() orelse P#dp.force_sync of
 						true ->
 							% Some time goes by between write and replication. We are syncing when replication is done.
 							% Another actor may already have synced and this will be a noop.
@@ -191,7 +191,7 @@ reply_maybe(P,N,[]) ->
 					end
 			end,
 			reply(P#dp.callfrom,P#dp.callres),
-			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined})));
+			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined, force_sync = false})));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
 				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),

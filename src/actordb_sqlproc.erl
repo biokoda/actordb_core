@@ -896,6 +896,7 @@ combine_write(P,{Mod,Func,_},Fromlist,Rows) ->
 
 % Not a multiactor transaction write
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
+	ForceSync = lists:member(fsync,W#write.flags),
 	EvNum = P#dp.evnum+1,
 	case Sql of
 		delete ->
@@ -937,7 +938,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 						_ when P#dp.follower_indexes == [] ->
 							{noreply,actordb_sqlprocutil:reply_maybe(
 										P#dp{callfrom = From, callres = Res,evnum = EvNum, flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
-												netchanges = actordb_local:net_changes(),
+												netchanges = actordb_local:net_changes(), force_sync = ForceSync,
 												schemavers = NewVers,evterm = P#dp.current_term},1,[])};
 						_ ->
 							% reply on appendentries response or later if nodes are behind.
@@ -949,7 +950,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 							end,
 							{noreply, ae_timer(P#dp{callfrom = From, callres = Callres, flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 											follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
-											netchanges = actordb_local:net_changes(),
+											netchanges = actordb_local:net_changes(),force_sync = ForceSync,
 										evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers})}
 					end;
 				Resp when EvNum == 1 ->
@@ -970,6 +971,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",
 				[TransactionId,P#dp.transactionid,Sql1]),
+	ForceSync = lists:member(fsync,W#write.flags),
 	case P#dp.follower_indexes of
 		[] ->
 			% If single node cluster, no need to store sql first.
@@ -1007,7 +1009,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					?DBG("Transaction ok"),
 					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId,
 								evterm = P#dp.current_term,
-								transactioncheckref = CheckRef,
+								transactioncheckref = CheckRef,force_sync = ForceSync,
 								transactioninfo = {ComplSql,EvNum,NewVers}, callfrom = From, callres = Res},1,[])};
 				_Err ->
 					ok = actordb_sqlite:rollback(P#dp.db),
@@ -1042,7 +1044,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 			{noreply,ae_timer(P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
 						  transactioninfo = {Sql,EvNum+1,NewVers},
 						  follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
-						  transactioncheckref = CheckRef,
+						  transactioncheckref = CheckRef,force_sync = ForceSync,
 						  transactionid = TransactionId})}
 	end.
 
