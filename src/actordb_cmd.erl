@@ -321,7 +321,7 @@ check_sql(Type,SizeCur,SqlNew,IsKv) ->
 	end || N <- lists:seq(1,SizeNew)],
 	case IsKv of
 		true ->
-			case actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';") of
+			case actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';",read) of
 				{ok,[{columns,{<<"name">>}},{rows,Tables}]} ->
 					case lists:member({<<"actors">>},Tables) of
 						true ->
@@ -338,11 +338,11 @@ check_sql(Type,SizeCur,SqlNew,IsKv) ->
 
 compare_tables(Type,NewDb) ->
 	{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
-	ok = actordb_sqlite:exec(Db,tuple_to_list(apply(actordb_schema,Type,[]))),
+	ok = actordb_sqlite:exec(Db,tuple_to_list(apply(actordb_schema,Type,[])),read),
 	compare_tables1(Type,actordb:tables(Type),Db,NewDb).
 compare_tables1(Type,[Table|T],Db,NewDb) ->
-	OldColumns = actordb_sqlite:exec(Db,["pragma table_info(",Table,");"]),
-	NewColumns = actordb_sqlite:exec(NewDb,["pragma table_info(",Table,");"]),
+	OldColumns = actordb_sqlite:exec(Db,["pragma table_info(",Table,");"],read),
+	NewColumns = actordb_sqlite:exec(NewDb,["pragma table_info(",Table,");"],read),
 	case OldColumns == NewColumns of
 		true ->
 			compare_tables1(Type,T,Db,NewDb);
@@ -354,7 +354,7 @@ compare_tables1(_,[],_,_) ->
 	ok.
 
 check_actor_table(Db,Type) ->
-	{ok,[{columns,Columns},{rows,Rows1}]} = actordb_sqlite:exec(Db,"pragma table_info(actors);"),
+	{ok,[{columns,Columns},{rows,Rows1}]} = actordb_sqlite:exec(Db,"pragma table_info(actors);",read),
 	Rows = [lists:zip(tuple_to_list(Columns),tuple_to_list(Row)) || Row <- Rows1],
 	case butil:findobj(<<"name">>,<<"id">>,Rows) of
 		false ->

@@ -247,9 +247,9 @@ parse_cfg_schema(G1) ->
 		EntireSchema = tuple_to_list(Sqls),
 		{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
 		actordb_sqlite:exec(Db,EntireSchema),
-		{ok,[{columns,{<<"name">>}},{rows,Tables}]} = actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';"),
+		{ok,[{columns,{<<"name">>}},{rows,Tables}]} = actordb_sqlite:exec(Db,"select name from sqlite_master where type='table';",read),
 		Val = [begin
-			{ok,[{columns,Columns},{rows,Rows1}]} = actordb_sqlite:exec(Db,["pragma table_info(",Table,");"]),
+			{ok,[{columns,Columns},{rows,Rows1}]} = actordb_sqlite:exec(Db,["pragma table_info(",Table,");"],read),
 			Rows = [lists:zip(tuple_to_list(Columns),tuple_to_list(Row)) || Row <- Rows1],
 			{Table,[{butil:ds_val(<<"name">>,Row),butil:ds_val(<<"type">>,Row)} || Row <- Rows]}
 		 end || {Table} <- Tables],

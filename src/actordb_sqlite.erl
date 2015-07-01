@@ -65,21 +65,22 @@ stop(Db) when element(1,Db) == actordb_driver ->
 	actordb_driver:close(Db),
 	ok.
 
-% wal_pages(Db) ->
-% 	esqlite3:wal_pages(Db).
-
-exec(Db,S,read) ->
+exec(Db,Sql,read) ->
 	actordb_local:report_read(),
-	exec(Db,S);
+	% exec(Db,S);
+	Res = actordb_driver:exec_read(Sql,Db,actordb_conf:query_timeout()),
+	exec_res(Res,Sql);
 exec(Db,S,write) ->
 	actordb_local:report_write(),
 	exec(Db,S);
 exec(Db,Sql,Records) ->
 	Res = actordb_driver:exec_script(Sql,Records,Db,actordb_conf:query_timeout()),
 	exec_res(Res,Sql).
-exec(Db,S,Records,read) ->
+exec(Db,Sql,Records,read) ->
 	actordb_local:report_write(),
-	exec(Db,S,Records);
+	% exec(Db,S,Records);
+	Res = actordb_driver:exec_read(Sql,Records,Db,actordb_conf:query_timeout()),
+	exec_res(Res,Sql);
 exec(Db,S,Records,write) ->
 	actordb_local:report_write(),
 	exec(Db,S,Records).

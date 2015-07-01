@@ -183,7 +183,7 @@ reply_maybe(P,N,[]) ->
 					actordb_sqlprocutil:delete_actor(P),
 					spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
-					case actordb_conf:sync() orelse P#dp.force_sync of
+					case actordb_conf:sync() == true orelse P#dp.force_sync of
 						true ->
 							% Some time goes by between write and replication.
 							% We are syncing when replication is done.
@@ -194,6 +194,7 @@ reply_maybe(P,N,[]) ->
 					end
 			end,
 			reply(P#dp.callfrom,P#dp.callres),
+			actordb_driver:replication_done(P#dp.db),
 			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined, force_sync = false})));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",

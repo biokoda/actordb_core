@@ -740,6 +740,12 @@ check_flags(<<"FSYNC",Rem/binary>>,L) ->
 	check_flags(Rem,[fsync|L]);
 check_flags(<<"Fsync",Rem/binary>>,L) ->
 	check_flags(Rem,[fsync|L]);
+check_flags(<<"sync",Rem/binary>>,L) ->
+	check_flags(Rem,[fsync|L]);
+check_flags(<<"SYNC",Rem/binary>>,L) ->
+	check_flags(Rem,[fsync|L]);
+check_flags(<<"Sync",Rem/binary>>,L) ->
+	check_flags(Rem,[fsync|L]);
 check_flags(<<";">>,L) ->
 	L;
 check_flags(<<>>,L) ->
@@ -747,7 +753,9 @@ check_flags(<<>>,L) ->
 check_flags(<<C,R,E,A,T,E,Rem/binary>>,L) when ?C(C) andalso ?R(R) andalso ?E(E) andalso ?A(A) andalso ?T(T) ->
 	check_flags(Rem,[create|L]);
 check_flags(<<F,S,Y,N,C,Rem/binary>>,L) when ?F(F) andalso ?S(S) andalso ?Y(Y) andalso ?N(N) andalso ?C(C) ->
-	check_flags(Rem,[create|L]);
+	check_flags(Rem,[fsync|L]);
+check_flags(<<S,Y,N,C,Rem/binary>>,L) when ?S(S) andalso ?Y(Y) andalso ?N(N) andalso ?C(C) ->
+	check_flags(Rem,[fsync|L]);
 check_flags(<<_,Rem/binary>>,L) ->
 	check_flags(Rem,L).
 
