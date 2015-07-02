@@ -1474,7 +1474,7 @@ down_info(PID,_Ref,Reason,P) ->
 			% wait_copy not in list add it (2nd stage of lock)
 			WithoutCopy1 =  [#lck{ref = C#cpto.ref, ismove = C#cpto.ismove,
 								node = C#cpto.node,time = os:timestamp(),
-								sactorname = C#cpto.actorname}|WithoutCopy],
+								actorname = C#cpto.actorname}|WithoutCopy],
 			erlang:send_after(1000,self(),check_locks),
 			NP = P#dp{dbcopy_to = NewCopyto,
 						locked = WithoutCopy1,
@@ -1519,7 +1519,7 @@ init([_|_] = Opts) ->
 	random:seed(actordb_conf:cfgtime()),
 	Now = os:timestamp(),
 	P1 = #dp{mors = master, callqueue = queue:new(), without_master_since = Now,
-		schemanum = catch actordb_schema:num()}
+		schemanum = catch actordb_schema:num()},
 	case actordb_sqlprocutil:parse_opts(P1,Opts) of
 		{registered,Pid} ->
 			explain({registered,Pid},Opts),
