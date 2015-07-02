@@ -317,9 +317,14 @@ handle_call(Msg,From,P) ->
 							{noreply,NP}
 					end
 			end;
-		#write{transaction = TransactionId} = Msg1
-			when P#dp.transactionid == TransactionId, P#dp.transactionid /= undefined ->
+		#write{transaction = TransactionId} = Msg1 when
+				P#dp.transactionid == TransactionId,P#dp.transactionid /= undefined ->
+			% Same transaction can write to an actor more than once
 			write_call(Msg1,From,P#dp{activity = make_ref()});
+		#read{} when P#dp.callres /= undefined; P#dp.transactionid /= undefined ->
+			% Read calls can execute before write replication is complete.
+			% Until actordb_driver:replication_done is called, current write is not visible to reads.
+			read_call(Msg,From,P#dp{activity = make_ref()});
 		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
 			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",
 				[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
@@ -338,7 +343,7 @@ handle_call(Msg,From,P) ->
 			end;
 		#write{} ->
 			write_call(Msg,From,P#dp{activity = make_ref()});
-		#read{}->
+		#read{} ->
 			read_call(Msg,From,P#dp{activity = make_ref()});
 		{move,NewShard,Node,CopyReset,CbState} ->
 			% Call to move this actor to another cluster.
@@ -599,35 +604,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 state_rw_call({appendentries_wal,Term,Header,Body,AEType,CallCount},From,P) ->
 	case ok of
 		_ when Term == P#dp.current_term; AEType == head ->
-			AWR = actordb_sqlprocutil:append_wal(P,Header,Body),
-			case AWR of
-				ok ->
-					case Header of
-						% dbsize == 0, not last page
-						<<_:20/binary,0:32>> ->
-							?DBG("AE append ~p",[AEType]),
-							{reply,ok,P#dp{locked = [ae]}};
-						% last page
-						<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,Pgno:32,Commit:32>> ->
-							?DBG("AE WAL done evnum=~p,evterm=~p,aetype=~p,qempty=~p,master=~p,pgno=~p,commit=~p",
-									[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode,Pgno,Commit]),
-							% Prevent any timeouts on next ae since recovery process is progressing.
-							case P#dp.inrecovery of
-								true ->
-									RecoveryAge = os:timestamp();
-								false ->
-									RecoveryAge = P#dp.recovery_age
-							end,
-							NP = P#dp{evnum = Evnum, evterm = Evterm,locked = [], recovery_age = RecoveryAge},
-							reply(From,done),
-							actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
-							{noreply,NP}
-					end;
-				_ ->
-					reply(From,false),
-					actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
-					{noreply,P}
-			end;
+			append_wal(P,From,CallCount,Header,Body,AEType);
 		_ ->
 			?ERR("AE WAL received wrong term ~p",[{Term,P#dp.current_term}]),
 			reply(From,false),
@@ -792,6 +769,46 @@ state_rw_call({delete,_MovedToNode},From,P) ->
 state_rw_call(checkpoint,_From,P) ->
 	actordb_sqlprocutil:checkpoint(P),
 	{reply,ok,P}.
+
+append_wal(P,From,CallCount,[Header|HT],[Body|BT],AEType) ->
+	case append_wal(P,From,CallCount,[Header|HT],[Body|BT],AEType) of
+		{noreply,NP} ->
+			{noreply,NP};
+		{reply,ok,NP} when HT /= [] ->
+			append_wal(NP,From,CallCount,HT,BT,AEType);
+		{reply,ok,NP} ->
+			{reply,ok,NP}
+	end;
+append_wal(P,From,CallCount,Header,Body,AEType) ->
+	AWR = actordb_sqlprocutil:append_wal(P,Header,Body),
+	case AWR of
+		ok ->
+			case Header of
+				% dbsize == 0, not last page
+				<<_:20/binary,0:32>> ->
+					?DBG("AE append ~p",[AEType]),
+					{reply,ok,P#dp{locked = [ae]}};
+				% last page
+				<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,Pgno:32,Commit:32>> ->
+					?DBG("AE WAL done evnum=~p,evterm=~p,aetype=~p,qempty=~p,master=~p,pgno=~p,commit=~p",
+							[Evnum,Evterm,AEType,queue:is_empty(P#dp.callqueue),P#dp.masternode,Pgno,Commit]),
+					% Prevent any timeouts on next ae since recovery process is progressing.
+					case P#dp.inrecovery of
+						true ->
+							RecoveryAge = os:timestamp();
+						false ->
+							RecoveryAge = P#dp.recovery_age
+					end,
+					NP = P#dp{evnum = Evnum, evterm = Evterm,locked = [], recovery_age = RecoveryAge},
+					reply(From,done),
+					actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
+					{noreply,NP}
+			end;
+		_ ->
+			reply(From,false),
+			actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
+			{noreply,P}
+	end.
 
 read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};

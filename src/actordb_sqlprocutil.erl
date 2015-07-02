@@ -439,7 +439,9 @@ store_follower(P,NF) ->
 
 
 % Read until commit set in header.
-send_wal(P,#flw{file = {iter,_}} = F) ->
+send_wal(P,F) ->
+	send_wal(P,F,[],[],0).
+send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 	case F#flw.pagebuf of
 		<<>> ->
 			case actordb_driver:iterate_db(P#dp.db,F#flw.file) of
@@ -454,19 +456,25 @@ send_wal(P,#flw{file = {iter,_}} = F) ->
 		{PageCompressed,Header,Commit} ->
 			Iter = F#flw.file
 	end,
-	<<ET:64,EN:64,Pgno:32,_:32>> = Header,
-	?DBG("send_wal et=~p, en=~p, pgno=~p, commit=~p",[ET,EN,Pgno,Commit]),
-	WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-				{state_rw,{appendentries_wal,P#dp.current_term,Header,PageCompressed,
-					recover,{F#flw.match_index,F#flw.match_term}}},
-				[nostart]]}),
-	case WalRes == ok orelse WalRes == done of
-		true when Commit == 0 ->
-			send_wal(P,F#flw{file = Iter, pagebuf = <<>>});
-		true ->
-			F#flw{file = Iter, pagebuf = <<>>};
-		_ ->
-			error
+	case Commit of
+		0 when BufSize < 1024*128 ->
+			send_wal(P,F,[Header|HeaderBuf],[PageCompressed|PageBuf],BufSize+byte_size(PageCompressed));
+		_ when Commit > 0; BufSize >= 1024*128 ->
+			<<ET:64,EN:64,Pgno:32,_:32>> = Header,
+			?DBG("send_wal et=~p, en=~p, pgno=~p, commit=~p",[ET,EN,Pgno,Commit]),
+			WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+						{state_rw,{appendentries_wal,P#dp.current_term,
+							lists:reverse([Header|HeaderBuf]),lists:reverse([PageCompressed|PageBuf]),
+							recover,{F#flw.match_index,F#flw.match_term}}},
+						[nostart]]}),
+			case WalRes == ok orelse WalRes == done of
+				true when Commit == 0 ->
+					send_wal(P,F#flw{file = Iter, pagebuf = <<>>},[],[],0);
+				true ->
+					F#flw{file = Iter, pagebuf = <<>>};
+				_ ->
+					error
+			end
 	end.
 
 % Go back one entry
@@ -1515,22 +1523,27 @@ dbcopy(P,Home,ActorTo) ->
 				actordb_driver:checkpoint_lock(P#dp.db,0)
 		end
 	end),
-	dbcopy(P,Home,ActorTo,undefined,0,wal).
-dbcopy(P,Home,ActorTo,{iter,_} = Iter,_Bin,wal) ->
+	dbcopy(P,Home,ActorTo,undefined,[],[],0).
+
+dbcopy(P,Home,ActorTo,{iter,_} = Iter, BufHead, BufBin, SizeBuf) ->
 	case actordb_driver:iterate_db(P#dp.db,Iter) of
-		{ok,Iter1,Bin1,Head,Done} when Done == 0 ->
-			dbcopy_do(P,{Bin1,Head}),
-			dbcopy(P,Home,ActorTo,Iter1,<<>>,wal);
-		{ok,_Iter1,Bin1,Head,Done} when Done > 0 ->
-			dbcopy_do(P,{Bin1,Head}),
-			dbcopy_done(P,Head,Home)
+		{ok,Iter1,Bin,Head,Done} when Done == 0, SizeBuf < 1024*128 ->
+			dbcopy(P,Home,ActorTo,Iter1,[Head|BufHead],[Bin|BufBin],SizeBuf+byte_size(Bin));
+		{ok,Iter1,Bin,Head,Done} when Done > 0; SizeBuf >= 1024*128 ->
+			dbcopy_do(P,{lists:reverse([Bin|BufBin]),lists:reverse([Head|BufHead])}),
+			case Done of
+				0 ->
+					dbcopy(P,Home,ActorTo,Iter1,[],[],0);
+				_ ->
+					dbcopy_done(P,Head,Home)
+			end
 	end;
-dbcopy(P,Home,ActorTo,_F,_Offset,wal) ->
+dbcopy(P,Home,ActorTo,_F, BufHead,BufBin,SizeBuf) ->
 	still_alive(P,Home,ActorTo),
 	case actordb_driver:iterate_db(P#dp.db,0,0) of
 		{ok,Iter,Bin,Head,Done} when Done == 0 ->
-			dbcopy_do(P,{Bin,Head}),
-			dbcopy(P,Home,ActorTo,Iter,Iter,wal);
+			% dbcopy_do(P,{Bin,Head}),
+			dbcopy(P,Home,ActorTo,Iter, [Head|BufHead], [Bin|BufBin],SizeBuf+byte_size(Bin));
 		{ok,_Iter,Bin,Head,Done} when Done > 0 ->
 			dbcopy_do(P,{Bin,Head}),
 			dbcopy_done(P,Head,Home)
@@ -1609,11 +1622,24 @@ start_copyrec(P) ->
 		exit(dbcopy_receive_error)
 	end.
 
+dbcopy_inject(Db,[Bin|BT],[Header|HT]) ->
+	dbcopy_inject(Db,Bin,Header),
+	dbcopy_inject(Db,BT,HT);
+dbcopy_inject(_,[],[]) ->
+	ok;
+dbcopy_inject(Db,Bin,Header) ->
+	ok = actordb_driver:inject_page(Db,Bin,Header).
+
 dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 	receive
 		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
 			[{Bin,Header},Status,Origin] = butil:ds_vals([bin,status,origin],Param),
-			<<Evterm:64/unsigned, Evnum:64/unsigned,_/binary>> = Header,
+			case Header of
+				<<Evterm:64,Evnum:64,_/binary>> ->
+					ok;
+				[<<Evterm:64,Evnum:64,_/binary>>|_] ->
+					ok
+			end,
 			% ?DBG("copy_receive size=~p, origin=~p, status=~p",[byte_size(Bin),Origin,Status]),
 			case Origin of
 				original ->
@@ -1625,12 +1651,12 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 			case CurStatus == Status of
 				true ->
 					?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
-					ok = actordb_driver:inject_page(P#dp.db,Bin,Header);
+					ok = dbcopy_inject(P#dp.db,Bin,Header);
 				false when Status == wal ->
 					?DBG("Opening new at ~p",[P#dp.dbpath]),
 					% {ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 					?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
-					ok = actordb_driver:inject_page(P#dp.db,Bin,Header);
+					ok = dbcopy_inject(P#dp.db,Bin,Header);
 				false when Status == done ->
 					SqlSchema = <<"select name, sql from sqlite_master where type='table';">>,
 					case actordb_sqlite:exec(P#dp.db,SqlSchema,read) of
@@ -1643,9 +1669,8 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 					{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
 					Evnum1 = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 					Evterm1 = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-					<<HEvterm:64,HEvnum:64,_/binary>> = Header,
 					?DBG("Storing evnum=~p, evterm=~p, curterm=~p, hevterm=~p,hevnum=~p",
-						[Evnum1,Evterm1,HEvterm,HEvnum,butil:ds_val(curterm,Param)]),
+						[Evnum1,Evterm1,Evterm,Evnum,butil:ds_val(curterm,Param)]),
 					store_term(P,undefined,butil:ds_val(curterm,Param,Evterm1),Evnum1,Evterm1),
 					case SchemaTables of
 						[] ->
