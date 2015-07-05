@@ -4,10 +4,11 @@
 
 -module(actordb_sqlite).
 -export([init/1,init/2,init/3,exec/2,exec/3,exec/4,exec/5,exec/6,okornot/1,
-		 stop/1,close/1,checkpoint/1,rollback/1,
-		 lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,
-		 all_tunnel_call/1,tcp_reconnect/0,
-		 tcp_connect_async/5,store_prepared_table/2]).
+		exec_async/2,exec_async/3,exec_async/4,exec_async/5,exec_async/6,
+		stop/1,close/1,checkpoint/1,rollback/1,
+		lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,
+		all_tunnel_call/1,tcp_reconnect/0,
+		tcp_connect_async/5,store_prepared_table/2]).
 -include("actordb.hrl").
 
 init(Path) ->
@@ -97,6 +98,31 @@ exec(Db,Sql,Records,Evnum,Evterm,VarHeader) ->
 	actordb_local:report_write(),
 	Res =  actordb_driver:exec_script(Sql,Records,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
 	exec_res(Res,Sql).
+
+exec_async(Db,Sql,read) ->
+	actordb_local:report_read(),
+	actordb_driver:exec_read_async(Sql,Db);
+exec_async(Db,S,write) ->
+	actordb_local:report_write(),
+	exec_async(Db,S);
+exec_async(Db,Sql,Records) ->
+	actordb_driver:exec_script_async(Sql,Records,Db).
+exec_async(Db,Sql,Records,read) ->
+	actordb_local:report_write(),
+	actordb_driver:exec_read_async(Sql,Records,Db);
+exec_async(Db,S,Records,write) ->
+	actordb_local:report_write(),
+	exec_async(Db,S,Records).
+exec_async(Db,Sql) ->
+	actordb_driver:exec_script_async(Sql,Db).
+exec_async(Db,Sql,Evnum,Evterm,VarHeader) ->
+	actordb_local:report_write(),
+	actordb_driver:exec_script_async(Sql,Db,Evnum,Evterm,VarHeader).
+exec_async(Db,Sql,[],Evnum,Evterm,VarHeader) ->
+	exec_async(Db,Sql,Evnum,Evterm,VarHeader);
+exec_async(Db,Sql,Records,Evnum,Evterm,VarHeader) ->
+	actordb_local:report_write(),
+	actordb_driver:exec_script_async(Sql,Records,Db,Evnum,Evterm,VarHeader).
 
 
 exec_res(Res,Sql) ->

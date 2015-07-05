@@ -56,6 +56,8 @@
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
+% batch writes/reads.
+-record(bd,{writes, reads, w_wait, r_wait}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
 			activity, fixed_latency = 300,
@@ -76,10 +78,8 @@
 	% callfrom is who is calling,
 	% callres result of sqlite call (need to replicate before replying)
 	callfrom,callres,
-	% queue which holds gen_server:calls that can not be processed immediately because db has not
-	%  been verified, is in the middle of a 2phase commit
-	%  or is being restored from another node.
-	callqueue,
+	% queue which holds gen_server:calls that can not be processed immediately
+	callqueue, rwbatch,
 	% (short for masterorslave): slave/master
 	% mors = slave                     -> follower
 	% mors = master, verified == false -> candidate
