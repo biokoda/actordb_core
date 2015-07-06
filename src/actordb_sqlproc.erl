@@ -272,11 +272,14 @@ handle_call(Msg,_,P) when is_binary(P#dp.movedtonode) ->
 	end;
 handle_call({dbcopy,Msg},CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,P);
+handle_call({state_rw,_} = Msg,From, #dp{rwbatch = #bd{w_wait = WRef}} = P) when is_reference(WRef) ->
+	{noreply,P#dp{statequeue = queue:in_r({From,Msg},P#dp.statequeue)}};
 handle_call({state_rw,What},From,P) ->
 	state_rw_call(What,From,P#dp{activity = make_ref()});
 handle_call({commit,Doit,Id},From, P) ->
 	commit_call(Doit,Id,From,P);
 handle_call(Msg,From,P) ->
+	BD = P#dp.rwbatch,
 	case Msg of
 		_ when P#dp.mors == slave ->
 			case P#dp.masternode of
@@ -321,11 +324,11 @@ handle_call(Msg,From,P) ->
 				P#dp.transactionid == TransactionId,P#dp.transactionid /= undefined ->
 			% Same transaction can write to an actor more than once
 			write_call(Msg1,From,P#dp{activity = make_ref()});
-		#read{} when P#dp.callres /= undefined; P#dp.transactionid /= undefined ->
+		#read{} when BD#bd.nreplies > 0 andalso (P#dp.callres /= undefined orelse P#dp.transactionid /= undefined) ->
 			% Read calls can execute before write replication is complete.
 			% Until actordb_driver:replication_done is called, current write is not visible to reads.
 			read_call(Msg,From,P#dp{activity = make_ref()});
-		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined ->
+		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined; BD#bd.w_wait /= undefined ->
 			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",
 				[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref()}};
@@ -341,6 +344,8 @@ handle_call(Msg,From,P) ->
 				false ->
 					{reply, {error,nocreate},P}
 			end;
+		#write{} when BD#bd.w_wait /= undefined ->
+			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref()}};
 		#write{} ->
 			write_call(Msg,From,P#dp{activity = make_ref()});
 		#read{} ->
@@ -945,7 +950,7 @@ combine_write(P,{Mod,Func,_},Fromlist,Rows) ->
 
 % Not a multiactor transaction write
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
-	ForceSync = lists:member(fsync,W#write.flags),
+	% ForceSync = lists:member(fsync,W#write.flags),
 	EvNum = P#dp.evnum+1,
 	case Sql of
 		delete ->
@@ -967,51 +972,50 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 					 ],
 			ADBW = [[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]],
 			Records = W#write.records++[W#write.adb_recs++ADBW],
-			% ?AINF("Doing write ~p ~p",[iolist_to_binary(ComplSql),Records]),
 			VarHeader = actordb_sqlprocutil:create_var_header(P),
-			% T1 = os:timestamp(),
-			Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
-			% T2 = os:timestamp(),
-			% ?INF("Exec time ~p",[timer:now_diff(T2,T1)]),
-			case actordb_sqlite:okornot(Res) of
-				ok ->
-					?DBG("Write result ~p",[Res]),
-					case ok of
-						_ when P#dp.follower_indexes == [] ->
-							{noreply,actordb_sqlprocutil:reply_maybe(
-								P#dp{callfrom = From, callres = Res,evnum = EvNum,
-								 	flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
-									netchanges = actordb_local:net_changes(), force_sync = ForceSync,
-									schemavers = NewVers,evterm = P#dp.current_term},1,[])};
-						_ ->
-							% reply on appendentries response or later if nodes are behind.
-							case P#dp.callres of
-								undefined ->
-									Callres = Res;
-								Callres ->
-									ok
-							end,
-							{noreply, ae_timer(P#dp{callfrom = From, callres = Callres,
-								flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
-								follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
-								netchanges = actordb_local:net_changes(),force_sync = ForceSync,
-								evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers})}
-					end;
-				Resp when EvNum == 1 ->
-					% Restart with write but just with schema.
-					actordb_sqlite:rollback(P#dp.db),
-					reply(From,Resp),
-					PES = actordb_sqlprocutil:post_election_sql(
-						P#dp{schemavers = undefined},[],undefined,[],undefined),
-					{NP,SchemaSql,SchemaRecords,_} = PES,
-					NW = W#write{sql = SchemaSql, records = SchemaRecords},
-					write_call1(NW,undefined,NP#dp.schemavers,NP);
-				Resp ->
-					% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-					actordb_sqlite:rollback(P#dp.db),
-					reply(From,Resp),
-					{noreply,P}
-			end
+			Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
+			NWB = (P#dp.rwbatch)#bd{w_wait = Res, w_info = W, w_newvers = NewVers,
+				w_callfrom = From, w_evnum = EvNum, w_evterm = P#dp.current_term},
+			{noreply,P#dp{rwbatch = NWB}}
+			% case actordb_sqlite:okornot(Res) of
+			% 	ok ->
+			% 		?DBG("Write result ~p",[Res]),
+			% 		case ok of
+			% 			_ when P#dp.follower_indexes == [] ->
+			% 				{noreply,actordb_sqlprocutil:reply_maybe(
+			% 					P#dp{callfrom = From, callres = Res,evnum = EvNum,
+			% 					 	flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+			% 						netchanges = actordb_local:net_changes(), force_sync = ForceSync,
+			% 						schemavers = NewVers,evterm = P#dp.current_term},1,[])};
+			% 			_ ->
+			% 				% reply on appendentries response or later if nodes are behind.
+			% 				case P#dp.callres of
+			% 					undefined ->
+			% 						Callres = Res;
+			% 					Callres ->
+			% 						ok
+			% 				end,
+			% 				{noreply, ae_timer(P#dp{callfrom = From, callres = Callres,
+			% 					flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+			% 					follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
+			% 					netchanges = actordb_local:net_changes(),force_sync = ForceSync,
+			% 					evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers})}
+			% 		end;
+			% 	Resp when EvNum == 1 ->
+			% 		% Restart with write but just with schema.
+			% 		actordb_sqlite:rollback(P#dp.db),
+			% 		reply(From,Resp),
+			% 		PES = actordb_sqlprocutil:post_election_sql(
+			% 			P#dp{schemavers = undefined},[],undefined,[],undefined),
+			% 		{NP,SchemaSql,SchemaRecords,_} = PES,
+			% 		NW = W#write{sql = SchemaSql, records = SchemaRecords},
+			% 		write_call1(NW,undefined,NP#dp.schemavers,NP);
+			% 	Resp ->
+			% 		% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+			% 		actordb_sqlite:rollback(P#dp.db),
+			% 		reply(From,Resp),
+			% 		{noreply,P}
+			% end
 	end;
 write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId} = W,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
@@ -1132,6 +1136,58 @@ handle_cast(_Msg,P) ->
 	?INF("sqlproc ~p unhandled cast ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
 
+% async write result
+handle_info({Ref,Res1}, #dp{rwbatch = #bd{w_wait = Ref} = BD} = P) when is_reference(Ref) ->
+	?DBG("Write result ~p",[Res1]),
+	Res = actordb_sqlite:exec_res(Res1),
+	From = BD#bd.w_callfrom,
+	EvNum = BD#bd.w_evnum,
+	EvTerm = BD#bd.w_evterm,
+	NewVers = BD#bd.w_newvers,
+	W = BD#bd.w_info,
+	ForceSync = lists:member(fsync,W#write.flags),
+	NewBD = BD#bd{w_callfrom = undefined, w_evnum = undefined, w_evterm = undefined,
+	w_newvers = undefined, w_info = undefined, w_wait = undefined},
+	case actordb_sqlite:okornot(Res) of
+		ok ->
+			case ok of
+				_ when P#dp.follower_indexes == [] ->
+					{noreply,actordb_sqlprocutil:statequeue(actordb_sqlprocutil:reply_maybe(
+						P#dp{callfrom = From, callres = Res,evnum = EvNum,
+						 	flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+							netchanges = actordb_local:net_changes(), force_sync = ForceSync,
+							schemavers = NewVers,evterm = EvTerm,
+							rwbatch = NewBD},1,[]))};
+				_ ->
+					% reply on appendentries response or later if nodes are behind.
+					case P#dp.callres of
+						undefined ->
+							Callres = Res;
+						Callres ->
+							ok
+					end,
+					{noreply, actordb_sqlprocutil:statequeue(ae_timer(P#dp{callfrom = From, callres = Callres,
+						flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+						follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
+						netchanges = actordb_local:net_changes(),force_sync = ForceSync,
+						evterm = EvTerm, evnum = EvNum,schemavers = NewVers,
+						rwbatch = NewBD}))}
+			end;
+		Resp when EvNum == 1 ->
+			% Restart with write but just with schema.
+			actordb_sqlite:rollback(P#dp.db),
+			reply(From,Resp),
+			PES = actordb_sqlprocutil:post_election_sql(
+				P#dp{schemavers = undefined, rwbatch = NewBD},[],undefined,[],undefined),
+			{NP,SchemaSql,SchemaRecords,_} = PES,
+			NW = W#write{sql = SchemaSql, records = SchemaRecords},
+			write_call1(NW,undefined,NP#dp.schemavers,NP);
+		Resp ->
+			% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
+			actordb_sqlite:rollback(P#dp.db),
+			reply(From,Resp),
+			{noreply,actordb_sqlprocutil:statequeue(P#dp{rwbatch = NewBD})}
+	end;
 handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
@@ -1227,17 +1283,6 @@ handle_info(check_locks,P) ->
 			erlang:send_after(1000,self(),check_locks),
 			{noreply, actordb_sqlprocutil:check_locks(P,P#dp.locked,[])}
 	end;
-% handle_info({inactivity_timer,N},P) ->
-% 	handle_info({check_inactivity,N},P#dp{timerref = {undefined,N}});
-% handle_info({check_inactivity,N}, P) ->
-% 	case check_inactivity(N,P) of
-% 		{noreply, NP} ->
-% 			{noreply,doqueue(NP)};
-% 		R ->
-% 			R
-% 	end;
-% handle_info(check_inactivity, P) ->
-% 	handle_info({check_inactivity,10},P);
 handle_info(stop,P) ->
 	?DBG("Received stop msg"),
 	handle_info({stop,normal},P);
@@ -1386,7 +1431,6 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 					?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, withdb ~p, vers ~p",
 						[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,
 						NP#dp.flags band ?FLAG_SEND_DB > 0,NP#dp.schemavers]),
-					% it must always return noreply
 					W = #write{sql = Sql, transaction = NP#dp.transactionid,
 						records = CallRecords, adb_recs = AdbRecords},
 					write_call(W,Callfrom, NP)
@@ -1535,7 +1579,7 @@ init([_|_] = Opts) ->
 	% Random needs to be unique per-node, not per-actor.
 	random:seed(actordb_conf:cfgtime()),
 	Now = os:timestamp(),
-	P1 = #dp{mors = master, callqueue = queue:new(), without_master_since = Now,
+	P1 = #dp{mors = master, callqueue = queue:new(),statequeue = queue:new(), without_master_since = Now,
 		schemanum = catch actordb_schema:num()},
 	case actordb_sqlprocutil:parse_opts(P1,Opts) of
 		{registered,Pid} ->

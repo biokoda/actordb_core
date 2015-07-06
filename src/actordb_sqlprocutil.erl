@@ -156,7 +156,8 @@ reply_maybe(P,N,[]) ->
 					end
 			end,
 			reply(From,Res),
-			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined,
+			BD = P#dp.rwbatch,
+			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, rwbatch = BD#bd{nreplies = BD#bd.nreplies + 1},
 									schemavers = NewVers,activity = make_ref()})),
 			case Msg of
 				undefined ->
@@ -177,6 +178,7 @@ reply_maybe(P,N,[]) ->
 			end;
 		true ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
+			BD = P#dp.rwbatch,
 			case P#dp.movedtonode of
 				deleted ->
 					Me = self(),
@@ -195,7 +197,8 @@ reply_maybe(P,N,[]) ->
 			end,
 			reply(P#dp.callfrom,P#dp.callres),
 			actordb_driver:replication_done(P#dp.db),
-			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined, force_sync = false})));
+			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined,
+				force_sync = false, rwbatch = BD#bd{nreplies = BD#bd.nreplies + 1}})));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
 				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
@@ -501,11 +504,27 @@ store_term(#dp{db = undefined} = P, VotedFor, CurrentTerm, _EN, _ET) ->
 store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->
 	ok = actordb_driver:term_store(P#dp.db, CurrentTerm, VotedFor).
 
+statequeue(P) ->
+	case queue:is_empty(P#dp.statequeue) of
+		true ->
+			P;
+		false ->
+			{{value,Call},CQ} = queue:out_r(P#dp.statequeue),
+			{From,Msg} = Call,
+			case actordb_sqlproc:handle_call(Msg,From,P#dp{statequeue = CQ}) of
+				{reply,Res,NP} ->
+					reply(From,Res),
+					statequeue(NP);
+				{noreply,NP} ->
+					% state_rw always responds, sometimes before returning
+					statequeue(NP)
+			end
+	end.
+
 doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false,
 			P#dp.transactionid == undefined, P#dp.locked == [] ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
-			% ?INF("Queue empty"),
 			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
 				{ok,NS} ->
 					P#dp{cbstate = NS};
@@ -523,6 +542,8 @@ doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false,
 					?DBG("Doqueue for call stop ~p",[Msg]),
 					self() ! stop,
 					NP;
+				{noreply,NP} when element(1,Msg) == state_rw ->
+					doqueue(NP);
 				% If call returns noreply, it will continue processing later.
 				{noreply,NP} ->
 					% We may have just inserted the same call back in the queue. If we did, it

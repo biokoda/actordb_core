@@ -56,8 +56,8 @@
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
-% batch writes/reads.
--record(bd,{writes, reads, w_wait, r_wait}).
+% batch writes/reads and data that needs to be set after current read/write is complete
+-record(bd,{writes, reads, nreplies = 0, w_wait, r_wait, w_info, r_info, w_callfrom, r_callfrom, w_evnum, w_evterm, w_newvers}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
 			activity, fixed_latency = 300,
@@ -78,8 +78,13 @@
 	% callfrom is who is calling,
 	% callres result of sqlite call (need to replicate before replying)
 	callfrom,callres,
-	% queue which holds gen_server:calls that can not be processed immediately
-	callqueue, rwbatch,
+	% queue which holds misc gen_server:calls that can not be processed immediately.
+	callqueue,
+	% Reads/writes are processed asynchronously, this stores info while call is executing
+	% If any reads/writes come in during exec, they are batched together into a larger read or write
+	rwbatch = #bd{},
+	% While write executing, state calls must be queued. After it is done, they can be processed.
+	statequeue,
 	% (short for masterorslave): slave/master
 	% mors = slave                     -> follower
 	% mors = master, verified == false -> candidate

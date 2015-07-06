@@ -7,7 +7,7 @@
 		exec_async/2,exec_async/3,exec_async/4,exec_async/5,exec_async/6,
 		stop/1,close/1,checkpoint/1,rollback/1,
 		lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,
-		all_tunnel_call/1,tcp_reconnect/0,
+		all_tunnel_call/1,tcp_reconnect/0,exec_res/2,exec_res/1,
 		tcp_connect_async/5,store_prepared_table/2]).
 -include("actordb.hrl").
 
@@ -124,7 +124,8 @@ exec_async(Db,Sql,Records,Evnum,Evterm,VarHeader) ->
 	actordb_local:report_write(),
 	actordb_driver:exec_script_async(Sql,Records,Db,Evnum,Evterm,VarHeader).
 
-
+exec_res(Res) ->
+	exec_res(Res,[]).
 exec_res(Res,Sql) ->
 	case Res of
 		{ok,[[{columns,_},_] = Res1]} ->
