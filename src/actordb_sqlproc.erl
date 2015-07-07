@@ -272,7 +272,7 @@ handle_call(Msg,_,P) when is_binary(P#dp.movedtonode) ->
 	end;
 handle_call({dbcopy,Msg},CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,P);
-handle_call({state_rw,_} = Msg,From, #dp{rwbatch = #bd{w_wait = WRef}} = P) when is_reference(WRef) ->
+handle_call({state_rw,_} = Msg,From, #dp{wasync = #ai{wait = WRef}} = P) when is_reference(WRef) ->
 	?DBG("Queuing state call"),
 	{noreply,P#dp{statequeue = queue:in_r({From,Msg},P#dp.statequeue)}};
 handle_call({state_rw,What},From,P) ->
@@ -280,7 +280,7 @@ handle_call({state_rw,What},From,P) ->
 handle_call({commit,Doit,Id},From, P) ->
 	commit_call(Doit,Id,From,P);
 handle_call(Msg,From,P) ->
-	BD = P#dp.rwbatch,
+	BD= P#dp.wasync,
 	case Msg of
 		_ when P#dp.mors == slave ->
 			case P#dp.masternode of
@@ -325,11 +325,11 @@ handle_call(Msg,From,P) ->
 				P#dp.transactionid == TransactionId,P#dp.transactionid /= undefined ->
 			% Same transaction can write to an actor more than once
 			write_call(Msg1,From,P#dp{activity = make_ref()});
-		#read{} when BD#bd.nreplies > 0 andalso (P#dp.callres /= undefined orelse P#dp.transactionid /= undefined) ->
+		#read{} when BD#ai.nreplies > 0 andalso (P#dp.callres /= undefined orelse P#dp.transactionid /= undefined) ->
 			% Read calls can execute before write replication is complete.
 			% Until actordb_driver:replication_done is called, current write is not visible to reads.
 			read_call(Msg,From,P#dp{activity = make_ref()});
-		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined; BD#bd.w_wait /= undefined ->
+		_ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined; BD#ai.wait /= undefined ->
 			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",
 				[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref()}};
@@ -345,8 +345,6 @@ handle_call(Msg,From,P) ->
 				false ->
 					{reply, {error,nocreate},P}
 			end;
-		#write{} when BD#bd.w_wait /= undefined ->
-			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), activity = make_ref()}};
 		#write{} ->
 			write_call(Msg,From,P#dp{activity = make_ref()});
 		#read{} ->
@@ -880,23 +878,26 @@ read_call(Msg,From,#dp{mors = master} = P) ->
 			end;
 		% Schema has changed. Execute write on schema update.
 		% Place this read in callqueue for later execution.
-		{NewVers,Sql1} ->
-			write_call1(#write{sql = Sql1},undefined,NewVers,
-				P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)})
+		{_NewVers,_Sql1} ->
+			% write_call1(#write{sql = Sql1},undefined,NewVers,
+			% 	P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)})
+			write_call(#write{}, undefined, P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)})
 	end;
 read_call(_Msg,_From,P) ->
 	?DBG("redirect read ~p",[P#dp.masternode]),
 	actordb_sqlprocutil:redirect_master(P).
 
-
+write_call(W, From, #dp{wasync = #ai{wait = Ref}} = P) when is_reference(Ref) ->
+	{noreply,P#dp{callqueue = queue:in_r({From,W},P#dp.callqueue)}};
 write_call(#write{mfa = MFA, sql = Sql, transaction = Transaction} = Msg,From,P) ->
 	?DBG("writecall evnum_prewrite=~p,term=~p, writeinfo=~p",
 		[P#dp.evnum,P#dp.current_term,{MFA,Sql,Transaction}]),
 	case actordb_sqlprocutil:has_schema_updated(P,Sql) of
+		{NewVers,Sql1} when Sql == undefined ->
+			% when called from read, it will have an empty write, so ignore it.
+			write_call1(#write{sql = Sql1},undefined,NewVers, P);
 		{NewVers,Sql1} ->
-			% First update schema, then do the transaction.
-			NP = P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)},
-			write_call1(#write{sql = Sql1},undefined,NewVers, NP);
+			write_call1(#write{sql = Sql1},undefined,NewVers, P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)});
 		ok when MFA == undefined ->
 			write_call1(Msg,From,P#dp.schemavers,P);
 		_ ->
@@ -948,7 +949,6 @@ combine_write(P,{Mod,Func,_},Fromlist,Rows) ->
 			{P,Fromlist,Rows}
 	end.
 
-
 % Not a multiactor transaction write
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	% ForceSync = lists:member(fsync,W#write.flags),
@@ -975,9 +975,9 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 			Records = W#write.records++[W#write.adb_recs++ADBW],
 			VarHeader = actordb_sqlprocutil:create_var_header(P),
 			Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
-			NWB = (P#dp.rwbatch)#bd{w_wait = Res, w_info = W, w_newvers = NewVers,
-				w_callfrom = From, w_evnum = EvNum, w_evterm = P#dp.current_term},
-			{noreply,P#dp{rwbatch = NWB}}
+			NWB = (P#dp.wasync)#ai{wait = Res, info = W, newvers = NewVers,
+				callfrom = From, evnum = EvNum, evterm = P#dp.current_term},
+			{noreply,P#dp{wasync = NWB}}
 			% case actordb_sqlite:okornot(Res) of
 			% 	ok ->
 			% 		?DBG("Write result ~p",[Res]),
@@ -1138,17 +1138,17 @@ handle_cast(_Msg,P) ->
 	{noreply,P}.
 
 % async write result
-handle_info({Ref,Res1}, #dp{rwbatch = #bd{w_wait = Ref} = BD} = P) when is_reference(Ref) ->
+handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
 	?DBG("Write result ~p",[Res1]),
 	Res = actordb_sqlite:exec_res(Res1),
-	From = BD#bd.w_callfrom,
-	EvNum = BD#bd.w_evnum,
-	EvTerm = BD#bd.w_evterm,
-	NewVers = BD#bd.w_newvers,
-	W = BD#bd.w_info,
+	From = BD#ai.callfrom,
+	EvNum = BD#ai.evnum,
+	EvTerm = BD#ai.evterm,
+	NewVers = BD#ai.newvers,
+	W = BD#ai.info,
 	ForceSync = lists:member(fsync,W#write.flags),
-	NewBD = BD#bd{w_callfrom = undefined, w_evnum = undefined, w_evterm = undefined,
-	w_newvers = undefined, w_info = undefined, w_wait = undefined},
+	NewAsync = BD#ai{callfrom = undefined, evnum = undefined, evterm = undefined,
+		newvers = undefined, info = undefined, wait = undefined},
 	case actordb_sqlite:okornot(Res) of
 		ok ->
 			case ok of
@@ -1158,7 +1158,7 @@ handle_info({Ref,Res1}, #dp{rwbatch = #bd{w_wait = Ref} = BD} = P) when is_refer
 						 	flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 							netchanges = actordb_local:net_changes(), force_sync = ForceSync,
 							schemavers = NewVers,evterm = EvTerm,
-							rwbatch = NewBD},1,[]))};
+							wasync = NewAsync},1,[]))};
 				_ ->
 					% reply on appendentries response or later if nodes are behind.
 					case P#dp.callres of
@@ -1172,14 +1172,14 @@ handle_info({Ref,Res1}, #dp{rwbatch = #bd{w_wait = Ref} = BD} = P) when is_refer
 						follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
 						netchanges = actordb_local:net_changes(),force_sync = ForceSync,
 						evterm = EvTerm, evnum = EvNum,schemavers = NewVers,
-						rwbatch = NewBD}))}
+						wasync = NewAsync}))}
 			end;
 		Resp when EvNum == 1 ->
 			% Restart with write but just with schema.
 			actordb_sqlite:rollback(P#dp.db),
 			reply(From,Resp),
 			PES = actordb_sqlprocutil:post_election_sql(
-				P#dp{schemavers = undefined, rwbatch = NewBD},[],undefined,[],undefined),
+				P#dp{schemavers = undefined, wasync = NewAsync},[],undefined,[],undefined),
 			{NP,SchemaSql,SchemaRecords,_} = PES,
 			NW = W#write{sql = SchemaSql, records = SchemaRecords},
 			write_call1(NW,undefined,NP#dp.schemavers,NP);
@@ -1187,7 +1187,7 @@ handle_info({Ref,Res1}, #dp{rwbatch = #bd{w_wait = Ref} = BD} = P) when is_refer
 			% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 			actordb_sqlite:rollback(P#dp.db),
 			reply(From,Resp),
-			{noreply,actordb_sqlprocutil:statequeue(P#dp{rwbatch = NewBD})}
+			{noreply,actordb_sqlprocutil:statequeue(P#dp{wasync = NewAsync})}
 	end;
 handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};

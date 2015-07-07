@@ -56,8 +56,22 @@
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
-% batch writes/reads and data that needs to be set after current read/write is complete
--record(bd,{writes, reads, nreplies = 0, w_wait, r_wait, w_info, r_info, w_callfrom, r_callfrom, w_evnum, w_evterm, w_newvers}).
+
+% async info for reads/writes
+-record(ai,{
+% holds sql statements that will be batched together and executed at the same time
+bufer = [],
+% for writes, we count every time a write was successful. This is necessary
+% so we don't start processing reads too soon.
+nreplies = 0,
+% reference from actordb_driver. Match against it to read response.
+wait,
+% current #read/#write
+info,
+% who is waiting to get response.
+callfrom,
+% info used when performing writes. Once write is done, #dp values will be overwritten with these.
+evnum, evterm, newvers}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
 			activity, fixed_latency = 300,
@@ -80,9 +94,9 @@
 	callfrom,callres,
 	% queue which holds misc gen_server:calls that can not be processed immediately.
 	callqueue,
-	% Reads/writes are processed asynchronously, this stores info while call is executing
-	% If any reads/writes come in during exec, they are batched together into a larger read or write
-	rwbatch = #bd{},
+	% Writes are processed asynchronously, this stores info while call is executing
+	% If any writes come in during exec, they are batched together into a larger read or write
+	wasync = #ai{},
 	% While write executing, state calls must be queued. After it is done, they can be processed.
 	statequeue,
 	% (short for masterorslave): slave/master

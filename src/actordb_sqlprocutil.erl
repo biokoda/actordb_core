@@ -156,8 +156,8 @@ reply_maybe(P,N,[]) ->
 					end
 			end,
 			reply(From,Res),
-			BD = P#dp.rwbatch,
-			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, rwbatch = BD#bd{nreplies = BD#bd.nreplies + 1},
+			BD = P#dp.wasync,
+			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, wasync = BD#ai{nreplies = BD#ai.nreplies + 1},
 									schemavers = NewVers,activity = make_ref()})),
 			case Msg of
 				undefined ->
@@ -178,7 +178,7 @@ reply_maybe(P,N,[]) ->
 			end;
 		true ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
-			BD = P#dp.rwbatch,
+			BD = P#dp.wasync,
 			case P#dp.movedtonode of
 				deleted ->
 					Me = self(),
@@ -198,7 +198,7 @@ reply_maybe(P,N,[]) ->
 			reply(P#dp.callfrom,P#dp.callres),
 			actordb_driver:replication_done(P#dp.db),
 			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined,
-				force_sync = false, rwbatch = BD#bd{nreplies = BD#bd.nreplies + 1}})));
+				force_sync = false, wasync = BD#ai{nreplies = BD#ai.nreplies + 1}})));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
 				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
