@@ -21,3 +21,17 @@
 -define(AINF(F,A),lager:info(F,A)).
 -define(AERR(F),lager:error(F)).
 -define(AERR(F,A),lager:error(F,A)).
+
+% Database Administration Statements
+-record(key, {alias, name, table}).
+-record(value, {name, value}).
+-record(table, {name, alias}).
+-record(all, {table}).
+
+-record(management, {action :: action(), data :: account() | permission() }).
+-record(account, {access}).
+-record(permission, {on, account, conditions}).
+
+-type action() :: create | drop | grant | rename | revoke | setpasswd.
+-type account() :: #account{}.
+-type permission() :: #permission{}.

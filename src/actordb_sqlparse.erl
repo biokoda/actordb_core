@@ -4,7 +4,7 @@
 
 -module(actordb_sqlparse).
 % -compile(export_all).
--export([parse_statements/1,parse_statements/2,parse_statements/3,split_statements/1, check_flags/2]).
+-export([parse_statements/1,parse_statements/2,parse_statements/3,split_statements/1, check_flags/2, parse_mngmt/1]).
 -export([split_actor/1]).
 -include("actordb.hrl").
 -define(A(A),(A == $a orelse A == $A)).
@@ -987,4 +987,19 @@ is_write(Bin) ->
 			skip;
 		_ ->
 			false
+	end.
+
+parse_mngmt(Sql) when is_binary(Sql) ->
+	parse_mngmt0(<<(<<(byte_size(Sql) - 1):32>>)/binary,Sql/binary>>);
+parse_mngmt(Sql) when is_list(Sql) ->
+	parse_mngmt0(Sql).
+
+parse_mngmt0(<<Skip:32,Sql:Skip/binary-unit:8, 59, _Rem/binary>>) ->
+	actordb_mngmnt_proto:parse(Sql);
+parse_mngmt0(<<_Skip:32,Sql/binary>>) ->
+	actordb_mngmnt_proto:parse(Sql);
+parse_mngmt0(Sql) ->
+	case lists:suffix(";",Sql) of
+		true -> actordb_mngmnt_proto:parse(lists:droplast(Sql));
+		false -> actordb_mngmnt_proto:parse(Sql)
 	end.

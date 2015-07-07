@@ -12,6 +12,7 @@
 % 							API
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 -record(st,{name,type,time_since_ping = {0,0,0},
 			master_group = [], waiting = false,
 			current_write = [], evnum = 0, am_i_master = false, timer,
@@ -46,6 +47,30 @@ start(Name,Type1,State,Opt) ->
 start_wait(Name,Type) ->
 	start(Name,Type,#st{name = Name,type = Type, waiting = true},[{slave,false},create,
 			no_election_timeout,lock,{lockinfo,wait}]).
+
+read_global_auth_index() ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			ets:match(?GLOBALETS,{["auth",'_','$1'],'_'})
+	end.
+
+read_global_users(Username,Host) ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			ets:match(?GLOBALETS,{["users",'$1'],[Username,Host,'$2']})
+	end.
+
+read_global_users_index() ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			ets:match(?GLOBALETS,{["users",'$1'],'_'})
+	end.
 
 read_global(Key) ->
 	case ets:info(?GLOBALETS,size) of
@@ -743,3 +768,47 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	?ADBG("Init Setting global state ~p",[State]),
 	set_global_state(actordb_conf:node_name(),State),
 	{ok,S#st{evnum = Evnum, waiting = false}}.
+
+mngmnt_execute(Sql)->
+	ActorTypes = actordb:types(),
+	case ActorTypes of
+		schema_not_loaded ->
+			schema_not_loaded;
+		[_|_] ->
+			case Sql of
+				#management{action = create, data = #account{access =
+					[#value{name = <<"password">>, value = Password},
+					#value{name = <<"username">>, value = Username},
+					#value{name = <<"host">>, value = Host}]}} ->
+					Index = increment_index(read_global_users_index()),
+					actordb_sharedstate:write_global(["users", Index],[Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)]);
+				#management{action = grant, data = #permission{
+																	on = #table{name = ActorType,alias = ActorType},
+		                              account = [#value{name = <<"username">>,value = Username},
+		                                          #value{name = <<"host">>,value = Host}],
+		                              conditions = Conditions}} ->
+						case {lists:keyfind(value,1,Conditions), Conditions -- [read,write], lists:member(butil:toatom(ActorType),actordb:types())} of
+							{false,[],true} ->
+								Index = increment_index(read_global_auth_index()),
+								case read_global_users(Username,Host) of
+									[[UserIndex,Sha]] ->
+										actordb_sharedstate:write_global(["auth", ActorType, Index],[UserIndex,Sha,Conditions]);
+									_ ->
+										user_not_found
+								end;
+							{_,_,false} ->
+								check_actor_type;
+							_ ->
+								not_supported
+						end;
+				#management{action = grant, data = _} ->
+					not_supported;
+				#management{action = drop, data = _} = Parsed -> ok
+			end
+		end.
+
+increment_index(Indexes)->
+	case lists:sort(Indexes) of
+		[] -> 1;
+		Indexes -> hd(lists:last(lists:sort(Indexes))) + 1
+	end.

@@ -11,12 +11,12 @@
 -export([start/0,stop/0,stop_complete/0,is_ready/0]).
 % start/stop internal
 -export([schema_changed/0]).
-
+-export ([exec_mngmnt/1]).
 % Internal. Generally not to be called from outside actordb
 -export([direct_call/1,actor_id_type/1,configfiles/0,exec1/1,
 		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
 -include("actordb.hrl").
--export ([get_multiblock_map/1]).
+
 %Maps are used for carrying query statements information:
 % type => type of an actor selected (check schema)
 % actor => select an actor with ID
@@ -297,6 +297,9 @@ exec1(St,BindingValues)->
 		{[[{columns,_},_]|_],_} ->
 			St
  	end.
+
+exec_mngmnt(Sql)->
+	actordb_sharedstate:mngmnt_execute(actordb_sqlparse:parse_mngmt(Sql)).
 
 get_multiblock_map(Multiblock) ->
 	[begin
