@@ -273,6 +273,7 @@ handle_call(Msg,_,P) when is_binary(P#dp.movedtonode) ->
 handle_call({dbcopy,Msg},CallFrom,P) ->
 	actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,P);
 handle_call({state_rw,_} = Msg,From, #dp{rwbatch = #bd{w_wait = WRef}} = P) when is_reference(WRef) ->
+	?DBG("Queuing state call"),
 	{noreply,P#dp{statequeue = queue:in_r({From,Msg},P#dp.statequeue)}};
 handle_call({state_rw,What},From,P) ->
 	state_rw_call(What,From,P#dp{activity = make_ref()});
@@ -776,7 +777,7 @@ state_rw_call(checkpoint,_From,P) ->
 	{reply,ok,P}.
 
 append_wal(P,From,CallCount,[Header|HT],[Body|BT],AEType) ->
-	case append_wal(P,From,CallCount,[Header|HT],[Body|BT],AEType) of
+	case append_wal(P,From,CallCount,Header,Body,AEType) of
 		{noreply,NP} ->
 			{noreply,NP};
 		{reply,ok,NP} when HT /= [] ->
