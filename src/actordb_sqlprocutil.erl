@@ -521,49 +521,122 @@ statequeue(P) ->
 			end
 	end.
 
-doqueue(P) when P#dp.callres == undefined, P#dp.verified /= false,
-			P#dp.transactionid == undefined, P#dp.locked == [] ->
+exec_writes(#dp{wasync = W} = P) when W#ai.buffer /= [] ->
+	actordb_sqlite:write_call1(#write{sql = W#ai.buffer},W#ai.buffer_cf,W#ai.buffer_nv,P);
+exec_writes(P) ->
+	P.
+
+doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked = [],wasync = #ai{wait = undefined}} = P) ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
 			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
 				{ok,NS} ->
-					P#dp{cbstate = NS};
+					exec_writes(P#dp{cbstate = NS});
 				_ ->
-					P
+					exec_writes(P)
 			end;
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
 			{From,Msg} = Call,
-			case actordb_sqlproc:handle_call(Msg,From,P#dp{callqueue = CQ}) of
-				{reply,Res,NP} ->
-					reply(From,Res),
+			Res = case Msg of
+				#write{} when Msg#write.transaction /= undefined ->
+					% Exec directly, this will stop doqueue loop
+					actordb_sqlproc:write_call1(Msg,From,P#dp.schemavers,P#dp{callqueue = CQ});
+				#write{} ->
+					actordb_sqlproc:write_call(Msg,From,P#dp{callqueue = CQ});
+				#read{} ->
+					actordb_sqlproc:read_call(Msg,From,P#dp{callqueue = CQ});
+				{move,NewShard,Node,CopyReset,CbState} ->
+					% Call to move this actor to another cluster.
+					% First store the intent to move with all needed data.
+					% This way even if a node chrashes, the actor will attempt to move on next startup.
+					% When write done, reply to caller and start with move process (in ..util:reply_maybe.
+					Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
+							(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,CbState})))/binary,"');">>,
+					actordb_sqlproc:write_call(#write{sql = Sql},{exec,From,{move,Node}},
+						actordb_sqlprocutil:set_followers(true,P#dp{callqueue = CQ}));
+				{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
+					% Similar to above. Both have just insert and not insert and replace because
+					%  we can only do one move/split at a time. It makes no sense to do both at the same time.
+					% So rely on DB to return error for these conflicting calls.
+					SplitBin = term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,CbState}),
+					Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
+							(base64:encode(SplitBin))/binary,"');">>,
+					% Split is called when shards are moving around (nodes were added).
+					% If different number of nodes in cluster, we need
+					%  to have an updated list of nodes.
+					actordb_sqlproc:write_call(#write{sql = Sql},{exec,From,{split,MFA,Node,OldActor,NewActor}},
+						actordb_sqlprocutil:set_followers(true,P#dp{callqueue = CQ}));
+				{copy,{Node,OldActor,NewActor}} ->
+					Ref = make_ref(),
+					case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+									{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
+						ok ->
+							dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P#dp{callqueue = CQ});
+						Err ->
+							{reply, Err,P#dp{callqueue = CQ}}
+					end;
+				delete ->
+					{reply,ok,P#dp{movedtonode = deleted, callqueue = CQ}};
+				stop ->
+					?DBG("Received stop call"),
+					{stop, stopped, P};
+				Msg ->
+					% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
+					case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
+						{write,Sql,NS} ->
+							actordb_sqlproc:write_call(#write{sql = Sql},From,P#dp{cbstate = NS, callqueue = CQ});
+						{reply,Resp,S} ->
+							{reply,Resp,P#dp{cbstate = S, callqueue = CQ}};
+						{reply,Resp} ->
+							{reply,Resp,P#dp{callqueue = CQ}}
+					end
+			end,
+			case Res of
+				{noreply,NP} ->
+					doqueue(NP);
+				{noreply,NP,_} ->
+					doqueue(NP);
+				{reply,X,NP} ->
+					reply(From,X),
+					doqueue(NP);
+				{reply,X,NP,_} ->
+					reply(From,X),
 					doqueue(NP);
 				{stop,_,NP} ->
-					?DBG("Doqueue for call stop ~p",[Msg]),
 					self() ! stop,
-					NP;
-				{noreply,NP} when element(1,Msg) == state_rw ->
-					doqueue(NP);
-				% If call returns noreply, it will continue processing later.
-				{noreply,NP} ->
-					% We may have just inserted the same call back in the queue. If we did, it
-					%  is placed in the wrong position. It should be in rear not front. So that
-					%  we continue with this call next time we try to execute queue.
-					% If we were to leave it as is, process might execute calls in a different order
-					%  than it received them.
-					case queue:is_empty(NP#dp.callqueue) of
-						false ->
-							{{value,Call1},CQ1} = queue:out(NP#dp.callqueue),
-							case Call1 == Call of
-								true ->
-									NP#dp{callqueue = queue:in(Call,CQ1)};
-								false ->
-									NP
-							end;
-						_ ->
-							NP
-					end
+					NP
 			end
+			% case actordb_sqlproc:handle_call(Msg,From,P#dp{callqueue = CQ}) of
+			% 	{reply,Res,NP} ->
+			% 		reply(From,Res),
+			% 		doqueue(NP);
+			% 	{stop,_,NP} ->
+			% 		?DBG("Doqueue for call stop ~p",[Msg]),
+			% 		self() ! stop,
+			% 		NP;
+			% 	{noreply,NP} when element(1,Msg) == state_rw ->
+			% 		doqueue(NP);
+			% 	% If call returns noreply, it will continue processing later.
+			% 	{noreply,NP} ->
+			% 		% We may have just inserted the same call back in the queue. If we did, it
+			% 		%  is placed in the wrong position. It should be in rear not front. So that
+			% 		%  we continue with this call next time we try to execute queue.
+			% 		% If we were to leave it as is, process might execute calls in a different order
+			% 		%  than it received them.
+			% 		case queue:is_empty(NP#dp.callqueue) of
+			% 			false ->
+			% 				{{value,Call1},CQ1} = queue:out(NP#dp.callqueue),
+			% 				case Call1 == Call of
+			% 					true ->
+			% 						NP#dp{callqueue = queue:in(Call,CQ1)};
+			% 					false ->
+			% 						NP
+			% 				end;
+			% 			_ ->
+			% 				NP
+			% 		end
+			% end
 	end;
 doqueue(P) ->
 	% ?INF("Queue notyet ~p",[{P#dp.callres,P#dp.verified,P#dp.transactionid,P#dp.locked}]),
@@ -696,10 +769,12 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	end,
 	% DefVals = [[$(,K,$,,$',butil:tobin(V),$',$)] || {K,V} <-
 	% 	[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
-	DefVals = [[?SCHEMA_VERSI,butil:tobin(SchemaVers)],[?ATYPEI,Type],[?EVNUMI,<<"0">>],[?EVTERMI,<<"0">>]|Moved],
+
+	% ,[?EVNUMI,<<"0">>],[?EVTERMI,<<"0">>]
+	DefVals = [[?SCHEMA_VERSI,butil:tobin(SchemaVers)],[?ATYPEI,Type]|Moved],
 	{[<<"$CREATE TABLE IF NOT EXISTS __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 		 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
-		 "$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);">>],DefVals}.
+		 "$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);#s02;">>],DefVals}.
 	 % <<"$INSERT INTO __adb (id,val) VALUES ">>,
 	 % 	butil:iolist_join(DefVals,$,),$;].
 
@@ -938,23 +1013,23 @@ follower_nodes(L) ->
 post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 	% If actor is starting with a write, we can incorporate the actual write to post election sql.
 	% This is why wait_election flag is added at actordb_sqlproc:write.
-	QueueEmpty = queue:is_empty(P#dp.callqueue),
-	case Callfrom1 of
-		undefined when QueueEmpty == false ->
-			case queue:out_r(P#dp.callqueue) of
-				{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite1, records = CallRecords}}},CQ} ->
-					CallWrite = semicolon(CallWrite1);
-				_ ->
-					CallRecords = [],
-					CallWrite = <<>>,
-					CQ = P#dp.callqueue,
-					Callfrom = Callfrom1
-			end;
-		Callfrom ->
-			CallRecords = [],
-			CallWrite = <<>>,
-			CQ = P#dp.callqueue
-	end,
+	% QueueEmpty = queue:is_empty(P#dp.callqueue),
+	% case Callfrom1 of
+	% 	undefined when QueueEmpty == false ->
+	% 		case queue:out_r(P#dp.callqueue) of
+	% 			{{value,{Callfrom,#write{sql = <<_/binary>> = CallWrite1, records = CallRecords}}},CQ} ->
+	% 				CallWrite = semicolon(CallWrite1);
+	% 			_ ->
+	% 				CallRecords = [],
+	% 				CallWrite = <<>>,
+	% 				CQ = P#dp.callqueue,
+	% 				Callfrom = Callfrom1
+	% 		end;
+	% 	Callfrom ->
+	% 		CallRecords = [],
+	% 		CallWrite = <<>>,
+	% 		CQ = P#dp.callqueue
+	% end,
 	?DBG("Adding write to post election sql schemavers=~p",[P#dp.schemavers]),
 	case P#dp.schemavers of
 		undefined ->
@@ -970,23 +1045,22 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 			{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
 			?DBG("Adding base schema ~p",[BS]),
 			AdbRecords = Records1 ++ [[?ANUMI,butil:tobin(ActorNum)]],
-			Sql = [SqlIn,BS,Schema,CallWrite
-					];
+			Sql = [SqlIn,BS,Schema];
 		_ ->
 			AdbRecords = [],
 			Flags = P#dp.flags,
 			case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
 				{_,[]} ->
 					NP = P,
-					Sql = CallWrite;
+					Sql = <<>>;
 				{SchemaVers,Schema} ->
 					NP = P#dp{schemavers = SchemaVers},
-					Sql = [SqlIn,Schema,CallWrite,
+					Sql = [SqlIn,Schema,
 							<<"$UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
 								<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
 			end
 	end,
-	{NP#dp{callqueue = CQ, flags = Flags},Sql,CallRecords,AdbRecords,Callfrom};
+	{NP#dp{flags = Flags},Sql,[AdbRecords],Callfrom1};
 post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfrom) ->
 	case base64:decode(MSql1) of
 		<<"delete">> ->
@@ -1001,7 +1075,7 @@ post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfr
 	NP = P#dp{transactioninfo = ReplSql,
 				transactionid = Transid,
 				schemavers = SchemaVers},
-	{NP,Sql,[],[],Callfrom};
+	{NP,Sql,[],Callfrom};
 post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 	CleanupSql = [<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"],
 	case Copyfrom of
@@ -1081,12 +1155,12 @@ post_election_sql(P,[],Copyfrom,SqlIn,_) ->
 			Sql = [SqlIn,Sql1]
 	end,
 	{P#dp{copyfrom = undefined, copyreset = undefined,
-		movedtonode = MovedToNode, cbstate = NS},Sql,[],[],Callfrom};
+		movedtonode = MovedToNode, cbstate = NS},Sql,[],Callfrom};
 post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], Copyfrom /= undefined ->
 	% Combine sqls for transaction and copy.
 	case post_election_sql(P,Transaction,undefined,Sql,Callfrom) of
 		{NP1,delete,_} ->
-			{NP1,delete,[],[],Callfrom};
+			{NP1,delete,[],Callfrom};
 		{NP1,Sql1,_} ->
 			post_election_sql(NP1,[],Copyfrom,Sql1,Callfrom)
 	end.
@@ -1179,15 +1253,15 @@ delete_actor(P) ->
 	end,
 	actordb_sqlite:stop(P#dp.db).
 	% delactorfile(P).
-empty_queue(Q,ReplyMsg) ->
+empty_queue(A,Q,ReplyMsg) ->
 	case queue:is_empty(Q) of
 		true ->
-			ok;
+			[reply(F,ReplyMsg) || F <- A#ai.buffer_cf];
 		false ->
 			{{value,Call},CQ} = queue:out_r(Q),
 			{From,_Msg} = Call,
 			reply(From,ReplyMsg),
-			empty_queue(CQ,ReplyMsg)
+			empty_queue(A,CQ,ReplyMsg)
 	end.
 
 semicolon(<<>>) ->
@@ -1375,12 +1449,9 @@ retry_copy(P) ->
 	end.
 
 % Initialize call on node that is source of copy
-dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
+dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 	% Send database to another node.
 	% This gets called from that node.
-	% File is sent in 1MB chunks. If db is =< 1MB, send the file directly.
-	% If file > 1MB, switch to journal mode wal. This will caue writes to go to a WAL file not into the db.
-	%  Which means the sqlite file can be read from safely.
 	case P#dp.verified of
 		true ->
 			?DBG("senddb myname, remotename ~p info ~p, copyto already ~p",
@@ -1397,18 +1468,8 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}} = Msg,CallFrom,P) ->
 							activity = make_ref()}};
 				{_,_Pid,Ref,_} ->
 					?DBG("senddb already exists with same ref!"),
-					{reply,{ok,Ref},P}
-			end;
-		_ when P#dp.masternode /= undefined ->
-			case P#dp.masternode == actordb_conf:node_name() of
-				true ->
-					{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
-				_ ->
-					?DBG("redirect not master node"),
-					redirect_master(P)
-			end;
-		false ->
-			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}}
+					{reply,{ok,Ref},P,0}
+			end
 	end;
 % Initial call on node that is destination of copy
 dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
@@ -1430,7 +1491,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 		_ ->
 			{ok,RecvPid} = start_copyrec(P#dp{db = Db, copyfrom = Copyfrom, dbcopyref = Ref}),
 			{reply,ok,P#dp{db = Db, mors = slave,dbcopyref = Ref,
-				copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
+				copyfrom = Copyfrom, copyproc = RecvPid, election = undefined},0}
 	end;
 % dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
 % 	% first clear existing db
@@ -1451,7 +1512,7 @@ dbcopy_call({wal_read,From1,done},_CallFrom,P) ->
 	{reply,ok,P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 dbcopy_call({checksplit,Data},_,P) ->
 	{M,F,A} = Data,
-	{reply,apply(M,F,[P#dp.cbstate,check|A]),P};
+	{reply,apply(M,F,[P#dp.cbstate,check|A]),P,0};
 % Final call when copy done
 dbcopy_call({unlock,Data},CallFrom,P) ->
 	% For unlock data = copyref
@@ -1469,7 +1530,6 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 					actordb_sqlproc:write_call(#write{sql = {moved,LC#lck.node}},CallFrom,
 										P#dp{locked = WithoutLock,dbcopy_to = DbCopyTo});
 				_ ->
-					self() ! doqueue,
 					case LC#lck.ismove of
 						{split,{M,F,A}} ->
 							case apply(M,F,[P#dp.cbstate,split|A]) of
@@ -1479,17 +1539,17 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 									ok
 							end,
 							WriteMsg = #write{sql = [Sql,<<"DELETE FROM __adb WHERE id=">>,(?COPYFROM),";"]},
-							case ok of
-								_ when WithoutLock == [], DbCopyTo == [] ->
+							% case ok of
+								% _ when WithoutLock == [], DbCopyTo == [] ->
 									actordb_sqlproc:write_call(WriteMsg,CallFrom,P#dp{locked = WithoutLock,
 												dbcopy_to = DbCopyTo,
 												cbstate = NS});
-								_ ->
-									?DBG("Queing write call"),
-									CQ = queue:in_r({CallFrom,WriteMsg},P#dp.callqueue),
-									{noreply,P#dp{locked = WithoutLock,
-										cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
-							end;
+							% 	_ ->
+							% 		?DBG("Queing write call"),
+							% 		CQ = queue:in_r({CallFrom,WriteMsg},P#dp.callqueue),
+							% 		{noreply,P#dp{locked = WithoutLock,
+							% 			cbstate = NS, dbcopy_to = DbCopyTo,callqueue = CQ}}
+							% end;
 						_ ->
 							?DBG("Copy done at evnum=~p",[P#dp.evnum]),
 							NP = P#dp{locked = WithoutLock, dbcopy_to = DbCopyTo},
@@ -1500,15 +1560,16 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 										% 	{reply,ok,start_verify(reply_maybe(store_follower(NP,
 										% 				Flw#flw{match_index = P#dp.evnum, next_index = P#dp.evnum+1})),force)};
 										Flw when is_tuple(Flw) ->
-											CQ = queue:in_r({CallFrom,#write{sql = <<>>}},P#dp.callqueue),
-											{reply,ok,reply_maybe(store_follower(NP#dp{callqueue = CQ},
+											% CQ = queue:in_r({CallFrom,#write{sql = <<>>}},P#dp.callqueue),
+											{noreply,NP1} = actordb_sqlproc:write_call(#write{sql = <<>>},undefined,NP),
+											{reply,ok,reply_maybe(store_follower(NP1,
 												Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm,
 														next_index = P#dp.evnum+1}))};
 										_ ->
-											{reply,ok,NP}
+											{reply,ok,NP,0}
 									end;
 								false ->
-									{reply,ok,NP}
+									{reply,ok,NP,0}
 							end
 					end
 			end;
@@ -1517,7 +1578,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 			case lists:keyfind(Data,#cpto.ref,P#dp.dbcopy_to) of
 				false ->
 					?ERR("dbcopy_to does not contain ref ~p, ~p",[Data,P#dp.dbcopy_to]),
-					{reply,false,P};
+					{reply,false,P,0};
 				Cpto ->
 					NLC = LC#lck{actorname = Cpto#cpto.actorname, node = Cpto#cpto.node,
 									ismove = Cpto#cpto.ismove, time = os:timestamp()},

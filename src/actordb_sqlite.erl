@@ -136,6 +136,8 @@ exec_res(Res,Sql) ->
 			ok;
 		{ok,[]} ->
 			ok;
+		{ok,T} when is_tuple(T) ->
+			{ok,T};
 		{error,Msg} ->
 			{sql_error,Msg,Sql};
 		ok ->

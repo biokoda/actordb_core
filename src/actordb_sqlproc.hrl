@@ -60,7 +60,11 @@
 % async info for reads/writes
 -record(ai,{
 % holds sql statements that will be batched together and executed at the same time
-bufer = [],
+buffer = [],
+buffer_recs = [],
+buffer_cf = [],
+buffer_nv,
+buffer_moved,
 % for writes, we count every time a write was successful. This is necessary
 % so we don't start processing reads too soon.
 nreplies = 0,
@@ -71,7 +75,7 @@ info,
 % who is waiting to get response.
 callfrom,
 % info used when performing writes. Once write is done, #dp values will be overwritten with these.
-evnum, evterm, newvers}).
+evnum, evterm, newvers, moved}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
 			activity, fixed_latency = 300,
@@ -106,7 +110,7 @@ evnum, evterm, newvers}).
 	mors,
 	% Local copy of db needs to be verified with all nodes. It might be stale or in a conflicted state.
 	% If local db is being restored, verified will be on false.
-	% Possible values: true, false, failed (there is no majority of nodes with the same db state)
+	% Possible values: true, false
 	verified = false,
 	% PID of election process if in progress, time of last seen election otherwise.
 	election,
