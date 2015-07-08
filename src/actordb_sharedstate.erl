@@ -48,12 +48,43 @@ start_wait(Name,Type) ->
 	start(Name,Type,#st{name = Name,type = Type, waiting = true},[{slave,false},create,
 			no_election_timeout,lock,{lockinfo,wait}]).
 
-read_global_auth_index() ->
+read_global_auth() ->
 	case ets:info(?GLOBALETS,size) of
 		undefined ->
 			nostate;
 		_ ->
-			ets:match(?GLOBALETS,{["auth",'_','$1'],'_'})
+			case ets:match_object(?GLOBALETS,{auth,'$1'}) of
+				[{auth,Auth}] -> Auth;
+				_ -> []
+			end
+	end.
+
+read_global_auth(UserIndex) ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			case ets:match_object(?GLOBALETS,{auth,'$1'}) of
+				[{auth,Auth}] ->
+					lists:filtermap(fun(AuthUser) ->
+						case AuthUser of
+							{_,UserIndex,_,_} -> {true, AuthUser};
+							_ -> false
+						end
+					end, Auth);
+				_ -> []
+			end
+	end.
+
+read_global_users() ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			case ets:match_object(?GLOBALETS,{users,'$1'}) of
+				[{users,OtherUsers}] -> OtherUsers;
+				_ -> []
+			end
 	end.
 
 read_global_users(Username,Host) ->
@@ -61,7 +92,13 @@ read_global_users(Username,Host) ->
 		undefined ->
 			nostate;
 		_ ->
-			ets:match(?GLOBALETS,{["users",'$1'],[Username,Host,'$2']})
+			OtherUsers = read_global_users(),
+			lists:filtermap(fun(User) ->
+				case User of
+					{_,Username,Host,_} -> {true, User};
+					_ -> false
+				end
+			end, OtherUsers)
 	end.
 
 read_global_users_index() ->
@@ -69,7 +106,11 @@ read_global_users_index() ->
 		undefined ->
 			nostate;
 		_ ->
-			ets:match(?GLOBALETS,{["users",'$1'],'_'})
+			case ets:match_object(?GLOBALETS,{users,'$1'}) of
+				[{users,OtherUsers}] ->
+					[Index||{Index,_,_,_} <- OtherUsers];
+				_ -> []
+			end
 	end.
 
 read_global(Key) ->
@@ -775,40 +816,132 @@ mngmnt_execute(Sql)->
 		schema_not_loaded ->
 			schema_not_loaded;
 		[_|_] ->
-			case Sql of
-				#management{action = create, data = #account{access =
-					[#value{name = <<"password">>, value = Password},
-					#value{name = <<"username">>, value = Username},
-					#value{name = <<"host">>, value = Host}]}} ->
-					Index = increment_index(read_global_users_index()),
-					actordb_sharedstate:write_global(["users", Index],[Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)]);
-				#management{action = grant, data = #permission{
-																	on = #table{name = ActorType,alias = ActorType},
-		                              account = [#value{name = <<"username">>,value = Username},
-		                                          #value{name = <<"host">>,value = Host}],
-		                              conditions = Conditions}} ->
-						case {lists:keyfind(value,1,Conditions), Conditions -- [read,write], lists:member(butil:toatom(ActorType),actordb:types())} of
-							{false,[],true} ->
-								Index = increment_index(read_global_auth_index()),
-								case read_global_users(Username,Host) of
-									[[UserIndex,Sha]] ->
-										actordb_sharedstate:write_global(["auth", ActorType, Index],[UserIndex,Sha,Conditions]);
-									_ ->
-										user_not_found
-								end;
-							{_,_,false} ->
-								check_actor_type;
-							_ ->
-								not_supported
-						end;
-				#management{action = grant, data = _} ->
-					not_supported;
-				#management{action = drop, data = _} = Parsed -> ok
-			end
+				mngmnt_execute0(Sql)
 		end.
+
+mngmnt_execute0({fail,{expected,_,_}})->
+	check_sql;
+mngmnt_execute0(#management{action = create, data = #account{access =
+	[#value{name = <<"password">>, value = Password},
+	#value{name = <<"username">>, value = Username},
+	#value{name = <<"host">>, value = Host}]}})->
+		Index = increment_index(read_global_users_index()),
+		case read_global_users(Username,Host) of
+			[_|_] ->
+				user_exists;
+			_ ->
+				write_user(Index,Username,Host,Password)
+		end;
+
+%should grant append?
+mngmnt_execute0(#management{action = grant, data = #permission{
+													on = #table{name = ActorType,alias = ActorType},
+													account = [#value{name = <<"username">>,value = Username},
+																		 #value{name = <<"host">>,value = Host}],
+													conditions = Conditions}})->
+		case {lists:keyfind(value,1,Conditions), Conditions -- [read,write], lists:member(butil:toatom(ActorType),actordb:types())} of
+			{false,[],true} ->
+				case read_global_users(Username,Host) of
+					[{UserIndex,_,_,Sha}] ->
+						merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions);
+					_ ->
+						user_not_found
+				end;
+			{_,_,false} ->
+				check_actor_type;
+			_ ->
+				not_supported
+		end;
+mngmnt_execute0(#management{action = grant, data = _})->
+	not_supported;
+
+mngmnt_execute0(#management{action = drop, data = #account{access =
+																				[#value{name = <<"username">>,value = Username},
+	                                      #value{name = <<"host">>,value = Host}]}}) ->
+	User = actordb_sharedstate:read_global_users(Username, Host),
+	AllUsers = actordb_sharedstate:read_global_users(),
+	case User of
+		[]-> user_not_found;
+		[{UserIndex,_,_,_}] ->
+				RemUser = AllUsers -- User,
+				Authentication = read_global_auth(),
+				UserAuthentication = read_global_auth(UserIndex),
+				write_global(auth,Authentication -- UserAuthentication),
+				write_global(users,RemUser)
+	end;
+mngmnt_execute0(#management{action = drop, data = _}) ->
+	not_supported;
+mngmnt_execute0(#management{action = rename, data = [#account{access = [#value{name = <<"username">>,
+                                              value = Username},
+                                       #value{name = <<"host">>,value = Host}]},
+                    #value{name = <<"username">>,value = ToUsername},
+                    #value{name = <<"host">>,value = ToHost}]}) ->
+	User = actordb_sharedstate:read_global_users(Username, Host),
+	AllUsers = actordb_sharedstate:read_global_users(),
+	FutureUser = actordb_sharedstate:read_global_users(ToUsername, ToHost),
+	case FutureUser of
+		[]->
+			case User of
+				[]-> user_not_found;
+				[{Index,Username,Host,Sha}] ->
+					RemUser = AllUsers -- User,
+					write_global(users,[{Index,ToUsername,ToHost,Sha}|RemUser])
+			end;
+		_ -> user_exists
+	end;
+mngmnt_execute0(#management{action = rename, data = _ }) ->
+	not_supported;
+mngmnt_execute0(#management{action = revoke,data = #permission{on = #table{name = ActorType,alias = ActorType},
+                               account = [#value{name = <<"username">>, value = Username},
+                                          #value{name = <<"host">>,value = Host}],
+                               conditions = Conditions}}) ->
+	Authentication = read_global_auth(),
+	case read_global_users(Username, Host) of
+		[] -> user_not_found;
+		[{UserIndex,Username,Host,Sha}] ->
+			[{ActorType,UserIndex,Sha,OldConditions}] = lists:filter(fun(X)-> case X of
+				{ActorType,UserIndex,Sha,_} -> true;
+				_ -> false end
+				end, Authentication),
+			NewConditions = OldConditions -- Conditions,
+			write_global(auth,(Authentication -- [{ActorType,UserIndex,Sha,OldConditions}])
+			++ [{ActorType,UserIndex,Sha,NewConditions}])
+	end;
+mngmnt_execute0(#management{action = revoke,data = _})->
+	not_supported;
+mngmnt_execute0(#management{action = setpasswd,data = #account{access = [
+																			#value{name = <<"password">>,value = Password},
+                                      #value{name = <<"username">>,value = Username},
+                                      #value{name = <<"host">>,value = Host}]}})->
+	Users = read_global_users(),
+	case read_global_users(Username, Host) of
+		[] -> user_not_found;
+		[{UserIndex,Username,Host,_Sha}] = User ->
+			RemUser = Users -- User,
+			write_global(users,[{UserIndex,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}|RemUser])
+	end;
+
+mngmnt_execute0(#management{action = setpasswd, data = _})->
+	not_supported.
 
 increment_index(Indexes)->
 	case lists:sort(Indexes) of
 		[] -> 1;
-		Indexes -> hd(lists:last(lists:sort(Indexes))) + 1
+		IndexesNum -> lists:last(lists:sort(IndexesNum)) + 1
+	end.
+
+write_user(Index,Username,Host,Password) ->
+	case read_global_users() of
+		[] ->
+			write_global(users,[{Index,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}]);
+		OtherUsers ->
+			write_global(users,[{Index,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}|OtherUsers])
+	end.
+
+merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions)->
+	Authentication = read_global_auth(),
+	case lists:filter(fun(X)-> case X of {ActorType,UserIndex,Sha,_} -> true; _ -> false end end, Authentication) of
+	[]-> write_global(auth,[{ActorType,UserIndex,Sha,Conditions}|Authentication]);
+	Remove ->
+		write_global(auth,(Authentication -- Remove) ++ [{ActorType,UserIndex,Sha,Conditions}])
 	end.
