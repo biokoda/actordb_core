@@ -49,7 +49,7 @@
 % records: for bulk inserts to single actor. List of rows (tuples).
 %          First element of tuple is table name. Sql must contain _insert; statement.
 % sql and flags must always be first and second position in #read and #write records.
--record(write,{sql, flags = [], mfa, transaction, records = [], adb_recs = []}).
+-record(write,{sql, flags = [], mfa, transaction, records = []}).
 -record(read,{sql, flags = []}).
 -record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0,
 			  file, wait_for_response_since, last_seen = {0,0,0}, pagebuf = <<>>}).
@@ -98,9 +98,9 @@ evnum, evterm, newvers, moved}).
 	callfrom,callres,
 	% queue which holds misc gen_server:calls that can not be processed immediately.
 	callqueue,
-	% Writes are processed asynchronously, this stores info while call is executing
+	% Writes/reads are processed asynchronously, this stores info while call is executing
 	% If any writes come in during exec, they are batched together into a larger read or write
-	wasync = #ai{},
+	wasync = #ai{}, rasync = #ai{},
 	% While write executing, state calls must be queued. After it is done, they can be processed.
 	statequeue,
 	% (short for masterorslave): slave/master

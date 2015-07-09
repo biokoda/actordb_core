@@ -8,7 +8,7 @@
 -export([print_info/1]).
 -export([read/4,write/4,call/4,call/5,diepls/2,try_actornum/3]).
 -export([call_slave/4,call_slave/5,start_copylock/2]). %call_master/4,call_master/5
--export([write_call/3]).
+-export([write_call/3, write_call1/4, read_call/3, read_call1/4]).
 -include_lib("actordb_sqlproc.hrl").
 
 % Read actor number without creating actor.
@@ -292,7 +292,6 @@ handle_call({state_rw,What},From,P) ->
 handle_call({commit,Doit,Id},From, P) ->
 	commit_call(Doit,Id,From,P);
 handle_call(Msg,From,P) ->
-	BD= P#dp.wasync,
 	case Msg of
 		_ when P#dp.mors == slave ->
 			case P#dp.masternode of
@@ -339,20 +338,13 @@ handle_call(Msg,From,P) ->
 		#write{transaction = TransactionId} = Msg1 when
 				P#dp.transactionid == TransactionId,P#dp.transactionid /= undefined ->
 			write_call1(Msg1,From,P#dp.schemavers,P);
-		#read{} when BD#ai.nreplies > 0 -> % andalso (P#dp.callres /= undefined orelse P#dp.transactionid /= undefined) ->
-			% Read calls can execute before write replication is complete. But not before first write is complete.
-			% Until actordb_driver:replication_done is called, current write is not visible to reads.
-			read_call(Msg,From,P#dp{activity = make_ref()});
+		#read{} when P#dp.movedtonode == undefined ->
+			% read call just buffers call
+			read_call(Msg,From,P);
 		#write{transaction = undefined} when P#dp.movedtonode == undefined ->
 			% write_call just buffers call, we can always run it.
-			% Actual write is executed once previous complete or no messages in queue.
+			% Actual write is executed at the end of doqueue.
 			write_call(Msg,From,P);
-		% #read{} ->
-		% 	read_call(Msg,From,P);
-		% _ when P#dp.callres /= undefined; P#dp.locked /= []; P#dp.transactionid /= undefined; BD#ai.wait /= undefined ->
-		% 	?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",
-		% 		[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
-		% 	{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}};
 		_ when P#dp.movedtonode == deleted andalso (element(1,Msg) == read orelse element(1,Msg) == write) ->
 			% #write and #read have flags in same pos
 			Flags = element(#write.flags,Msg),
@@ -782,88 +774,63 @@ append_wal(P,From,CallCount,Header,Body,AEType) ->
 
 read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
-read_call(Msg,From,#dp{mors = master} = P) ->
-	% case actordb_sqlprocutil:has_schema_updated(P,[]) of
-	% 	ok ->
-			% case P#dp.netchanges == actordb_local:net_changes() of
-			% 	false ->
-			% 		?DBG("Running re-election before read"),
-			% 		NP = P#dp{callqueue = queue:in({From, Msg},P#dp.callqueue)},
-			% 		{noreply,actordb_sqlprocutil:start_verify(NP,false)};
-			% 	true ->
-					case Msg#read.sql of
-						{Mod,Func,Args} ->
-							case apply(Mod,Func,[P#dp.cbstate|Args]) of
-								{reply,What,Sql,NS} ->
-									{reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
-								{reply,What,NS} ->
-									{reply,What,P#dp{cbstate = NS}};
-								{reply,What} ->
-									{reply,What,P};
-								{Sql,State} ->
-									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P#dp{cbstate = State}};
-								Sql ->
-									{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
-							end;
-						{Sql,{Mod,Func,Args}} ->
-							case apply(Mod,Func,[P#dp.cbstate,actordb_sqlite:exec(P#dp.db,Sql,read)|Args]) of
-								{write,Write} ->
-									case Write of
-										_ when is_binary(Write); is_list(Write) ->
-											write_call(#write{sql = iolist_to_binary(Write)},From,P);
-										{_,_,_} ->
-											write_call(#write{mfa = Write},From,P)
-									end;
-								{write,Write,NS} ->
-									case Write of
-										_ when is_binary(Write); is_list(Write) ->
-											write_call(#write{sql = iolist_to_binary(Write)},
-													   From,P#dp{cbstate = NS});
-										{_,_,_} ->
-											write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
-									end;
-								{reply_write,Reply,Write,NS} ->
-									case Write of
-										_ when is_binary(Write); is_list(Write) ->
-											write_call(#write{sql = iolist_to_binary(Write)},
-													   undefined,P#dp{cbstate = NS});
-										{_,_,_} ->
-											write_call(#write{mfa = Write},undefined,P#dp{cbstate = NS})
-									end,
-									{reply,Reply,P};
-								{reply,What,NS} ->
-									{reply,What,P#dp{cbstate = NS}};
-								{reply,What} ->
-									{reply,What,P}
-							end;
-						{Sql,Recs} ->
-							{reply,actordb_sqlite:exec(P#dp.db,Sql,Recs,read),P};
-						Sql ->
-							{reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
-					end;
-			% end;
-		% Schema has changed. Execute write on schema update.
-		% Place this read in callqueue for later execution.
-	% 	{_NewVers,_Sql1} ->
-	% 		% write_call1(#write{sql = Sql1},undefined,NewVers,
-	% 		% 	P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)})
-	% 		write_call(#write{}, undefined, P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)})
-	% end;
+read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
+	case Msg#read.sql of
+		{Mod,Func,Args} ->
+			case apply(Mod,Func,[P#dp.cbstate|Args]) of
+				{reply,What,Sql,NS} ->
+					% {reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
+					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [{tuple,What,From}|AR#ai.buffer_cf],
+					buffer_recs = [[]|AR#ai.buffer_recs]},
+					{noreply,P#dp{cbstate = NS, rasync = AR1}, 0};
+				{reply,What,NS} ->
+					{reply,What,P#dp{cbstate = NS}, 0};
+				{reply,What} ->
+					{reply,What,P, 0};
+				{Sql,State} ->
+					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
+						buffer_recs = [[]|AR#ai.buffer_recs]},
+					{noreply,P#dp{cbstate = State, rasync = AR1}, 0};
+				Sql ->
+					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
+						buffer_recs = [[]|AR#ai.buffer_recs]},
+					% {reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
+					{noreply,P#dp{rasync = AR1}, 0}
+			end;
+		{Sql,{Mod,Func,Args}} ->
+			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [{mod,{Mod,Func,Args},From}|AR#ai.buffer_cf],
+				buffer_recs = [[]|AR#ai.buffer_recs]},
+			{noreply,P#dp{rasync = AR1}, 0};
+		{Sql,Recs} ->
+			% {reply,actordb_sqlite:exec(P#dp.db,Sql,Recs,read),P};
+			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
+				buffer_recs = [Recs|AR#ai.buffer_recs]},
+			{noreply,P#dp{rasync = AR1}, 0};
+		Sql ->
+			% {reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
+			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
+				buffer_recs = [[]|AR#ai.buffer_recs]},
+			{noreply,P#dp{rasync = AR1}, 0}
+	end;
 read_call(_Msg,_From,P) ->
 	?DBG("redirect read ~p",[P#dp.masternode]),
 	actordb_sqlprocutil:redirect_master(P).
+
+% Execute buffered read sqls
+read_call1(Sql,Recs,From,P) ->
+	ComplSql = list_to_tuple(Sql),
+	Records = list_to_tuple(Recs),
+	% ?DBG("READ SQL=~p, Recs=~p, from=~p",[ComplSql, Records,From]),
+	Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,read),
+	A = P#dp.rasync,
+	NRB = A#ai{wait = Res, info = Sql, callfrom = From, buffer = [], buffer_cf = [], buffer_recs = []},
+	P#dp{rasync = NRB}.
 
 write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 	?DBG("writecall evnum_prewrite=~p,term=~p, writeinfo=~p",
 		[P#dp.evnum,P#dp.current_term,{MFA,Sql}]),
 	A = P#dp.wasync,
 	case Sql of
-	% case actordb_sqlprocutil:has_schema_updated(P,Sql) of
-	% 	{NewVers,Sql1} when Sql == undefined ->
-	% 		% when called from read, it will have an empty write, so ignore it.
-	% 		write_call1(#write{sql = Sql1},undefined,NewVers, P);
-	% 	{NewVers,Sql1} ->
-	% 		write_call1(#write{sql = Sql1},undefined,NewVers, P#dp{callqueue = queue:in({From,Msg},P#dp.callqueue)});
 		delete ->
 			A1 = A#ai{buffer = [<<"#s02;">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
 				buffer_recs = [[[[?MOVEDTOI,<<"$deleted$">>]]]|A#ai.buffer_recs], buffer_moved = deleted},
@@ -873,7 +840,6 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 				buffer_recs = [[[[?MOVEDTOI,MovedTo]]]|A#ai.buffer_recs], buffer_moved = {moved,MovedTo}},
 			{noreply,P#dp{wasync = A1},0};
 		_ when MFA == undefined ->
-			% write_call1(Msg,From,P#dp.schemavers,P);
 			A1 = A#ai{buffer = [Sql|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
 				buffer_recs = [Msg#write.records|A#ai.buffer_recs]},
 			{noreply,P#dp{wasync = A1},0};
@@ -882,8 +848,6 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
 				{reply,What,OutSql,NS} ->
 					reply(From,What),
-					% W = #write{sql = OutSql, transaction = Transaction},
-					% write_call1(W,undefined,P#dp.schemavers,P#dp{cbstate = NS});
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [undefined|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1, cbstate = NS}};
 				{reply,What,NS} ->
@@ -891,126 +855,35 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 				{reply,What} ->
 					{reply,What,P,0};
 				{exec,OutSql,Recs} ->
-					% case Recs of
-					% 	[SingleStatement] ->
-					% 		% If this just runs a sql with prepared statement, check if there are any queued writes
-					% 		%  that match same call and combine them.
-					% 		% This is basically an optimization for actordb_shard:reg_actor
-					% 		{NP,Fromlist,Rows} = combine_write(P,MFA,[From],SingleStatement),
-					% 		?ADBG("Combining write ~p",[Rows]),
-					% 		% W = #write{sql = OutSql,transaction = Transaction, records = [Rows]},
-					% 		% write_call1(W,Fromlist,P#dp.schemavers,NP);
-					% 		{noreply,P#dp{wasync = A#ai{buffer = [Sql|A#ai.buffer],
-					% 			buffer_recs = [],
-					% 			buffer_cf = [From|A#ai.buffer_cf]}}};
-					% 	_ ->
-							% W = #write{sql = OutSql,transaction = Transaction, records = Recs},
-							% write_call1(W,From,P#dp.schemavers,P)
-					% end;
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1},0};
 				{OutSql,State} ->
-					% W = #write{sql = OutSql,transaction = Transaction},
-					% write_call1(W,From,P#dp.schemavers,P#dp{cbstate = State});
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1, cbstate = State},0};
 				{OutSql,Recs,State} ->
-					% W = #write{sql = OutSql,transaction = Transaction, records = Recs},
-					% write_call1(W,From,P#dp.schemavers,P#dp{cbstate = State});
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1, cbstate = State},0};
 				OutSql ->
-					% W = #write{sql = OutSql,transaction = Transaction},
-					% write_call1(W,From,P#dp.schemavers,P)
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1},0}
 			end
 	end.
-% combine_write(P,{Mod,Func,_},Fromlist,Rows) ->
-% 	case queue:out_r(P#dp.callqueue) of
-% 		{{value,{From,#write{mfa = {Mod,Func,Args}}}},CQ} ->
-% 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
-% 				{exec,_,[[Recs]]} ->
-% 					combine_write(P#dp{callqueue = CQ},{Mod,Func,Args},[From|Fromlist],[Recs|Rows]);
-% 				_BR ->
-% 					{P,Fromlist,Rows}
-% 			end;
-% 		_NOT ->
-% 			{P,Fromlist,Rows}
-% 	end.
 
 % Not a multiactor transaction write
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
-	% case Sql of
-	% 	delete ->
-	% 		?DBG("Write delete"),
-	% 		NW = W#write{sql = <<"#s02;">>,records = [[[?MOVEDTOI,<<"$deleted$">>]]]},
-	% 		write_call1(NW,From,NewVers,P#dp{movedtonode = deleted});
-	% 	{moved,MovedTo} ->
-	% 		% actordb_sqlprocutil:delete_actor(P#dp{movedtonode = MovedTo}),
-	% 		% reply(From,ok),
-	% 		% ?DBG("Write moved"),
-	% 		% {stop,normal,P#dp{db = undefined}};
-	% 		NW = W#write{sql = <<"#s02;">>,records = [[[?MOVEDTOI,MovedTo]]]},
-	% 		write_call1(NW,From,NewVers,P#dp{movedtonode = {moved,MovedTo}});
-	% 	_ ->
-			% ComplSql =
-			% 		[<<"#s00;">>, % savepoint
-			% 		 actordb_sqlprocutil:semicolon(Sql),
-			% 		 <<"#s02;#s01;">> % __adb insert, release savepoint
-			% 		 ],
-			ComplSql = list_to_tuple([<<"#s00;">>|lists:reverse([<<"#s02;#s01;">>|Sql])]),
-			ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
-			Records = list_to_tuple([[]|lists:reverse([ADBW|W#write.records])]),
-			VarHeader = actordb_sqlprocutil:create_var_header(P),
-			Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
-			A = P#dp.wasync,
-			NWB = A#ai{wait = Res, info = W, newvers = NewVers,
-				callfrom = [undefined|lists:reverse([undefined|From])], evnum = EvNum, evterm = P#dp.current_term,
-				moved = A#ai.buffer_moved,
-				buffer_moved = undefined, buffer_nv = undefined, buffer = [], buffer_cf = []},
-			{noreply,P#dp{wasync = NWB}};
-			% case actordb_sqlite:okornot(Res) of
-			% 	ok ->
-			% 		?DBG("Write result ~p",[Res]),
-			% 		case ok of
-			% 			_ when P#dp.follower_indexes == [] ->
-			% 				{noreply,actordb_sqlprocutil:reply_maybe(
-			% 					P#dp{callfrom = From, callres = Res,evnum = EvNum,
-			% 					 	flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
-			% 						netchanges = actordb_local:net_changes(), force_sync = ForceSync,
-			% 						schemavers = NewVers,evterm = P#dp.current_term},1,[])};
-			% 			_ ->
-			% 				% reply on appendentries response or later if nodes are behind.
-			% 				case P#dp.callres of
-			% 					undefined ->
-			% 						Callres = Res;
-			% 					Callres ->
-			% 						ok
-			% 				end,
-			% 				{noreply, ae_timer(P#dp{callfrom = From, callres = Callres,
-			% 					flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
-			% 					follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
-			% 					netchanges = actordb_local:net_changes(),force_sync = ForceSync,
-			% 					evterm = P#dp.current_term, evnum = EvNum,schemavers = NewVers})}
-			% 		end;
-			% 	Resp when EvNum == 1 ->
-			% 		% Restart with write but just with schema.
-			% 		actordb_sqlite:rollback(P#dp.db),
-			% 		reply(From,Resp),
-			% 		PES = actordb_sqlprocutil:post_election_sql(
-			% 			P#dp{schemavers = undefined},[],undefined,[],undefined),
-			% 		{NP,SchemaSql,SchemaRecords,_} = PES,
-			% 		NW = W#write{sql = SchemaSql, records = SchemaRecords},
-			% 		write_call1(NW,undefined,NP#dp.schemavers,NP);
-			% 	Resp ->
-			% 		% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
-			% 		actordb_sqlite:rollback(P#dp.db),
-			% 		reply(From,Resp),
-			% 		{noreply,P}
-			% end
-	% end;
+	ComplSql = list_to_tuple([<<"#s00;">>|lists:reverse([<<"#s02;#s01;">>|Sql])]),
+	ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+	Records = list_to_tuple([[]|lists:reverse([ADBW|W#write.records])]),
+	VarHeader = actordb_sqlprocutil:create_var_header(P),
+	?DBG("SQL=~p, Recs=~p",[ComplSql, Records]),
+	Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
+	A = P#dp.wasync,
+	NWB = A#ai{wait = Res, info = W, newvers = NewVers,
+		callfrom = [batch,undefined|lists:reverse([undefined|From])], evnum = EvNum, evterm = P#dp.current_term,
+		moved = A#ai.buffer_moved,
+		buffer_moved = undefined, buffer_nv = undefined, buffer = [], buffer_cf = [], buffer_recs = []},
+	P#dp{wasync = NWB};
 write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId} = W,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",
@@ -1045,7 +918,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 								 <<"#s02;">>
 								 ],
 							AWR = [[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]],
-							Records = W#write.records++[W#write.adb_recs++AWR],
+							Records = W#write.records++[AWR],
 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,write)
 					end
 			end,
@@ -1130,8 +1003,65 @@ handle_cast(_Msg,P) ->
 	?INF("sqlproc ~p unhandled cast ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
 
+% shards/kv can have reads that turn into writes, or have extra data to return along with read.
+read_reply(P,[H|T],Pos,Res) ->
+	case H of
+		{tuple,What,From} ->
+			reply(From,{What,actordb_sqlite:exec_res({ok, element(Pos,Res)})});
+		{mod,{Mod,Func,Args},From} ->
+			case apply(Mod,Func,[P#dp.cbstate,actordb_sqlite:exec_res({ok, element(Pos,Res)})|Args]) of
+				{write,Write} ->
+					case Write of
+						_ when is_binary(Write); is_list(Write) ->
+							{noreply,NP,_} = write_call(#write{sql = iolist_to_binary(Write)},From,P);
+						{_,_,_} ->
+							{noreply,NP,_} = write_call(#write{mfa = Write},From,P)
+					end,
+					read_reply(NP,T,Pos+1,Res);
+				{write,Write,NS} ->
+					case Write of
+						_ when is_binary(Write); is_list(Write) ->
+							{noreply,NP,_} = write_call(#write{sql = iolist_to_binary(Write)},
+									   From,P#dp{cbstate = NS});
+						{_,_,_} ->
+							{noreply,NP,_} = write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
+					end,
+					read_reply(NP,T,Pos+1,Res);
+				{reply_write,Reply,Write,NS} ->
+					reply(From,Reply),
+					case Write of
+						_ when is_binary(Write); is_list(Write) ->
+							{noreply,NP,_} = write_call(#write{sql = iolist_to_binary(Write)},undefined,P#dp{cbstate = NS});
+						{_,_,_} ->
+							{noreply,NP,_} = write_call(#write{mfa = Write},undefined,P#dp{cbstate = NS})
+					end,
+					read_reply(NP,T,Pos+1,Res);
+				{reply,What,NS} ->
+					reply(From,What),
+					read_reply(P#dp{cbstate = NS},T,Pos+1,Res);
+				{reply,What} ->
+					reply(From,What),
+					read_reply(P,T,Pos+1,Res)
+			end;
+		From ->
+			reply(From,actordb_sqlite:exec_res({ok, element(Pos,Res)})),
+			read_reply(P,T,Pos+1,Res)
+	end;
+read_reply(P,[],_,_) ->
+	P.
+
 handle_info(timeout,P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
+% Unlike writes we can reply directly
+handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
+	case Res of
+		{ok,ResTuples} ->
+			NewBD = BD#ai{callfrom = undefined, info = undefined, wait = undefined},
+			{noreply,read_reply(P#dp{rasync = NewBD}, BD#ai.callfrom, 1, ResTuples)};
+		Err ->
+			?ERR("Read call error: ~p",[Err]),
+			{noreply,P}
+	end;
 % async write result
 handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
 	?DBG("Write result ~p",[Res1]),
@@ -1671,12 +1601,14 @@ explain(What,Opts) ->
 			ok
 	end.
 
-reply(undefined,_Msg) ->
-	ok;
-reply([_|_] = From,Msg) ->
-	[gen_server:reply(F,Msg) || F <- From];
-reply(From,Msg) ->
-	gen_server:reply(From,Msg).
+reply(A,B) ->
+	actordb_sqlprocutil:reply(A,B).
+% reply(undefined,_Msg) ->
+% 	ok;
+% reply([_|_] = From,Msg) ->
+% 	[gen_server:reply(F,Msg) || F <- From];
+% reply(From,Msg) ->
+% 	gen_server:reply(From,Msg).
 
 
 ae_timer(P) ->

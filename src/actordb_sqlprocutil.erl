@@ -36,10 +36,18 @@ static_sqls() ->
 
 reply(undefined,_Msg) ->
 	ok;
+reply([batch|From],{ok,Msg}) ->
+	reply_tuple(From,1,Msg);
 reply([_|_] = From,Msg) ->
 	[gen_server:reply(F,Msg) || F <- From];
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
+
+reply_tuple([H|T],Pos,Msg) ->
+	reply(H,actordb_sqlite:exec_res({ok,element(Pos,Msg)},"")),
+	reply_tuple(T,Pos+1,Msg);
+reply_tuple([],_,_) ->
+	ok.
 
 ae_respond(P,undefined,_Success,_PrevEvnum,_AEType,_CallCount) ->
 	?ERR("Unable to respond for AE because leader is gone"),
@@ -522,18 +530,25 @@ statequeue(P) ->
 	end.
 
 exec_writes(#dp{wasync = W} = P) when W#ai.buffer /= [] ->
-	actordb_sqlite:write_call1(#write{sql = W#ai.buffer},W#ai.buffer_cf,W#ai.buffer_nv,P);
+	actordb_sqlproc:write_call1(#write{sql = W#ai.buffer, records = W#ai.buffer_recs},W#ai.buffer_cf,W#ai.buffer_nv,P);
 exec_writes(P) ->
 	P.
 
+% We must have successfully replicated at least one write before executing reads.
+exec_reads(#dp{rasync = R, wasync = #ai{nreplies = NR}} = P) when R#ai.buffer /= [], NR > 0 ->
+	actordb_sqlproc:read_call1(R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P);
+exec_reads(P) ->
+	P.
+
+% Execute queued calls and execute reads/writes. handle_call just batched r/w's together.
 doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked = [],wasync = #ai{wait = undefined}} = P) ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
 			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
 				{ok,NS} ->
-					exec_writes(P#dp{cbstate = NS});
+					exec_writes(exec_reads(P#dp{cbstate = NS}));
 				_ ->
-					exec_writes(P)
+					exec_writes(exec_reads(P))
 			end;
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
