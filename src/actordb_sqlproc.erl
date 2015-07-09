@@ -398,7 +398,10 @@ commit_call(Doit,Id,From,P) ->
 							actordb_sqlprocutil:delete_actor(P),
 							spawn(fun() -> ?DBG("Stopping in commit"), stop(Me) end);
 						_ ->
-							ok = actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>))
+							VarHeader = actordb_sqlprocutil:create_var_header(P),
+							ok = actordb_sqlite:okornot(actordb_sqlite:exec(
+								P#dp.db,<<"#s01;">>,P#dp.evterm,EvNum,VarHeader)),
+							actordb_driver:replication_done(P#dp.db)
 					end,
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined,
 						transactioncheckref = undefined,
@@ -412,6 +415,7 @@ commit_call(Doit,Id,From,P) ->
 					VarHeader = actordb_sqlprocutil:create_var_header(P),
 					actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>,
 												P#dp.evterm,EvNum,VarHeader)),
+					actordb_driver:replication_done(P#dp.db),
 					{noreply,ae_timer(P#dp{callfrom = From,
 						callres = ok,evnum = EvNum,movedtonode = Moved,
 						follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
@@ -816,10 +820,27 @@ read_call1(Sql,Recs,From,P) ->
 	ComplSql = list_to_tuple(Sql),
 	Records = list_to_tuple(Recs),
 	?DBG("READ SQL=~p, Recs=~p, from=~p",[ComplSql, Records,From]),
-	Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,read),
-	A = P#dp.rasync,
-	NRB = A#ai{wait = Res, info = Sql, callfrom = From, buffer = [], buffer_cf = [], buffer_recs = []},
-	P#dp{rasync = NRB}.
+	%
+	% Direct read mode (not async)
+	%
+	Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,read),
+	case Res of
+		{ok,ResTuples} ->
+			?DBG("Read resp=~p",[Res]),
+			read_reply(P#dp{rasync = #ai{}}, From, 1, ResTuples);
+		Err ->
+			?ERR("Read call error: ~p",[Err]),
+			P#dp{rasync = #ai{}}
+	end.
+	%
+	% Async mode, less safe because it can return pages that have not been replicated.
+	% It's a race condition. Reads are executed before writes, but which thread executes first is
+	% undetermined. TODO: use mutexes? read event is fired off first...
+	%
+	% Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,read),
+	% A = P#dp.rasync,
+	% NRB = A#ai{wait = Res, info = Sql, callfrom = From, buffer = [], buffer_cf = [], buffer_recs = []},
+	% P#dp{rasync = NRB}.
 
 write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 	?DBG("writecall evnum_prewrite=~p,term=~p, writeinfo=~p",
@@ -913,7 +934,8 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 								 ],
 							AWR = [[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]],
 							Records = W#write.records++[AWR],
-							Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,write)
+							VarHeader = actordb_sqlprocutil:create_var_header(P),
+							Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader)
 					end
 			end,
 			case actordb_sqlite:okornot(Res) of
