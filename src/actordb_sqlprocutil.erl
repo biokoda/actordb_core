@@ -172,7 +172,7 @@ reply_maybe(P,N,[]) ->
 			end,
 			BD = P#dp.wasync,
 			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, wasync = BD#ai{nreplies = BD#ai.nreplies + 1},
-									schemavers = NewVers,activity = make_ref()})),
+									schemavers = NewVers})),
 			case Msg of
 				undefined ->
 					checkpoint(NP);
@@ -451,8 +451,7 @@ continue_maybe(P,F,SuccessHead) ->
 store_follower(P,#flw{distname = undefined} = F) ->
 	store_follower(P,F#flw{distname = bkdcore:dist_name(F#flw.node)});
 store_follower(P,NF) ->
-	P#dp{activity = make_ref(),
-	follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
+	P#dp{follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
 
 
 % Read until commit set in header.
@@ -679,7 +678,6 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 			% end
 	end;
 doqueue(P,[]) ->
-	?DBG("DOQUEUE DONE"),
 	P;
 doqueue(P,Skipped) ->
 	appendqueue(P,Skipped).
@@ -946,7 +944,7 @@ start_verify(P,JustStarted) ->
 							Verifypid = self(),
 							self() ! {'DOWN',make_ref(),process,self(),{leader,P#dp.follower_indexes,false}}
 					end,
-					NP#dp{election = Verifypid, verified = false, activity = make_ref()};
+					NP#dp{election = Verifypid, verified = false};
 				LeaderNode when is_binary(LeaderNode) ->
 					?DBG("Received leader ~p",[LeaderNode]),
 					DistName = bkdcore:dist_name(LeaderNode),
@@ -956,7 +954,7 @@ start_verify(P,JustStarted) ->
 							doqueue(reopen_db(P#dp{masternode = LeaderNode, election = undefined,
 								masternodedist = DistName, mors = slave,
 								callfrom = undefined, callres = undefined,
-								verified = true, activity = make_ref()}));
+								verified = true}));
 						_ ->
 							P#dp{election = election_timer(P#dp.election)}
 					end;
@@ -1515,8 +1513,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 							dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
 					{reply,{ok,Ref},P#dp{db = Db,
 							dbcopy_to = [#cpto{node = Node, pid = Pid, ref = Ref, ismove = IsMove,
-							actorname = ActornameToCopyto}|P#dp.dbcopy_to],
-							activity = make_ref()}};
+							actorname = ActornameToCopyto}|P#dp.dbcopy_to]}};
 				{_,_Pid,Ref,_} ->
 					?DBG("senddb already exists with same ref!"),
 					{reply,{ok,Ref},P,0}

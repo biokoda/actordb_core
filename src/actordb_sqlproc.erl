@@ -271,7 +271,7 @@ handle_call(Msg,_,P) when is_binary(P#dp.movedtonode) ->
 		{reply,What,NS,Red} ->
 			{reply,What,P#dp{cbstate = NS, movedtonode = Red}};
 		ok ->
-			{reply,{redirect,P#dp.movedtonode},P#dp{activity = make_ref()}}
+			{reply,{redirect,P#dp.movedtonode},P}
 	end;
 handle_call({dbcopy,Msg},CallFrom,P) ->
 	Me = actordb_conf:node_name(),
@@ -288,7 +288,7 @@ handle_call({state_rw,_} = Msg,From, #dp{wasync = #ai{wait = WRef}} = P) when is
 	?DBG("Queuing state call"),
 	{noreply,P#dp{statequeue = queue:in_r({From,Msg},P#dp.statequeue)}};
 handle_call({state_rw,What},From,P) ->
-	state_rw_call(What,From,P#dp{activity = make_ref()});
+	state_rw_call(What,From,P);
 handle_call({commit,Doit,Id},From, P) ->
 	commit_call(Doit,Id,From,P);
 handle_call(Msg,From,P) ->
@@ -402,7 +402,7 @@ commit_call(Doit,Id,From,P) ->
 					end,
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined,
 						transactioncheckref = undefined,
-						transactioninfo = undefined, activity = make_ref(),movedtonode = Moved,
+						transactioninfo = undefined, movedtonode = Moved,
 						evnum = EvNum, evterm = P#dp.current_term})};
 				true ->
 					% We can safely release savepoint.
@@ -412,20 +412,15 @@ commit_call(Doit,Id,From,P) ->
 					VarHeader = actordb_sqlprocutil:create_var_header(P),
 					actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>,
 												P#dp.evterm,EvNum,VarHeader)),
-					{noreply,ae_timer(P#dp{callfrom = From, activity = make_ref(),
+					{noreply,ae_timer(P#dp{callfrom = From,
 						callres = ok,evnum = EvNum,movedtonode = Moved,
 						follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
 						transactionid = undefined, transactioninfo = undefined,
 						transactioncheckref = undefined})};
 				false when P#dp.follower_indexes == [] ->
-					% case Sql of
-					% 	<<"delete">> ->
-					% 		ok;
-					% 	_ ->
-							actordb_sqlite:rollback(P#dp.db),
-					% end,
+					ok = actordb_sqlite:rollback(P#dp.db),
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined,
-					transactioninfo = undefined,transactioncheckref = undefined,activity = make_ref()})};
+						transactioninfo = undefined,transactioncheckref = undefined})};
 				false ->
 					% Transaction failed.
 					% Delete it from __transactions.
@@ -886,8 +881,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	P#dp{wasync = NWB};
 write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId} = W,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
-	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",
-				[TransactionId,P#dp.transactionid,Sql1]),
+	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",[TransactionId,P#dp.transactionid,Sql1]),
 	ForceSync = lists:member(fsync,W#write.flags),
 	case P#dp.follower_indexes of
 		[] ->
@@ -934,7 +928,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					ok = actordb_sqlite:rollback(P#dp.db),
 					erlang:demonitor(CheckRef),
 					?DBG("Transaction not ok ~p",[_Err]),
-					{reply,Res,P#dp{activity = make_ref(), transactionid = undefined, evterm = P#dp.current_term}}
+					{reply,Res,P#dp{transactionid = undefined, evterm = P#dp.current_term}}
 			end;
 		_ ->
 			EvNum = P#dp.evnum+1,
@@ -962,10 +956,10 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 			ok = actordb_sqlite:okornot(actordb_sqlite:exec(
 				P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader)),
 			{noreply,ae_timer(P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
-						  transactioninfo = {Sql,EvNum+1,NewVers},
-						  follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
-						  transactioncheckref = CheckRef,force_sync = ForceSync,
-						  transactionid = TransactionId})}
+				transactioninfo = {Sql,EvNum+1,NewVers},
+				follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
+				transactioncheckref = CheckRef,force_sync = ForceSync,
+				transactionid = TransactionId})}
 	end.
 
 update_followers(_Evnum,L) ->
@@ -1472,8 +1466,7 @@ down_info(PID,_Ref,Reason,P) ->
 								actorname = C#cpto.actorname}|WithoutCopy],
 			erlang:send_after(1000,self(),check_locks),
 			NP = P#dp{dbcopy_to = NewCopyto,
-						locked = WithoutCopy1,
-						activity = make_ref()},
+						locked = WithoutCopy1},
 			case queue:is_empty(P#dp.callqueue) of
 				true ->
 					{noreply,NP};
