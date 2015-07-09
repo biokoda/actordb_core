@@ -59,6 +59,15 @@ stop(Name) ->
 print_info() ->
 	gen_server:cast(?MODULE,print_info).
 
+has_authentication(P,ActorType,Action)->
+	ReadWriteAction = case Action of
+		true -> write;
+		false -> read
+	end,
+	case actordb_backpressure:has_authentication(P,ActorType,ReadWriteAction) of
+		true -> ok;
+		_ -> throw({error,actor_type_authentication})
+	end.
 
 % If node goes down, this updater may be started on another node in cluster.
 % The only operation it will alow is checking transaction state and abandoning any transactions that are incomplete.

@@ -4,19 +4,26 @@
 -module(actordb_backpressure).
 -behaviour(gen_server).
 -export([start/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
--export([start_caller/0,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
+-export([start_caller/0,start_caller/2,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
 			inc_callcount/0,inc_callcount/1,dec_callcount/0,dec_callcount/1,call_count/0,call_size/0,
 			inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2,
-			save/3,getval/2,delval/2]).
+			save/3,getval/2,delval/2,has_authentication/3]).
 -define(LAGERDBG,true).
 -include_lib("actordb.hrl").
 
--record(caller,{ets}).
+-record(caller,{ets, login}).
 start_caller() ->
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
 	#caller{ets = E}.
+start_caller(Username, Password) ->
+	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
+	Authentication = actordb_sharedstate:read_global_auth(),
+	butil:ds_add(auth,Authentication,E),
+	butil:ds_add(curcount,0,E),
+	butil:ds_add(cursize,0,E),
+	#caller{ets = E, login = butil:sha256(Username++";"++Password)}.
 stop_caller(P) ->
 	Tid = P#caller.ets,
 	Size = butil:ds_val(cursize,Tid),
@@ -46,7 +53,7 @@ sleep_caller(_P) ->
 	case whereis(backpressure_proc) of
 		undefined ->
 			% Spawn backpressure_proc and wait for it to die
-			{Pid,_} = spawn_monitor(fun() -> 
+			{Pid,_} = spawn_monitor(fun() ->
 								case catch register(backpressure_proc,self()) of
 									true ->
 										?AINF("Backpressure applied."),
@@ -125,7 +132,7 @@ print_info() ->
 
 -record(dp,{}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
--define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
+-define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
 
 handle_call(print_info,_,P) ->
@@ -149,9 +156,9 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(_, P) -> 
+handle_info(_, P) ->
 	{noreply, P}.
-	
+
 terminate(_, _) ->
 	ok.
 code_change(_, P, _) ->
@@ -167,3 +174,13 @@ init(_) ->
 			ok
 	end,
 	{ok,#dp{}}.
+
+has_authentication(P,ActorType,Action)->
+	Authentication = butil:ds_val(auth,P#caller.ets),
+	Key = lists:keyfind(P#caller.login,3,Authentication),
+	case Key of
+		false -> false;
+		{ActorType,_,_,ActionList} ->
+			lists:member(Action,ActionList);
+		_ -> false
+	end.
