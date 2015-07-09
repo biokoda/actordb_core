@@ -820,7 +820,7 @@ read_call(_Msg,_From,P) ->
 read_call1(Sql,Recs,From,P) ->
 	ComplSql = list_to_tuple(Sql),
 	Records = list_to_tuple(Recs),
-	% ?DBG("READ SQL=~p, Recs=~p, from=~p",[ComplSql, Records,From]),
+	?DBG("READ SQL=~p, Recs=~p, from=~p",[ComplSql, Records,From]),
 	Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,read),
 	A = P#dp.rasync,
 	NRB = A#ai{wait = Res, info = Sql, callfrom = From, buffer = [], buffer_cf = [], buffer_recs = []},
@@ -849,7 +849,7 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 				{reply,What,OutSql,NS} ->
 					reply(From,What),
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [undefined|A#ai.buffer_cf]},
-					{noreply,P#dp{wasync = A1, cbstate = NS}};
+					{noreply,P#dp{wasync = A1, cbstate = NS}, 0};
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS},0};
 				{reply,What} ->
@@ -1054,13 +1054,14 @@ handle_info(timeout,P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
 % Unlike writes we can reply directly
 handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
+	NewBD = BD#ai{callfrom = undefined, info = undefined, wait = undefined},
 	case Res of
 		{ok,ResTuples} ->
-			NewBD = BD#ai{callfrom = undefined, info = undefined, wait = undefined},
+			?DBG("Read resp=~p",[Res]),
 			{noreply,read_reply(P#dp{rasync = NewBD}, BD#ai.callfrom, 1, ResTuples)};
 		Err ->
 			?ERR("Read call error: ~p",[Err]),
-			{noreply,P}
+			{noreply,P#dp{rasync = NewBD}}
 	end;
 % async write result
 handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
@@ -1081,7 +1082,7 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 				_ when P#dp.follower_indexes == [] ->
 					{noreply,actordb_sqlprocutil:statequeue(actordb_sqlprocutil:reply_maybe(
 						P#dp{callfrom = From, callres = Res,evnum = EvNum,
-						 	flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+							flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 							netchanges = actordb_local:net_changes(), force_sync = ForceSync,
 							schemavers = NewVers,evterm = EvTerm,movedtonode = Moved,
 							wasync = NewAsync},1,[]))};
@@ -1110,7 +1111,6 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 			NW = W#write{sql = SchemaSql, records = SchemaRecords},
 			write_call1(NW,undefined,NP#dp.schemavers,NP);
 		Resp ->
-			% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>),
 			actordb_sqlite:rollback(P#dp.db),
 			reply(From,Resp),
 			{noreply,actordb_sqlprocutil:statequeue(P#dp{wasync = NewAsync})}
@@ -1350,13 +1350,18 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			% If nothing to store and all nodes synced, send an empty AE.
 			case is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
 				true when AllSynced, NewFollowers == [] ->
+					?DBG("Nodes synced, no followers"),
+					W = NP#dp.wasync,
 					{noreply,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:do_cb(
-						NP#dp{follower_indexes = NewFollowers,netchanges = actordb_local:net_changes()}))};
+						NP#dp{follower_indexes = [],netchanges = actordb_local:net_changes(),
+						wasync = W#ai{nreplies = W#ai.nreplies+1}}))};
 				true when AllSynced ->
 					?DBG("Nodes synced, running empty AE."),
 					NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
+					W = NP#dp.wasync,
 					{noreply,ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
-												netchanges = actordb_local:net_changes()})};
+						wasync = W#ai{nreplies = W#ai.nreplies+1},
+						netchanges = actordb_local:net_changes()}), 0};
 				_ ->
 					?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, withdb ~p, vers ~p",
 						[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,
@@ -1369,11 +1374,11 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			?DBG("Continue as follower"),
 			{noreply,actordb_sqlprocutil:reopen_db(P#dp{
 				election = actordb_sqlprocutil:election_timer(undefined),
-				masternode = undefined, mors = slave, without_master_since = os:timestamp()})};
+				masternode = undefined, mors = slave, without_master_since = os:timestamp()}), 0};
 		_Err ->
 			P = P1,
 			?ERR("Election invalid result ~p",[_Err]),
-			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
+			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}, 0}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 	?DBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
@@ -1499,7 +1504,7 @@ init(#dp{} = P,_Why) ->
 		 	ok
 	end,
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,Flags},
-		{state,P#dp.cbstate},{slave,P#dp.mors == slave},
+		{state,P#dp.cbstate},{slave,P#dp.mors == slave},{wasync,P#dp.wasync},{rasync,P#dp.rasync},
 		{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).
 % Never call other processes from init. It may cause deadlocks. Whoever
 % started actor is blocking waiting for init to finish.

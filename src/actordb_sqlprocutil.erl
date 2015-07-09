@@ -164,6 +164,12 @@ reply_maybe(P,N,[]) ->
 					end
 			end,
 			reply(From,Res),
+			case P#dp.transactioninfo of
+				undefined ->
+					actordb_driver:replication_done(P#dp.db);
+				_ ->
+					ok
+			end,
 			BD = P#dp.wasync,
 			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, wasync = BD#ai{nreplies = BD#ai.nreplies + 1},
 									schemavers = NewVers,activity = make_ref()})),
@@ -540,28 +546,42 @@ exec_reads(#dp{rasync = R, wasync = #ai{nreplies = NR}} = P) when R#ai.buffer /=
 exec_reads(P) ->
 	P.
 
+doqueue(P) ->
+	doqueue(P,[]).
 % Execute queued calls and execute reads/writes. handle_call just batched r/w's together.
-doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked = [],wasync = #ai{wait = undefined}} = P) ->
+doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked = [],
+		wasync = #ai{wait = undefined, nreplies = NR}} = P, Skipped) ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
 			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
 				{ok,NS} ->
-					exec_writes(exec_reads(P#dp{cbstate = NS}));
+					exec_writes(exec_reads(appendqueue(P#dp{cbstate = NS},Skipped)));
 				_ ->
-					exec_writes(exec_reads(P))
+					exec_writes(exec_reads(appendqueue(P,Skipped)))
 			end;
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
 			{From,Msg} = Call,
 			Res = case Msg of
 				#write{} when Msg#write.transaction /= undefined ->
-					% Exec directly, this will stop doqueue loop
-					actordb_sqlproc:write_call1(Msg,From,P#dp.schemavers,P#dp{callqueue = CQ});
+					case NR > 0 of
+						true ->
+							SkippedNew = Skipped,
+							% Exec directly, this will stop doqueue loop
+							actordb_sqlproc:write_call1(Msg,From,P#dp.schemavers,P#dp{callqueue = CQ});
+						false ->
+							% Not ready to process transaction yet.
+							SkippedNew = [{From,Msg}|Skipped],
+							{noreply,P#dp{callqueue = CQ}}
+					end;
 				#write{} ->
+					SkippedNew = Skipped,
 					actordb_sqlproc:write_call(Msg,From,P#dp{callqueue = CQ});
 				#read{} ->
+					SkippedNew = Skipped,
 					actordb_sqlproc:read_call(Msg,From,P#dp{callqueue = CQ});
 				{move,NewShard,Node,CopyReset,CbState} ->
+					SkippedNew = Skipped,
 					% Call to move this actor to another cluster.
 					% First store the intent to move with all needed data.
 					% This way even if a node chrashes, the actor will attempt to move on next startup.
@@ -571,6 +591,7 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 					actordb_sqlproc:write_call(#write{sql = Sql},{exec,From,{move,Node}},
 						actordb_sqlprocutil:set_followers(true,P#dp{callqueue = CQ}));
 				{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
+					SkippedNew = Skipped,
 					% Similar to above. Both have just insert and not insert and replace because
 					%  we can only do one move/split at a time. It makes no sense to do both at the same time.
 					% So rely on DB to return error for these conflicting calls.
@@ -583,8 +604,9 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 					actordb_sqlproc:write_call(#write{sql = Sql},{exec,From,{split,MFA,Node,OldActor,NewActor}},
 						actordb_sqlprocutil:set_followers(true,P#dp{callqueue = CQ}));
 				{copy,{Node,OldActor,NewActor}} ->
+					SkippedNew = Skipped,
 					Ref = make_ref(),
-					case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
 									{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
 						ok ->
 							dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P#dp{callqueue = CQ});
@@ -592,11 +614,14 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 							{reply, Err,P#dp{callqueue = CQ}}
 					end;
 				delete ->
+					SkippedNew = Skipped,
 					{reply,ok,P#dp{movedtonode = deleted, callqueue = CQ}};
 				stop ->
+					SkippedNew = Skipped,
 					?DBG("Received stop call"),
 					{stop, stopped, P};
 				Msg ->
+					SkippedNew = Skipped,
 					% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
 					case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
 						{write,Sql,NS} ->
@@ -609,15 +634,15 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 			end,
 			case Res of
 				{noreply,NP} ->
-					doqueue(NP);
+					doqueue(NP,SkippedNew);
 				{noreply,NP,_} ->
-					doqueue(NP);
+					doqueue(NP,SkippedNew);
 				{reply,X,NP} ->
 					reply(From,X),
-					doqueue(NP);
+					doqueue(NP,SkippedNew);
 				{reply,X,NP,_} ->
 					reply(From,X),
-					doqueue(NP);
+					doqueue(NP,SkippedNew);
 				{stop,_,NP} ->
 					self() ! stop,
 					NP
@@ -653,8 +678,15 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 			% 		end
 			% end
 	end;
-doqueue(P) ->
-	% ?INF("Queue notyet ~p",[{P#dp.callres,P#dp.verified,P#dp.transactionid,P#dp.locked}]),
+doqueue(P,[]) ->
+	?DBG("DOQUEUE DONE"),
+	P;
+doqueue(P,Skipped) ->
+	appendqueue(P,Skipped).
+
+appendqueue(P,[Skipped|T]) ->
+	appendqueue(P#dp{callqueue = queue:in_r(Skipped,P#dp.callqueue)},T);
+appendqueue(P,[]) ->
 	P.
 
 
@@ -1369,6 +1401,10 @@ parse_opts(P,[H|T]) ->
 			end;
 		{queue,Q} ->
 			parse_opts(P#dp{callqueue = Q},T);
+		{wasync,W} ->
+			parse_opts(P#dp{wasync = W},T);
+		{rasync,R} ->
+			parse_opts(P#dp{rasync = R},T);
 		{flags,F} ->
 			parse_opts(P#dp{flags = P#dp.flags bor F},T);
 		create ->
@@ -1579,7 +1615,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 											{noreply,NP1} = actordb_sqlproc:write_call(#write{sql = <<>>},undefined,NP),
 											{reply,ok,reply_maybe(store_follower(NP1,
 												Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm,
-														next_index = P#dp.evnum+1}))};
+														next_index = P#dp.evnum+1})), 0};
 										_ ->
 											{reply,ok,NP,0}
 									end;
