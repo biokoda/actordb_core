@@ -528,8 +528,13 @@ statequeue(P) ->
 				{reply,Res,NP} ->
 					reply(From,Res),
 					statequeue(NP);
+				{reply,Res,NP,_} ->
+					reply(From,Res),
+					statequeue(NP);
+				% state_rw always responds, sometimes before returning
 				{noreply,NP} ->
-					% state_rw always responds, sometimes before returning
+					statequeue(NP);
+				{noreply,NP,_} ->
 					statequeue(NP)
 			end
 	end.
@@ -678,6 +683,8 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 			% end
 	end;
 doqueue(P,[]) ->
+	% ?DBG("doqueue can't execute: verified=~p, callres=~p, transid=~p, locked=~p",
+	% 	[P#dp.verified,P#dp.callres,P#dp.transactionid,P#dp.locked]),
 	P;
 doqueue(P,Skipped) ->
 	appendqueue(P,Skipped).
@@ -1516,7 +1523,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 							actorname = ActornameToCopyto}|P#dp.dbcopy_to]}};
 				{_,_Pid,Ref,_} ->
 					?DBG("senddb already exists with same ref!"),
-					{reply,{ok,Ref},P,0}
+					{reply,{ok,Ref},P}
 			end
 	end;
 % Initial call on node that is destination of copy
@@ -1539,7 +1546,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 		_ ->
 			{ok,RecvPid} = start_copyrec(P#dp{db = Db, copyfrom = Copyfrom, dbcopyref = Ref}),
 			{reply,ok,P#dp{db = Db, mors = slave,dbcopyref = Ref,
-				copyfrom = Copyfrom, copyproc = RecvPid, election = undefined},0}
+				copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
 	end;
 % dbcopy_call({start_receive,Copyfrom,Ref},CF,P) ->
 % 	% first clear existing db
@@ -1560,7 +1567,7 @@ dbcopy_call({wal_read,From1,done},_CallFrom,P) ->
 	{reply,ok,P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 dbcopy_call({checksplit,Data},_,P) ->
 	{M,F,A} = Data,
-	{reply,apply(M,F,[P#dp.cbstate,check|A]),P,0};
+	{reply,apply(M,F,[P#dp.cbstate,check|A]),P;
 % Final call when copy done
 dbcopy_call({unlock,Data},CallFrom,P) ->
 	% For unlock data = copyref
@@ -1614,10 +1621,10 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 												Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm,
 														next_index = P#dp.evnum+1})), 0};
 										_ ->
-											{reply,ok,NP,0}
+											{reply,ok,NP}
 									end;
 								false ->
-									{reply,ok,NP,0}
+									{reply,ok,NP}
 							end
 					end
 			end;
@@ -1626,7 +1633,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 			case lists:keyfind(Data,#cpto.ref,P#dp.dbcopy_to) of
 				false ->
 					?ERR("dbcopy_to does not contain ref ~p, ~p",[Data,P#dp.dbcopy_to]),
-					{reply,false,P,0};
+					{reply,false,P};
 				Cpto ->
 					NLC = LC#lck{actorname = Cpto#cpto.actorname, node = Cpto#cpto.node,
 									ismove = Cpto#cpto.ismove, time = os:timestamp()},

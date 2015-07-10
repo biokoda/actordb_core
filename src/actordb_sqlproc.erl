@@ -359,10 +359,11 @@ handle_call(Msg,From,P) ->
 					{reply, {error,nocreate},P}
 			end;
 		_ ->
-			?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",
-				[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
+			% ?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",
+			% 	[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			% Continue in doqueue
-			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)},0}
+			self() ! timeout,
+			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}}
 	end.
 
 
@@ -501,7 +502,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			NP = P#dp{masternode = LeaderNode,without_master_since = undefined,
 			masternodedist = bkdcore:dist_name(LeaderNode),
 			callfrom = undefined, callres = undefined,verified = true},
-			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP)));
+			state_rw_call(What,From,actordb_sqlprocutil:reopen_db(NP));
 		% This node is candidate or leader but someone with newer term is sending us log
 		_ when P#dp.mors == master ->
 			?ERR("AE start, stepping down as leader ~p ~p",
@@ -518,8 +519,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 				masternode = LeaderNode,without_master_since = undefined,
 				masternodedist = bkdcore:dist_name(LeaderNode),
 				current_term = Term},
-			state_rw_call(What,From,actordb_sqlprocutil:doqueue(
-				actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(NP))));
+			state_rw_call(What,From,actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(NP)));
 		_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
 			?ERR("AE start failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 						[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
@@ -541,7 +541,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			NP = P#dp{current_term = Term,voted_for = undefined,
 			masternode = LeaderNode, without_master_since = undefined,verified = true,
 			masternodedist = bkdcore:dist_name(LeaderNode)},
-			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(NP)));
+			state_rw_call(What,From,actordb_sqlprocutil:save_term(NP));
 		_ when AEType == empty ->
 			?DBG("AE start, ok for empty"),
 			reply(From,ok),
@@ -570,7 +570,7 @@ state_rw_call({appendentries_wal,Term,Header,Body,AEType,CallCount},From,P) ->
 			?ERR("AE WAL received wrong term ~p",[{Term,P#dp.current_term}]),
 			reply(From,false),
 			actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
-			{noreply,P}
+			{noreply, P}
 	end;
 % Executed on leader.
 state_rw_call({appendentries_response,Node,CurrentTerm,Success,
@@ -774,6 +774,7 @@ append_wal(P,From,CallCount,Header,Body,AEType) ->
 read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
 read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
+	self() ! timeout,
 	case Msg#read.sql of
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
@@ -781,35 +782,35 @@ read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
 					% {reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [{tuple,What,From}|AR#ai.buffer_cf],
 					buffer_recs = [[]|AR#ai.buffer_recs]},
-					{noreply,P#dp{cbstate = NS, rasync = AR1}, 0};
+					{noreply,P#dp{cbstate = NS, rasync = AR1}};
 				{reply,What,NS} ->
-					{reply,What,P#dp{cbstate = NS}, 0};
+					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
-					{reply,What,P, 0};
+					{reply,What,P};
 				{Sql,State} ->
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
 						buffer_recs = [[]|AR#ai.buffer_recs]},
-					{noreply,P#dp{cbstate = State, rasync = AR1}, 0};
+					{noreply,P#dp{cbstate = State, rasync = AR1}};
 				Sql ->
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
 						buffer_recs = [[]|AR#ai.buffer_recs]},
 					% {reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
-					{noreply,P#dp{rasync = AR1}, 0}
+					{noreply,P#dp{rasync = AR1}}
 			end;
 		{Sql,{Mod,Func,Args}} ->
 			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [{mod,{Mod,Func,Args},From}|AR#ai.buffer_cf],
 				buffer_recs = [[]|AR#ai.buffer_recs]},
-			{noreply,P#dp{rasync = AR1}, 0};
+			{noreply,P#dp{rasync = AR1}};
 		{Sql,Recs} ->
 			% {reply,actordb_sqlite:exec(P#dp.db,Sql,Recs,read),P};
 			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
 				buffer_recs = [Recs|AR#ai.buffer_recs]},
-			{noreply,P#dp{rasync = AR1}, 0};
+			{noreply,P#dp{rasync = AR1}};
 		Sql ->
 			% {reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
 			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
 				buffer_recs = [[]|AR#ai.buffer_recs]},
-			{noreply,P#dp{rasync = AR1}, 0}
+			{noreply,P#dp{rasync = AR1}}
 	end;
 read_call(_Msg,_From,P) ->
 	?DBG("redirect read ~p",[P#dp.masternode]),
@@ -843,45 +844,46 @@ read_call1(Sql,Recs,From,P) ->
 	% P#dp{rasync = NRB}.
 
 write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
-	?DBG("writecall evnum_prewrite=~p,term=~p, writeinfo=~p",
-		[P#dp.evnum,P#dp.current_term,{MFA,Sql}]),
 	A = P#dp.wasync,
+	?DBG("writecall evnum_prewrite=~p,term=~p writeinfo=~p",[P#dp.evnum,P#dp.current_term,{MFA,Sql}]),
+	% Drain message queue.
+	self () ! timeout,
 	case Sql of
 		delete ->
 			A1 = A#ai{buffer = [<<"#s02;">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
 				buffer_recs = [[[[?MOVEDTOI,<<"$deleted$">>]]]|A#ai.buffer_recs], buffer_moved = deleted},
-			{noreply,P#dp{wasync = A1},0};
+			{noreply,P#dp{wasync = A1}};
 		{moved,MovedTo} ->
 			A1 = A#ai{buffer = [<<"#s02;">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
 				buffer_recs = [[[[?MOVEDTOI,MovedTo]]]|A#ai.buffer_recs], buffer_moved = {moved,MovedTo}},
-			{noreply,P#dp{wasync = A1},0};
+			{noreply,P#dp{wasync = A1}};
 		_ when MFA == undefined ->
 			A1 = A#ai{buffer = [Sql|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
 				buffer_recs = [Msg#write.records|A#ai.buffer_recs]},
-			{noreply,P#dp{wasync = A1},0};
+			{noreply,P#dp{wasync = A1}};
 		_ ->
 			{Mod,Func,Args} = MFA,
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
 				{reply,What,OutSql,NS} ->
 					reply(From,What),
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [undefined|A#ai.buffer_cf]},
-					{noreply,P#dp{wasync = A1, cbstate = NS}, 0};
+					{noreply,P#dp{wasync = A1, cbstate = NS}};
 				{reply,What,NS} ->
-					{reply,What,P#dp{cbstate = NS},0};
+					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
-					{reply,What,P,0};
+					{reply,What,P};
 				{exec,OutSql,Recs} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
-					{noreply,P#dp{wasync = A1},0};
+					{noreply,P#dp{wasync = A1}};
 				{OutSql,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
-					{noreply,P#dp{wasync = A1, cbstate = State},0};
+					{noreply,P#dp{wasync = A1, cbstate = State}};
 				{OutSql,Recs,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
-					{noreply,P#dp{wasync = A1, cbstate = State},0};
+					{noreply,P#dp{wasync = A1, cbstate = State}};
 				OutSql ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
-					{noreply,P#dp{wasync = A1},0}
+					{noreply,P#dp{wasync = A1}}
 			end
 	end.
 
@@ -1375,9 +1377,9 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 					?DBG("Nodes synced, running empty AE."),
 					NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
 					W = NP#dp.wasync,
-					{noreply,ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
+					{noreply,actordb_sqlprocutil:doqueue(ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
 						wasync = W#ai{nreplies = W#ai.nreplies+1},
-						netchanges = actordb_local:net_changes()}), 0};
+						netchanges = actordb_local:net_changes()}))};
 				_ ->
 					?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, withdb ~p, vers ~p",
 						[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,
@@ -1390,11 +1392,11 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			?DBG("Continue as follower"),
 			{noreply,actordb_sqlprocutil:reopen_db(P#dp{
 				election = actordb_sqlprocutil:election_timer(undefined),
-				masternode = undefined, mors = slave, without_master_since = os:timestamp()}), 0};
+				masternode = undefined, mors = slave, without_master_since = os:timestamp()})};
 		_Err ->
 			P = P1,
 			?ERR("Election invalid result ~p",[_Err]),
-			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}, 0}
+			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 	?DBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
@@ -1411,18 +1413,18 @@ down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 							{stop,normal,NP};
 						{reply,_,NP} ->
 							{noreply,NP};
-						{noreply,NP} ->
-							{noreply,NP}
+						{noreply,_} = R ->
+							R
 					end;
 				done ->
 					case handle_call({commit,true,P#dp.transactionid},
 							undefined,P#dp{transactioncheckref = undefined}) of
-						{stop,normal,NP} ->
+						{stop,normal,NP,_} ->
 							{stop,normal,NP};
 						{reply,_,NP} ->
 							{noreply,NP};
-						{noreply,NP} ->
-							{noreply,NP}
+						{noreply,_,_} = R ->
+							R
 					end
 			end;
 		_ ->
@@ -1487,14 +1489,7 @@ down_info(PID,_Ref,Reason,P) ->
 								node = C#cpto.node,time = os:timestamp(),
 								actorname = C#cpto.actorname}|WithoutCopy],
 			erlang:send_after(1000,self(),check_locks),
-			NP = P#dp{dbcopy_to = NewCopyto,
-						locked = WithoutCopy1},
-			case queue:is_empty(P#dp.callqueue) of
-				true ->
-					{noreply,NP};
-				false ->
-					handle_info(doqueue,NP)
-			end
+			{noreply,P#dp{dbcopy_to = NewCopyto,locked = WithoutCopy1}}
 	end.
 
 
