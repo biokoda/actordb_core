@@ -1567,7 +1567,7 @@ dbcopy_call({wal_read,From1,done},_CallFrom,P) ->
 	{reply,ok,P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 dbcopy_call({checksplit,Data},_,P) ->
 	{M,F,A} = Data,
-	{reply,apply(M,F,[P#dp.cbstate,check|A]),P;
+	{reply,apply(M,F,[P#dp.cbstate,check|A]),P};
 % Final call when copy done
 dbcopy_call({unlock,Data},CallFrom,P) ->
 	% For unlock data = copyref
