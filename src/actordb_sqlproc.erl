@@ -1095,30 +1095,27 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 	NewAsync = BD#ai{callfrom = undefined, evnum = undefined, evterm = undefined,
 		newvers = undefined, info = undefined, wait = undefined},
 	case actordb_sqlite:okornot(Res) of
+		ok when P#dp.follower_indexes == []  ->
+			{noreply,actordb_sqlprocutil:statequeue(actordb_sqlprocutil:reply_maybe(
+				P#dp{callfrom = From, callres = Res,evnum = EvNum,
+					flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+					netchanges = actordb_local:net_changes(), force_sync = ForceSync,
+					schemavers = NewVers,evterm = EvTerm,movedtonode = Moved,
+					wasync = NewAsync},1,[]))};
 		ok ->
-			case ok of
-				_ when P#dp.follower_indexes == [] ->
-					{noreply,actordb_sqlprocutil:statequeue(actordb_sqlprocutil:reply_maybe(
-						P#dp{callfrom = From, callres = Res,evnum = EvNum,
-							flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
-							netchanges = actordb_local:net_changes(), force_sync = ForceSync,
-							schemavers = NewVers,evterm = EvTerm,movedtonode = Moved,
-							wasync = NewAsync},1,[]))};
-				_ ->
-					% reply on appendentries response or later if nodes are behind.
-					case P#dp.callres of
-						undefined ->
-							Callres = Res;
-						Callres ->
-							ok
-					end,
-					{noreply, actordb_sqlprocutil:statequeue(ae_timer(P#dp{callfrom = From, callres = Callres,
-						flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
-						follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
-						netchanges = actordb_local:net_changes(),force_sync = ForceSync,
-						evterm = EvTerm, evnum = EvNum,schemavers = NewVers,movedtonode = Moved,
-						wasync = NewAsync}))}
-			end;
+			% reply on appendentries response or later if nodes are behind.
+			case P#dp.callres of
+				undefined ->
+					Callres = Res;
+				Callres ->
+					ok
+			end,
+			{noreply, actordb_sqlprocutil:statequeue(ae_timer(P#dp{callfrom = From, callres = Callres,
+				flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
+				follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
+				netchanges = actordb_local:net_changes(),force_sync = ForceSync,
+				evterm = EvTerm, evnum = EvNum,schemavers = NewVers,movedtonode = Moved,
+				wasync = NewAsync}))};
 		Resp when EvNum == 1 ->
 			% Restart with write but just with schema.
 			actordb_sqlite:rollback(P#dp.db),
@@ -1316,17 +1313,15 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 				locked = lists:delete(ae,P1#dp.locked)}),
 			case P#dp.movedtonode of
 				deleted ->
-					SqlIn = (actordb_sqlprocutil:actually_delete(P1))#write.sql,
+					actordb_sqlprocutil:actually_delete(P1),
 					Moved = undefined,
 					SchemaVers = undefined;
 				_ ->
-					SqlIn = [],
 					Moved = P#dp.movedtonode,
 					SchemaVers = P#dp.schemavers
 			end,
 			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
-			?DBG("Elected leader term=~p, nodes_synced=~p, moved=~p",
-				[P1#dp.current_term,AllSynced,P#dp.movedtonode]),
+			?DBG("Elected leader term=~p, nodes_synced=~p, moved=~p",[P1#dp.current_term,AllSynced,P#dp.movedtonode]),
 			ReplBin = term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),
 			ok = actordb_sqlite:replicate_opts(P#dp.db,ReplBin,ReplType),
 
@@ -1364,7 +1359,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			NP1 = P#dp{verified = true,copyreset = CopyReset,movedtonode = Moved,
 				cbstate = CbState, schemavers = SchemaVers},
 			{NP,Sql,AdbRecords,Callfrom} =
-				actordb_sqlprocutil:post_election_sql(NP1,Transaction,CopyFrom,SqlIn,P#dp.callfrom),
+				actordb_sqlprocutil:post_election_sql(NP1,Transaction,CopyFrom,[],P#dp.callfrom),
 			% If nothing to store and all nodes synced, send an empty AE.
 			case is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
 				true when AllSynced, NewFollowers == [] ->
