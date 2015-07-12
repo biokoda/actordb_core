@@ -817,6 +817,8 @@ read_call(_Msg,_From,P) ->
 	actordb_sqlprocutil:redirect_master(P).
 
 % Execute buffered read sqls
+read_call1(_,_,[],P) ->
+	P;
 read_call1(Sql,Recs,From,P) ->
 	ComplSql = list_to_tuple(Sql),
 	Records = list_to_tuple(Recs),
@@ -829,14 +831,29 @@ read_call1(Sql,Recs,From,P) ->
 		{ok,ResTuples} ->
 			?DBG("Read resp=~p",[Res]),
 			read_reply(P#dp{rasync = #ai{}}, From, 1, ResTuples);
-		Err ->
+		{sql_error,ErrMsg,_} = Err ->
 			?ERR("Read call error: ~p",[Err]),
-			P#dp{rasync = #ai{}}
+			ErrPos = element(1,ErrMsg),
+
+			{Before,[Problem|After]} = lists:split(ErrPos,From),
+			reply(Problem, Res),
+
+			{BeforeSql,[_Problem|AfterSql]} = lists:split(ErrPos,Sql),
+			{BeforeRecs,[_Problem|AfterRecs]} = lists:split(ErrPos,Recs),
+
+			read_call1(BeforeSql++AfterSql, BeforeRecs++AfterRecs, Before++After,P#dp{rasync = #ai{}})
 	end.
+
 	%
 	% Async mode, less safe because it can return pages that have not been replicated.
-	% It's a race condition. Reads are executed before writes, but which thread executes first is
-	% undetermined. TODO: use mutexes? read event is fired off first...
+	% We can make the storage engine level correct (lmdb), but what we can't fix at the moment
+	% is sqlite page cache. Any write will store pages in cache. Which means reads will use those
+	% unsafe cache pages instead of what is stored in lmdb.
+	% This unfortunately means we can't process reads while writes are running. Reads are executed
+	% before writes.
+	% We could use seperate read/write connections. This also means there is a read and write
+	% sqlite page cache. After every write, read connection page cache must be cleared. How
+	% detrimental to performance that would be is something that needs to be tested.
 	%
 	% Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,read),
 	% A = P#dp.rasync,
@@ -866,23 +883,28 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
 				{reply,What,OutSql,NS} ->
 					reply(From,What),
-					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [undefined|A#ai.buffer_cf]},
+					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
+						buffer_cf = [undefined|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1, cbstate = NS}};
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
 					{reply,What,P};
 				{exec,OutSql,Recs} ->
-					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
+					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
+						buffer_cf = [From|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1}};
 				{OutSql,State} ->
-					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
+					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
+						buffer_cf = [From|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1, cbstate = State}};
 				{OutSql,Recs,State} ->
-					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
+					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
+						buffer_cf = [From|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1, cbstate = State}};
 				OutSql ->
-					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs], buffer_cf = [From|A#ai.buffer_cf]},
+					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
+						buffer_cf = [From|A#ai.buffer_cf]},
 					{noreply,P#dp{wasync = A1}}
 			end
 	end.
@@ -1070,16 +1092,17 @@ read_reply(P,[],_,_) ->
 
 handle_info(timeout,P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
-% Unlike writes we can reply directly
+% Async read result. Unlike writes we can reply directly. We don't use async reads atm.
 handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
 	NewBD = BD#ai{callfrom = undefined, info = undefined, wait = undefined},
 	case Res of
 		{ok,ResTuples} ->
 			?DBG("Read resp=~p",[Res]),
-			{noreply,read_reply(P#dp{rasync = NewBD}, BD#ai.callfrom, 1, ResTuples)};
-		Err ->
-			?ERR("Read call error: ~p",[Err]),
-			{noreply,P#dp{rasync = NewBD}}
+			{noreply,read_reply(P#dp{rasync = NewBD}, BD#ai.callfrom, 1, ResTuples)}
+		% Err ->
+		%   TODO: if async reads ever get used...
+		% 	?ERR("Read call error: ~p",[Err]),
+		% 	{noreply,P#dp{rasync = NewBD}}
 	end;
 % async write result
 handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
@@ -1116,19 +1139,38 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 				netchanges = actordb_local:net_changes(),force_sync = ForceSync,
 				evterm = EvTerm, evnum = EvNum,schemavers = NewVers,movedtonode = Moved,
 				wasync = NewAsync}))};
-		Resp when EvNum == 1 ->
-			% Restart with write but just with schema.
+		% {sql_error,ErrMsg,_} when EvNum == 1 ->
+		% 	% Restart with write but just with schema.
+		% 	actordb_sqlite:rollback(P#dp.db),
+		%
+		% 	% ErrPos = element(1,ErrMsg),
+		% 	% [batch,undefined|CF] = From,
+		% 	% {Before,[Problem|After]} = lists:split(ErrPos,CF),
+		% 	% reply(Problem, Res),
+		%
+		% 	PES = actordb_sqlprocutil:post_election_sql(
+		% 		P#dp{schemavers = undefined, wasync = NewAsync},[],undefined,[],undefined),
+		% 	{NP,SchemaSql,SchemaRecords,_} = PES,
+		% 	NW = W#write{sql = SchemaSql, records = SchemaRecords},
+		% 	write_call1(NW,undefined,NP#dp.schemavers,NP);
+		{sql_error,ErrMsg,_} ->
 			actordb_sqlite:rollback(P#dp.db),
-			reply(From,Resp),
-			PES = actordb_sqlprocutil:post_election_sql(
-				P#dp{schemavers = undefined, wasync = NewAsync},[],undefined,[],undefined),
-			{NP,SchemaSql,SchemaRecords,_} = PES,
-			NW = W#write{sql = SchemaSql, records = SchemaRecords},
-			write_call1(NW,undefined,NP#dp.schemavers,NP);
-		Resp ->
-			actordb_sqlite:rollback(P#dp.db),
-			reply(From,Resp),
-			{noreply,actordb_sqlprocutil:statequeue(P#dp{wasync = NewAsync})}
+
+			ErrPos = element(1,ErrMsg),
+			[batch,undefined|CF] = From,
+			{Before,[Problem|After]} = lists:split(ErrPos,CF),
+			reply(Problem, Res),
+
+			{BeforeSql,[_Problem|AfterSql]} = lists:split(ErrPos,W#write.sql),
+			{BeforeRecs,[_Problem|AfterRecs]} = lists:split(ErrPos,W#write.records),
+
+			RemainCF = Before++After,
+			RemainSql = BeforeSql++AfterSql,
+			RemainRecs = BeforeRecs++AfterRecs,
+			NewAsync1 = NewAsync#ai{buffer = RemainSql++NewAsync#ai.buffer,
+				buffer_cf = RemainCF++NewAsync#ai.buffer_cf,
+				buffer_recs = RemainRecs++NewAsync#ai.buffer_recs},
+			handle_info(doqueue,actordb_sqlprocutil:statequeue(P#dp{wasync = NewAsync1}))
 	end;
 handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
