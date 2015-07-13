@@ -539,16 +539,37 @@ statequeue(P) ->
 			end
 	end.
 
-exec_writes(#dp{wasync = W} = P) when W#ai.buffer /= [] ->
+exec_writes(#dp{verified = true, wasync = W} = P) when W#ai.buffer /= [] ->
 	actordb_sqlproc:write_call1(#write{sql = W#ai.buffer, records = W#ai.buffer_recs},W#ai.buffer_cf,W#ai.buffer_nv,P);
 exec_writes(P) ->
 	P.
 
 % We must have successfully replicated at least one write before executing reads.
-exec_reads(#dp{rasync = R, wasync = #ai{nreplies = NR}} = P) when R#ai.buffer /= [], NR > 0 ->
+exec_reads(#dp{verified = true, rasync = R, wasync = #ai{nreplies = NR}} = P) when R#ai.buffer /= [], NR > 0 ->
 	actordb_sqlproc:read_call1(R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P);
 exec_reads(P) ->
 	P.
+
+schema_change(#dp{schemavers = undefined} = P) ->
+	% first write sets schema and vers variable
+	P;
+schema_change(P) ->
+	case has_schema_updated(P,[]) of
+		ok ->
+			P;
+		{NewVers,Sql} ->
+			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers}, undefined,P),
+			NP
+	end.
+
+net_changes(P) ->
+	case P#dp.netchanges == actordb_local:net_changes() of
+		true ->
+			P;
+		false ->
+			start_verify(P#dp{netchanges = actordb_local:net_changes()},false)
+	end.
+
 
 doqueue(P) ->
 	doqueue(P,[]).
@@ -559,9 +580,9 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 		true ->
 			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
 				{ok,NS} ->
-					exec_writes(exec_reads(appendqueue(P#dp{cbstate = NS},Skipped)));
+					exec_writes(exec_reads(schema_change(net_changes(appendqueue(P#dp{cbstate = NS},Skipped)))));
 				_ ->
-					exec_writes(exec_reads(appendqueue(P,Skipped)))
+					exec_writes(exec_reads(schema_change(net_changes(appendqueue(P,Skipped)))))
 			end;
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),

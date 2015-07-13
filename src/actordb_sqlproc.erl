@@ -259,6 +259,10 @@ stop(Name) ->
 			stop(Pid)
 	end.
 
+print_info(undefined) ->
+	ok;
+print_info({A,T}) ->
+	print_info(distreg:whereis({A,T}));
 print_info(Pid) ->
 	gen_server:cast(Pid,print_info).
 
@@ -862,21 +866,30 @@ read_call1(Sql,Recs,From,P) ->
 
 write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 	A = P#dp.wasync,
+	ForceSync = lists:member(fsync,Msg#write.flags),
 	?DBG("writecall evnum_prewrite=~p,term=~p writeinfo=~p",[P#dp.evnum,P#dp.current_term,{MFA,Sql}]),
 	% Drain message queue.
 	self () ! timeout,
 	case Sql of
 		delete ->
 			A1 = A#ai{buffer = [<<"#s02;">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
-				buffer_recs = [[[[?MOVEDTOI,<<"$deleted$">>]]]|A#ai.buffer_recs], buffer_moved = deleted},
+				buffer_recs = [[[[?MOVEDTOI,<<"$deleted$">>]]]|A#ai.buffer_recs],
+				buffer_moved = deleted, buffer_fsync = A#ai.buffer_fsync or ForceSync},
 			{noreply,P#dp{wasync = A1}};
 		{moved,MovedTo} ->
 			A1 = A#ai{buffer = [<<"#s02;">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
-				buffer_recs = [[[[?MOVEDTOI,MovedTo]]]|A#ai.buffer_recs], buffer_moved = {moved,MovedTo}},
+				buffer_recs = [[[[?MOVEDTOI,MovedTo]]]|A#ai.buffer_recs],
+				buffer_moved = {moved,MovedTo}, buffer_fsync = A#ai.buffer_fsync or ForceSync},
+			{noreply,P#dp{wasync = A1}};
+		% If new schema version write, add sql to first place of list of writes.
+		_ when Msg#write.newvers /= undefined, MFA == undefined ->
+			A1 = A#ai{buffer = A#ai.buffer++[Sql], buffer_recs = A#ai.buffer_recs++[[]],
+				buffer_cf = A#ai.buffer_cf++[From], buffer_nv = Msg#write.newvers,
+				buffer_fsync = A#ai.buffer_fsync or ForceSync},
 			{noreply,P#dp{wasync = A1}};
 		_ when MFA == undefined ->
 			A1 = A#ai{buffer = [Sql|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
-				buffer_recs = [Msg#write.records|A#ai.buffer_recs]},
+				buffer_recs = [Msg#write.records|A#ai.buffer_recs], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 			{noreply,P#dp{wasync = A1}};
 		_ ->
 			{Mod,Func,Args} = MFA,
@@ -884,7 +897,7 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 				{reply,What,OutSql,NS} ->
 					reply(From,What),
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
-						buffer_cf = [undefined|A#ai.buffer_cf]},
+						buffer_cf = [undefined|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1, cbstate = NS}};
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS}};
@@ -892,19 +905,19 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 					{reply,What,P};
 				{exec,OutSql,Recs} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf]},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1}};
 				{OutSql,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf]},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1, cbstate = State}};
 				{OutSql,Recs,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf]},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1, cbstate = State}};
 				OutSql ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf]},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1}}
 			end
 	end.
@@ -922,8 +935,9 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	A = P#dp.wasync,
 	NWB = A#ai{wait = Res, info = W, newvers = NewVers,
 		callfrom = CF, evnum = EvNum, evterm = P#dp.current_term,
-		moved = A#ai.buffer_moved,
-		buffer_moved = undefined, buffer_nv = undefined, buffer = [], buffer_cf = [], buffer_recs = []},
+		moved = A#ai.buffer_moved, fsync = A#ai.buffer_fsync,
+		buffer_moved = undefined, buffer_nv = undefined, buffer_fsync = false,
+		buffer = [], buffer_cf = [], buffer_recs = []},
 	P#dp{wasync = NWB};
 write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId} = W,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
@@ -1108,16 +1122,23 @@ handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference
 % async write result
 handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
 	?DBG("Write result ~p",[Res1]),
+	% ?DBG("Buffer=~p",[BD#ai.buffer]),
+	% ?DBG("CQ=~p",[P#dp.callqueue]),
 	Res = actordb_sqlite:exec_res(Res1),
 	From = BD#ai.callfrom,
 	EvNum = BD#ai.evnum,
 	EvTerm = BD#ai.evterm,
-	NewVers = BD#ai.newvers,
+	case BD#ai.newvers of
+		undefined ->
+			NewVers = P#dp.schemavers;
+		NewVers ->
+			ok
+	end,
 	Moved = BD#ai.moved,
 	W = BD#ai.info,
-	ForceSync = lists:member(fsync,W#write.flags),
+	ForceSync = BD#ai.fsync,
 	NewAsync = BD#ai{callfrom = undefined, evnum = undefined, evterm = undefined,
-		newvers = undefined, info = undefined, wait = undefined},
+		newvers = undefined, info = undefined, wait = undefined, fsync = false},
 	case actordb_sqlite:okornot(Res) of
 		ok when P#dp.follower_indexes == []  ->
 			{noreply,actordb_sqlprocutil:statequeue(actordb_sqlprocutil:reply_maybe(

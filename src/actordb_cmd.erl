@@ -337,7 +337,7 @@ check_sql(Type,SizeCur,SqlNew,IsKv) ->
 	end.
 
 compare_tables(Type,NewDb) ->
-	{ok,Db,_,_} = actordb_sqlite:init(":memory:",off),
+	{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
 	ok = actordb_sqlite:exec(Db,tuple_to_list(apply(actordb_schema,Type,[])),read),
 	compare_tables1(Type,actordb:tables(Type),Db,NewDb).
 compare_tables1(Type,[Table|T],Db,NewDb) ->

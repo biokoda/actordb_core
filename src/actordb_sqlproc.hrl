@@ -49,7 +49,7 @@
 % records: for bulk inserts to single actor. List of rows (tuples).
 %          First element of tuple is table name. Sql must contain _insert; statement.
 % sql and flags must always be first and second position in #read and #write records.
--record(write,{sql, flags = [], mfa, transaction, records = []}).
+-record(write,{sql, flags = [], mfa, transaction, records = [], newvers}).
 -record(read,{sql, flags = []}).
 -record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0,
 			  file, wait_for_response_since, last_seen = {0,0,0}, pagebuf = <<>>}).
@@ -65,6 +65,7 @@ buffer_recs = [],
 buffer_cf = [],
 buffer_nv,
 buffer_moved,
+buffer_fsync = false,
 % for writes, we count every time a write was successful. This is necessary
 % so we don't start processing reads too soon.
 nreplies = 0,
@@ -75,7 +76,7 @@ info,
 % who is waiting to get response.
 callfrom,
 % info used when performing writes. Once write is done, #dp values will be overwritten with these.
-evnum, evterm, newvers, moved}).
+evnum, evterm, newvers, moved, fsync}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
 			activity, fixed_latency = 300,

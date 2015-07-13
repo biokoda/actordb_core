@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch_write/0]).
+-export([batch/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
@@ -7,7 +7,7 @@
 % general tests are in actordb/test/dist_test.erl and run with detest
 
 
-batch_write() ->
+batch() ->
 	Actor = butil:tobin(butil:epochsec()),
 	{sql_error,A,B} = actordb_sqlproc:write({Actor,type1},[create],"insert into tab values (1,'a',2,3);",actordb_actor),
 	?AINF("Create actor with error: {sql_error,~p,~p}",[A,B]),
