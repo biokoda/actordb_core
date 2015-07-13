@@ -19,20 +19,32 @@ batch_write() ->
 	{{self(),make_ref()},#write{sql = "insert into tab values (3,'c',4,5);"}},
 	{{self(),make_ref()},#write{sql = "insert into tab values (4,'d',5);"}},
 	{{self(),make_ref()},#write{sql = "insert into tab values (5,'aa',1);"}}],
-	Pid ! {batch_write,W},
+	Pid ! {batch,W},
 	ok = recbatch(W,1),
+
+	R = [{{self(),make_ref()}, #read{sql = "select * from tab where id=1;"}},
+	{{self(),make_ref()}, #read{sql = "select * from tab where id=2;"}},
+	{{self(),make_ref()}, #read{sql = "select * from tab where xid=3;"}},
+	{{self(),make_ref()}, #read{sql = "select * from tab where id=4;"}},
+	{{self(),make_ref()}, #read{sql = "select * from tab where id=5;"}}],
+	Pid ! {batch,R},
+	ok = recbatch(R,1),
+
 	ok.
 
-recbatch([{{_,Ref},_}|T],Id) ->
+recbatch([{{_,Ref},R}|T],Id) ->
 	receive
 		{Ref,{sql_error,A,B}} when Id == 3 ->
 			?AINF("Correctly received error for invalid sql in batch: ~p,~p",[A,B]),
 			recbatch(T,Id+1);
-		{Ref,{ok,{changes,Id,1}}} ->
-			?AINF("Received write response for id=~p",[Id]),
+		{Ref,{ok,{changes,Id,1}}} when element(1,R) == write ->
+			?AINF("Received correct write response for id=~p",[Id]),
+			recbatch(T,Id+1);
+		{Ref,{ok,[{columns,{<<"id">>,<<"txt">>,<<"i">>}},{rows,[{Id,_,_}]}]}} when element(1,R) == read ->
+			?AINF("Received correct read response for id=~p",[Id]),
 			recbatch(T,Id+1)
-		% X ->
-		% 	% ?AERR("REC: ~p, waiting on ~p",[X]),
+		% X when element(1,R) == read ->
+		% 	?AERR("REC read: ~p",[X]),
 		% 	recbatch(T,Id+1)
 	after 1000 ->
 		timeout

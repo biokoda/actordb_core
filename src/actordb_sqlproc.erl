@@ -838,8 +838,8 @@ read_call1(Sql,Recs,From,P) ->
 			{Before,[Problem|After]} = lists:split(ErrPos,From),
 			reply(Problem, Res),
 
-			{BeforeSql,[_Problem|AfterSql]} = lists:split(ErrPos,Sql),
-			{BeforeRecs,[_Problem|AfterRecs]} = lists:split(ErrPos,Recs),
+			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos,Sql),
+			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos,Recs),
 
 			read_call1(BeforeSql++AfterSql, BeforeRecs++AfterRecs, Before++After,P#dp{rasync = #ai{}})
 	end.
@@ -1140,20 +1140,6 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 				netchanges = actordb_local:net_changes(),force_sync = ForceSync,
 				evterm = EvTerm, evnum = EvNum,schemavers = NewVers,movedtonode = Moved,
 				wasync = NewAsync}))};
-		% {sql_error,ErrMsg,_} when EvNum == 1 ->
-		% 	% Restart with write but just with schema.
-		% 	actordb_sqlite:rollback(P#dp.db),
-		%
-		% 	% ErrPos = element(1,ErrMsg),
-		% 	% [batch,undefined|CF] = From,
-		% 	% {Before,[Problem|After]} = lists:split(ErrPos,CF),
-		% 	% reply(Problem, Res),
-		%
-		% 	PES = actordb_sqlprocutil:post_election_sql(
-		% 		P#dp{schemavers = undefined, wasync = NewAsync},[],undefined,[],undefined),
-		% 	{NP,SchemaSql,SchemaRecords,_} = PES,
-		% 	NW = W#write{sql = SchemaSql, records = SchemaRecords},
-		% 	write_call1(NW,undefined,NP#dp.schemavers,NP);
 		{sql_error,ErrMsg,_} ->
 			actordb_sqlite:rollback(P#dp.db),
 
@@ -1271,9 +1257,9 @@ handle_info(retry_copy,P) ->
 		_ ->
 			{noreply, P}
 	end;
-handle_info({batch_write,L},P) ->
+handle_info({batch,L},P) ->
 	?DBG("Batch=~p",[L]),
-	{noreply, lists:foldl(fun({{Pid,Ref},W},NP) -> {noreply, NP1} = write_call(W, {Pid,Ref}, NP), NP1 end, P, L)};
+	{noreply, lists:foldl(fun({{Pid,Ref},W},NP) -> {noreply, NP1} = handle_call(W, {Pid,Ref}, NP), NP1 end, P, L)};
 handle_info(check_locks,P) ->
 	case P#dp.locked of
 		[] ->
