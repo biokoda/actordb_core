@@ -326,6 +326,9 @@ handle_call(reload, _, P) ->
 	code:purge(?MODULE),
 	code:load_file(?MODULE),
 	{reply, ok, ?MODULE:deser_prop(?R2P(P))};
+% handle_call(print_info,F,P) ->
+% 	?AINF("~p ~p",[F,?R2P(P)]),
+% 	{noreply,P};
 handle_call(stop, _, P) ->
 	{stop, shutdown, stopped, P}.
 

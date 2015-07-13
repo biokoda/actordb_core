@@ -916,11 +916,12 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 	Records = list_to_tuple([[]|lists:reverse([ADBW|W#write.records])]),
 	VarHeader = actordb_sqlprocutil:create_var_header(P),
-	?DBG("SQL=~p, Recs=~p",[ComplSql, Records]),
+	CF = [batch,undefined|lists:reverse([undefined|From])],
+	?DBG("SQL=~p, Recs=~p, cf=~p",[ComplSql, Records, CF]),
 	Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
 	A = P#dp.wasync,
 	NWB = A#ai{wait = Res, info = W, newvers = NewVers,
-		callfrom = [batch,undefined|lists:reverse([undefined|From])], evnum = EvNum, evterm = P#dp.current_term,
+		callfrom = CF, evnum = EvNum, evterm = P#dp.current_term,
 		moved = A#ai.buffer_moved,
 		buffer_moved = undefined, buffer_nv = undefined, buffer = [], buffer_cf = [], buffer_recs = []},
 	P#dp{wasync = NWB};
@@ -953,9 +954,9 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 						_ ->
 							ComplSql =
 								[<<"#s00;">>,
-								 actordb_sqlprocutil:semicolon(Sql1),
-								 <<"#s02;">>
-								 ],
+								actordb_sqlprocutil:semicolon(Sql1),
+								<<"#s02;">>
+								],
 							AWR = [[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]],
 							Records = W#write.records++[AWR],
 							VarHeader = actordb_sqlprocutil:create_var_header(P),
@@ -966,10 +967,10 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 				ok ->
 					?DBG("Transaction ok"),
 					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId,
-								evterm = P#dp.current_term,
-								transactioncheckref = CheckRef,force_sync = ForceSync,
-								transactioninfo = {ComplSql,EvNum,NewVers},
-								callfrom = From, callres = Res},1,[])};
+						evterm = P#dp.current_term,
+						transactioncheckref = CheckRef,force_sync = ForceSync,
+						transactioninfo = {ComplSql,EvNum,NewVers},
+						callfrom = From, callres = Res},1,[])};
 				_Err ->
 					ok = actordb_sqlite:rollback(P#dp.db),
 					erlang:demonitor(CheckRef),
@@ -1156,20 +1157,28 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 		{sql_error,ErrMsg,_} ->
 			actordb_sqlite:rollback(P#dp.db),
 
-			ErrPos = element(1,ErrMsg),
-			[batch,undefined|CF] = From,
+			% we don't count #s00
+			ErrPos = element(1,ErrMsg)-1,
+			[batch,undefined|CF1] = From,
+			% Remove cf for last part (#s02, #s01)
+			CF = lists:reverse(tl(lists:reverse(CF1))),
+			?DBG("Error pos ~p, cf=~p",[ErrPos,CF]),
 			{Before,[Problem|After]} = lists:split(ErrPos,CF),
 			reply(Problem, Res),
 
-			{BeforeSql,[_Problem|AfterSql]} = lists:split(ErrPos,W#write.sql),
-			{BeforeRecs,[_Problem|AfterRecs]} = lists:split(ErrPos,W#write.records),
+			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos,lists:reverse(W#write.sql)),
+			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos,lists:reverse(W#write.records)),
 
-			RemainCF = Before++After,
-			RemainSql = BeforeSql++AfterSql,
-			RemainRecs = BeforeRecs++AfterRecs,
+			RemainCF = lists:reverse(Before++After),
+			RemainSql = lists:reverse(BeforeSql++AfterSql),
+			RemainRecs = lists:reverse(BeforeRecs++AfterRecs),
+			% ?DBG("Remain cf=~p",[RemainCF]),
+			% ?DBG("Remain sql=~p",[RemainSql]),
+			% ?DBG("Remain recs=~p",[RemainRecs]),
 			NewAsync1 = NewAsync#ai{buffer = RemainSql++NewAsync#ai.buffer,
 				buffer_cf = RemainCF++NewAsync#ai.buffer_cf,
 				buffer_recs = RemainRecs++NewAsync#ai.buffer_recs},
+			?DBG("New write ~p",[NewAsync1]),
 			handle_info(doqueue,actordb_sqlprocutil:statequeue(P#dp{wasync = NewAsync1}))
 	end;
 handle_info(doqueue, P) ->
@@ -1262,6 +1271,9 @@ handle_info(retry_copy,P) ->
 		_ ->
 			{noreply, P}
 	end;
+handle_info({batch_write,L},P) ->
+	?DBG("Batch=~p",[L]),
+	{noreply, lists:foldl(fun({{Pid,Ref},W},NP) -> {noreply, NP1} = write_call(W, {Pid,Ref}, NP), NP1 end, P, L)};
 handle_info(check_locks,P) ->
 	case P#dp.locked of
 		[] ->
