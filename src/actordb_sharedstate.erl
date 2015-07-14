@@ -922,6 +922,21 @@ mngmnt_execute0(#management{action = setpasswd,data = #account{access = [
 	end;
 
 mngmnt_execute0(#management{action = setpasswd, data = _})->
+	not_supported;
+mngmnt_execute0(#select{params = _Params, tables = [#table{name = <<"users">>,alias = <<"users">>}],
+        conditions = _Conditions,group = undefined,order = _Order, limit = _Limit,offset = _Offset})->
+	% Users = read_global_users(),%id,username,host,sha
+	%
+	%
+	%
+	%
+	% Ordered = case Order of
+	% 	undefined ->
+	% 		Users;
+	% 	_ ->
+	% end,
+	ok;
+mngmnt_execute0(#select{params = _, tables = _, conditions = _,group = _,order = _, limit = _,offset = _})->
 	not_supported.
 
 increment_index(Indexes)->
@@ -945,3 +960,22 @@ merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions)->
 	Remove ->
 		write_global(auth,(Authentication -- Remove) ++ [{ActorType,UserIndex,Sha,Conditions}])
 	end.
+
+%NexoCondition is between op1 and op2Tail
+%NexoCondition is either AND or OR
+conditions(Users,Condition)->
+	conditions(Users,Condition,[]).
+
+conditions(Users,#condition{nexo = nexo_and,
+								op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
+								op2 = Tail},Part) ->
+conditions(Users,Tail,[Op|Part]);
+conditions(Users,#condition{nexo = nexo_or,
+								op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
+								op2 = Tail}, Part) ->
+Conditions = [Op|Part],
+io:fwrite("conditions ~p~n~n~n~n",[Conditions]),
+conditions(Users,Tail,[]);
+conditions(_Users,#condition{nexo = _, op1 = _, op2 = _} = Op,Part) ->
+Conditions = [Op|Part],
+io:fwrite("conditions ~p~n~n~n~n",[Conditions]).

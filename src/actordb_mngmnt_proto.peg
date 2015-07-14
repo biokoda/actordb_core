@@ -1,4 +1,56 @@
-sql <- account_management_query ~;
+sql <- select_query / account_management_query ~;
+
+% --------------- SELECT
+
+select_query <- select_limit / select_order / select_group / select_where / select_from / select_simple ~;
+
+select_simple <- space? select space params space? `
+    #select{params=lists:nth(4, Node)}
+`;
+
+select_from <- select_simple space from space tables space? `
+    [#select{params=Query}, _, _From, _, Tables, _] = Node,
+    #select{params=Query, tables=Tables}
+`;
+
+select_where <- select_from space where space conditions space? `
+    [Select, _, _Where, _, Conditions, _] = Node,
+    Select#select{conditions=Conditions}
+`;
+select_group <- ( select_where / select_from ) space group_by space group_datas space? `
+    [Select, _, _GroupBy, _, Groups, _] = Node,
+    Select#select{group=Groups}
+`;
+select_order <- ( select_group / select_where / select_from ) space order_by space order_datas space? `
+    [Select, _, _OrderBy, _, Orders, _] = Node,
+    Select#select{order=Orders}
+`;
+
+select_limit <- ( select_order / select_group / select_where / select_from / select_simple ) space limit space integer (space offset space integer)? space? `
+    case Node of
+        [Select,_,limit,_,Limit,[],_] ->
+            Select#select{limit=Limit};
+        [Select,_,limit,_,Limit,[_,offset,_,Offset],_] ->
+            Select#select{limit=Limit, offset=Offset}
+    end
+`;
+
+order_datas <- head:order_data tail:( space? ',' space? order_data )* `
+    [proplists:get_value(head, Node)|[ lists:nth(4,I) || I <- proplists:get_value(tail, Node) ]]
+`;
+order_data <- (key '.' key / key / integer ) (space sort)? `
+    case Node of
+        [[_,<<".">>,Key], [_, Sort]] -> #order{key=Key, sort=Sort};
+        [Key, [_, Sort]] -> #order{key=Key, sort=Sort};
+        [Key, []] -> #order{key=Key, sort=asc}
+    end
+`;
+sort <- asc / desc ~;
+
+group_datas <- head:group_data tail:( space? ',' space? group_data )* `
+    [proplists:get_value(head, Node)|[ lists:nth(4,I) || I <- proplists:get_value(tail, Node) ]]
+`;
+group_data <- key / integer ~;
 
 % ---------------- Account Management Statements
 
@@ -131,6 +183,66 @@ grant_options <- space? (max_queries_per_hour / max_updates_per_hour / max_conne
 
 
 
+
+
+conditions <- conditions_normal_chain / conditions_normal / conditions_parens_chain / conditions_parens ~;
+conditions_parens_chain <- space? '(' conditions ')' space? nexo space conditions space? `
+    case Node of
+        [_,_,Cond,_,_,Nexo,_,Next,_] -> #condition{nexo=Nexo, op1=Cond, op2=Next}
+    end
+`;
+conditions_parens <- space? '(' first:conditions ')' space? `
+    proplists:get_value(first, Node)
+`;
+conditions_normal_chain <- space? condition space nexo space conditions space? `
+    case Node of
+        [_,Cond,_,Nexo,_,Next,_] -> #condition{nexo=Nexo, op1=Cond, op2=Next}
+    end
+`;
+conditions_normal <- space? condition space? `lists:nth(2, Node)`;
+condition <- condition_comp / condition_set ~;
+condition_set <- param space? set_comp subquery `
+    #condition{nexo=lists:nth(3,Node), op1=lists:nth(1,Node), op2=lists:nth(4,Node)}
+`;
+condition_comp <- param space? comparator space? param `
+    #condition{nexo=lists:nth(3,Node), op1=lists:nth(1,Node), op2=lists:nth(5,Node)}
+`;
+
+subquery <- space? '(' space? ( select_query / set_datas ) space? ')' space? `
+    #subquery{subquery=lists:nth(4, Node)}
+`;
+
+set_datas <- head:set_data tail:( space? ',' space? set_data )* `
+    [proplists:get_value(head, Node)|[ lists:nth(4,I) || I <- proplists:get_value(tail, Node) ]]
+`;
+set_data <- value ~;
+
+comparator <- '<=' / '=<' / '=>' / '>=' / '<>' / '!=' / '<' / '>' / '=' / like `
+case Node of
+    <<"<=">> -> lte;
+    <<"=<">> -> lte;
+    <<">=">> -> gte;
+    <<"=>">> -> gte;
+    <<"!=">> -> neq;
+    <<"<>">> -> neq;
+    <<"<">> -> lt;
+    <<">">> -> gt;
+    <<"=">> -> eq;
+    like -> like
+end
+`;
+set_comp <- not_in / in / exist / all / any ~;
+nexo <- nexo_and / nexo_or ~;
+% ---------------- COMMON TYPES
+
+tables <- head:table tail:( space? ',' space? table )* `
+    [proplists:get_value(head, Node)|[ lists:nth(4,I) || I <- proplists:get_value(tail, Node) ]]
+`;
+
+params <- head:param tail:( space? ',' space? param )* `
+    [proplists:get_value(head, Node)|[ lists:nth(4,I) || I <- proplists:get_value(tail, Node) ]]
+`;
+
 % ------------- reserved words
 
 update <- #(?i)update# `update`;
@@ -185,6 +297,21 @@ process <- #(?i)process# `process`;
 read <- #(?i)read# `read`;
 write <- #(?i)write# `write`;
 
+%select
+where <- #(?i)where# `where`;
+nexo_or <- #(?i)or# `nexo_or`;
+nexo_and <- #(?i)and# `nexo_and`;
+any <- #(?i)any# `in`;
+exist <- #(?i)exist# `exist`;
+not_in <- #(?i)not +in# `not_in`;
+in <- #(?i)in# `in`;
+like <- #(?i)like# `like`;
+order_by <- #(?i)order +by# `order_by`;
+limit <- #(?i)limit# `limit`;
+asc <- #(?i)asc# `asc`;
+desc <- #(?i)desc# `desc`;
+offset <- #(?i)offset# `offset`;
+group_by <- #(?i)group +by# `group_by`;
 % complex types
 
 key <- '`' chars:(!'`' ("\\\\" / '\\`' / .))+ '`' / [a-zA-Z] [A-zA-Z0-9_]* `

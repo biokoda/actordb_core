@@ -35,3 +35,12 @@
 -type action() :: create | drop | grant | rename | revoke | setpasswd.
 -type account() :: #account{}.
 -type permission() :: #permission{}.
+
+
+% Select
+-record(condition, {nexo, op1, op2}).
+-record(subquery, {name, subquery }).
+-record(select, {params, tables, conditions, group, order, limit, offset}).
+-record(order, {key, sort}).
+
+-type select() :: #select{}.

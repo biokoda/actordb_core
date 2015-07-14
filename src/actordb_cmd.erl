@@ -154,6 +154,10 @@ cmd(stats,stats,{Node,Pid,Ref}) ->
 cmd(_,_,_) ->
 	{error,?ERR("uncrecognized command.~nSupported commands: ~p, ~p, ~p~n",[init,updateschema,updatenodes])}.
 
+%Account Management
+cmd(Statement)->
+	actordb:exec_mngmnt(Statement).
+
 send_stats(Node,Pid,Ref) ->
 	case lists:member(Node,nodes(connected)) of
 		true ->
