@@ -1,5 +1,5 @@
 -module(actordb_core).
--compile(export_all).
+-export([start/0, start/2, stop/0, stop/1, stop_complete/0, start_ready/0]).
 -include("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 
@@ -42,14 +42,14 @@ wait_done_queries(N) ->
 			wait_done_queries(N-100)
 	end.
 
-wait_distreg_procs() ->
-	case distreg:processes() of
-		[] ->
-			ok;
-		_ ->
-			timer:sleep(1000),
-			wait_distreg_procs()
-	end.
+% wait_distreg_procs() ->
+% 	case distreg:processes() of
+% 		[] ->
+% 			ok;
+% 		_ ->
+% 			timer:sleep(1000),
+% 			wait_distreg_procs()
+% 	end.
 
 start_ready() ->
 	?AINF("Start ready."),
@@ -134,11 +134,11 @@ prestart1(Files) ->
 					end
 			end, [], Files),
 	ActorParam = butil:ds_val(actordb_core,L),
-	[Main,Extra,Sync1,NumMngrs,QueryTimeout1,Repl] =
+	[Main,Extra,Sync1,NumMngrs,QueryTimeout1,Repl,MaxDbSize] =
 		butil:ds_vals([main_db_folder,extra_db_folders,
 						fsync,num_transaction_managers,
-						query_timeout,max_replication_space],ActorParam,
-						["db",[],undefined,12,60000,{5000,0.1}]),
+						query_timeout,max_replication_space,max_db_size],ActorParam,
+						["db",[],undefined,12,60000,{5000,0.1},"1TB"]),
 	case QueryTimeout1 of
 		0 ->
 			QueryTimeout = infinity;
@@ -207,8 +207,69 @@ prestart1(Files) ->
 	% end,
 	actordb_util:createcfg(Main,Extra,Sync,QueryTimeout,Repl,Name),
 	ensure_folders(actordb_conf:paths()),
-	ok = actordb_driver:init({list_to_tuple(actordb_conf:paths()),actordb_sqlprocutil:static_sqls()}),
+
+	Sch = erlang:system_info(schedulers),
+	SchOnline = erlang:system_info(schedulers_online),
+	case ok of
+		_ when Sch == SchOnline, Sch > 6 ->
+			% Limit number of erlang schedulers to leave space for engine threads
+			erlang:system_flag(schedulers_online,6),
+			WThrds = length(actordb_conf:paths()),
+			% For every write thread, max 4 read threads, if enough CPU cores avail
+			RdThreads = min(round((Sch-WThrds-6) / WThrds), 4);
+		_ ->
+			RdThreads = 1
+	end,
+
+	A = list_to_tuple(actordb_conf:paths()),
+	B = actordb_sqlprocutil:static_sqls(),
+	ok = try_load_driver(A,B,RdThreads,parse_size(MaxDbSize)),
+
 	emurmur3:init().
+
+% LMDB needs max size. We try with configured size, if fail, try lowering value.
+% Lowest tried value is 1GB.
+try_load_driver(A,B,C,Size) ->
+	case (catch actordb_driver:init({A,B, Size,C})) of
+		ok ->
+			ok;
+		Err ->
+			Mem = butil:ds_val(total_memory,memsup:get_system_memory_data()),
+			case ok of
+				_ when Size > Mem*10 ->
+					try_load_driver(A,B,C,Mem*10);
+				_ when Size > Mem ->
+					try_load_driver(A,B,C,Mem);
+				_ when Size > (Mem div 2) ->
+					try_load_driver(A,B,C,Mem div 2);
+				_ when Size > 1024*1024*1024*2 ->
+					try_load_driver(A,B,C,1024*1024*1024*2);
+				_ when Size > 1024*1024*1024 ->
+					try_load_driver(A,B,C,1024*1024*1024);
+				_ ->
+					Err
+			end
+	end.
+
+
+parse_size(DbSize1) ->
+	S = string:to_lower(DbSize1),
+	fix_size(S,butil:toint(filter_num(S))).
+
+find_size_char(L) ->
+	[N || N <- L, N == $M orelse N == $G orelse N == $T orelse N == $m orelse N == $g orelse N == $t].
+filter_num(L) ->
+	[N || N <- L, N >= $0 andalso N =< $9].
+fix_size(Max,Max1)->
+	case find_size_char(Max) of
+		[SS|_] when SS == $m; SS == $M ->
+			1024*1024*Max1;
+		[SS|_] when SS == $g; SS == $G ->
+			1024*1024*1024*Max1;
+		[SS|_] when SS == $t; SS == $T ->
+			1024*1024*1024*1024*Max1
+	end.
+
 
 start() ->
 	% ?AINF("Starting actordb"),
@@ -309,7 +370,7 @@ import_legacy([H|T],Thr) ->
 	case file:read_file_info(H++"/termstore") of
 		{ok,_} ->
 			import_db(H++"/termstore","termstore",Thr),
-			[big_wal(Pth) || Pth <- lists:sort(fun actordb_core:walsort/2, filelib:wildcard(H++"/wal.*"))];
+			[big_wal(Pth) || Pth <- lists:sort(fun walsort/2, filelib:wildcard(H++"/wal.*"))];
 		_ ->
 			ok
 	end,
@@ -325,7 +386,7 @@ import_legacy([H|T],Thr) ->
 	import_dbs(H,"actors",Thr,Actors),
 	import_dbs(H,"shards",Thr,Shards),
 	import_dbs(H,"state",Thr,State),
-	[big_wal(Pth) || Pth <- lists:sort(fun actordb_core:walsort/2, filelib:wildcard(H++"/wal.*"))],
+	[big_wal(Pth) || Pth <- lists:sort(fun walsort/2, filelib:wildcard(H++"/wal.*"))],
 	case get(<<"termstore">>) of
 		undefined ->
 			ok;
