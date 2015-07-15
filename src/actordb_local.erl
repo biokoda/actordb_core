@@ -278,7 +278,7 @@ handle_info(switch_cur_active,P) ->
 			ets:delete(EtsToHibernate),
 			case ets:info(?HIBERNATE,size) of
 				N when N > P#dp.proclimit ->
-					ToKill = ets:select(hibernate_list,[{{'$1'},[],['$1']}],P#dp.proclimit),
+					{ToKill,_} = ets:select(hibernate_list,[{{'$1'},[],['$1']}],P#dp.proclimit),
 					[actordb_sqlproc:diepls(Pid,limit) || Pid <- ToKill];
 				_ ->
 					ok
