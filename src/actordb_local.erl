@@ -52,12 +52,10 @@ subscribe_stat() ->
 	ok.
 % 	gen_server:call(?MODULE,{subscribe_stat,self()}).
 report_read() ->
-	folsom_metrics_counter:inc(reads, 1),
-	ok.
+	folsom_metrics_counter:inc(reads, 1).
 
 report_write() ->
-	folsom_metrics_counter:inc(writes, 1),
-	ok.
+	folsom_metrics_counter:inc(writes, 1).
 
 get_nreads() ->
 	folsom_metrics_counter:get_value(reads).
@@ -189,9 +187,6 @@ print_info() ->
 -record(dp,{mupdaters = [], mpids = [], updaters_saved = true,
 % Ulimit and memlimit are checked on startup and will influence how many actors to keep in memory
 ulimit = 1024*100, memlimit = 1024*1024*1024, proclimit, lastcull = {0,0,0},
-% Every second do make_ref. Since ref is always incrementing it's a simple+fast way
-%  to find out which actors were active during prev second.
-prev_sec_from, prev_sec_to,
 stat_readers = [],prev_reads = 0, prev_writes = 0,
 % slots for 8 raft cluster connections
 % Set element is: NodeName
@@ -280,7 +275,14 @@ handle_info(switch_cur_active,P) ->
 			L = ets:tab2list(EtsToHibernate),
 			[Pid ! {hibernate,?HIBERNATE} || {Pid} <- L],
 			butil:ds_add(L,?HIBERNATE),
-			ets:delete(EtsToHibernate)
+			ets:delete(EtsToHibernate),
+			case ets:info(?HIBERNATE,size) of
+				N when N > P#dp.proclimit ->
+					ToKill = ets:select(hibernate_list,[{{'$1'},[],['$1']}],P#dp.proclimit),
+					[actordb_sqlproc:diepls(Pid,limit) || Pid <- ToKill];
+				_ ->
+					ok
+			end
 	end,
 	CurEts = butil:ds_val(?CUR_ACTIVE,?GLOBAL_INFO),
 	butil:ds_add(?PREV_ACTIVE,CurEts,?GLOBAL_INFO),
@@ -494,27 +496,14 @@ init(_) ->
 
 	folsom_metrics:new_counter(reads),
 	folsom_metrics:new_counter(writes),
-	% case ets:info(?STATS,size) of
-	% 	undefined ->
-	% 		ets:new(?STATS, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},
-	% 								{write_concurrency,true}]),
-	% 		butil:ds_add(writes,0,?STATS),
-	% 		butil:ds_add(reads,0,?STATS);
-	% 	_ ->
-	% 		ok
-	% end,
-	% case ets:info(?REF_TIMES,size) of
-	% 	undefined ->
-	% 		ets:new(?REF_TIMES, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},
-	% 								{read_concurrency,true}]),
-	% 		R = make_ref(),
-	% 		butil:ds_add(twoseconds,{R,R,R,R,R,R,R,R,R,R},?REF_TIMES),
-	% 		butil:ds_add(tenseconds,{R,R,R,R,R,R,R,R,R,R},?REF_TIMES);
-	% 	_ ->
-	% 		ok
-	% end,
+
 	butil:ds_add(#actor{pid = 0},actorsalive),
-	Ulimit = (#dp{})#dp.ulimit,
+	case butil:get_os() of
+		win ->
+			Ulimit = (#dp{})#dp.ulimit;
+		_ ->
+			Ulimit = butil:toint(lists:flatten(string:tokens(os:cmd("ulimit -n"),"\n\r")))
+	end,
 	case memsup:get_memory_data() of
 		{0,0,_} ->
 			Memlimit1 = (#dp{})#dp.memlimit;
@@ -525,19 +514,23 @@ init(_) ->
 	% 	_ when Ulimit =< 1024 ->
 	% 		Proclimit = erlang:round(Ulimit*0.5);
 	% 	_ ->
-			Proclimit = erlang:round(Ulimit*0.8),
+			% Proclimit = erlang:round(Ulimit*0.8),
 	% end,
 	case ok of
 		_ when Memlimit1 =< ?GB ->
+			Proclimit = 30,
 			Memlimit = 200*?MB;
 		_ when Memlimit1 =< ?GB*2 ->
+			Proclimit = 60,
 			Memlimit = ?GB;
 		_ when Memlimit1 =< ?GB*4 ->
+			Proclimit = 100,
 			Memlimit = 2*?GB;
 		_ ->
-			Memlimit = erlang:round(Memlimit1*0.5)
+			Proclimit = round(Memlimit1 / (8*?MB*2)),
+			Memlimit = round(Memlimit1*0.5)
 	end,
-	P = #dp{memlimit = Memlimit, ulimit = Ulimit, proclimit = Proclimit, prev_sec_from = make_ref(),prev_sec_to = make_ref()},
+	P = #dp{memlimit = Memlimit, ulimit = Ulimit, proclimit = Proclimit},
 	start_timer(P),
 	{ok,P}.
 
