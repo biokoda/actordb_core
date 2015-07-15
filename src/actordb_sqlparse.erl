@@ -999,7 +999,8 @@ parse_mngmt0(<<Skip:32,Sql:Skip/binary-unit:8, 59, _Rem/binary>>) ->
 parse_mngmt0(<<_Skip:32,Sql/binary>>) ->
 	actordb_mngmnt_proto:parse(Sql);
 parse_mngmt0(Sql) ->
-	case lists:suffix(";",lists:flatten(Sql)) of
-		true -> actordb_mngmnt_proto:parse(lists:droplast(Sql));
-		false -> actordb_mngmnt_proto:parse(Sql)
+	Sql0 = lists:flatten(Sql),
+	case lists:suffix(";",Sql0) of
+		true -> actordb_mngmnt_proto:parse(lists:droplast(Sql0));
+		false -> actordb_mngmnt_proto:parse(Sql0)
 	end.

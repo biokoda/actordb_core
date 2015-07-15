@@ -923,7 +923,7 @@ mngmnt_execute0(#management{action = setpasswd,data = #account{access = [
 
 mngmnt_execute0(#management{action = setpasswd, data = _})->
 	not_supported;
-mngmnt_execute0(#select{params = _Params, tables = [#table{name = <<"users">>,alias = <<"users">>}],
+mngmnt_execute0(#select{params = Params, tables = [#table{name = <<"users">>,alias = <<"users">>}],
         conditions = Conditions, group = undefined,order = Order, limit = Limit,offset = Offset})->
 	Users = read_global_users(),%id,username,host,sha
 	NumberOfUsers = length(Users),
@@ -940,12 +940,29 @@ mngmnt_execute0(#select{params = _Params, tables = [#table{name = <<"users">>,al
 		{undefined, Offset} -> Con(lists:sublist(Users, case Offset of 0 -> 1; _ -> Offset end, NumberOfUsers));
 		{Limit, Offset} -> Con(lists:sublist(Users, case Offset of 0 -> 1; _ -> Offset end, Limit))
 	end,
-	MapUsers = [#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| {Id,Username,Host,Sha} <- FilterdUsers],
-	lists:sort(fun(U1,U2)->
-		sorting_fun(tuple_g(U1,Order), tuple_g(U2,Order), Order)
-	end, MapUsers);
+	Ordered = case Order of
+		undefined ->
+			[#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| {Id,Username,Host,Sha} <- FilterdUsers];
+		_ ->
+			MapUsers = [#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| {Id,Username,Host,Sha} <- FilterdUsers],
+			lists:sort(fun(U1,U2)->
+				sorting_fun(tuple_g(U1,Order), tuple_g(U2,Order), Order)
+			end, MapUsers)
+	end,
+	filter_by_keys_param(Params,Ordered);
+
 mngmnt_execute0(#select{params = _, tables = _, conditions = _,group = _,order = _, limit = _,offset = _})->
 	not_supported.
+
+filter_by_keys_param(Params,Users)->
+	case Params of
+		[#all{table = _}] -> Users;
+		_ ->
+			[lists:foldl(fun(#key{alias = _,name = Name,table = _}, MapOut) ->
+					maps:put(Name,maps:get(Name,UO),MapOut)
+				end, #{}, Params)
+			||UO <- Users]
+	end.
 
 tuple_g(User,Orders)->
 	list_to_tuple([maps:get(Order#order.key, User)||Order <- Orders]).
