@@ -924,20 +924,51 @@ mngmnt_execute0(#management{action = setpasswd,data = #account{access = [
 mngmnt_execute0(#management{action = setpasswd, data = _})->
 	not_supported;
 mngmnt_execute0(#select{params = _Params, tables = [#table{name = <<"users">>,alias = <<"users">>}],
-        conditions = _Conditions,group = undefined,order = _Order, limit = _Limit,offset = _Offset})->
-	% Users = read_global_users(),%id,username,host,sha
-	%
-	%
-	%
-	%
-	% Ordered = case Order of
-	% 	undefined ->
-	% 		Users;
-	% 	_ ->
-	% end,
-	ok;
+        conditions = Conditions, group = undefined,order = Order, limit = Limit,offset = Offset})->
+	Users = read_global_users(),%id,username,host,sha
+	NumberOfUsers = length(Users),
+	Con = fun(UsersLO)->
+		case Conditions of
+			undefined -> UsersLO;
+			_ -> conditions(UsersLO,Conditions)
+		end
+	end,
+	FilterdUsers =
+	case {Limit, Offset} of
+		{undefined, undefined} -> Con(Users);
+		{Limit, undefined} -> Con(lists:sublist(Users, 1, Limit));
+		{undefined, Offset} -> Con(lists:sublist(Users, case Offset of 0 -> 1; _ -> Offset end, NumberOfUsers));
+		{Limit, Offset} -> Con(lists:sublist(Users, case Offset of 0 -> 1; _ -> Offset end, Limit))
+	end,
+	MapUsers = [#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| {Id,Username,Host,Sha} <- FilterdUsers],
+	lists:sort(fun(U1,U2)->
+		sorting_fun(tuple_g(U1,Order), tuple_g(U2,Order), Order)
+	end, MapUsers);
 mngmnt_execute0(#select{params = _, tables = _, conditions = _,group = _,order = _, limit = _,offset = _})->
 	not_supported.
+
+tuple_g(User,Orders)->
+	list_to_tuple([maps:get(Order#order.key, User)||Order <- Orders]).
+
+%this probably needs an explanation
+%since erlang sort function can compare tuples
+%and we can order lists by ASC and DESC
+%what we do is, in case we are ordering by id DESC, username ASC
+%we switch ids between two comparing tuples
+sorting_fun(X, Y, Orders)->
+	{XX,YY} = lists:foldl(fun(#order{key = Name,sort = Sort},{X0, Y0}) ->
+		case Sort of
+			asc -> {X0, Y0};
+			desc ->
+				Index = user_element(Name),
+				Xelement = element(Index, X0),
+				Yelement = element(Index, Y0),
+				XX = setelement(Index,X0,Yelement),
+				YY = setelement(Index,Y0,Xelement),
+				{XX,YY}
+			end
+		end, {X, Y}, Orders),
+	XX < YY.
 
 increment_index(Indexes)->
 	case lists:sort(Indexes) of
@@ -963,19 +994,58 @@ merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions)->
 
 %NexoCondition is between op1 and op2Tail
 %NexoCondition is either AND or OR
+%Users 1 ID, 2 username, 3 Host, 4 SHA
 conditions(Users,Condition)->
 	conditions(Users,Condition,[]).
 
 conditions(Users,#condition{nexo = nexo_and,
 								op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
 								op2 = Tail},Part) ->
-conditions(Users,Tail,[Op|Part]);
+  conditions(Users,Tail,[Op|Part]);
 conditions(Users,#condition{nexo = nexo_or,
 								op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
 								op2 = Tail}, Part) ->
-Conditions = [Op|Part],
-io:fwrite("conditions ~p~n~n~n~n",[Conditions]),
-conditions(Users,Tail,[]);
-conditions(_Users,#condition{nexo = _, op1 = _, op2 = _} = Op,Part) ->
-Conditions = [Op|Part],
-io:fwrite("conditions ~p~n~n~n~n",[Conditions]).
+	Conditions = [Op|Part],
+	FilterdUsers = lists:filter(fun(User)->
+  	condition(Conditions,User)
+	end, Users),
+  conditions(FilterdUsers, Tail, []);
+conditions(Users,#condition{nexo = _, op1 = _, op2 = _} = Op,Part) ->
+	Conditions = [Op|Part],
+	lists:filter(fun(User)->
+  	condition(Conditions,User)
+	end, Users).
+
+lte(A,B)->
+	A =< B.
+gte(A,B)->
+	A >= B.
+lt(A,B)->
+	A < B.
+gt(A,B)->
+	A > B.
+eq(A,B)->
+	A =:= B.
+neq(A,B)->
+	A =/= B.
+
+user_element(<<"id">>)->
+	1;
+user_element(<<"username">>)->
+	2;
+user_element(<<"host">>)->
+	3;
+user_element(<<"sha">>)->
+	4.
+
+condition(Conditions,User)->
+	condition(Conditions,User,true).
+condition([C|T],User,true) ->
+	UserValue = element(user_element(C#condition.op1#key.name),User),
+	ComparingTo = C#condition.op2#value.value,
+	Result = apply(?MODULE,C#condition.nexo,[UserValue,ComparingTo]),
+	condition(T,User,Result);
+condition(_, _, false) ->
+	false;
+condition([],_,true) ->
+	true.
