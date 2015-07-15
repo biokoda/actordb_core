@@ -281,20 +281,22 @@ handle_call({dbcopy,Msg},CallFrom,P) ->
 	Me = actordb_conf:node_name(),
 	case ok of
 		_ when element(1,Msg) == send_db andalso P#dp.verified == false ->
-			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue)}};
+			{noreply,P#dp{callqueue = queue:in_r({CallFrom,{dbcopy,Msg}},P#dp.callqueue),
+				activity = actordb_local:actor_activity(P#dp.activity)}};
 		_ when element(1,Msg) == send_db andalso Me /= P#dp.masternode ->
 			?DBG("redirect not master node"),
 			actordb_sqlprocutil:redirect_master(P);
 		_ ->
-			actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,P)
+			actordb_sqlprocutil:dbcopy_call(Msg,CallFrom,
+				P#dp{activity = actordb_local:actor_activity(P#dp.activity)})
 	end;
 handle_call({state_rw,_} = Msg,From, #dp{wasync = #ai{wait = WRef}} = P) when is_reference(WRef) ->
 	?DBG("Queuing state call"),
 	{noreply,P#dp{statequeue = queue:in_r({From,Msg},P#dp.statequeue)}};
 handle_call({state_rw,What},From,P) ->
-	state_rw_call(What,From,P);
+	state_rw_call(What,From,P#dp{activity = actordb_local:actor_activity(P#dp.activity)});
 handle_call({commit,Doit,Id},From, P) ->
-	commit_call(Doit,Id,From,P);
+	commit_call(Doit,Id,From,P#dp{activity = actordb_local:actor_activity(P#dp.activity)});
 handle_call(Msg,From,P) ->
 	case Msg of
 		_ when P#dp.mors == slave ->
@@ -367,7 +369,8 @@ handle_call(Msg,From,P) ->
 			% 	[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			% Continue in doqueue
 			self() ! timeout,
-			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)}}
+			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), 
+				activity = actordb_local:actor_activity(P#dp.activity)}}
 	end.
 
 
@@ -822,7 +825,7 @@ read_call(_Msg,_From,P) ->
 
 % Execute buffered read sqls
 read_call1(_,_,[],P) ->
-	P;
+	P#dp{activity = actordb_local:actor_activity(P#dp.activity)};
 read_call1(Sql,Recs,From,P) ->
 	ComplSql = list_to_tuple(Sql),
 	Records = list_to_tuple(Recs),
@@ -834,7 +837,7 @@ read_call1(Sql,Recs,From,P) ->
 	case Res of
 		{ok,ResTuples} ->
 			?DBG("Read resp=~p",[Res]),
-			read_reply(P#dp{rasync = #ai{}}, From, 1, ResTuples);
+			read_reply(P#dp{rasync = #ai{}, activity = actordb_local:actor_activity(P#dp.activity)}, From, 1, ResTuples);
 		{sql_error,ErrMsg,_} = Err ->
 			?ERR("Read call error: ~p",[Err]),
 			ErrPos = element(1,ErrMsg),
@@ -938,7 +941,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 		moved = A#ai.buffer_moved, fsync = A#ai.buffer_fsync,
 		buffer_moved = undefined, buffer_nv = undefined, buffer_fsync = false,
 		buffer = [], buffer_cf = [], buffer_recs = []},
-	P#dp{wasync = NWB};
+	P#dp{wasync = NWB, activity = actordb_local:actor_activity(P#dp.activity)};
 write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId} = W,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",[TransactionId,P#dp.transactionid,Sql1]),
@@ -984,12 +987,14 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 						evterm = P#dp.current_term,
 						transactioncheckref = CheckRef,force_sync = ForceSync,
 						transactioninfo = {ComplSql,EvNum,NewVers},
+						activity = actordb_local:actor_activity(P#dp.activity),
 						callfrom = From, callres = Res},1,[])};
 				_Err ->
 					ok = actordb_sqlite:rollback(P#dp.db),
 					erlang:demonitor(CheckRef),
 					?DBG("Transaction not ok ~p",[_Err]),
-					{reply,Res,P#dp{transactionid = undefined, evterm = P#dp.current_term}}
+					{reply,Res,P#dp{transactionid = undefined, activity = actordb_local:actor_activity(P#dp.activity),
+						evterm = P#dp.current_term}}
 			end;
 		_ ->
 			EvNum = P#dp.evnum+1,
@@ -1017,7 +1022,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 			ok = actordb_sqlite:okornot(actordb_sqlite:exec(
 				P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader)),
 			{noreply,ae_timer(P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
-				transactioninfo = {Sql,EvNum+1,NewVers},
+				transactioninfo = {Sql,EvNum+1,NewVers}, activity = actordb_local:actor_activity(P#dp.activity),
 				follower_indexes = update_followers(EvNum,P#dp.follower_indexes),
 				transactioncheckref = CheckRef,force_sync = ForceSync,
 				transactionid = TransactionId})}
@@ -1035,11 +1040,10 @@ update_followers(_Evnum,L) ->
 handle_cast({diepls,_Reason},P) ->
 	?DBG("Received diepls ~p",[_Reason]),
 	Empty = queue:is_empty(P#dp.callqueue),
-	Age = actordb_local:min_ref_age(P#dp.activity),
 	CanDie = apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]),
-	?DBG("Age ~p, verified ~p, empty ~p, candie ~p",[Age,P#dp.verified,Empty,CanDie]),
+	?DBG("verified ~p, empty ~p, candie ~p",[P#dp.verified,Empty,CanDie]),
 	case ok of
-		_ when Age > 2000, P#dp.verified, Empty, CanDie /= never ->
+		_ when P#dp.verified, Empty, CanDie /= never ->
 			{stop,normal,P};
 		_ ->
 			{noreply,P}
@@ -1190,6 +1194,17 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 	end;
 handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
+handle_info({hibernate,A},P) ->
+	?DBG("hibernating"),
+	{noreply,P#dp{activity = A},hibernate};
+handle_info(copy_timer,P) ->
+	case P#dp.dbcopy_to of
+		[_|_] ->
+			erlang:send_after(1000,self(),copy_timer);
+		_ ->
+			ok
+	end,
+	{noreply,P#dp{activity = actordb_local:actor_activity(P#dp.activity)}};
 handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 	down_info(PID,Monitor,Reason,P);
 handle_info(doelection,P) ->
@@ -1202,15 +1217,17 @@ handle_info({doelection,LatencyBefore,TimerFrom},P) ->
 	%  from here means same thing.
 	case LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100 of
 		true ->
-			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
+			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
+				activity = actordb_local:actor_activity(P#dp.activity)}};
 		false ->
 			case [F || F <- P#dp.follower_indexes, F#flw.last_seen > TimerFrom] of
 				[] ->
 					% Clear out msg queue first.
 					self() ! doelection1,
-					{noreply,P};
+					{noreply,P#dp{activity = actordb_local:actor_activity(P#dp.activity)}};
 				_ ->
-					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
+					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
+						activity = actordb_local:actor_activity(P#dp.activity)}}
 			end
 	end;
 handle_info(doelection1,P) ->

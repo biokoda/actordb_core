@@ -900,7 +900,7 @@ election_timer(T) ->
 	end.
 
 actor_start(P) ->
-	actordb_local:actor_started(P#dp.actorname,P#dp.actortype,?PAGESIZE*?DEF_CACHE_PAGES).
+	actordb_local:actor_started().
 
 
 % Returns:
@@ -1399,72 +1399,68 @@ redirect_master(P) ->
 			end
 	end.
 
-
-parse_opts(P,[H|T]) ->
-	case H of
-		{actor,Name} ->
-			parse_opts(P#dp{actorname = Name},T);
-		{type,Type} when is_atom(Type) ->
-			parse_opts(P#dp{actortype = Type},T);
-		{mod,Mod} ->
-			parse_opts(P#dp{cbmod = Mod},T);
-		{state,S} ->
-			parse_opts(P#dp{cbstate = S},T);
-		{slave,true} ->
-			parse_opts(P#dp{mors = slave},T);
-		{slave,false} ->
-			parse_opts(P#dp{mors = master,masternode = actordb_conf:node_name(),masternodedist = node()},T);
-		{copyfrom,Node} ->
-			parse_opts(P#dp{copyfrom = Node},T);
-		{copyreset,What} ->
-			case What of
-				false ->
-					parse_opts(P#dp{copyreset = false},T);
-				true ->
-					parse_opts(P#dp{copyreset = <<>>},T);
-				Mod ->
-					parse_opts(P#dp{copyreset = Mod},T)
-			end;
-		{queue,Q} ->
-			parse_opts(P#dp{callqueue = Q},T);
-		{wasync,W} ->
-			parse_opts(P#dp{wasync = W},T);
-		{rasync,R} ->
-			parse_opts(P#dp{rasync = R},T);
-		{flags,F} ->
-			parse_opts(P#dp{flags = P#dp.flags bor F},T);
-		create ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_CREATE},T);
-		actornum ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_ACTORNUM},T);
-		exists ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_EXISTS},T);
-		noverify ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOVERIFY},T);
-		test ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_TEST},T);
-		lock ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_STARTLOCK},T);
-		nohibernate ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOHIBERNATE},T);
-		wait_election ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_WAIT_ELECTION},T);
-		no_election_timeout ->
-			parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NO_ELECTION_TIMEOUT},T);
-		nostart ->
-			{stop,nostart};
-		_ ->
-			parse_opts(P,T)
+parse_opts(P,[{actor,Name}|T]) ->
+	parse_opts(P#dp{actorname = Name},T);
+parse_opts(P,[{type,Type}|T]) ->
+	parse_opts(P#dp{actortype = Type},T);
+parse_opts(P,[{mod,Mod}|T]) ->
+	parse_opts(P#dp{cbmod = Mod},T);
+parse_opts(P,[{state,S}|T]) ->
+	parse_opts(P#dp{cbstate = S},T);
+parse_opts(P,[{slave,true}|T]) ->
+	parse_opts(P#dp{mors = slave},T);
+parse_opts(P,[{slave,false}|T]) ->
+	parse_opts(P#dp{mors = master,masternode = actordb_conf:node_name(),masternodedist = node()},T);
+parse_opts(P,[{copyfrom,Node}|T]) ->
+	parse_opts(P#dp{copyfrom = Node},T);
+parse_opts(P,[{copyreset,What}|T]) ->
+	case What of
+		false ->
+			parse_opts(P#dp{copyreset = false},T);
+		true ->
+			parse_opts(P#dp{copyreset = <<>>},T);
+		Mod ->
+			parse_opts(P#dp{copyreset = Mod},T)
 	end;
+parse_opts(P,[{queue,Q}|T]) ->
+	parse_opts(P#dp{callqueue = Q},T);
+parse_opts(P,[{wasync,W}|T]) ->
+	parse_opts(P#dp{wasync = W},T);
+parse_opts(P,[{rasync,R}|T]) ->
+	parse_opts(P#dp{rasync = R},T);
+parse_opts(P,[{flags,F}|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor F},T);
+parse_opts(P,[create|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_CREATE},T);
+parse_opts(P,[actornum|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_ACTORNUM},T);
+parse_opts(P,[exists|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_EXISTS},T);
+parse_opts(P,[noverify|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOVERIFY},T);
+parse_opts(P,[test|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_TEST},T);
+parse_opts(P,[lock|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_STARTLOCK},T);
+parse_opts(P,[nohibernate|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOHIBERNATE},T);
+parse_opts(P,[wait_election|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_WAIT_ELECTION},T);
+parse_opts(P,[no_election_timeout|T]) ->
+	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NO_ELECTION_TIMEOUT},T);
+parse_opts(_,[nostart|_]) ->
+	{stop,nostart};
+parse_opts(P,[_|T]) ->
+	parse_opts(P,T);
 parse_opts(P,[]) ->
 	Name = {P#dp.actorname,P#dp.actortype},
 	case distreg:reg(self(),Name) of
 		ok ->
 			DbPath = lists:flatten(apply(P#dp.cbmod,cb_path,
-									[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
-									butil:encode_percent(butil:tolist(P#dp.actorname))++"."++
-									butil:encode_percent(butil:tolist(P#dp.actortype)),
-			P#dp{dbpath = DbPath,activity_now = actor_start(P), netchanges = actordb_local:net_changes()};
+				[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
+				butil:encode_percent(butil:tolist(P#dp.actorname))++"."++
+				butil:encode_percent(butil:tolist(P#dp.actortype)),
+			P#dp{dbpath = DbPath,activity = actor_start(P), netchanges = actordb_local:net_changes()};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.
@@ -1539,6 +1535,7 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 					Db = P#dp.db,
 					{Pid,_} = spawn_monitor(fun() ->
 							dbcopy(P#dp{dbcopy_to = Node, dbcopyref = Ref},Me,ActornameToCopyto) end),
+					erlang:send_after(1000,self(),copy_timer),
 					{reply,{ok,Ref},P#dp{db = Db,
 							dbcopy_to = [#cpto{node = Node, pid = Pid, ref = Ref, ismove = IsMove,
 							actorname = ActornameToCopyto}|P#dp.dbcopy_to]}};

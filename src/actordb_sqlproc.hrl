@@ -79,8 +79,7 @@ callfrom,
 evnum, evterm, newvers, moved, fsync}).
 
 -record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
-			activity, fixed_latency = 300,
-			activity_now,schemanum,schemavers,flags = 0, netchanges = 0,
+			activity, fixed_latency = 300,schemanum,schemavers,flags = 0, netchanges = 0,
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]
 	current_term = 0,voted_for, follower_indexes = [],
