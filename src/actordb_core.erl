@@ -274,7 +274,7 @@ fix_size(Max,Max1)->
 
 start() ->
 	% ?AINF("Starting actordb"),
-	application:start(actordb_core).
+	application:ensure_all_started(actordb_core).
 
 start(_Type, _Args) ->
 	prestart(),
