@@ -1041,11 +1041,15 @@ update_followers(_Evnum,L) ->
 
 handle_cast({diepls,_Reason},P) ->
 	?DBG("Received diepls ~p",[_Reason]),
-	Empty = queue:is_empty(P#dp.callqueue),
+	W = P#dp.wasync,
+	R = P#dp.rasync,
+	Inactive = queue:is_empty(P#dp.callqueue) andalso W#ai.buffer == [] andalso R#ai.buffer == [] andalso
+		P#dp.dbcopy_to == [] andalso P#dp.locked == [] andalso P#dp.copyfrom == undefined andalso
+		W#ai.wait == undefined andalso R#ai.wait == undefined andalso P#dp.transactioninfo == undefined,
 	CanDie = apply(P#dp.cbmod,cb_candie,[P#dp.mors,P#dp.actorname,P#dp.actortype,P#dp.cbstate]),
-	?DBG("verified ~p, empty ~p, candie ~p",[P#dp.verified,Empty,CanDie]),
+	?DBG("verified ~p, empty ~p, candie ~p, state=~p",[P#dp.verified,Inactive,CanDie,?R2P(P)]),
 	case ok of
-		_ when P#dp.verified, Empty, CanDie /= never ->
+		_ when P#dp.verified, Inactive, CanDie /= never ->
 			{stop,normal,P};
 		_ ->
 			{noreply,P}
