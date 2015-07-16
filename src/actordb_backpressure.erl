@@ -17,13 +17,20 @@ start_caller() ->
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
 	#caller{ets = E}.
+start_caller(<<>>, <<>>) ->
+	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
+	Authentication = actordb_sharedstate:read_global_auth(),
+	butil:ds_add(auth,Authentication,E),
+	butil:ds_add(curcount,0,E),
+	butil:ds_add(cursize,0,E),
+	#caller{ets = E, login = <<>>};
 start_caller(Username, Password) ->
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
 	Authentication = actordb_sharedstate:read_global_auth(),
 	butil:ds_add(auth,Authentication,E),
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
-	#caller{ets = E, login = butil:sha256(Username++";"++Password)}.
+	#caller{ets = E, login = butil:sha256(<<(Username)/binary,(<<";">>)/binary,(Password)/binary>>)}.
 stop_caller(P) ->
 	Tid = P#caller.ets,
 	Size = butil:ds_val(cursize,Tid),
@@ -174,8 +181,13 @@ init(_) ->
 			ok
 	end,
 	{ok,#dp{}}.
-
 has_authentication(P,ActorType,Action)->
+	Authentication = butil:ds_val(auth,P#caller.ets),
+	has_authentication(P,ActorType,Action,Authentication).
+
+has_authentication(_,_,_,[])->
+	true;
+has_authentication(P,ActorType,Action,Authentication)->
 	Authentication = butil:ds_val(auth,P#caller.ets),
 	Key = lists:keyfind(P#caller.login,3,Authentication),
 	case Key of
