@@ -861,6 +861,8 @@ read_call1(Sql,Recs,From,P) ->
 	% We could use seperate read/write connections. This also means there is a read and write
 	% sqlite page cache. After every write, read connection page cache must be cleared. How
 	% detrimental to performance that would be is something that needs to be tested.
+	% 
+	% Recompile driver with threadsafe=1 if using async reads.
 	%
 	% Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,read),
 	% A = P#dp.rasync,

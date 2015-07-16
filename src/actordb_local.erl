@@ -250,8 +250,8 @@ handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 				false ->
 					Prev = butil:ds_val(?PREV_ACTIVE,?GLOBAL_INFO),
 					Cur = butil:ds_val(?CUR_ACTIVE, ?GLOBAL_INFO),
-					butil:ds_rem(PID,Prev),
-					butil:ds_rem(PID,Cur)
+					(catch butil:ds_rem(PID,Prev)),
+					(catch butil:ds_rem(PID,Cur))
 			end,
 			{noreply,P}
 	end;
@@ -518,10 +518,10 @@ init(_) ->
 	% end,
 	case ok of
 		_ when Memlimit1 =< ?GB ->
-			Proclimit = 30,
+			Proclimit = 20,
 			Memlimit = 200*?MB;
 		_ when Memlimit1 =< ?GB*2 ->
-			Proclimit = 60,
+			Proclimit = 30,
 			Memlimit = ?GB;
 		_ when Memlimit1 =< ?GB*4 ->
 			Proclimit = 100,

@@ -5,7 +5,8 @@
 -module(actordb_multiupdate).
 -behaviour(gen_server).
 -define(LAGERDBG,true).
--export([start/1, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
+-export([start/1, stop/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, 
+code_change/3,print_info/0]).
 % -compile(export_all).
 % -export([cb_schema/3,cb_path/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2]).
 -export([multiread/1,exec/1,exec/2,get_schema/1,transaction_state/2]).
@@ -298,7 +299,6 @@ do_multiupdate(P,[#{type := Type1, actor := Actors, flags := _Flags, var := unde
 		curactor ->
 			case Actors of
 				$* ->
-					?AINF("Move over shards1 ~p~n",[actordb_shardtree:all()]),
 					move_over_shards(H#{type := actordb_util:typeatom(Type1)}, P, curactor, actordb_shardtree:all());
 				_ ->
 					case Actors of
@@ -313,7 +313,6 @@ do_multiupdate(P,[#{type := Type1, actor := Actors, flags := _Flags, var := unde
 		{StBin,Varlist} ->
 			case Actors of
 				$* ->
-					?AINF("Move over shards2 ~p~n",[actordb_shardtree:all()]),
 					move_over_shards(H#{statements := StBin, type := actordb_util:typeatom(Type1)}, P, Varlist, actordb_shardtree:all());
 				_ ->
 					case Actors of
@@ -352,6 +351,8 @@ do_multiupdate(_,[]) ->
 %
 % 			TYPE 1 - moving over all actors for type by traversing shard tree
 %
+move_over_shards(#{statements := [{list,{0,0}}]} = H, _, _, _) ->
+	H;
 move_over_shards(H, P, Varlist, {Shard,_UpperLimit,Nd,Left,Right}) ->
 	% A bit of an ugly hack with proc. dictionary. The problem is a shard might get visited
 	%  more then once without this failsafe. If a node has too few shards, it will split them in half
@@ -359,20 +360,19 @@ move_over_shards(H, P, Varlist, {Shard,_UpperLimit,Nd,Left,Right}) ->
 	case get({shard_visited,Shard}) of
 		undefined ->
 			put({shard_visited,Shard},true),
-			move_over_shard_actors(Nd, H, Shard, [], 0, 0, P, Varlist, undefined);
+			H1 = move_over_shard_actors(Nd, H, Shard, [], 0, 0, P, Varlist, undefined);
 		_ ->
-			ok
+			H1 = H
 	end,
 	case Left of
 		undefined when Right /= undefined ->
-			move_over_shards(H, P, Varlist, Right);
+			move_over_shards(H1, P, Varlist, Right);
 		undefined ->
-			ok;
+			H1;
 		_ when Right == undefined ->
-			move_over_shards(H, P, Varlist, Left);
+			move_over_shards(H1, P, Varlist, Left);
 		_ ->
-			move_over_shards(H, P, Varlist, Left),
-			move_over_shards(H ,P, Varlist, Right)
+			move_over_shards(move_over_shards(H1, P, Varlist, Left), P, Varlist, Right)
 	end.
 
 
@@ -380,7 +380,7 @@ move_over_shards(H, P, Varlist, {Shard,_UpperLimit,Nd,Left,Right}) ->
 move_over_shard_actors(Nd, H, Shard, [], 1000, CountAll, P, Varlist, NextShard) when NextShard /= undefined ->
 	move_over_shard_actors(Nd, H, Shard, [],1000, CountAll, P, Varlist, undefined);
 
-move_over_shard_actors(Nd,#{type := Type, statements := [count]} = _H, Shard, [], _CountNow, _CountAll, _P, _Varlist, _NextShard) ->
+move_over_shard_actors(Nd,#{type := Type, statements := [count]} = H, Shard, [], _CountNow, _CountAll, _P, _Varlist, _NextShard) ->
 	case get({<<"RESULT">>,cols}) of
 		undefined ->
 			put({<<"RESULT">>,cols},{<<"count">>}),
@@ -397,13 +397,14 @@ move_over_shard_actors(Nd,#{type := Type, statements := [count]} = _H, Shard, []
 			Count = actordb:rpc(Nd,Shard,{actordb_shard,count_actors,[Shard,Type]})
 	end,
 	put({<<"RESULT">>,0},{CurCount+Count}),
-	ok;
+	H;
 move_over_shard_actors(Nd,#{type := Type, flags := _Flags, statements := _StBin, iswrite := _IsWrite} = H,
 				Shard, [], CountNow, CountAll, P, Varlist, Next) ->
 	Iskv = actordb_schema:iskv(Type),
 	case ok of
 		_ when Iskv ->
-			do_actor(P,true,H#{actor := {Shard,1}},Varlist);
+			do_actor(P,true,H#{actor := {Shard,1}},Varlist),
+			H;
 		_ when CountNow == 0; CountNow == 1000 ->
 			case bkdcore:node_name() == Nd of
 				true ->
@@ -415,7 +416,7 @@ move_over_shard_actors(Nd,#{type := Type, flags := _Flags, statements := _StBin,
 			case List of
 				{ok,[]} ->
 					put({empty_shard,Shard},[]),
-					ok;
+					H;
 				{ok,L} ->
 					move_over_shard_actors(Nd, H, Shard, L, 0, CountAll, P, Varlist, Next);
 				{ok,[],NextShard,NextShardNode} ->
@@ -426,18 +427,18 @@ move_over_shard_actors(Nd,#{type := Type, flags := _Flags, statements := _StBin,
 		_ ->
 			case Next of
 				undefined ->
-					Shard;
+					H;
 				{NextShard,NextShardNode} ->
 					case get({shard_visited,NextShard}) of
 						undefined ->
 							put({shard_visited,NextShard},true),
 							move_over_shard_actors(NextShardNode, H, NextShard, [], 0, 0, P, Varlist, undefined);
 						_ ->
-							ok
+							H
 					end
 			end
 	end;
-move_over_shard_actors(Nd,#{statements := [list]} = H,
+move_over_shard_actors(Nd,#{statements := [{list,{Limit,Offset}}]} = H,
 			Shard, Actors, CountNow, CountAll, P, Varlist, Next) ->
 	case get({<<"RESULT">>,cols}) of
 		undefined ->
@@ -447,12 +448,19 @@ move_over_shard_actors(Nd,#{statements := [list]} = H,
 			ok
 	end,
 	CurNRows = get({<<"RESULT">>,nrows}),
-	Count = lists:foldl(fun({Actor},Cnt) ->
-				put({<<"RESULT">>,CurNRows+Cnt},{Actor}),
-				Cnt+1
-			end,0,Actors),
-	put({<<"RESULT">>,nrows},CurNRows+Count),
-	move_over_shard_actors(Nd,H,Shard,[],CountNow+Count,CountAll+Count,P,Varlist,Next);
+	% Count = lists:foldl(fun({Actor},Cnt) ->
+	% 			put({<<"RESULT">>,CurNRows+Cnt},{Actor}),
+	% 			Cnt+1
+	% 		end,0,Actors),
+	case list_actors_append(CurNRows,0,Actors,Limit,Offset) of
+		{Count,Limit1,Offset1} ->
+			put({<<"RESULT">>,nrows},CurNRows+Count),
+			move_over_shard_actors(Nd,H#{statements => [{list,{Limit1,Offset1}}]},
+				Shard,[],CountNow+Count,CountAll+Count,P,Varlist,Next);
+		{done,Count} ->
+			put({<<"RESULT">>,nrows},CurNRows+Count),
+			H#{statements => [{list,{0,0}}]}
+	end;	
 move_over_shard_actors(Nd,#{type := _Type, flags := _Flags, statements := _StBin, iswrite := _IsWrite} = H,
 		Shard, Actors, CountNow, CountAll, P, Varlist, Next) ->
 	Count = lists:foldl(fun({Actor},Cnt) ->
@@ -461,6 +469,15 @@ move_over_shard_actors(Nd,#{type := _Type, flags := _Flags, statements := _StBin
 			end,0,Actors),
 	move_over_shard_actors(Nd,H,Shard,[],CountNow+Count,CountAll+Count,P,Varlist,Next).
 
+list_actors_append(CurNRows,Count,[{Actor}|L],Limit,Offset) when Limit > 0, Offset == 0 ->
+	put({<<"RESULT">>,CurNRows+Count},{Actor}),
+	list_actors_append(CurNRows,Count+1,L,Limit-1,0);
+list_actors_append(CurNRows,C,[_|T],L,Offset) when Offset > 0 ->
+	list_actors_append(CurNRows,C+1,T,L,Offset-1);
+list_actors_append(_CurNRows,C,[],L,O) ->
+	{C,L,O};
+list_actors_append(_,C,_,_,_) ->
+	{done,C}.
 
 %
 % 			TYPE 2 - looping over a list with for
@@ -648,9 +665,9 @@ statements_to_binary(CurActor,[<<_/binary>> = B|T],Out,VarList) ->
 statements_to_binary(CurActor,[{{A1,C1,A2,C2},<<>>}|T],Out,VarList) ->
 	statements_to_binary(CurActor,T,Out,[{A1,C1,A2,C2}|VarList]);
 % Result var but no statement variables
-statements_to_binary(CurActor,[{ResultVar,<<_/binary>> = B}|T],Out,VarList) ->
+statements_to_binary(CurActor,[{ResultVar,<<_/binary>> = B}|T],Out,VarList) when is_binary(ResultVar) ->
 	statements_to_binary(CurActor,T,[B|Out],[ResultVar|VarList]);
-statements_to_binary(_,[X],_,_) when is_atom(X) ->
+statements_to_binary(_,[X],_,_) when is_atom(X); is_tuple(X) ->
 	{[X],[]};
 statements_to_binary(CurActor,[H|T],Out,Varlist) ->
 	case H of
@@ -660,41 +677,41 @@ statements_to_binary(CurActor,[H|T],Out,Varlist) ->
 			ok
 	end,
 	Bin = lists:foldl(fun(_,undefined) -> undefined;
-											 (_,curactor) -> curactor;
-										   (El,B) ->
-							case El of
-								curactor when CurActor == undefined ->
-									curactor;
-								curactor ->
-									<<B/binary,CurActor/binary>>;
-								uniqid ->
-									{ok,Idi} = actordb_idgen:getid(),
-									Id = butil:tobin(Idi),
-									<<B/binary,Id/binary>>;
-								{uniqid,Column} ->
-									case get({uniqid,Column}) of
-										undefined ->
-											{ok,Idi} = actordb_idgen:getid(),
-											Id = butil:tobin(Idi),
-											put({uniqid,Column},Id);
-										Id ->
-											ok
-									end,
-									<<B/binary,Id/binary>>;
-								{Var,Column} ->
-									case get_pd_column(Var,Column) of
-										undefined ->
-											<<B/binary,"{{",Var/binary,".",Column/binary,"}}">>;
-										Valx ->
-											<<B/binary,Valx/binary>>
-									end;
-								<<_/binary>> = El ->
-									<<B/binary,El/binary>>;
-								% single char
-								_  ->
-									<<B/binary,El>>
-							end
-					end,<<>>,Statements),
+		(_,curactor) -> curactor;
+		(El,B) ->
+			case El of
+				curactor when CurActor == undefined ->
+					curactor;
+				curactor ->
+					<<B/binary,CurActor/binary>>;
+				uniqid ->
+					{ok,Idi} = actordb_idgen:getid(),
+					Id = butil:tobin(Idi),
+					<<B/binary,Id/binary>>;
+				{uniqid,Column} ->
+					case get({uniqid,Column}) of
+						undefined ->
+							{ok,Idi} = actordb_idgen:getid(),
+							Id = butil:tobin(Idi),
+							put({uniqid,Column},Id);
+						Id ->
+							ok
+					end,
+					<<B/binary,Id/binary>>;
+				{Var,Column} ->
+					case get_pd_column(Var,Column) of
+						undefined ->
+							<<B/binary,"{{",Var/binary,".",Column/binary,"}}">>;
+						Valx ->
+							<<B/binary,Valx/binary>>
+					end;
+				<<_/binary>> = El ->
+					<<B/binary,El/binary>>;
+				% single char
+				_  ->
+					<<B/binary,El>>
+			end
+	end,<<>>,Statements),
 	case Bin of
 		undefined ->
 			undefined;

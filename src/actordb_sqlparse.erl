@@ -7,6 +7,7 @@
 -export([parse_statements/1,parse_statements/2,parse_statements/3,split_statements/1, check_flags/2]).
 -export([split_actor/1]).
 -include("actordb.hrl").
+-define(LIST_LIMIT,30000).
 -define(A(A),(A == $a orelse A == $A)).
 -define(B(B),(B == $b orelse B == $B)).
 -define(C(C),(C == $c orelse C == $C)).
@@ -81,7 +82,7 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 									{Type,[Actor],Flags} = split_actor(CurUse),
 									{_,_,Node} = actordb_shardmngr:find_global_shard(Name),
 									parse_statements(BP,T,L,PreparedRows,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
-								Pragma when Pragma == list; Pragma == count ->
+								Pragma when Pragma == count; element(1,Pragma) == list ->
 									case split_actor(CurUse) of
 										{Type,_Actors,_Flags} ->
 											ok;
@@ -376,12 +377,12 @@ parse_pragma(Bin) ->
 			exists;
 		<<"EXISTS",_/binary>> ->
 			exists;
-		<<"list",_/binary>> ->
-			list;
-		<<"List",_/binary>> ->
-			list;
-		<<"LIST",_/binary>> ->
-			list;
+		<<"list",Rem/binary>> ->
+			{list,parse_pragma_list(rem_spaces(Rem), ?LIST_LIMIT, 0)};
+		<<"List",Rem/binary>> ->
+			{list,parse_pragma_list(rem_spaces(Rem), ?LIST_LIMIT, 0)};
+		<<"LIST",Rem/binary>> ->
+			{list,parse_pragma_list(rem_spaces(Rem), ?LIST_LIMIT, 0)};
 		<<"count",_/binary>> ->
 			count;
 		<<"COUNT",_/binary>> ->
@@ -391,37 +392,43 @@ parse_pragma(Bin) ->
 		<<"copy",R/binary>> ->
 			<<"=",Aname/binary>> = rem_spaces(R),
 			{copy,get_name(Aname)};
-		<<D,E,L,E,T,E,_/binary>> when (D == $d orelse D == $D) andalso
-										(E == $e orelse E == $E) andalso
-										(L == $l orelse L == $L) andalso
-										(T == $t orelse T == $T) ->
+		<<D,E,L,E,T,E,_/binary>> when ?D(D) andalso ?E(E) andalso ?L(L) andalso ?T(T) ->
 			delete;
-		<<E,X,I,S,T,S,_/binary>> when (E == $e orelse E == $E) andalso
-									  (X == $x orelse X == $X) andalso
-									  (I == $i orelse I == $I) andalso
-									  (S == $s orelse S == $S) andalso
-									  (T == $t orelse T == $T) ->
+		<<E,X,I,S,T,S,_/binary>> when ?E(E) andalso ?X(X) andalso ?I(I) andalso ?S(S) andalso ?T(T) ->
 			exists;
-		<<L,I,S,T,_/binary>> when (L == $l orelse L == $L) andalso
-								  (I == $i orelse I == $I) andalso
-								  (S == $s orelse S == $S) andalso
-								  (T == $t orelse T == $T) ->
-			list;
-		<<C,O,U,N,T,_/binary>> when (C == $c orelse C == $C) andalso
-								  (O == $o orelse O == $O) andalso
-								  (U == $u orelse U == $U) andalso
-								  (N == $n orelse N == $N) andalso
-								  (T == $t orelse T == $T) ->
+		<<L,I,S,T,Rem/binary>> when ?L(L) andalso ?I(I) andalso ?S(S) andalso ?T(T) ->
+			{list,parse_pragma_list(rem_spaces(Rem), ?LIST_LIMIT, 0)};
+		<<C,O,U,N,T,_/binary>> when ?C(C) andalso ?O(O) andalso ?U(U) andalso ?N(N) andalso ?T(T) ->
 			count;
-		<<C,O,P,Y,R/binary>> when (C == $c orelse C == $C) andalso
-								  (O == $o orelse O == $O) andalso
-								  (P == $p orelse P == $P) andalso
-								  (Y == $y orelse Y == $Y) ->
+		<<C,O,P,Y,R/binary>> when ?C(C) andalso ?O(O) andalso ?P(P) andalso ?Y(Y) ->
 			<<"=",Aname/binary>> = rem_spaces(R),
 			{copy,get_name(Aname)};
 		_ ->
 			undefined
 	end.
+
+parse_pragma_list(<<";",_/binary>>,Limit,Offset) ->
+	{Limit,Offset};
+parse_pragma_list(<<L,I,M,I,T," ",Rem/binary>>,Limit,Offset) when ?L(L) andalso ?I(I) andalso ?M(M) 
+		andalso ?T(T) ->
+	case count_name(rem_spaces(Rem),0) of
+		Len when Len > 0 ->
+			<<Num:Len/binary,Next/binary>> = rem_spaces(Rem),
+			parse_pragma_list(rem_spaces(Next),butil:toint(Num),Offset);
+		_ ->
+			{Limit,Offset}
+	end;
+parse_pragma_list(<<O,F1,F2,S,E,T," ",Rem/binary>>,Limit,Offset) when ?O(O) andalso ?F(F1) andalso 
+		?F(F2) andalso ?S(S) andalso ?E(E) andalso ?T(T) ->
+	case count_name(rem_spaces(Rem),0) of
+		Len when Len > 0 ->
+			<<Num:Len/binary,Next/binary>> = rem_spaces(Rem),
+			parse_pragma_list(rem_spaces(Next),Limit,butil:toint(Num));
+		_ ->
+			{Limit,Offset}
+	end;
+parse_pragma_list(_,L,O) ->
+	{L,O}.
 
 
 split_statements(<<>>) ->
@@ -651,11 +658,7 @@ is_actor(Bin) ->
 			Rem;
 		<<"Actor ",Rem/binary>> ->
 			Rem;
-		<<A,C,T,O,R," ",Rem/binary>>  when (A == $a orelse A == $A) andalso
-										(C == $c orelse C == $C) andalso
-										(T == $t orelse T == $T) andalso
-										(O == $o orelse O == $O) andalso
-										(R == $t orelse R == $T) ->
+		<<A,C,T,O,R," ",Rem/binary>>  when ?A(A) andalso ?C(C) andalso ?T(T) andalso ?O(O) andalso ?R(R) ->
 			Rem;
 		_ ->
 			undefined
