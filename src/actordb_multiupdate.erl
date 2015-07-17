@@ -565,6 +565,7 @@ do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := Is
 			?AINF("Res store vars =~p",[{IsMulti,Actor,Varlist,[L]}]),
 			store_vars(IsMulti,Actor,Varlist,[L]);
 		{ok,[_|_] = L} ->
+			sum_changes(L),
 			store_vars(IsMulti,Actor,Varlist,L);
 		{ok,{changes,_,NChanges}} ->
 			put(nchanges,get(nchanges)+NChanges);
@@ -578,6 +579,14 @@ do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := Is
 			exit(Res)
 	end,
 	?ADBG("do_actor res ~p",[Res]),
+	ok.
+
+sum_changes([{changes,_,N}|T]) ->
+	put(nchanges,get(nchanges)+N),
+	sum_changes(T);
+sum_changes([_|T]) ->
+	sum_changes(T);
+sum_changes([]) ->
 	ok.
 
 store_vars(IsMulti,{Shard,_},L1,L2) ->
