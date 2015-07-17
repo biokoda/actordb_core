@@ -888,7 +888,7 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 			{noreply,P#dp{wasync = A1}};
 		% If new schema version write, add sql to first place of list of writes.
 		_ when Msg#write.newvers /= undefined, MFA == undefined ->
-			A1 = A#ai{buffer = A#ai.buffer++[Sql], buffer_recs = A#ai.buffer_recs++[[]],
+			A1 = A#ai{buffer = A#ai.buffer++[Sql], buffer_recs = A#ai.buffer_recs++[Msg#write.records],
 				buffer_cf = A#ai.buffer_cf++[From], buffer_nv = Msg#write.newvers,
 				buffer_fsync = A#ai.buffer_fsync or ForceSync},
 			{noreply,P#dp{wasync = A1}};
@@ -927,6 +927,13 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 			end
 	end.
 
+% print_sqls(Pos,Sql,Recs) when tuple_size(Sql) >= Pos ->
+% 	?ADBG("SQL=~p,     Recs=~p",[element(Pos,Sql),element(Pos,Recs)]),
+% 	print_sqls(Pos+1,Sql,Recs);
+% print_sqls(_,_,_) ->
+% 	ok.
+
+
 % Not a multiactor transaction write
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
@@ -935,7 +942,8 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	Records = list_to_tuple([[]|lists:reverse([ADBW|W#write.records])]),
 	VarHeader = actordb_sqlprocutil:create_var_header(P),
 	CF = [batch,undefined|lists:reverse([undefined|From])],
-	?DBG("SQL=~p, Recs=~p, cf=~p",[ComplSql, Records, CF]),
+	?DBG("schema = ~p, SQL=~p, Recs=~p, cf=~p",[P#dp.schemavers,ComplSql, Records, CF]),
+	% print_sqls(1,ComplSql,Records),
 	Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
 	A = P#dp.wasync,
 	NWB = A#ai{wait = Res, info = W, newvers = NewVers,
@@ -1186,9 +1194,16 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos,lists:reverse(W#write.sql)),
 			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos,lists:reverse(W#write.records)),
 
-			RemainCF = lists:reverse(Before++After),
-			RemainSql = lists:reverse(BeforeSql++AfterSql),
-			RemainRecs = lists:reverse(BeforeRecs++AfterRecs),
+			case BD#ai.newvers of
+				undefined ->
+					RemainCF = lists:reverse(Before++After),
+					RemainSql = lists:reverse(BeforeSql++AfterSql),
+					RemainRecs = lists:reverse(BeforeRecs++AfterRecs);
+				_ ->
+					RemainCF = lists:reverse(tl(Before++After)),
+					RemainSql = lists:reverse(tl(BeforeSql++AfterSql)),
+					RemainRecs = lists:reverse(tl(BeforeRecs++AfterRecs))
+			end,
 			% ?DBG("Remain cf=~p",[RemainCF]),
 			% ?DBG("Remain sql=~p",[RemainSql]),
 			% ?DBG("Remain recs=~p",[RemainRecs]),
@@ -1417,9 +1432,8 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 					case actordb_sqlite:exec(P#dp.db,
 							<<"SELECT * FROM __adb;",
 							  "SELECT * FROM __transactions;">>,read) of
-						{ok,[[{columns,_},{rows,Transaction}],
-						     [{columns,_},{rows,Rows}]]} ->
-						     	ok;
+						{ok,[[{columns,_},{rows,Transaction}],[{columns,_},{rows,Rows}]]} ->
+							ok;
 						Err ->
 							?ERR("Unable read from db for, error=~p after election.",[Err]),
 							Transaction = Rows = [],
@@ -1445,7 +1459,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{NP,Sql,AdbRecords,Callfrom} =
 				actordb_sqlprocutil:post_election_sql(NP1,Transaction,CopyFrom,[],P#dp.callfrom),
 			% If nothing to store and all nodes synced, send an empty AE.
-			case is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
+			case is_number(P#dp.schemavers) andalso is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
 				true when AllSynced, NewFollowers == [] ->
 					?DBG("Nodes synced, no followers"),
 					W = NP#dp.wasync,
@@ -1498,11 +1512,11 @@ down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
 				done ->
 					case handle_call({commit,true,P#dp.transactionid},
 							undefined,P#dp{transactioncheckref = undefined}) of
-						{stop,normal,NP,_} ->
+						{stop,normal,NP} ->
 							{stop,normal,NP};
 						{reply,_,NP} ->
 							{noreply,NP};
-						{noreply,_,_} = R ->
+						{noreply,_} = R ->
 							R
 					end
 			end;

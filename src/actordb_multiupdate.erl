@@ -555,7 +555,7 @@ do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := Is
 		Res1 ->
 			ok
 	end,
-	% ?AINF("Res=~p",[Res1]),
+	?AINF("Res=~p",[Res1]),
 	case Res1 of
 		{sql_error,Str} ->
 			exit({sql_error,Str});
@@ -667,7 +667,8 @@ statements_to_binary(CurActor,[{{A1,C1,A2,C2},<<>>}|T],Out,VarList) ->
 % Result var but no statement variables
 statements_to_binary(CurActor,[{ResultVar,<<_/binary>> = B}|T],Out,VarList) when is_binary(ResultVar) ->
 	statements_to_binary(CurActor,T,[B|Out],[ResultVar|VarList]);
-statements_to_binary(_,[X],_,_) when is_atom(X); is_tuple(X) ->
+statements_to_binary(_,[X],_,_) when is_atom(X); is_atom(element(1,X)) ->
+	?AINF("IS TUPLE ~p",[X]),
 	{[X],[]};
 statements_to_binary(CurActor,[H|T],Out,Varlist) ->
 	case H of
@@ -708,7 +709,7 @@ statements_to_binary(CurActor,[H|T],Out,Varlist) ->
 				<<_/binary>> = El ->
 					<<B/binary,El/binary>>;
 				% single char
-				_  ->
+				_ ->
 					<<B/binary,El>>
 			end
 	end,<<>>,Statements),

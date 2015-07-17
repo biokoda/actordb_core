@@ -104,7 +104,7 @@ reply_maybe(P,N,[]) ->
 									AdbRecs = []
 							end,
 							NewSql = [Sql1,<<"$DELETE FROM __transactions WHERE tid=">>,(butil:tobin(Tid)),
-												<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
+								<<" AND updater=">>,(butil:tobin(Updaterid)),";"],
 							% Execute transaction sql and at the same time delete transaction sql from table.
 							% No release savepoint yet. That comes in transaction confirm.
 							ComplSql =
@@ -550,13 +550,16 @@ exec_reads(#dp{verified = true, rasync = R, wasync = #ai{nreplies = NR}} = P) wh
 exec_reads(P) ->
 	P.
 
-schema_change(#dp{schemavers = undefined} = P) ->
-	% first write sets schema and vers variable
-	P;
+% schema_change(#dp{schemavers = undefined} = P) ->
+% 	% first write sets schema and vers variable
+% 	P;
 schema_change(P) ->
 	case has_schema_updated(P,[]) of
 		ok ->
 			P;
+		{NewVers,Sql,Recs} ->
+			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers, records = Recs}, undefined,P),
+			NP;
 		{NewVers,Sql} ->
 			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers}, undefined,P),
 			NP
@@ -844,7 +847,7 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	% 	[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
 
 	% ,[?EVNUMI,<<"0">>],[?EVTERMI,<<"0">>]
-	DefVals = [[?SCHEMA_VERSI,butil:tobin(SchemaVers)],[?ATYPEI,Type]|Moved],
+	DefVals = [[[?SCHEMA_VERSI,butil:tobin(SchemaVers)],[?ATYPEI,Type]|Moved]],
 	{[<<"$CREATE TABLE IF NOT EXISTS __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 		 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
 		 "$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);#s02;">>],DefVals}.
@@ -899,7 +902,7 @@ election_timer(T) ->
 			election_timer(undefined)
 	end.
 
-actor_start(P) ->
+actor_start(_P) ->
 	actordb_local:actor_started().
 
 
@@ -950,7 +953,7 @@ start_verify(P,JustStarted) ->
 		_ when is_pid(P#dp.election); is_reference(P#dp.election) ->
 			P;
 		_ ->
-			?DBG("Trying to get elected"),
+			?DBG("Trying to get elected ~p",[P#dp.schemavers]),
 			CurrentTerm = P#dp.current_term+1,
 			Me = actordb_conf:node_name(),
 			E = #election{actor = P#dp.actorname, type = P#dp.actortype, candidate = Me,
@@ -961,8 +964,8 @@ start_verify(P,JustStarted) ->
 				Result when is_pid(Result); Result == Me ->
 					store_term(P,actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm),
 					NP = set_followers(P#dp.schemavers /= undefined,
-							reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me,
-									mors = master, verified = false})),
+						reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me,
+							mors = master, verified = false})),
 					case ok of
 						_ when is_pid(Result) ->
 							Verifypid = Result,
@@ -1103,37 +1106,39 @@ post_election_sql(P,[],undefined,SqlIn,Callfrom1) ->
 	% 		CallWrite = <<>>,
 	% 		CQ = P#dp.callqueue
 	% end,
-	?DBG("Adding write to post election sql schemavers=~p",[P#dp.schemavers]),
-	case P#dp.schemavers of
-		undefined ->
-			{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
-			NP = P#dp{schemavers = SchemaVers},
-			case P#dp.follower_indexes of
-				[] ->
-					Flags = P#dp.flags;
-				_ ->
-					Flags = P#dp.flags bor ?FLAG_SEND_DB
-			end,
-			ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
-			{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
-			?DBG("Adding base schema ~p",[BS]),
-			AdbRecords = Records1 ++ [[?ANUMI,butil:tobin(ActorNum)]],
-			Sql = [SqlIn,BS,Schema];
-		_ ->
-			AdbRecords = [],
-			Flags = P#dp.flags,
-			case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
-				{_,[]} ->
-					NP = P,
-					Sql = <<>>;
-				{SchemaVers,Schema} ->
-					NP = P#dp{schemavers = SchemaVers},
-					Sql = [SqlIn,Schema,
-							<<"$UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
-								<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
-			end
-	end,
-	{NP#dp{flags = Flags},Sql,[AdbRecords],Callfrom1};
+
+	% ?DBG("Adding write to post election sql schemavers=~p",[P#dp.schemavers]),
+	% case P#dp.schemavers of
+	% 	undefined ->
+	% 		{SchemaVers,Schema} = apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,0]),
+	% 		NP = P#dp{schemavers = SchemaVers},
+	% 		case P#dp.follower_indexes of
+	% 			[] ->
+	% 				Flags = P#dp.flags;
+	% 			_ ->
+	% 				Flags = P#dp.flags bor ?FLAG_SEND_DB
+	% 		end,
+	% 		ActorNum = actordb_util:hash(term_to_binary({P#dp.actorname,P#dp.actortype,os:timestamp(),make_ref()})),
+	% 		{BS,Records1} = base_schema(SchemaVers,P#dp.actortype),
+	% 		?DBG("Adding base schema ~p",[BS]),
+	% 		AdbRecords = Records1 ++ [[?ANUMI,butil:tobin(ActorNum)]],
+	% 		Sql = [SqlIn,BS,Schema];
+	% 	_ ->
+	% 		AdbRecords = [],
+	% 		Flags = P#dp.flags,
+	% 		case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
+	% 			{_,[]} ->
+	% 				NP = P,
+	% 				Sql = <<>>;
+	% 			{SchemaVers,Schema} ->
+	% 				NP = P#dp{schemavers = SchemaVers},
+	% 				Sql = [SqlIn,Schema,
+	% 						<<"$UPDATE __adb SET val='">>,(butil:tobin(SchemaVers)),
+	% 							<<"' WHERE id=",?SCHEMA_VERS/binary,";">>]
+	% 		end
+	% end,
+	% {NP#dp{flags = Flags},Sql,[AdbRecords],Callfrom1};
+	{P,SqlIn,[],Callfrom1};
 post_election_sql(P,[{1,Tid,Updid,Node,SchemaVers,MSql1}],undefined,SqlIn,Callfrom) ->
 	case base64:decode(MSql1) of
 		<<"delete">> ->
@@ -1320,7 +1325,7 @@ delete_actor(P) ->
 			ok;
 		_ ->
 			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
-							[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,deleted}}]})
+				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,deleted}}]})
 	% 		{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,stop,
 	% 						[{P#dp.actorname,P#dp.actortype}]})
 	end,
@@ -1367,18 +1372,31 @@ has_schema_updated(P,Sql) ->
 		Schema ->
 			ok
 	end,
+
 	case P#dp.schemanum == Schema orelse P#dp.transactionid /= undefined orelse Sql == delete of
-		true ->
+		true when P#dp.schemavers /= undefined ->
 			ok;
-		false ->
-			case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,P#dp.schemavers]) of
+		_ ->
+			case P#dp.schemavers of
+				undefined ->
+					Vers = 0;
+				Vers ->
+					ok
+			end,
+			case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
 				{_,[]} ->
 					ok;
 				{NewVers,SchemaUpdate} ->
-					?DBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
-					{NewVers,iolist_to_binary([SchemaUpdate,
-						<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,
-						"' WHERE id=",?SCHEMA_VERS/binary,";">>])}
+					case Vers of
+						0 ->
+							{BS,Records1} = base_schema(NewVers,P#dp.actortype),
+							{NewVers,[BS,SchemaUpdate],Records1};
+						_ ->
+							?DBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
+							{NewVers,iolist_to_binary([SchemaUpdate,
+							<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,
+							"' WHERE id=",?SCHEMA_VERS/binary,";">>])}
+					end
 			end
 	end.
 
