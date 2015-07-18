@@ -430,6 +430,8 @@ configfiles() ->
 							{onload,{actordb,schema_changed,[]}}]}
 	].
 
+has_authentication(undefined,_,_) ->
+	ok;
 has_authentication(P,ActorType,Action)->
 	ReadWriteAction = case Action of
 		true -> write;
