@@ -11,12 +11,12 @@
 -export([start/0,stop/0,stop_complete/0,is_ready/0]).
 % start/stop internal
 -export([schema_changed/0]).
-
+-export ([exec_mngmnt/1]).
 % Internal. Generally not to be called from outside actordb
--export([direct_call/1,actor_id_type/1,configfiles/0,exec1/1,
+-export([direct_call/1,actor_id_type/1,configfiles/0,
 		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
 -include("actordb.hrl").
--export ([get_multiblock_map/1]).
+
 %Maps are used for carrying query statements information:
 % type => type of an actor selected (check schema)
 % actor => select an actor with ID
@@ -186,7 +186,7 @@ exec_bp1(P,Size,Sql,BindingValues) ->
 	actordb_backpressure:inc_callcount(P),
 	actordb_backpressure:inc_callsize(Size),
 	actordb_backpressure:inc_callsize(P,Size),
-	Res = exec1(Sql,BindingValues),
+	Res = exec1(P,Sql,BindingValues),
 	GCount = actordb_backpressure:dec_callcount(),
 	actordb_backpressure:dec_callcount(P),
 	GSize = actordb_backpressure:dec_callsize(Size),
@@ -216,40 +216,44 @@ stop_bp(P) ->
 exec([_|_] = Sql) ->
 	exec(butil:tobin(Sql),[]);
 exec(Sql) ->
-	exec1(actordb_sqlparse:parse_statements(Sql),[]).
+	exec1(undefined,actordb_sqlparse:parse_statements(Sql),[]).
 
 exec([_|_] = Sql, BindingValues) ->
 	exec(butil:tobin(Sql), BindingValues);
 exec(Sql, BindingValues) ->
-	exec1(actordb_sqlparse:parse_statements(Sql),BindingValues).
+	exec1(undefined,actordb_sqlparse:parse_statements(Sql),BindingValues).
 
-exec1(St) ->
-	exec1(St,[]).
-exec1(St,BindingValues)->
+exec1(P,St,BindingValues)->
 	case {St,BindingValues} of
 		{{[{{Type,[Actor],Flags},IsWrite,Statements}],_}, []} when is_binary(Type) ->
+			has_authentication(P,Type,IsWrite),
 			Call = #{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite, statements => Statements,
 			bindingvals => [], dorpc => true},
 			direct_call(Call);
 		{{[{{Type,[Actor],Flags},IsWrite,Statements}],_}, _} when is_binary(Type) ->
+			has_authentication(P,Type,IsWrite),
 			Call = #{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite,
 			statements => Statements, bindingvals => BindingValues, dorpc => true},
 			direct_call(Call);
 		% Single block, writes to more than one actor
 		{{[{{Type,[_,_|_] = Actors,Flags},true,Statements}],_}, []} ->
+			has_authentication(P,Type,true),
 			Call = [#{type => Type, actor => Actors, flags => Flags, iswrite => true,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined}],
 			actordb_multiupdate:exec(Call);
 		{{[{{Type,[_,_|_] = Actors,Flags},true,Statements}],_}, _} ->
+			has_authentication(P,Type,true),
 			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => true,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:exec(Call);
 		% Single block, lookup across multiple actors
 		{{[{{Type, [_,_|_] = Actors, Flags},false, Statements}] = _Multiread,_}, []} ->
+			has_authentication(P,Type,false),
 			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
 		{{[{{Type, [_,_|_] = Actors, Flags}, false, Statements}],_}, _} ->
+			has_authentication(P,Type,false),
 			Call = #{type => Type, actor => Actors, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
@@ -258,36 +262,40 @@ exec1(St,BindingValues)->
 		%<<"actor type1(*); {{RESULT}} SELECT * FROM tab;">>
 		%if it does not contains {{result}} it wil return just ok
 		{{[{{ Type, $*, Flags}, false, Statements}],_}, []} ->
+			has_authentication(P,Type,false),
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
 		{{[{{Type, $*, Flags}, false, Statements}],_}, _} ->
+			has_authentication(P,Type,false),
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
 		% Single block, write across all actors of certain type
 		{{[{{Type, $*, Flags}, true, Statements}],_}, []} ->
+			has_authentication(P,Type,true),
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => true,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:exec([Call]);
 		{{[{{Type, $*, Flags}, true, Statements}],_}, _} ->
+			has_authentication(P,Type,true),
 			Call = #{type => Type, actor => $*, flags => Flags, iswrite => true,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:exec([Call]);
 		%actordb_sqlparse:parse_statements(<<"actor user(denis); SELECT * FROM todos; actor user(ino); SELECT * FROM todos;">>).
 		{{[_,_|_] = Multiblock,false}, []} ->
-			Call = get_multiblock_map(Multiblock),
+			Call = get_multiblock_map(P,Multiblock),
 			actordb_multiupdate:multiread(Call);
 		{{[_,_|_] = Multiblock,false}, _} ->
-			Call = get_multiblock_map(lists:zip(Multiblock,BindingValues)),
+			Call = get_multiblock_map(P,lists:zip(Multiblock,BindingValues)),
 			actordb_multiupdate:multiread(Call);
 		% Multiple blocks, that change db
 		{{[_,_|_] = Multiblock,true}, []} ->
-			Call = get_multiblock_map(Multiblock),
+			Call = get_multiblock_map(P,Multiblock),
 			actordb_multiupdate:exec(Call);
 			% Multiple blocks, that change db
 		{{[_,_|_] = Multiblock,true}, _} ->
-			Call = get_multiblock_map(lists:zip(Multiblock,BindingValues)),
+			Call = get_multiblock_map(P,lists:zip(Multiblock,BindingValues)),
 			actordb_multiupdate:exec(Call);
 		% Multiple blocks but only reads
   	{undefined, _} ->
@@ -298,13 +306,18 @@ exec1(St,BindingValues)->
 			St
  	end.
 
-get_multiblock_map(Multiblock) ->
+exec_mngmnt(Sql)->
+	actordb_sharedstate:mngmnt_execute(actordb_sqlparse:parse_mngmt(Sql)).
+
+get_multiblock_map(P,Multiblock) ->
 	[begin
 			case Block of
 				{{Type, Actor, Flags}, IsWrite, Statements} ->
+					has_authentication(P,Type,IsWrite),
 					#{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite,
 					statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined};
 				{{Type, Var, Column, Blockvar, Flags}, IsWrite, Statements} ->
+					has_authentication(P,Type,IsWrite),
 					#{type => Type, actor => undefined, flags => Flags, iswrite => IsWrite,
 					statements => Statements, bindingvals => [], var => Var, column => Column, blockvar => Blockvar}
 			end
@@ -416,3 +429,13 @@ configfiles() ->
 							{preload,{actordb_util,parse_cfg_schema,[]}},
 							{onload,{actordb,schema_changed,[]}}]}
 	].
+
+has_authentication(P,ActorType,Action)->
+	ReadWriteAction = case Action of
+		true -> write;
+		false -> read
+	end,
+	case actordb_backpressure:has_authentication(P,ActorType,ReadWriteAction) of
+		true -> ok;
+		_ -> throw({error,actor_type_authentication})
+	end.

@@ -12,6 +12,7 @@
 % 							API
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 -record(st,{name,type,time_since_ping = {0,0,0},
 			master_group = [], waiting = false,
 			current_write = [], evnum = 0, am_i_master = false, timer,
@@ -46,6 +47,71 @@ start(Name,Type1,State,Opt) ->
 start_wait(Name,Type) ->
 	start(Name,Type,#st{name = Name,type = Type, waiting = true},[{slave,false},create,
 			no_election_timeout,lock,{lockinfo,wait}]).
+
+read_global_auth() ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			case ets:match_object(?GLOBALETS,{auth,'$1'}) of
+				[{auth,Auth}] -> Auth;
+				_ -> []
+			end
+	end.
+
+read_global_auth(UserIndex) ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			case ets:match_object(?GLOBALETS,{auth,'$1'}) of
+				[{auth,Auth}] ->
+					lists:filtermap(fun(AuthUser) ->
+						case AuthUser of
+							{_,UserIndex,_,_} -> {true, AuthUser};
+							_ -> false
+						end
+					end, Auth);
+				_ -> []
+			end
+	end.
+
+read_global_users() ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			case ets:match_object(?GLOBALETS,{users,'$1'}) of
+				[{users,OtherUsers}] -> OtherUsers;
+				_ -> []
+			end
+	end.
+
+read_global_users(Username,Host) ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			OtherUsers = read_global_users(),
+			lists:filtermap(fun(User) ->
+				case User of
+					{_,Username,Host,_} -> {true, User};
+					_ -> false
+				end
+			end, OtherUsers)
+	end.
+
+read_global_users_index() ->
+	case ets:info(?GLOBALETS,size) of
+		undefined ->
+			nostate;
+		_ ->
+			case ets:match_object(?GLOBALETS,{users,'$1'}) of
+				[{users,OtherUsers}] ->
+					[Index||{Index,_,_,_} <- OtherUsers];
+				_ -> []
+			end
+	end.
 
 read_global(Key) ->
 	case ets:info(?GLOBALETS,size) of
@@ -743,3 +809,260 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	?ADBG("Init Setting global state ~p",[State]),
 	set_global_state(actordb_conf:node_name(),State),
 	{ok,S#st{evnum = Evnum, waiting = false}}.
+
+mngmnt_execute(Sql)->
+	ActorTypes = actordb:types(),
+	case ActorTypes of
+		schema_not_loaded ->
+			schema_not_loaded;
+		[_|_] ->
+				mngmnt_execute0(Sql)
+		end.
+
+mngmnt_execute0({fail,{expected,_,_}})->
+	check_sql;
+mngmnt_execute0(#management{action = create, data = #account{access =
+	[#value{name = <<"password">>, value = Password},
+	#value{name = <<"username">>, value = Username},
+	#value{name = <<"host">>, value = Host}]}})->
+		Index = increment_index(read_global_users_index()),
+		case read_global_users(Username,Host) of
+			[_|_] ->
+				user_exists;
+			_ ->
+				write_user(Index,Username,Host,Password)
+		end;
+
+%should grant append?
+mngmnt_execute0(#management{action = grant, data = #permission{
+													on = #table{name = ActorType,alias = ActorType},
+													account = [#value{name = <<"username">>,value = Username},
+																		 #value{name = <<"host">>,value = Host}],
+													conditions = Conditions}})->
+		case {lists:keyfind(value,1,Conditions), Conditions -- [read,write], lists:member(butil:toatom(ActorType),actordb:types())} of
+			{false,[],true} ->
+				case read_global_users(Username,Host) of
+					[{UserIndex,_,_,Sha}] ->
+						merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions);
+					_ ->
+						user_not_found
+				end;
+			{_,_,false} ->
+				check_actor_type;
+			_ ->
+				not_supported
+		end;
+mngmnt_execute0(#management{action = grant, data = _})->
+	not_supported;
+
+mngmnt_execute0(#management{action = drop, data = #account{access =
+																				[#value{name = <<"username">>,value = Username},
+	                                      #value{name = <<"host">>,value = Host}]}}) ->
+	User = actordb_sharedstate:read_global_users(Username, Host),
+	AllUsers = actordb_sharedstate:read_global_users(),
+	case User of
+		[]-> user_not_found;
+		[{UserIndex,_,_,_}] ->
+				RemUser = AllUsers -- User,
+				Authentication = read_global_auth(),
+				UserAuthentication = read_global_auth(UserIndex),
+				write_global(auth,Authentication -- UserAuthentication),
+				write_global(users,RemUser)
+	end;
+mngmnt_execute0(#management{action = drop, data = _}) ->
+	not_supported;
+mngmnt_execute0(#management{action = rename, data = [#account{access = [#value{name = <<"username">>,
+                                              value = Username},
+                                       #value{name = <<"host">>,value = Host}]},
+                    #value{name = <<"username">>,value = ToUsername},
+                    #value{name = <<"host">>,value = ToHost}]}) ->
+	User = actordb_sharedstate:read_global_users(Username, Host),
+	AllUsers = actordb_sharedstate:read_global_users(),
+	FutureUser = actordb_sharedstate:read_global_users(ToUsername, ToHost),
+	case FutureUser of
+		[]->
+			case User of
+				[]-> user_not_found;
+				[{Index,Username,Host,Sha}] ->
+					RemUser = AllUsers -- User,
+					write_global(users,[{Index,ToUsername,ToHost,Sha}|RemUser])
+			end;
+		_ -> user_exists
+	end;
+mngmnt_execute0(#management{action = rename, data = _ }) ->
+	not_supported;
+mngmnt_execute0(#management{action = revoke,data = #permission{on = #table{name = ActorType,alias = ActorType},
+                               account = [#value{name = <<"username">>, value = Username},
+                                          #value{name = <<"host">>,value = Host}],
+                               conditions = Conditions}}) ->
+	Authentication = read_global_auth(),
+	case read_global_users(Username, Host) of
+		[] -> user_not_found;
+		[{UserIndex,Username,Host,Sha}] ->
+			[{ActorType,UserIndex,Sha,OldConditions}] = lists:filter(fun(X)-> case X of
+				{ActorType,UserIndex,Sha,_} -> true;
+				_ -> false end
+				end, Authentication),
+			NewConditions = OldConditions -- Conditions,
+			write_global(auth,(Authentication -- [{ActorType,UserIndex,Sha,OldConditions}])
+			++ [{ActorType,UserIndex,Sha,NewConditions}])
+	end;
+mngmnt_execute0(#management{action = revoke,data = _})->
+	not_supported;
+mngmnt_execute0(#management{action = setpasswd,data = #account{access = [
+																			#value{name = <<"password">>,value = Password},
+                                      #value{name = <<"username">>,value = Username},
+                                      #value{name = <<"host">>,value = Host}]}})->
+	Users = read_global_users(),
+	case read_global_users(Username, Host) of
+		[] -> user_not_found;
+		[{UserIndex,Username,Host,_Sha}] = User ->
+			RemUser = Users -- User,
+			write_global(users,[{UserIndex,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}|RemUser])
+	end;
+
+mngmnt_execute0(#management{action = setpasswd, data = _})->
+	not_supported;
+mngmnt_execute0(#select{params = Params, tables = [#table{name = <<"users">>,alias = <<"users">>}],
+        conditions = Conditions, group = undefined,order = Order, limit = Limit,offset = Offset})->
+	Users = read_global_users(),%id,username,host,sha
+	NumberOfUsers = length(Users),
+	Con = fun(UsersLO)->
+		case Conditions of
+			undefined -> UsersLO;
+			_ -> conditions(UsersLO,Conditions)
+		end
+	end,
+	FilterdUsers =
+	case {Limit, Offset} of
+		{undefined, undefined} -> Con(Users);
+		{Limit, undefined} -> Con(lists:sublist(Users, 1, Limit));
+		{undefined, Offset} -> Con(lists:sublist(Users, case Offset of 0 -> 1; _ -> Offset end, NumberOfUsers));
+		{Limit, Offset} -> Con(lists:sublist(Users, case Offset of 0 -> 1; _ -> Offset end, Limit))
+	end,
+	Ordered = case Order of
+		undefined ->
+			[#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| {Id,Username,Host,Sha} <- FilterdUsers];
+		_ ->
+			MapUsers = [#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| {Id,Username,Host,Sha} <- FilterdUsers],
+			lists:sort(fun(U1,U2)->
+				sorting_fun(tuple_g(U1,Order), tuple_g(U2,Order), Order)
+			end, MapUsers)
+	end,
+	filter_by_keys_param(Params,Ordered);
+
+mngmnt_execute0(#select{params = _, tables = _, conditions = _,group = _,order = _, limit = _,offset = _})->
+	not_supported.
+
+filter_by_keys_param(Params,Users)->
+	case Params of
+		[#all{table = _}] -> Users;
+		_ ->
+			[lists:foldl(fun(#key{alias = _,name = Name,table = _}, MapOut) ->
+					maps:put(Name,maps:get(Name,UO),MapOut)
+				end, #{}, Params)
+			||UO <- Users]
+	end.
+
+tuple_g(User,Orders)->
+	list_to_tuple([maps:get(Order#order.key, User)||Order <- Orders]).
+
+%this probably needs an explanation
+%since erlang sort function can compare tuples
+%and we can order lists by ASC and DESC
+%what we do is, in case we are ordering by id DESC, username ASC
+%we switch ids between two comparing tuples
+sorting_fun(X, Y, Orders)->
+	{XX,YY} = lists:foldl(fun(#order{key = Name,sort = Sort},{X0, Y0}) ->
+		case Sort of
+			asc -> {X0, Y0};
+			desc ->
+				Index = user_element(Name),
+				Xelement = element(Index, X0),
+				Yelement = element(Index, Y0),
+				XX = setelement(Index,X0,Yelement),
+				YY = setelement(Index,Y0,Xelement),
+				{XX,YY}
+			end
+		end, {X, Y}, Orders),
+	XX < YY.
+
+increment_index(Indexes)->
+	case lists:sort(Indexes) of
+		[] -> 1;
+		IndexesNum -> lists:last(lists:sort(IndexesNum)) + 1
+	end.
+
+write_user(Index,Username,Host,Password) ->
+	case read_global_users() of
+		[] ->
+			write_global(users,[{Index,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}]);
+		OtherUsers ->
+			write_global(users,[{Index,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}|OtherUsers])
+	end.
+
+merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions)->
+	Authentication = read_global_auth(),
+	case lists:filter(fun(X)-> case X of {ActorType,UserIndex,Sha,_} -> true; _ -> false end end, Authentication) of
+	[]-> write_global(auth,[{ActorType,UserIndex,Sha,Conditions}|Authentication]);
+	Remove ->
+		write_global(auth,(Authentication -- Remove) ++ [{ActorType,UserIndex,Sha,Conditions}])
+	end.
+
+%NexoCondition is between op1 and op2Tail
+%NexoCondition is either AND or OR
+%Users 1 ID, 2 username, 3 Host, 4 SHA
+conditions(Users,Condition)->
+	conditions(Users,Condition,[]).
+
+conditions(Users,#condition{nexo = nexo_and,
+								op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
+								op2 = Tail},Part) ->
+  conditions(Users,Tail,[Op|Part]);
+conditions(Users,#condition{nexo = nexo_or,
+								op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
+								op2 = Tail}, Part) ->
+	Conditions = [Op|Part],
+	FilterdUsers = lists:filter(fun(User)->
+  	condition(Conditions,User)
+	end, Users),
+  conditions(FilterdUsers, Tail, []);
+conditions(Users,#condition{nexo = _, op1 = _, op2 = _} = Op,Part) ->
+	Conditions = [Op|Part],
+	lists:filter(fun(User)->
+  	condition(Conditions,User)
+	end, Users).
+
+lte(A,B)->
+	A =< B.
+gte(A,B)->
+	A >= B.
+lt(A,B)->
+	A < B.
+gt(A,B)->
+	A > B.
+eq(A,B)->
+	A =:= B.
+neq(A,B)->
+	A =/= B.
+
+user_element(<<"id">>)->
+	1;
+user_element(<<"username">>)->
+	2;
+user_element(<<"host">>)->
+	3;
+user_element(<<"sha">>)->
+	4.
+
+condition(Conditions,User)->
+	condition(Conditions,User,true).
+condition([C|T],User,true) ->
+	UserValue = element(user_element(C#condition.op1#key.name),User),
+	ComparingTo = C#condition.op2#value.value,
+	Result = apply(?MODULE,C#condition.nexo,[UserValue,ComparingTo]),
+	condition(T,User,Result);
+condition(_, _, false) ->
+	false;
+condition([],_,true) ->
+	true.

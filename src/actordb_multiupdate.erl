@@ -60,7 +60,6 @@ stop(Name) ->
 print_info() ->
 	gen_server:cast(?MODULE,print_info).
 
-
 % If node goes down, this updater may be started on another node in cluster.
 % The only operation it will alow is checking transaction state and abandoning any transactions that are incomplete.
 -record(dp,{name, currow, confirming, callqueue, curfrom, execproc, curnum = 0,local = true}).

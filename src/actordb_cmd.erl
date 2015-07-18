@@ -28,22 +28,12 @@ cmd(init,parse,Etc) ->
 			NewCfg = parse_schema(Schema),
 			case catch compare_schema([],NewCfg) of
 				{ok,L} ->
-					case bkdcore:nodelist() of
-						[] ->
-							[_|_] = compare_groups(nodes_to_names(Nodes),
-											bkdcore_changecheck:parse_yaml_groups(Groups),
-											compare_nodes(Nodes,[])),
-							ok;
-						_ ->
-							{error,"ActorDB already initialized."}
-					end;
+					ok;
 				{error,Err} ->
 					{error,Err};
 				Err ->
 					{error,?ERR("~p",[Err])}
-			end;
-		X ->
-			throw(?ERR("Error parsing nodes.yaml: ~p",[X]))
+			end
 	end of
 		ok ->
 			{ok,"Start new cluster?"};
@@ -63,9 +53,7 @@ cmd(init,commit,Etc) ->
 	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
 		Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
 		Schema = getschema(Etc),
-		ok = actordb_sharedstate:init_state(Nodes,Groups,[{'schema.yaml',Schema}]) of
-		ok ->
-			"ok"
+		init_state(Nodes,Groups,Schema)
 	catch
 		_:{badmatch,{error,enoent}} ->
 			?ERR("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/schema.yaml"]);
@@ -153,6 +141,10 @@ cmd(stats,stats,{Node,Pid,Ref}) ->
 	ok;
 cmd(_,_,_) ->
 	{error,?ERR("uncrecognized command.~nSupported commands: ~p, ~p, ~p~n",[init,updateschema,updatenodes])}.
+
+%Account Management
+cmd(Statement)->
+	actordb:exec_mngmnt(Statement).
 
 send_stats(Node,Pid,Ref) ->
 	case lists:member(Node,nodes(connected)) of
@@ -380,4 +372,12 @@ check_actor_table(Db,Type) ->
 					throw({error,?ERR("KV data type ~p \"hash\" column should be INTEGER, but is ~p.",
 							[Type,butil:tolist(ColType)])})
 			end
+	end.
+
+init_state(Nodes, Groups, Schema0) ->
+	case actordb_sharedstate:init_state(Nodes,Groups,[{'schema.yaml',Schema0}]) of
+		ok ->
+			"ok";
+		Err ->
+			throw(Err)
 	end.
