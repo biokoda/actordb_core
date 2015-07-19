@@ -981,12 +981,12 @@ is_write(Bin) ->
 		<<C,O,M,M,I,T,_/binary>> when ?C(C) andalso ?O(O) andalso ?M(M) andalso ?I(I) andalso ?T(T) ->
 			skip;
 		<<R,O,L,L,B,A,C,K,_/binary>> when ?R(R) andalso ?O(O) andalso ?L(L) andalso	?B(B) andalso
-                                       ?A(A) andalso ?C(C) andalso ?K(K) ->
+			?A(A) andalso ?C(C) andalso ?K(K) ->
 			skip;
 		<<B,E,G,I,N,_/binary>> when ?B(B) andalso ?E(E) andalso ?G(G) andalso ?I(I) andalso ?N(N) ->
 			skip;
 		<<S,A,V,E,P,O,I,N,T,_/binary>> when ?S(S) andalso ?A(A) andalso ?V(V) andalso ?E(E) andalso ?P(P) andalso
-		                              ?O(O) andalso ?I(I) andalso ?N(N) andalso ?T(T) ->
+			?O(O) andalso ?I(I) andalso ?N(N) andalso ?T(T) ->
 			skip;
 		_ ->
 			false
@@ -998,12 +998,12 @@ parse_mngmt(Sql) when is_list(Sql) ->
 	parse_mngmt0(Sql).
 
 parse_mngmt0(<<Skip:32,Sql:Skip/binary-unit:8, 59, _Rem/binary>>) ->
-	actordb_mngmnt_proto:parse(Sql);
+	actordb_sql:parse(Sql);
 parse_mngmt0(<<_Skip:32,Sql/binary>>) ->
-	actordb_mngmnt_proto:parse(Sql);
+	actordb_sql:parse(Sql);
 parse_mngmt0(Sql) ->
 	Sql0 = lists:flatten(Sql),
 	case lists:suffix(";",Sql0) of
-		true -> actordb_mngmnt_proto:parse(lists:droplast(Sql0));
-		false -> actordb_mngmnt_proto:parse(Sql0)
+		true -> actordb_sql:parse(lists:droplast(Sql0));
+		false -> actordb_sql:parse(Sql0)
 	end.

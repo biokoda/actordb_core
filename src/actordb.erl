@@ -311,23 +311,23 @@ exec_mngmnt(Sql)->
 
 get_multiblock_map(P,Multiblock) ->
 	[begin
-			case Block of
-				{{Type, Actor, Flags}, IsWrite, Statements} ->
-					has_authentication(P,Type,IsWrite),
-					#{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite,
-					statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined};
-				{{Type, Var, Column, Blockvar, Flags}, IsWrite, Statements} ->
-					has_authentication(P,Type,IsWrite),
-					#{type => Type, actor => undefined, flags => Flags, iswrite => IsWrite,
-					statements => Statements, bindingvals => [], var => Var, column => Column, blockvar => Blockvar}
-			end
+	case Block of
+		{{Type, Actor, Flags}, IsWrite, Statements} ->
+			has_authentication(P,Type,IsWrite),
+			#{type => Type, actor => Actor, flags => Flags, iswrite => IsWrite,
+			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined};
+		{{Type, Var, Column, Blockvar, Flags}, IsWrite, Statements} ->
+			has_authentication(P,Type,IsWrite),
+			#{type => Type, actor => undefined, flags => Flags, iswrite => IsWrite,
+			statements => Statements, bindingvals => [], var => Var, column => Column, blockvar => Blockvar}
+	end
 	end	|| Block <- Multiblock].
 
 direct_call(#{actor := undefined}) ->
 	[];
 direct_call(#{actor := Actor, type := Type1, flags := _Flags, iswrite := IsWrite, statements := _Statements,
 				bindingvals := _BindingVals, dorpc := DoRpc} = Call)->
-  Type = actordb_util:typeatom(Type1),
+	Type = actordb_util:typeatom(Type1),
 	Where = actordb_shardmngr:find_local_shard(Actor,Type),
 	% ?AINF("direct_call ~p ~p ~p ~p",[Actor,Statements,Where,DoRpc]),
 	% ?ADBG("call for actor local ~p global ~p ~p~n",[{Where,bkdcore:node_name()},actordb_shardmngr:find_global_shard(Actor),{IsWrite,Statements}]),

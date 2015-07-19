@@ -835,47 +835,49 @@ mngmnt_execute0(#management{action = create, data = #account{access =
 
 %should grant append?
 mngmnt_execute0(#management{action = grant, data = #permission{
-													on = #table{name = ActorType,alias = ActorType},
-													account = [#value{name = <<"username">>,value = Username},
-																		 #value{name = <<"host">>,value = Host}],
-													conditions = Conditions}})->
-		case {lists:keyfind(value,1,Conditions), Conditions -- [read,write], lists:member(butil:toatom(ActorType),actordb:types())} of
-			{false,[],true} ->
-				case read_global_users(Username,Host) of
-					[{UserIndex,_,_,Sha}] ->
-						merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions);
-					_ ->
-						user_not_found
-				end;
-			{_,_,false} ->
-				check_actor_type;
-			_ ->
-				not_supported
-		end;
+	on = #table{name = ActorType,alias = ActorType},
+	conditions = Conditions,
+	account = [#value{name = <<"username">>,value = Username},
+		#value{name = <<"host">>,value = Host}]}})->
+	case {lists:keyfind(value,1,Conditions), 
+		Conditions -- [read,write], 
+		lists:member(butil:toatom(ActorType),actordb:types())} of
+		{false,[],true} ->
+			case read_global_users(Username,Host) of
+				[{UserIndex,_,_,Sha}] ->
+					merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions);
+				_ ->
+					user_not_found
+			end;
+		{_,_,false} ->
+			check_actor_type;
+		_ ->
+			not_supported
+	end;
 mngmnt_execute0(#management{action = grant, data = _})->
 	not_supported;
 
-mngmnt_execute0(#management{action = drop, data = #account{access =
-																				[#value{name = <<"username">>,value = Username},
-	                                      #value{name = <<"host">>,value = Host}]}}) ->
+mngmnt_execute0(#management{action = drop, 
+	data = #account{access =[#value{name = <<"username">>,value = Username},
+	#value{name = <<"host">>,value = Host}]}}) ->
 	User = actordb_sharedstate:read_global_users(Username, Host),
 	AllUsers = actordb_sharedstate:read_global_users(),
 	case User of
 		[]-> user_not_found;
 		[{UserIndex,_,_,_}] ->
-				RemUser = AllUsers -- User,
-				Authentication = read_global_auth(),
-				UserAuthentication = read_global_auth(UserIndex),
-				write_global(auth,Authentication -- UserAuthentication),
-				write_global(users,RemUser)
+			RemUser = AllUsers -- User,
+			Authentication = read_global_auth(),
+			UserAuthentication = read_global_auth(UserIndex),
+			write_global(auth,Authentication -- UserAuthentication),
+			write_global(users,RemUser)
 	end;
 mngmnt_execute0(#management{action = drop, data = _}) ->
 	not_supported;
-mngmnt_execute0(#management{action = rename, data = [#account{access = [#value{name = <<"username">>,
-                                              value = Username},
-                                       #value{name = <<"host">>,value = Host}]},
-                    #value{name = <<"username">>,value = ToUsername},
-                    #value{name = <<"host">>,value = ToHost}]}) ->
+mngmnt_execute0(#management{action = rename, 
+	data = [#account{access = [#value{name = <<"username">>,value = Username},
+	#value{name = <<"host">>,value = Host}]},
+	#value{name = <<"username">>,value = ToUsername},
+	#value{name = <<"host">>,value = ToHost}]}) ->
 	User = actordb_sharedstate:read_global_users(Username, Host),
 	AllUsers = actordb_sharedstate:read_global_users(),
 	FutureUser = actordb_sharedstate:read_global_users(ToUsername, ToHost),
@@ -891,10 +893,10 @@ mngmnt_execute0(#management{action = rename, data = [#account{access = [#value{n
 	end;
 mngmnt_execute0(#management{action = rename, data = _ }) ->
 	not_supported;
-mngmnt_execute0(#management{action = revoke,data = #permission{on = #table{name = ActorType,alias = ActorType},
-                               account = [#value{name = <<"username">>, value = Username},
-                                          #value{name = <<"host">>,value = Host}],
-                               conditions = Conditions}}) ->
+mngmnt_execute0(#management{action = revoke,
+	data = #permission{on = #table{name = ActorType,alias = ActorType},
+	account = [#value{name = <<"username">>, value = Username},#value{name = <<"host">>,value = Host}],
+	conditions = Conditions}}) ->
 	Authentication = read_global_auth(),
 	case read_global_users(Username, Host) of
 		[] -> user_not_found;
@@ -909,10 +911,10 @@ mngmnt_execute0(#management{action = revoke,data = #permission{on = #table{name 
 	end;
 mngmnt_execute0(#management{action = revoke,data = _})->
 	not_supported;
-mngmnt_execute0(#management{action = setpasswd,data = #account{access = [
-																			#value{name = <<"password">>,value = Password},
-                                      #value{name = <<"username">>,value = Username},
-                                      #value{name = <<"host">>,value = Host}]}})->
+mngmnt_execute0(#management{action = setpasswd,
+	data = #account{access = [#value{name = <<"password">>,value = Password},
+	#value{name = <<"username">>,value = Username},
+	#value{name = <<"host">>,value = Host}]}})->
 	Users = read_global_users(),
 	case read_global_users(Username, Host) of
 		[] -> user_not_found;
@@ -924,7 +926,7 @@ mngmnt_execute0(#management{action = setpasswd,data = #account{access = [
 mngmnt_execute0(#management{action = setpasswd, data = _})->
 	not_supported;
 mngmnt_execute0(#select{params = Params, tables = [#table{name = <<"users">>,alias = <<"users">>}],
-        conditions = Conditions, group = undefined,order = Order, limit = Limit,offset = Offset})->
+		conditions = Conditions, group = undefined,order = Order, limit = Limit,offset = Offset})->
 	Users = read_global_users(),%id,username,host,sha
 	NumberOfUsers = length(Users),
 	Con = fun(UsersLO)->
@@ -942,9 +944,11 @@ mngmnt_execute0(#select{params = Params, tables = [#table{name = <<"users">>,ali
 	end,
 	Ordered = case Order of
 		undefined ->
-			[#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| {Id,Username,Host,Sha} <- FilterdUsers];
+			[#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| 
+				{Id,Username,Host,Sha} <- FilterdUsers];
 		_ ->
-			MapUsers = [#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| {Id,Username,Host,Sha} <- FilterdUsers],
+			MapUsers = [#{<<"id">> => Id, <<"username">> => Username, <<"host">> => Host, <<"sha">> => Sha}|| 
+				{Id,Username,Host,Sha} <- FilterdUsers],
 			lists:sort(fun(U1,U2)->
 				sorting_fun(tuple_g(U1,Order), tuple_g(U2,Order), Order)
 			end, MapUsers)
@@ -1016,21 +1020,20 @@ conditions(Users,Condition)->
 	conditions(Users,Condition,[]).
 
 conditions(Users,#condition{nexo = nexo_and,
-								op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
-								op2 = Tail},Part) ->
+	op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
+	op2 = Tail},Part) ->
   conditions(Users,Tail,[Op|Part]);
 conditions(Users,#condition{nexo = nexo_or,
-								op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
-								op2 = Tail}, Part) ->
+	op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,op2 = Tail}, Part) ->
 	Conditions = [Op|Part],
 	FilterdUsers = lists:filter(fun(User)->
-  	condition(Conditions,User)
+		condition(Conditions,User)
 	end, Users),
-  conditions(FilterdUsers, Tail, []);
+	conditions(FilterdUsers, Tail, []);
 conditions(Users,#condition{nexo = _, op1 = _, op2 = _} = Op,Part) ->
 	Conditions = [Op|Part],
 	lists:filter(fun(User)->
-  	condition(Conditions,User)
+		condition(Conditions,User)
 	end, Users).
 
 lte(A,B)->
