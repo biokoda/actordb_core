@@ -42,11 +42,17 @@ stop_caller(P) ->
 
 % Store data inside connection ets (for instance prepared statement info)
 save(#caller{ets = Ets},K,V) ->
-	butil:ds_add(K,V,Ets).
+	butil:ds_add(K,V,Ets);
+save(undefined,_,_) ->
+	undefined.
 getval(#caller{ets = Ets},K) ->
-	butil:ds_val(K,Ets).
+	butil:ds_val(K,Ets);
+getval(undefined,_) ->
+	undefined.
 delval(#caller{ets = Ets},K) ->
-	butil:ds_rem(K,Ets).
+	butil:ds_rem(K,Ets);
+delval(undefined,_) ->
+	ok.
 
 % High watermark. If more than 2000 calls are waiting for result or
 %  more than 32MB of queries is waiting to be processed

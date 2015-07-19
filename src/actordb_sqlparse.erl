@@ -31,6 +31,7 @@
 -define(W(W),(W == $w orelse W == $W)).
 -define(X(X),(X == $x orelse X == $X)).
 -define(Y(Y),(Y == $y orelse Y == $Y)).
+-define(GV(P,V),actordb_backpressure:getval(P,V)).
 
 
 
@@ -71,7 +72,7 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 								delete ->
 									parse_statements(BP,T,L,PreparedRows,CurUse,[delete],true, true);
 								exists ->
-									case split_actor(CurUse) of
+									case split_actor(?GV(BP,canempty),CurUse) of
 										{Type,Actors,Flags} ->
 											NewUse = {Type,Actors,butil:lists_add(exists,Flags)};
 										{Type,Global,Col,Var,Flags} ->
@@ -79,11 +80,11 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 									end,
 									parse_statements(BP,T,L,PreparedRows,NewUse,[exists],IsWrite, GIsWrite);
 								{copy,Name} ->
-									{Type,[Actor],Flags} = split_actor(CurUse),
+									{Type,[Actor],Flags} = split_actor(?GV(BP,canempty),CurUse),
 									{_,_,Node} = actordb_shardmngr:find_global_shard(Name),
 									parse_statements(BP,T,L,PreparedRows,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
 								Pragma when Pragma == count; element(1,Pragma) == list ->
-									case split_actor(CurUse) of
+									case split_actor(?GV(BP,canempty),CurUse) of
 										{Type,_Actors,_Flags} ->
 											ok;
 										{Type,_Global,_Col,_Var,_Flags} ->
@@ -145,9 +146,9 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 		Use when CurUse /= undefined ->
 			case PreparedRows of
 				[] ->
-					Actor = {split_actor(CurUse),IsWrite,lists:reverse(CurStatements)};
+					Actor = {split_actor(?GV(BP,canempty),CurUse),IsWrite,lists:reverse(CurStatements)};
 				_ ->
-					Actor = {split_actor(CurUse),IsWrite,{lists:reverse(CurStatements),lists:reverse(PreparedRows)}}
+					Actor = {split_actor(?GV(BP,canempty),CurUse),IsWrite,{lists:reverse(CurStatements),lists:reverse(PreparedRows)}}
 			end,
 			parse_statements(BP,T,[Actor|L],[],Use,[],false,GIsWrite)
 	end;
@@ -161,12 +162,12 @@ parse_statements(_BP,[],_L,_Prepared,undefined,CurStatements,_,_) ->
 		R ->
 			R
 	end;
-parse_statements(_BP,[],L,Prepared,Use,S,IsWrite,GIsWrite) ->
+parse_statements(BP,[],L,Prepared,Use,S,IsWrite,GIsWrite) ->
 	case Prepared of
 		[] ->
-			Actor = {split_actor(Use),IsWrite,lists:reverse(S)};
+			Actor = {split_actor(?GV(BP,canempty),Use),IsWrite,lists:reverse(S)};
 		_ ->
-			Actor = {split_actor(Use),IsWrite,{lists:reverse(S),lists:reverse(Prepared)}}
+			Actor = {split_actor(?GV(BP,canempty),Use),IsWrite,{lists:reverse(S),lists:reverse(Prepared)}}
 	end,
 	{lists:reverse([Actor|L]),GIsWrite}.
 
@@ -666,55 +667,57 @@ is_actor(Bin) ->
 
 % actordb_sqlparse:split_actor(<<"type(asdf,234,asdisfpsouf);">>).
 % actordb_sqlparse:split_actor(<<"type(for X.column in RES);">>).
-split_actor({_,_,_} = A) ->
+split_actor(V) ->
+	split_actor(false,V).
+split_actor(_,{_,_,_} = A) ->
 	A;
-split_actor({_,__,_,_} = A) ->
+split_actor(_,{_,__,_,_} = A) ->
 	A;
 % Variable actor name
-split_actor([Type,{K,V},Flags]) ->
+split_actor(_,[Type,{K,V},Flags]) ->
 	{<< <<Char:8>> || <<Char:8>> <= Type, Char /= $\s, Char /= $(>>, [{K,V}], check_flags(Flags,[])};
-split_actor(Bin) ->
-	case split_actor(Bin,<<>>,undefined,[]) of
+split_actor(CanEmpty,Bin) ->
+	case split_actor(CanEmpty,Bin,<<>>,undefined,[]) of
 		{Type,[<<"*">>],Flags} ->
 			{Type,$*,Flags};
 		Res ->
 			Res
 	end.
-split_actor(<<" ",Bin/binary>>,Word,Type,L) ->
-	split_actor(Bin,Word,Type,L);
-split_actor(<<"(",Bin/binary>>,Word,_,L) ->
-	split_actor(Bin,<<>>,Word,L);
-split_actor(<<"'",Bin/binary>>,Word,T,L) ->
-	split_actor(Bin,Word,T,L);
-split_actor(<<"`",Bin/binary>>,Word,undefined,L) ->
-	split_actor(Bin,Word,undefined,L);
-split_actor(<<",",Bin/binary>>,Word,Type,L) ->
-	split_actor(Bin,<<>>,Type,[is_not_empty(Word)|L]);
-split_actor(<<")",FlagsBin/binary>>,Word,Type,L) ->
-	{Type,[is_not_empty(Word)|L],check_flags(FlagsBin,[])};
-split_actor(<<"for ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(CE,<<" ",Bin/binary>>,Word,Type,L) ->
+	split_actor(CE,Bin,Word,Type,L);
+split_actor(CE,<<"(",Bin/binary>>,Word,_,L) ->
+	split_actor(CE,Bin,<<>>,Word,L);
+split_actor(CE,<<"'",Bin/binary>>,Word,T,L) ->
+	split_actor(CE,Bin,Word,T,L);
+split_actor(CE,<<"`",Bin/binary>>,Word,undefined,L) ->
+	split_actor(CE,Bin,Word,undefined,L);
+split_actor(CE,<<",",Bin/binary>>,Word,Type,L) ->
+	split_actor(CE,Bin,<<>>,Type,[is_not_empty(CE,Word)|L]);
+split_actor(CE,<<")",FlagsBin/binary>>,Word,Type,L) ->
+	{Type,[is_not_empty(CE,Word)|L],check_flags(FlagsBin,[])};
+split_actor(_CE,<<"for ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var,Flags};
-split_actor(<<"FOR ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(_CE,<<"FOR ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var,Flags};
-split_actor(<<"For ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(_CE,<<"For ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var,Flags};
-split_actor(<<"foreach ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(_CE,<<"foreach ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var,Flags};
-split_actor(<<"FOREACH ",Bin/binary>>,<<>>,Type,[]) ->
+split_actor(_CE,<<"FOREACH ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var,Flags};
-split_actor(<<";",_/binary>>,Word,Type,L) ->
+split_actor(CE,<<";",_/binary>>,Word,Type,L) ->
 	% {Type,[Word|L],[]};
-	split_actor(<<>>,Word,Type,L);
-split_actor(<<C,Bin/binary>>,Word,Type,L) ->
-	split_actor(Bin,<<Word/binary,C>>,Type,L);
-split_actor(<<>>,Word,Type,L) ->
+	split_actor(CE,<<>>,Word,Type,L);
+split_actor(CE,<<C,Bin/binary>>,Word,Type,L) ->
+	split_actor(CE,Bin,<<Word/binary,C>>,Type,L);
+split_actor(CE,<<>>,Word,Type,L) ->
 	case catch count_name(Word,0) of
-		0 ->
+		0 when CE /= true ->
 			throw({error,empty_actor_name});
 		{'EXIT',_} ->
 			throw({error,invalid_actor_name});
@@ -722,9 +725,11 @@ split_actor(<<>>,Word,Type,L) ->
 			{Type,[Word|L],[]}
 	end.
 
-is_not_empty(<<>>) ->
+is_not_empty(true,<<>>) ->
+	<<>>;
+is_not_empty(_,<<>>) ->
 	throw({error,empty_actor_name});
-is_not_empty(W) ->
+is_not_empty(_,W) ->
 	W.
 
 check_flags(<<" ",Rem/binary>>,L) ->
