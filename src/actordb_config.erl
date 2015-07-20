@@ -32,7 +32,6 @@ exec(BP,Sql) ->
 	end,
 	exec1(Init,cmd([],butil:tobin(Sql))).
 
-% Execute
 exec1(true,_Cmds) ->
 	_Cmds;
 exec1(false,Cmds) ->
@@ -40,13 +39,44 @@ exec1(false,Cmds) ->
 	% Insert to group
 	% Insert to nodes
 	% Create user
-	Grp = [I || I <- Cmds, I#insert.table == <<"groups">>],
-	Nodes = [I || I <- Cmds, I#insert.table == <<"nodes">>],
+	Grp1 = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"groups">>]),
+	Grp2 = [case G of {Nm} -> {Nm,<<"cluster">>}; _ -> G end || G <- Grp1],
+	Nodes = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"nodes">>]),
 	Usrs = [I || I <- Cmds, element(1,I) == management],
-	check_el(Grp,missing_group_insert),
-	check_el(Nodes,missing_nodes_insert),
+
+	Nodes1 = [butil:tolist(Nd) || {Nd,_} <- Nodes],
+
+	Me = bkdcore_changecheck:read_node(butil:tolist(node())),
+	case lists:member(Me,[bkdcore_changecheck:read_node(Nd) || Nd <- Nodes1]) of
+		false ->
+			throw(local_node_missing);
+		true ->
+			ok
+	end,
+
+	Grp3 = [
+		{butil:toatom(GName),
+		 [element(1,bkdcore_changecheck:read_node(butil:tolist(Nd))) || {Nd,Name} <- Nodes, Name == GName],
+		 butil:toatom(Type),[]} 
+	|| {GName,Type} <- Grp2],
+
+	check_el(Grp3,missing_group_insert),
+	check_el(Nodes1,missing_nodes_insert),
 	check_el(Usrs,missing_root_user),
-	Cmds.
+
+	case actordb_sharedstate:init_state(Nodes1,Grp3,[]) of
+		ok ->
+			ok;
+		E ->
+			E
+	end.
+
+
+simple_values([[{value,_,_}|_] = H|T],L) ->
+	simple_values(T,[list_to_tuple([V || {value,_,V} <- H])|L]);
+simple_values([],L) ->
+	L.
+
 
 check_el([],E) ->
 	throw({error,E});
