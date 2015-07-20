@@ -9,7 +9,7 @@
 			inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2,
 			save/3,getval/2,delval/2,has_authentication/3]).
 -define(LAGERDBG,true).
--include_lib("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 
 -record(caller,{ets, login}).
 start_caller() ->
@@ -187,6 +187,8 @@ init(_) ->
 			ok
 	end,
 	{ok,#dp{}}.
+
+
 has_authentication(P,ActorType,Action)->
 	Authentication = butil:ds_val(auth,P#caller.ets),
 	has_authentication(P,ActorType,Action,Authentication).

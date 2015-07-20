@@ -15,7 +15,7 @@
 % Internal. Generally not to be called from outside actordb
 -export([direct_call/1,actor_id_type/1,configfiles/0,
 		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 
 %Maps are used for carrying query statements information:
 % type => type of an actor selected (check schema)
@@ -424,10 +424,11 @@ schema_changed() ->
 
 configfiles() ->
 	[
-		{cfg,"schema.yaml",[{autoload,true},
-							{mod,actordb_schema},
-							{preload,{actordb_util,parse_cfg_schema,[]}},
-							{onload,{actordb,schema_changed,[]}}]}
+		{cfg,"schema.yaml",
+			[{autoload,true},
+			{mod,actordb_schema},
+			{preload,{actordb_util,parse_cfg_schema,[]}},
+			{onload,{actordb,schema_changed,[]}}]}
 	].
 
 has_authentication(undefined,_,_) ->

@@ -1,7 +1,7 @@
 % This Source Code Form is subject to the terms of the Mozilla Public
 % License, v. 2.0. If a copy of the MPL was not distributed with this
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
--include_lib("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 
 -record(election,{actor, type, candidate, wait, term, evnum, evterm, flags, followers = [], cbmod}).

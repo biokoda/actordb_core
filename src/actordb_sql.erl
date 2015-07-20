@@ -15,7 +15,7 @@
 
 
 
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 
 -spec file(file:name()) -> any().
 file(Filename) -> case file:read_file(Filename) of {ok,Bin} -> parse(Bin); Err -> Err end.
@@ -32,7 +32,7 @@ parse(Input) when is_binary(Input) ->
 
 -spec 'sql'(input(), index()) -> parse_result().
 'sql'(Input, Index) ->
-  p(Input, Index, 'sql', fun(I,D) -> (p_choose([fun 'set_query'/2, fun 'select_query'/2, fun 'update_query'/2, fun 'insert_query'/2, fun 'delete_query'/2, fun 'show_query'/2, fun 'desc_query'/2, fun 'use_query'/2, fun 'account_management_query'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
+  p(Input, Index, 'sql', fun(I,D) -> (p_choose([fun 'set_query'/2, fun 'select_query'/2, fun 'update_query'/2, fun 'insert_query'/2, fun 'delete_query'/2, fun 'show_query'/2, fun 'desc_query'/2, fun 'use_query'/2, fun 'account_management_query'/2, fun 'commit'/2, fun 'rollback'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
 
 -spec 'use_query'(input(), index()) -> parse_result().
 'use_query'(Input, Index) ->
@@ -412,8 +412,13 @@ end
 
 -spec 'user_at_host'(input(), index()) -> parse_result().
 'user_at_host'(Input, Index) ->
-  p(Input, Index, 'user_at_host', fun(I,D) -> (p_seq([fun 'param'/2, p_string(<<"@">>), fun 'param'/2]))(I,D) end, fun(Node, _Idx) ->
-    [{value,undefined,Username},<<"@">>,{value,undefined,Host}] = Node,
+  p(Input, Index, 'user_at_host', fun(I,D) -> (p_seq([fun 'param'/2, p_optional(p_string(<<"@">>)), p_optional(fun 'param'/2)]))(I,D) end, fun(Node, _Idx) ->
+    case Node of
+        [{value,undefined,Username},<<"@">>,{value,undefined,Host}] ->
+            ok;
+        [{value,undefined,Username}|_] ->
+            Host = <<>>
+    end,
     [#value{name = <<"username">>, value = Username},
     #value{name = <<"host">>, value = Host}]
  end).
@@ -919,6 +924,14 @@ end
 -spec 'database'(input(), index()) -> parse_result().
 'database'(Input, Index) ->
   p(Input, Index, 'database', fun(I,D) -> (fun 'key'/2)(I,D) end, fun(Node, _Idx) ->Node end).
+
+-spec 'commit'(input(), index()) -> parse_result().
+'commit'(Input, Index) ->
+  p(Input, Index, 'commit', fun(I,D) -> (p_regexp(<<"(?i)commit">>))(I,D) end, fun(_Node, _Idx) ->commit end).
+
+-spec 'rollback'(input(), index()) -> parse_result().
+'rollback'(Input, Index) ->
+  p(Input, Index, 'rollback', fun(I,D) -> (p_regexp(<<"(?i)rollback">>))(I,D) end, fun(_Node, _Idx) ->rollback end).
 
 -spec 'keys'(input(), index()) -> parse_result().
 'keys'(Input, Index) ->

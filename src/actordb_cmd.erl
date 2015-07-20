@@ -5,7 +5,7 @@
 -module(actordb_cmd).
 -compile(export_all).
 -define(DELIMITER,"~n-------------------------~n~p~n-------------------------~n").
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 -define(ERR(F,P),lists:flatten(io_lib:fwrite(F,P))).
 
 getschema(Etc) ->

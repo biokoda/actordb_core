@@ -14,17 +14,17 @@
 
 show_variables() ->
 	[{<<"db_version">>,?MYACTOR_VER},
-    {<<"max_allowed_packet">>,<<"1048576">>},
-    {<<"character_set_client">>,<<"utf8">>},
-    {<<"character_set_connection">>,<<"utf8">>},
-    {<<"character_set_database">>,<<"utf8">>},
-    {<<"character_set_filesystem">>,<<"utf8">>},
-    {<<"character_set_results">>,<<"utf8">>},
-    {<<"character_set_server">>,<<"utf8">>},
-    {<<"character_set_system">>,<<"utf8">>},
-    {<<"collation_connection">>,<<"utf8_general_ci">>},
-    {<<"collation_database">>,<<"utf8_general_ci">>},
-    {<<"collation_server">>,<<"utf8_general_ci">>}   ].
+	{<<"max_allowed_packet">>,<<"1048576">>},
+	{<<"character_set_client">>,<<"utf8">>},
+	{<<"character_set_connection">>,<<"utf8">>},
+	{<<"character_set_database">>,<<"utf8">>},
+	{<<"character_set_filesystem">>,<<"utf8">>},
+	{<<"character_set_results">>,<<"utf8">>},
+	{<<"character_set_server">>,<<"utf8">>},
+	{<<"character_set_system">>,<<"utf8">>},
+	{<<"collation_connection">>,<<"utf8_general_ci">>},
+	{<<"collation_database">>,<<"utf8_general_ci">>},
+	{<<"collation_server">>,<<"utf8_general_ci">>}   ].
 
 show_collation() ->
 	[{<<"big5_chinese_ci">>,<<"big5">>,1,1,1,1},

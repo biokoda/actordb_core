@@ -5,7 +5,7 @@
 -module(actordb_sup).
 -behavior(supervisor).
 -export([start_link/0, init/1]).
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 -compile(export_all).
 start_link() ->
 	supervisor:start_link({local, ?MODULE}, ?MODULE, []).

@@ -9,7 +9,7 @@
 -export([test/0]).
 -define(RANGE_SIZE,5000).
 -define(RANGE_FROM,1000).
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 % -compile(export_all).
 
 

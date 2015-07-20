@@ -9,7 +9,7 @@
 		lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,
 		all_tunnel_call/1,tcp_reconnect/0,exec_res/2,exec_res/1,
 		tcp_connect_async/5,store_prepared_table/2]).
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 
 init(Path) ->
 	init(Path,wal).

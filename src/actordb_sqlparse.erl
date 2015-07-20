@@ -6,7 +6,7 @@
 % -compile(export_all).
 -export([parse_statements/1,parse_statements/2,parse_statements/3,split_statements/1, check_flags/2, parse_mngmt/1]).
 -export([split_actor/1]).
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 -define(LIST_LIMIT,30000).
 -define(A(A),(A == $a orelse A == $A)).
 -define(B(B),(B == $b orelse B == $B)).

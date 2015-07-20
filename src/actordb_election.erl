@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 -export([start/0,stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 -export([whois_leader/1,connect_all/0]).
--include_lib("actordb_sqlproc.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 
 % This is a global registered process. It executes elections on behalf of sqlproc.
 

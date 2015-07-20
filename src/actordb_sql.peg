@@ -1,7 +1,7 @@
 % --------------- BASED ON https://github.com/altenwald/myproto/blob/master/src/mysql_proto.peg
 
 
-sql <- set_query / select_query / update_query / insert_query / delete_query / show_query / desc_query / use_query / account_management_query ~;
+sql <- set_query / select_query / update_query / insert_query / delete_query / show_query / desc_query / use_query / account_management_query / commit / rollback ~;
 
 % --------------- USE
 
@@ -278,8 +278,13 @@ show_dbs / show_view / shutdown / super / trigger / update / usage / insert / cr
 
 % --------------- GRANT Syntax Account Names http://dev.mysql.com/doc/refman/5.6/en/account-names.html
 
-user_at_host <- param '@' param `
-    [{value,undefined,Username},<<"@">>,{value,undefined,Host}] = Node,
+user_at_host <- param '@'? param? `
+    case Node of
+        [{value,undefined,Username},<<"@">>,{value,undefined,Host}] ->
+            ok;
+        [{value,undefined,Username}|_] ->
+            Host = <<>>
+    end,
     [#value{name = <<"username">>, value = Username},
     #value{name = <<"host">>, value = Host}]
 `;
@@ -479,6 +484,8 @@ identified <- #(?i)identified +by # `identified`;
 user <- #(?i)user# `user`;
 drop <- #(?i)drop# `drop`;
 database <- key ~;
+commit <- #(?i)commit# `commit`;
+rollback <- #(?i)rollback# `rollback`;
 
 % complex types
 keys <- head:key tail:( space? ',' space? key )* `
@@ -533,5 +540,5 @@ space <- [ \t\n\s\r]* ~;
 null <- [nN] [uU] [lL] [lL] `null`;
 
 `
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 `

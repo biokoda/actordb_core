@@ -12,7 +12,7 @@
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 cb_redirected_call/4,cb_write_done/2,cb_unverified_call/2,cb_replicate_type/1,
 		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2]). %split_other_done/3,
--include_lib("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 -define(META_NEXT_SHARD,$1).
 -define(META_NEXT_SHARD_NODE,$2).
 -define(META_CLEANUP_PRE,$3).

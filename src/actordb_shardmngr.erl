@@ -11,7 +11,7 @@
 			set_shard_border/5,shard_moved/3,shard_started/3,shard_has_split/2,get_local_shards/0,schema_changed/0]).
 % for testing
 -export([create_shards/1]).
--include_lib("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 -define(BORDERETS,shardborders).
 % -compile(export_all).

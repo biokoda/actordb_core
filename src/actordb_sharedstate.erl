@@ -4,7 +4,7 @@
 
 -module(actordb_sharedstate).
 -compile(export_all).
--include("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 -define(GLOBALETS,globalets).
 -define(MASTER_GROUP_SIZE,7).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -810,6 +810,9 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	set_global_state(actordb_conf:node_name(),State),
 	{ok,S#st{evnum = Evnum, waiting = false}}.
 
+
+
+
 mngmnt_execute(Sql)->
 	ActorTypes = actordb:types(),
 	case ActorTypes of
@@ -1022,7 +1025,7 @@ conditions(Users,Condition)->
 conditions(Users,#condition{nexo = nexo_and,
 	op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,
 	op2 = Tail},Part) ->
-  conditions(Users,Tail,[Op|Part]);
+	conditions(Users,Tail,[Op|Part]);
 conditions(Users,#condition{nexo = nexo_or,
 	op1 = #condition{nexo = _, op1 = _, op2 = _} = Op,op2 = Tail}, Part) ->
 	Conditions = [Op|Part],

@@ -14,7 +14,7 @@
 % Ref age
 -export([net_changes/0,mod_netchanges/0]).
 -define(LAGERDBG,true).
--include_lib("actordb.hrl").
+-include_lib("actordb_core/include/actordb.hrl").
 -define(MB,1024*1024).
 -define(GB,1024*1024*1024).
 % -define(STATS,runningstats).
