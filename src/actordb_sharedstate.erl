@@ -195,11 +195,11 @@ save_prepared(ActorType1,IsWrite,Sql1) ->
 			Doit
 	end.
 
-init_state(Nodes,Groups,{_,_,_} = Configs) ->
-	init_state(Nodes,Groups,[Configs]);
-init_state(Nodes,Groups,Configs) ->
+init_state(Nodes,Groups,Misc,{_,_,_} = Configs) ->
+	init_state(Nodes,Groups,Misc,[Configs]);
+init_state(Nodes,Groups,Misc,Configs) ->
 	?ADBG("Init state ~p",[Nodes]),
-	case actordb_sqlproc:call({?STATE_NM_GLOBAL,?STATE_TYPE},[],{init_state,Nodes,Groups,Configs},?MODULE) of
+	case actordb_sqlproc:call({?STATE_NM_GLOBAL,?STATE_TYPE},[],{init_state,Nodes,Groups,Misc,Configs},?MODULE) of
 		ok ->
 			ok;
 		_ ->
@@ -677,7 +677,7 @@ cb_unverified_call(#st{waiting = true, name = ?STATE_NM_GLOBAL} = S,{master_ping
 			{reinit_master,slave}
 	end;
 % Initialize state on first master.
-cb_unverified_call(S,{init_state,Nodes,Groups,Configs}) ->
+cb_unverified_call(S,{init_state,Nodes,Groups,Misc,Configs}) ->
 	case S#st.waiting of
 		false ->
 			{reply,{error,already_started}};
@@ -688,9 +688,10 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Configs}) ->
 			timer:sleep(100),
 			Sql = [$$,write_sql(nodes,Nodes),
 				   $$,write_sql(groups,Groups),
+				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Misc],
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Configs]],
 			?ADBG("Writing init state ~p",[Sql]),
-			{reinit,Sql,S#st{current_write = [{nodes,Nodes},{groups,Groups}|Configs]}}
+			{reinit,Sql,S#st{current_write = [{nodes,Nodes},{groups,Groups}|Misc++Configs]}}
 	end;
 cb_unverified_call(_S,_Msg)  ->
 	queue.

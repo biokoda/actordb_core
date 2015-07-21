@@ -11,7 +11,7 @@
 -define(LAGERDBG,true).
 -include_lib("actordb_core/include/actordb.hrl").
 
--record(caller,{ets, login}).
+-record(caller,{ets, login, auth = []}).
 start_caller() ->
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
 	butil:ds_add(curcount,0,E),
@@ -23,14 +23,32 @@ start_caller(<<>>, <<>>) ->
 	butil:ds_add(auth,Authentication,E),
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
-	#caller{ets = E, login = <<>>};
+	#caller{ets = E, login = <<>>, auth = [{'*',ok,ok,[read,write]}]};
 start_caller(Username, Password) ->
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
 	Authentication = actordb_sharedstate:read_global_auth(),
-	butil:ds_add(auth,Authentication,E),
+	% butil:ds_add(auth,Authentication,E),
+	Key = butil:sha256(<<(Username)/binary,(<<";">>)/binary,(Password)/binary>>),
+	MyAuth = [A || A <- Authentication, element(3, A) == Key],
+	case MyAuth of
+		[] ->
+			case actordb_sharedstate:read_global_users() of
+				L ->
+					case lists:keymember(Key,4,L) of
+						true ->
+							% user with no auth, which means he cant do anything
+							ok;
+						_ ->
+							throw(invalid_login)
+					end
+			end;
+		_ ->
+			ok
+	end,
+	% P#caller.login,3,Authentication
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
-	#caller{ets = E, login = butil:sha256(<<(Username)/binary,(<<";">>)/binary,(Password)/binary>>)}.
+	#caller{ets = E, login = Key, auth = MyAuth}.
 stop_caller(P) ->
 	Tid = P#caller.ets,
 	Size = butil:ds_val(cursize,Tid),
@@ -189,18 +207,33 @@ init(_) ->
 	{ok,#dp{}}.
 
 
-has_authentication(P,ActorType,Action)->
-	Authentication = butil:ds_val(auth,P#caller.ets),
-	has_authentication(P,ActorType,Action,Authentication).
+has_authentication(#caller{auth = Auth} = P,ActorType,Action)->
+	Auth = P#caller.auth,
+	has_authentication(Auth,ActorType,Action);
 
-has_authentication(_,_,_,[])->
-	true;
-has_authentication(P,ActorType,Action,Authentication)->
-	Authentication = butil:ds_val(auth,P#caller.ets),
-	Key = lists:keyfind(P#caller.login,3,Authentication),
-	case Key of
-		false -> false;
-		{ActorType,_,_,ActionList} ->
-			lists:member(Action,ActionList);
-		_ -> false
-	end.
+% check for atom because of config. User must have explicit {config} type access.
+% For all other types, '*' is ok.
+has_authentication([{'*',_,_,ActionList}|_],Type,Action) when is_atom(Type) ->
+	lists:member(Action,ActionList);
+has_authentication([{Type,_Index,_Key,ActionList}|_],Type,Action) ->
+	lists:member(Action,ActionList);
+has_authentication([_|T],Type,A) ->
+	has_authentication(T,Type,A);
+has_authentication([],_,_) ->
+	false.
+
+% has_authentication(_,_,_,[])->
+% 	true;
+% has_authentication(P,ActorType,Action,Authentication)->
+	% Authentication = butil:ds_val(auth,P#caller.ets),
+	% Key = lists:keyfind(P#caller.login,3,Authentication),
+	% case Key of
+	% 	false ->
+	% 		false;
+	% 	{'*',_,_,ActionList} ->
+	% 		lists:member(Action,ActionList);
+	% 	{ActorType,_,_,ActionList} ->
+	% 		lists:member(Action,ActionList);
+	% 	_ ->
+	% 		false
+	% end.

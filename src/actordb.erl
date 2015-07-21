@@ -440,5 +440,5 @@ has_authentication(P,ActorType,Action)->
 	end,
 	case actordb_backpressure:has_authentication(P,ActorType,ReadWriteAction) of
 		true -> ok;
-		_ -> throw({error,actor_type_authentication})
+		_ -> throw({error,no_permission})
 	end.
