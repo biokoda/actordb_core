@@ -11,7 +11,7 @@
 -export([start/0,stop/0,stop_complete/0,is_ready/0]).
 % start/stop internal
 -export([schema_changed/0]).
--export ([exec_mngmnt/1]).
+% -export ([exec_mngmnt/1]).
 % Internal. Generally not to be called from outside actordb
 -export([direct_call/1,actor_id_type/1,configfiles/0,
 		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
@@ -306,8 +306,8 @@ exec1(P,St,BindingValues)->
 			St
  	end.
 
-exec_mngmnt(Sql)->
-	actordb_sharedstate:mngmnt_execute(actordb_sqlparse:parse_mngmt(Sql)).
+% exec_mngmnt(Sql)->
+% 	actordb_sharedstate:mngmnt_execute(actordb_sqlparse:parse_mngmt(Sql)).
 
 get_multiblock_map(P,Multiblock) ->
 	[begin

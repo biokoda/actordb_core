@@ -997,18 +997,18 @@ is_write(Bin) ->
 			false
 	end.
 
-parse_mngmt(Sql) when is_binary(Sql) ->
-	parse_mngmt0(<<(<<(byte_size(Sql) - 1):32>>)/binary,Sql/binary>>);
-parse_mngmt(Sql) when is_list(Sql) ->
-	parse_mngmt0(Sql).
+% parse_mngmt(Sql) when is_binary(Sql) ->
+% 	parse_mngmt0(<<(<<(byte_size(Sql) - 1):32>>)/binary,Sql/binary>>);
+% parse_mngmt(Sql) when is_list(Sql) ->
+% 	parse_mngmt0(Sql).
 
-parse_mngmt0(<<Skip:32,Sql:Skip/binary-unit:8, 59, _Rem/binary>>) ->
-	actordb_sql:parse(Sql);
-parse_mngmt0(<<_Skip:32,Sql/binary>>) ->
-	actordb_sql:parse(Sql);
-parse_mngmt0(Sql) ->
-	Sql0 = lists:flatten(Sql),
-	case lists:suffix(";",Sql0) of
-		true -> actordb_sql:parse(lists:droplast(Sql0));
-		false -> actordb_sql:parse(Sql0)
-	end.
+% parse_mngmt0(<<Skip:32,Sql:Skip/binary-unit:8, 59, _Rem/binary>>) ->
+% 	actordb_sql:parse(Sql);
+% parse_mngmt0(<<_Skip:32,Sql/binary>>) ->
+% 	actordb_sql:parse(Sql);
+% parse_mngmt0(Sql) ->
+% 	Sql0 = lists:flatten(Sql),
+% 	case lists:suffix(";",Sql0) of
+% 		true -> actordb_sql:parse(lists:droplast(Sql0));
+% 		false -> actordb_sql:parse(Sql0)
+% 	end.
