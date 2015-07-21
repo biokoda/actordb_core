@@ -118,19 +118,21 @@ interpret_writes(Cmds) ->
 	ExistingNodes = actordb_sharedstate:read_global(nodes),
 	ExistingGroups = actordb_sharedstate:read_global(groups),
 	Users = [mngmnt_execute0(I) || I <- Cmds, element(1,I) == management],
-	{Nodes,Groups} = insert_to_grpnd(Cmds),
-	case Nodes -- ExistingNodes of
-		Nodes ->
+	{InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
+	case InsertNodes -- ExistingNodes of
+		InsertNodes ->
 			ok;
 		_ ->
 			throw({error,"insert_on_existing_node"})
 	end,
-	case Groups -- ExistingGroups of
-		Groups ->
+	case InsertGroups -- ExistingGroups of
+		InsertGroups ->
 			ok;
 		_ ->
 			throw({error,"insert_on_existing_group"})
 	end,
+	Nodes = InsertNodes++ExistingNodes,
+	Groups = InsertGroups++ExistingGroups,
 	interpret_writes1([{nodes,Nodes},{groups,Groups}]++Users,[]).
 interpret_writes1([{_,[]}|T],L) ->
 	interpret_writes1(T,L);

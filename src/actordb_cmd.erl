@@ -375,7 +375,7 @@ check_actor_table(Db,Type) ->
 	end.
 
 init_state(Nodes, Groups, Schema0) ->
-	case actordb_sharedstate:init_state(Nodes,Groups,[{'schema.yaml',Schema0}]) of
+	case actordb_sharedstate:init_state(Nodes,Groups,[],[{'schema.yaml',Schema0}]) of
 		ok ->
 			"ok";
 		Err ->
