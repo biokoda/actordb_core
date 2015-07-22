@@ -31,7 +31,7 @@ exec(BP,Sql) ->
 		undefined ->
 			ok;
 		_ when Init ->
-			case actordb_backpressure:has_authentication(BP,{config},[write]) of
+			case actordb_backpressure:has_authentication(BP,{config},write) of
 				true ->
 					ok;
 				false ->
