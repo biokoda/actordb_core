@@ -5,7 +5,8 @@
 -module(actordb_config).
 -include_lib("actordb_core/include/actordb.hrl").
 -export([exec/1, exec/2]).
-
+-export([cmd/2]).
+-export([test/0]).
 % Replacement for actordb_cmd
 % Query/change actordb config.
 
@@ -42,11 +43,11 @@ exec(BP,Sql) ->
 	exec1(Init,cmd([],butil:tobin(Sql))).
 
 exec1(true,Cmds) ->
-	_Reads  = [S || S <- Cmds, element(1,S) == select],
+	Reads  = [S || S <- Cmds, element(1,S) == select],
 	Writes = [S || S <- Cmds, element(1,S) /= select],
 	case Writes of
 		[] ->
-			ok;
+			do_reads(Reads);
 		_ ->
 			Out = interpret_writes(Writes),
 			case actordb_sharedstate:write_global(Out) of
@@ -86,7 +87,7 @@ exec1(false,Cmds) ->
 	Me = bkdcore_changecheck:read_node(butil:tolist(node())),
 	case lists:member(Me,[bkdcore_changecheck:read_node(Nd) || Nd <- Nodes1]) of
 		false ->
-			throw(local_node_missing);
+			throw({error,local_node_missing});
 		true ->
 			ok
 	end,
@@ -97,6 +98,34 @@ exec1(false,Cmds) ->
 		E ->
 			E
 	end.
+
+% If we get more than one read, we will only process the first. 
+% Getting more than one is a bug.
+% Nodes/groups always return entire node/group list for now.
+do_reads([S|_]) ->
+	[#table{name = Table}] = S#select.tables,
+	Nodes = actordb_sharedstate:read_global(nodes),
+	Groups = actordb_sharedstate:read_global(groups),
+	case Table of
+		<<"nodes">> ->
+			% For every node, get group list, create a list of [{NodeName,GroupName}]
+			NL = lists:flatten([[{butil:tobin(Nd),butil:tobin(Grp)} || 
+				Grp <- bkdcore:node_membership(element(1,bkdcore_changecheck:read_node(Nd)))] 
+				|| Nd <- Nodes]),
+			{ok,[{columns,{<<"name">>,<<"group_name">>}},{rows,NL}]};
+		<<"groups">> ->
+			NG = [{butil:tobin(Nm),butil:tobin(Typ)} || {Nm,_Nds,Typ,_Opt} <- Groups],
+			{ok,[{columns,{<<"name">>,<<"type">>}},{rows,NG}]};
+		<<"users">> ->
+			ML = mngmnt_execute0(S),
+			KL = [<<"id">>,<<"username">>,<<"host">>],
+			{ok,[{columns,list_to_tuple(KL)},{rows,map_rows(ML,KL)}]}
+	end.
+
+map_rows([Map|MT],KL) ->
+	[list_to_tuple([maps:get(K,Map) || K <- KL, K /= <<"sha">>])|map_rows(MT,KL)];
+map_rows([],_) ->
+	[].
 
 insert_to_grpnd(Cmds) ->
 	Grp1 = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"groups">>]),
@@ -112,13 +141,22 @@ insert_to_grpnd(Cmds) ->
 
 	{Nodes1,Grp3}.
 
-% interpret_writes([H|T],L) when element(1,H) == management ->
-% 	interpret_writes(T,[mngmnt_execute0(H)|L]);
 interpret_writes(Cmds) ->
+	% 1.Take existing
+	% 2.Check inserts don't overwrite
+	% 3.Combine inserts and existing
+	% 4.Process updates/deletes
 	ExistingNodes = actordb_sharedstate:read_global(nodes),
 	ExistingGroups = actordb_sharedstate:read_global(groups),
+	interpret_writes(Cmds,ExistingNodes,ExistingGroups).
+interpret_writes(Cmds,ExistingNodes,ExistingGroups) ->
 	Users = [mngmnt_execute0(I) || I <- Cmds, element(1,I) == management],
-	{InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
+	% {InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
+	NewNodes = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"nodes">>]),
+	NewGroups = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"groups">>]),
+	InsertGroups = [{butil:toatom(GName),[],butil:toatom(GType),[]} || {GName,GType} <- NewGroups],
+	InsertNodes = [node_name(Nd) || {Nd,_} <- NewNodes],
+	NodeUpdates = [U || U <- Cmds, U#update.table == <<"nodes">>],
 	case InsertNodes -- ExistingNodes of
 		InsertNodes ->
 			ok;
@@ -132,14 +170,113 @@ interpret_writes(Cmds) ->
 			throw({error,"insert_on_existing_group"})
 	end,
 	Nodes = InsertNodes++ExistingNodes,
-	Groups = InsertGroups++ExistingGroups,
-	interpret_writes1([{nodes,Nodes},{groups,Groups}]++Users,[]).
+	% New groups have no nodes and new nodes are not a part of any groups yet.
+	Groups = add_nodes_if_missing(NewNodes,InsertGroups++ExistingGroups),
+	% Now check for updates
+	case catch node_update(Nodes,Groups,NodeUpdates) of
+		{'EXIT',_} ->
+			GroupsFinal = NodeFinal = [],
+			throw({error,unsupported_update});
+		{NodeFinal,GroupsFinal} ->
+			ok
+	end,
+	interpret_writes1([{nodes,NodeFinal},{groups,GroupsFinal}]++Users,[]).
 interpret_writes1([{_,[]}|T],L) ->
 	interpret_writes1(T,L);
 interpret_writes1([{K,V}|T],L) ->
 	interpret_writes1(T,[{K,V}|L]);
 interpret_writes1([],L) ->
 	L.
+
+% New nodes, list of all groups (including just added ones)
+add_nodes_if_missing([{Nd1,Grp1}|T],Grps) ->
+	Grp = butil:toatom(Grp1),
+	Nd = element(1,bkdcore_changecheck:read_node(node_name(Nd1))),
+	case lists:keyfind(Grp,1,Grps) of
+		false ->
+			throw({error,node_to_unknown_group});
+		{Grp,Nodes,Type,Opt} ->
+			case lists:member(Nd,Nodes) of
+				true ->
+					add_nodes_if_missing(T,Grps);
+				false ->
+					NG = {Grp,[Nd|Nodes],Type,Opt},
+					NGL = lists:keystore(Grp,1,Grps,NG),
+					add_nodes_if_missing(T,NGL)
+			end
+	end;
+add_nodes_if_missing([],G) ->
+	G.
+
+node_update(Nodes,Groups,[U|T]) ->
+	#condition{nexo = Op, op1 = FromKey, op2 = FromVal} = U#update.conditions,
+	case U#update.set of
+		[{set,<<"name">>,To}] when FromKey#key.name == <<"name">> ->
+			ok;
+		_ ->
+			To = undefined,	
+			throw({error,only_name_updatable})
+	end,
+	From = FromVal#value.value,
+	case Op of
+		eq ->
+			Node = butil:tolist(From),
+			case lists:member(Node,Nodes) of
+				true ->
+					ok;
+				false ->
+					throw({error,update_nomatch})
+			end;
+		like ->
+			case like_match_list(From,Nodes) of
+				[] = Node ->
+					throw({error,update_nomatch});
+				[Node] ->
+					ok;
+				[_,_|_] = Node ->
+					throw({error,update_match_multiple})
+			end
+	end,
+	BNew = element(1,bkdcore_changecheck:read_node(butil:tolist(To))),
+	BOld = element(1,bkdcore_changecheck:read_node(butil:tolist(Node))),
+	NewGroups = replace_nd_in_grp(BOld,BNew,Groups),
+	node_update([butil:tolist(To)|Nodes--[Node]],NewGroups,T);
+node_update(Nodes,Groups,[]) ->
+	{Nodes,Groups}.
+
+replace_nd_in_grp(Old,New,[{GrpNm,Nodes,GrpTyp,GrpParam}|T]) ->
+	case lists:member(Old,Nodes) of
+		true ->
+			[{GrpNm,[New|Nodes--[Old]],GrpTyp,GrpParam}|replace_nd_in_grp(Old,New,T)];
+		false ->
+			[{GrpNm,Nodes,GrpTyp,GrpParam}|replace_nd_in_grp(Old,New,T)]
+	end;
+replace_nd_in_grp(_,_,[]) ->
+	[].
+
+rematch(match) ->
+	true;
+rematch({match,_}) ->
+	true;
+rematch(_) ->
+	false.
+
+like_match_list(Pattern,Nodes) ->
+	Regex = like_to_regex(Pattern),
+	{ok,R} = re:compile(Regex),
+	[Nd || Nd <- Nodes, rematch(re:run(Nd,R))].
+
+like_to_regex(Bin) ->
+	case binary:split(Bin,<<"%">>,[global]) of
+		[<<>>,Str] when byte_size(Str) > 0 ->
+			["^.*?",Str,"$"];
+		[<<>>,Str,<<>>] when byte_size(Str) > 0 ->
+			["^.*?",Str,".*?$"];
+		[Str,<<>>] when byte_size(Str) > 0 ->
+			["^",Str,".*?$"];
+		[Bin] ->
+			["^",Bin,"$"]
+	end.
 
 simple_values([[VX|_] = H|T],L) when element(1,VX) == value; element(1,VX) == function ->
 	simple_values(T,[list_to_tuple([just_value(V) || V <- H])|L]);
@@ -202,8 +339,9 @@ cmd_select(P,R,_Bin) ->
 cmd_insert(P,#insert{table = #table{name = Table}, values = V},_Bin) ->
 	[#insert{table = Table, values = V}|P].
 
-cmd_update(P,#update{table = #table{name = Table}} = R,_Bin) ->
-	[R#update{table = Table}|P].
+cmd_update(P,#update{table = #table{name = Table}, set = Setlist} = R,_Bin) ->
+	Set1 = [S#set{value = just_value(S#set.value)} || S <- Setlist],
+	[R#update{table = Table, set = Set1}|P].
 
 cmd_delete(P,R,_Bin) ->
 	[R|P].
@@ -461,3 +599,41 @@ condition(_, _, false) ->
 	false;
 condition([],_,true) ->
 	true.
+
+
+
+test() ->
+	Nodes = ["alfa","beta","omega"],
+	["omega"] = like_match_list(<<"%ga">>,Nodes),
+	["beta"] = like_match_list(<<"%et%">>,Nodes),
+	["alfa"] = like_match_list(<<"a%">>,Nodes),
+
+	From = bkdcore:node_name(),
+	Tob = butil:tobin([From,"_test_update"]),
+	To = butil:tolist(Tob),
+	ExistingNodes = actordb_sharedstate:read_global(nodes),
+	[{GrpName,[From],cluster,[]}] = ExistingGroups = actordb_sharedstate:read_global(groups),
+	
+	UpdSql = ["update nodes set name='",To,"' where name like '",binary:first(From),"%';"],
+	Cmd = cmd([],butil:tobin([UpdSql])),
+	{NewNodesRaw,[{GrpName,NewNodesB,cluster,[]}]} = node_update(ExistingNodes,ExistingGroups,Cmd),
+	[] = NewNodesRaw -- [To],
+	[] = NewNodesB -- [Tob],
+
+	Newb = <<"newnode@127.0.0.1:43801">>,
+	New = butil:tolist(Newb),
+	NewSql = ["insert into nodes values ('",New,"','",butil:tobin(GrpName),"');"],
+	Cmd1 = cmd([],butil:tobin([NewSql,UpdSql])),
+	[{groups,[OutG]},{nodes,OutN}] = interpret_writes(Cmd1),
+	GrpNodes = element(2,OutG),
+	[] = GrpNodes -- [element(1,bkdcore_changecheck:read_node(New)),Tob],
+	[] = OutN -- [New,To],
+	ok.
+
+	% ok.
+
+
+
+
+
+
