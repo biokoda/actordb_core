@@ -42,12 +42,47 @@ exec_schema(BP,Sql) ->
 	
 	case catch actordb_cmd:compare_schema(Types,Parsed) of
 		{ok,_} ->
-			ok;
+			Existing = actordb_sharedstate:read_global('schema.yaml'),
+			Merged = merge_schema(L,Existing),
+			case actordb_sharedstate:write_global([{'schema.yaml',Merged}]) of
+				ok ->
+					{ok,{changes,1,1}};
+				Err ->
+					Err
+			end;
 		{errr,E} ->
 			throw({error,E});
 		E ->
 			?AERR("Cant parse schema ~p",[E]),
 			throw({error,schema_unparsable})
+	end.
+
+merge_schema([{Type,Schema}|T],Ex) ->
+	case lists:keyfind(Type,1,Ex) of
+		false ->
+			merge_schema(T,[{Type,Schema}|Ex]);
+		{Type,Old} -> %[{_,_}|_] = 
+			% ExSch = butil:ds_val("schema",Old),
+			case Old of
+				[{_,_}|_] ->
+					SubType = butil:ds_val("type",Old);
+				_ ->
+					SubType = "actor"
+			end,
+			ExSch = get_schema(Old),
+			NewSch = get_schema(Schema),
+			Merged = {Type,[{"type",SubType},{"schema",ExSch++NewSch}]},
+			merge_schema(T,lists:keystore(Type,1,Ex,Merged))
+	end;
+merge_schema([],Ex) ->
+	Ex.
+
+get_schema(Schema) ->
+	case Schema of
+		[{_,_}|_] ->
+			butil:ds_val("schema",Schema);
+		NewSch ->
+			NewSch
 	end.
 
 tol(Statements) ->
@@ -376,7 +411,8 @@ cmd(P,Bin,Tuple) ->
 		#delete{} = R ->
 			cmd_delete(P,R,Bin);
 		_ when is_tuple(Tuple), is_tuple(element(1,Tuple)), is_binary(element(2,Tuple)) ->
-			cmd(cmd(P,Bin,element(1,Tuple)), element(2,Tuple));
+			[This,Next] = binary:split(Bin,element(2,Tuple)),
+			cmd(cmd(P,This,element(1,Tuple)), Next);
 		_ ->
 			{error,bad_query}
 	end.
