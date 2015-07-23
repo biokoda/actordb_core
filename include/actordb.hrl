@@ -64,10 +64,6 @@
 
 -type sql() :: show() | select() | update() | delete() | insert().
 
-
-
-
-
 -record(management, {action :: action(), data :: account() | permission() }).
 -record(account, {access}).
 -record(permission, {on, account, conditions}).

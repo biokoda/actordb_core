@@ -70,14 +70,20 @@ stop_caller(P) ->
 % Store data inside connection ets (for instance prepared statement info)
 save(#caller{ets = Ets},K,V) ->
 	butil:ds_add(K,V,Ets);
+save(L,K,V) when is_list(L) ->
+	[{K,V}|L];
 save(undefined,_,_) ->
 	undefined.
 getval(#caller{ets = Ets},K) ->
 	butil:ds_val(K,Ets);
+getval(L,K) when is_list(L) ->
+	butil:ds_val(K,L);
 getval(undefined,_) ->
 	undefined.
 delval(#caller{ets = Ets},K) ->
 	butil:ds_rem(K,Ets);
+delval(L,K) when is_list(L) ->
+	lists:delete(K,L);
 delval(undefined,_) ->
 	ok.
 

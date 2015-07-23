@@ -32,7 +32,25 @@ parse(Input) when is_binary(Input) ->
 
 -spec 'sql'(input(), index()) -> parse_result().
 'sql'(Input, Index) ->
-  p(Input, Index, 'sql', fun(I,D) -> (p_choose([fun 'set_query'/2, fun 'select_query'/2, fun 'update_query'/2, fun 'insert_query'/2, fun 'delete_query'/2, fun 'show_query'/2, fun 'desc_query'/2, fun 'use_query'/2, fun 'account_management_query'/2, fun 'commit'/2, fun 'rollback'/2, fun 'print'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
+  p(Input, Index, 'sql', fun(I,D) -> (p_choose([fun 'set_query'/2, fun 'select_query'/2, fun 'update_query'/2, fun 'insert_query'/2, fun 'delete_query'/2, fun 'show_query'/2, fun 'desc_query'/2, fun 'use_query'/2, fun 'account_management_query'/2, fun 'commit'/2, fun 'rollback'/2, fun 'print'/2, fun 'actor'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
+
+-spec 'actor'(input(), index()) -> parse_result().
+'actor'(Input, Index) ->
+  p(Input, Index, 'actor', fun(I,D) -> (p_seq([p_regexp(<<"(?i)actor">>), p_optional(fun 'space'/2), fun 'key'/2, p_optional(fun 'space'/2), p_optional(fun 'actor_kv'/2)]))(I,D) end, fun(Node, _Idx) ->
+    [_,_,Type,_,Type1|_] = Node,
+    {actor,binary_to_atom(Type,latin1),Type1}
+ end).
+
+-spec 'actor_kv'(input(), index()) -> parse_result().
+'actor_kv'(Input, Index) ->
+  p(Input, Index, 'actor_kv', fun(I,D) -> (p_optional(p_regexp(<<"(?i)kv">>)))(I,D) end, fun(Node, _Idx) ->
+    case Node of
+        <<_/binary>> when byte_size(Node) > 0 ->
+            kv;
+        _ ->
+            actor
+    end
+ end).
 
 -spec 'use_query'(input(), index()) -> parse_result().
 'use_query'(Input, Index) ->

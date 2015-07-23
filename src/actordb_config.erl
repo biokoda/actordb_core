@@ -4,7 +4,7 @@
 
 -module(actordb_config).
 -include_lib("actordb_core/include/actordb.hrl").
--export([exec/1, exec/2]).
+-export([exec/1, exec/2, exec_schema/1, exec_schema/2]).
 -export([cmd/2]).
 -export([test/0]).
 % Replacement for actordb_cmd
@@ -14,6 +14,44 @@
 % Initialize:
 % actordb_config:exec("insert into groups values ('grp1','cluster');insert into nodes values ('testnd','grp1');CREATE USER 'monty' IDENTIFIED BY 'some_pass';").
 % actordb_config:exec("insert into groups values ('grp1','cluster');insert into nodes values (localnode(),'grp1');CREATE USER 'monty' IDENTIFIED BY 'some_pass';").
+
+% Schema:
+% actordb_config:exec_schema("actor type1; CREATE TABLE tab (id INTEGER PRIMARY KEY, txt TEXT); ALTER TABLE tab ADD i INTEGER; actor counters kv; CREATE TABLE actors (id TEXT UNIQUE, hash INTEGER, val INTEGER);").
+
+exec_schema(Sql) ->
+	exec_schema([{canempty,true}],Sql).
+
+exec_schema(BP,Sql) ->
+	auth(BP,false),
+	case actordb_schema:types() of
+		Types when is_list(Types) ->
+			ok;
+		Types ->
+			throw({error,db_not_initialized})
+	end,
+	% actordb_sqlparse cares about actor statements and leaves sql statements intact.
+	{[{{_Type,_,_},_,_Statements}|_] = L1,_} = actordb_sqlparse:parse_statements(BP,butil:tobin(Sql)),
+	
+	L = [case Sub of
+	[<<"kv">>] ->
+		{butil:tolist(Type),[{"type","kv"},{"schema",tol(Statements)}]};
+	[_|_] ->
+		{butil:tolist(Type),tol(Statements)}
+	end || {{Type,Sub,_},_,Statements} <- L1],
+	Parsed = actordb_util:parse_cfg_schema(L),
+	
+	case catch actordb_cmd:compare_schema(Types,Parsed) of
+		{ok,_} ->
+			ok;
+		{errr,E} ->
+			throw({error,E});
+		E ->
+			?AERR("Cant parse schema ~p",[E]),
+			throw({error,schema_unparsable})
+	end.
+
+tol(Statements) ->
+	[butil:tolist(S) || S <- Statements].
 
 exec(Sql) ->
 	exec(undefined,Sql).
@@ -27,8 +65,14 @@ exec(BP,Sql) ->
 		_ ->
 			Init = true
 	end,
+	auth(BP,Init),
+	exec1(Init,cmd([],butil:tobin(Sql))).
+
+auth(BP,Init) ->
 	case BP of
 		undefined ->
+			ok;
+		[_|_] ->
 			ok;
 		_ when Init ->
 			case actordb_backpressure:has_authentication(BP,{config},write) of
@@ -39,8 +83,7 @@ exec(BP,Sql) ->
 			end;
 		_ ->
 			ok
-	end,
-	exec1(Init,cmd([],butil:tobin(Sql))).
+	end.
 
 exec1(true,Cmds) ->
 	Reads  = [S || S <- Cmds, element(1,S) == select],
@@ -320,8 +363,8 @@ cmd(P,Bin,Tuple) ->
 			{error,bad_query};
 		% #show{} = R ->
 		% 	cmd_show(P,R);
-		create_table ->
-			cmd_create(P,Bin);
+		% create_table ->
+		% 	cmd_create(P,Bin);
 		#management{} ->
 			[Tuple|P];
 		#select{} = R ->
@@ -338,9 +381,9 @@ cmd(P,Bin,Tuple) ->
 			{error,bad_query}
 	end.
 
-cmd_create(_P,_Bin) ->
-	% Only in change schema...
-	ok.
+% cmd_create(_P,_Bin) ->
+% 	% Only in change schema...
+% 	ok.
 
 cmd_select(P,R,_Bin) ->
 	[R|P].

@@ -1,11 +1,10 @@
 % This Source Code Form is subject to the terms of the Mozilla Public
 % License, v. 2.0. If a copy of the MPL was not distributed with this
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
-
 -module(actordb_sqlparse).
 % -compile(export_all).
 -export([parse_statements/1,parse_statements/2,parse_statements/3,split_statements/1, check_flags/2]).
--export([split_actor/1]).
+-export([split_actor/1,split_actor/2]).
 -include_lib("actordb_core/include/actordb.hrl").
 -define(LIST_LIMIT,30000).
 -define(A(A),(A == $a orelse A == $A)).
@@ -33,7 +32,10 @@
 -define(Y(Y),(Y == $y orelse Y == $Y)).
 -define(GV(P,V),actordb_backpressure:getval(P,V)).
 
-
+% Organic hand crafted sql parser.
+% Or to be precise an sql segmenter with some additional stuff.
+% It parses actor statements, figures out of this is a write statement, parses
+%  any {{}} script stuff and splits sql statements into a list. 
 
 % Returns: {[{Actors,IsWrite,Statements},..],IsWrite}
 % Actors: {Type,[Actor1,Actor2,Actor3,...],[Flag1,Flag2]} |
@@ -48,11 +50,11 @@
 % 1. Fixed list of actors
 % 2. all actors of some type
 % 3. actors as a result of a query preceing current block
-parse_statements(Bin) ->%exported1
+parse_statements(Bin) ->
 	parse_statements(undefined,Bin).
-parse_statements(BP,Bin) ->%exported2
+parse_statements(BP,Bin) ->
 	parse_statements(BP,Bin,undefined).
-parse_statements(BP,Bin,Actors) ->%exported3
+parse_statements(BP,Bin,Actors) ->
 	L = split_statements(rem_spaces(Bin)),
 	parse_statements(BP,L,[],[],Actors,[],false,false).
 
@@ -104,7 +106,7 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 				{prepare,PrepRem} ->
 					case parse_prepare(rem_spaces(PrepRem)) of
 						{delete,Name} ->
-							{_ActorType,SqlId,_Types} = actordb_backpressure:getval(BP,{prepared,Name}),
+							{_ActorType,SqlId,_Types} = ?GV(BP,{prepared,Name}),
 							ok = actordb_sharedstate:delete_prepared(SqlId),
 							actordb_backpressure:delval(BP,{prepared,Name}),
 							parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite, GIsWrite);
@@ -117,7 +119,7 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 					end;
 				{execute,ExecRem} ->
 					{Name,Vals1} = parse_execute(rem_spaces(ExecRem)),
-					{_ActorType,SqlId,Types} = actordb_backpressure:getval(BP,{prepared,Name}),
+					{_ActorType,SqlId,Types} = ?GV(BP,{prepared,Name}),
 					case SqlId of
 						<<"#r",_/binary>> ->
 							IsWriteH = false;
@@ -683,6 +685,8 @@ split_actor(CanEmpty,Bin) ->
 		Res ->
 			Res
 	end.
+split_actor(CE,<<" ",Bin/binary>>,Word,Type,L) when Type == undefined, Word /= <<>> ->
+	split_actor(CE,Bin,<<>>,Word,L);
 split_actor(CE,<<" ",Bin/binary>>,Word,Type,L) ->
 	split_actor(CE,Bin,Word,Type,L);
 split_actor(CE,<<"(",Bin/binary>>,Word,_,L) ->
@@ -710,8 +714,9 @@ split_actor(_CE,<<"foreach ",Bin/binary>>,<<>>,Type,[]) ->
 split_actor(_CE,<<"FOREACH ",Bin/binary>>,<<>>,Type,[]) ->
 	{Var,Col,Global,Flags} = split_foru(Bin,<<>>,undefined,undefined),
 	{Type,Global,Col,Var,Flags};
+split_actor(CE,<<";",_/binary>>,Word,Type,L) when Type == undefined ->
+	split_actor(CE,<<>>,<<>>,Word,L);
 split_actor(CE,<<";",_/binary>>,Word,Type,L) ->
-	% {Type,[Word|L],[]};
 	split_actor(CE,<<>>,Word,Type,L);
 split_actor(CE,<<C,Bin/binary>>,Word,Type,L) ->
 	split_actor(CE,Bin,<<Word/binary,C>>,Type,L);
@@ -721,7 +726,7 @@ split_actor(CE,<<>>,Word,Type,L) ->
 			throw({error,empty_actor_name});
 		{'EXIT',_} ->
 			throw({error,invalid_actor_name});
-		_ ->
+		_X ->
 			{Type,[Word|L],[]}
 	end.
 
@@ -754,6 +759,14 @@ check_flags(<<"SYNC",Rem/binary>>,L) ->
 	check_flags(Rem,[fsync|L]);
 check_flags(<<"Sync",Rem/binary>>,L) ->
 	check_flags(Rem,[fsync|L]);
+check_flags(<<"KV",Rem/binary>>,L) ->
+	check_flags(Rem,[kv|L]);
+check_flags(<<"kv",Rem/binary>>,L) ->
+	check_flags(Rem,[kv|L]);
+check_flags(<<"Kv",Rem/binary>>,L) ->
+	check_flags(Rem,[kv|L]);
+check_flags(<<"kV",Rem/binary>>,L) ->
+	check_flags(Rem,[kv|L]);
 check_flags(<<";">>,L) ->
 	L;
 check_flags(<<>>,L) ->

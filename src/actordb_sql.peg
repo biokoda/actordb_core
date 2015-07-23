@@ -2,7 +2,27 @@
 
 
 sql <- set_query / select_query / update_query / insert_query / delete_query / 
-    show_query / desc_query / use_query / account_management_query / commit / rollback / print ~;
+    show_query / desc_query / use_query / account_management_query / commit / rollback / print / actor ~;
+
+% --------------- ACTOR
+
+actor <- #(?i)actor# space? key space? actor_kv? `
+    [_,_,Type,_,Type1|_] = Node,
+    {actor,binary_to_atom(Type,latin1),Type1}
+`;
+
+actor_kv <- #(?i)kv#? `
+    case Node of
+        <<_/binary>> when byte_size(Node) > 0 ->
+            kv;
+        _ ->
+            actor
+    end
+`;
+
+%actor_name <- '(' space? '*'? space? ')' space? `
+%    []
+%`;
 
 % --------------- USE
 
