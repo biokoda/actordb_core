@@ -94,6 +94,15 @@ exec1(false,Cmds) ->
 
 	case actordb_sharedstate:init_state(Nodes1,Grp3,[{auth,Auths},{users,Users}],[{'schema.yaml',[]}]) of
 		ok ->
+			case get(adbt) of
+				true ->
+					timer:sleep(1000),
+					% After initialization we need a session for further requests.
+					{Username,Password,_} = hd(Usrs2),
+					put(bp,actordb_backpressure:start_caller(Username, Password));
+				_ ->
+					ok
+			end,
 			{ok,{changes,1,1}};
 		E ->
 			E
@@ -119,7 +128,7 @@ do_reads([S|_]) ->
 		<<"users">> ->
 			ML = mngmnt_execute0(S),
 			KL = [<<"id">>,<<"username">>,<<"host">>],
-			{ok,[{columns,list_to_tuple(KL)},{rows,map_rows(ML,KL)}]}
+			{ok,[{columns,list_to_tuple(KL)},{rows,map_rows(butil:maplistsort(<<"id">>,ML),KL)}]}
 	end.
 
 map_rows([Map|MT],KL) ->
@@ -180,7 +189,7 @@ interpret_writes(Cmds,ExistingNodes,ExistingGroups) ->
 		{NodeFinal,GroupsFinal} ->
 			ok
 	end,
-	interpret_writes1([{nodes,NodeFinal},{groups,GroupsFinal}]++Users,[]).
+	interpret_writes1(lists:flatten([{nodes,NodeFinal},{groups,GroupsFinal},Users]),[]).
 interpret_writes1([{_,[]}|T],L) ->
 	interpret_writes1(T,L);
 interpret_writes1([{K,V}|T],L) ->

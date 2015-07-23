@@ -1,7 +1,8 @@
 % --------------- BASED ON https://github.com/altenwald/myproto/blob/master/src/mysql_proto.peg
 
 
-sql <- set_query / select_query / update_query / insert_query / delete_query / show_query / desc_query / use_query / account_management_query / commit / rollback ~;
+sql <- set_query / select_query / update_query / insert_query / delete_query / 
+    show_query / desc_query / use_query / account_management_query / commit / rollback / print ~;
 
 % --------------- USE
 
@@ -451,6 +452,7 @@ rename_user <- #(?i)rename +user# `rename_user`;
 create_user <- #(?i)create +user# `create_user`;
 create_view <- #(?i)create +view# `create_view`;
 grant_option <- #(?i)grant +option# `grant_option`;
+print <- #(?i)print# `print`;
 write <- #(?i)write# `write`;
 read <- #(?i)read# `read`;
 execute <- #(?i)execute# `execute`;

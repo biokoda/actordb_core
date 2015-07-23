@@ -18,8 +18,17 @@ start_caller() ->
 	butil:ds_add(cursize,0,E),
 	#caller{ets = E}.
 start_caller(<<>>, <<>>) ->
+	% Only if no state or no users
+	Authentication1 = actordb_sharedstate:read_global_auth(),
+	case Authentication1 of
+		nostate ->
+			Authentication = [];
+		[] = Authentication ->
+			ok;
+		[_|_] = Authentication ->
+			throw({error,invalid_login})
+	end,
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
-	Authentication = actordb_sharedstate:read_global_auth(),
 	butil:ds_add(auth,Authentication,E),
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
@@ -131,6 +140,8 @@ dec_callcount() ->
 dec_callcount(N) when is_integer(N) ->
 	ets:update_counter(bpcounters,global_count,-N);
 % Local decrement
+dec_callcount(undefined) ->
+	ok;
 dec_callcount(P) ->
 	ets:update_counter(P#caller.ets,curcount,-1).
 
@@ -138,6 +149,8 @@ inc_callsize(N) ->
 	ets:update_counter(bpcounters,global_size,N).
 inc_callsize(P,N) ->
 	ets:update_counter(P#caller.ets,cursize,N).
+dec_callsize(undefined) ->
+	ok;
 dec_callsize(N) ->
 	ets:update_counter(bpcounters,global_size,-N).
 dec_callsize(P,N) ->
@@ -222,18 +235,3 @@ has_authentication([_|T],Type,A) ->
 has_authentication([],_,_) ->
 	false.
 
-% has_authentication(_,_,_,[])->
-% 	true;
-% has_authentication(P,ActorType,Action,Authentication)->
-	% Authentication = butil:ds_val(auth,P#caller.ets),
-	% Key = lists:keyfind(P#caller.login,3,Authentication),
-	% case Key of
-	% 	false ->
-	% 		false;
-	% 	{'*',_,_,ActionList} ->
-	% 		lists:member(Action,ActionList);
-	% 	{ActorType,_,_,ActionList} ->
-	% 		lists:member(Action,ActionList);
-	% 	_ ->
-	% 		false
-	% end.

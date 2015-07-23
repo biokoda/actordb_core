@@ -32,7 +32,7 @@ parse(Input) when is_binary(Input) ->
 
 -spec 'sql'(input(), index()) -> parse_result().
 'sql'(Input, Index) ->
-  p(Input, Index, 'sql', fun(I,D) -> (p_choose([fun 'set_query'/2, fun 'select_query'/2, fun 'update_query'/2, fun 'insert_query'/2, fun 'delete_query'/2, fun 'show_query'/2, fun 'desc_query'/2, fun 'use_query'/2, fun 'account_management_query'/2, fun 'commit'/2, fun 'rollback'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
+  p(Input, Index, 'sql', fun(I,D) -> (p_choose([fun 'set_query'/2, fun 'select_query'/2, fun 'update_query'/2, fun 'insert_query'/2, fun 'delete_query'/2, fun 'show_query'/2, fun 'desc_query'/2, fun 'use_query'/2, fun 'account_management_query'/2, fun 'commit'/2, fun 'rollback'/2, fun 'print'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
 
 -spec 'use_query'(input(), index()) -> parse_result().
 'use_query'(Input, Index) ->
@@ -792,6 +792,10 @@ end
 -spec 'grant_option'(input(), index()) -> parse_result().
 'grant_option'(Input, Index) ->
   p(Input, Index, 'grant_option', fun(I,D) -> (p_regexp(<<"(?i)grant +option">>))(I,D) end, fun(_Node, _Idx) ->grant_option end).
+
+-spec 'print'(input(), index()) -> parse_result().
+'print'(Input, Index) ->
+  p(Input, Index, 'print', fun(I,D) -> (p_regexp(<<"(?i)print">>))(I,D) end, fun(_Node, _Idx) ->print end).
 
 -spec 'write'(input(), index()) -> parse_result().
 'write'(Input, Index) ->

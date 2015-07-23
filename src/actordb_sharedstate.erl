@@ -811,15 +811,3 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	set_global_state(actordb_conf:node_name(),State),
 	{ok,S#st{evnum = Evnum, waiting = false}}.
 
-
-
-
-% mngmnt_execute(Sql)->
-% 	ActorTypes = actordb:types(),
-% 	case ActorTypes of
-% 		schema_not_loaded ->
-% 			schema_not_loaded;
-% 		[_|_] ->
-% 				mngmnt_execute0(Sql)
-% 		end.
-
