@@ -301,8 +301,8 @@ show_dbs / show_view / shutdown / super / trigger / update / usage / insert / cr
 
 user_at_host <- param '@'? param? `
     case Node of
-        [{value,undefined,Username},<<"@">>,{value,undefined,Host}] ->
-            ok;
+        %[{value,undefined,Username},<<"@">>,{value,undefined,Host}] ->
+        %    ok;
         [{value,undefined,Username}|_] ->
             Host = <<>>
     end,

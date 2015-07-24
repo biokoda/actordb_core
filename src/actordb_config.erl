@@ -5,6 +5,7 @@
 -module(actordb_config).
 -include_lib("actordb_core/include/actordb.hrl").
 -export([exec/1, exec/2, exec_schema/1, exec_schema/2]).
+-export([lte/2, gte/2,lt/2,gt/2,eq/2,neq/2]).
 -export([cmd/2]).
 -export([test/0]).
 % Replacement for actordb_cmd
@@ -29,31 +30,33 @@ exec_schema(BP,Sql) ->
 		Types ->
 			throw({error,db_not_initialized})
 	end,
+
 	% actordb_sqlparse cares about actor statements and leaves sql statements intact.
 	{[{{_Type,_,_},_,_Statements}|_] = L1,_} = actordb_sqlparse:parse_statements(BP,butil:tobin(Sql)),
-	
+
 	L = [case Sub of
 	[<<"kv">>] ->
 		{butil:tolist(Type),[{"type","kv"},{"schema",tol(Statements)}]};
 	[_|_] ->
 		{butil:tolist(Type),tol(Statements)}
 	end || {{Type,Sub,_},_,Statements} <- L1],
-	Parsed = actordb_util:parse_cfg_schema(L),
 	
+	Existing = actordb_sharedstate:read_global('schema.yaml'),
+	Merged = merge_schema(L,Existing),
+	Parsed = actordb_util:parse_cfg_schema(Merged),
+
 	case catch actordb_cmd:compare_schema(Types,Parsed) of
 		{ok,_} ->
-			Existing = actordb_sharedstate:read_global('schema.yaml'),
-			Merged = merge_schema(L,Existing),
 			case actordb_sharedstate:write_global([{'schema.yaml',Merged}]) of
 				ok ->
 					{ok,{changes,1,1}};
 				Err ->
 					Err
 			end;
-		{errr,E} ->
+		{error,E} ->
 			throw({error,E});
 		E ->
-			?AERR("Cant parse schema ~p",[E]),
+			?AERR("Schema error: ~p",[E]),
 			throw({error,schema_unparsable})
 	end.
 
@@ -204,7 +207,9 @@ do_reads([S|_]) ->
 			NG = [{butil:tobin(Nm),butil:tobin(Typ)} || {Nm,_Nds,Typ,_Opt} <- Groups],
 			{ok,[{columns,{<<"name">>,<<"type">>}},{rows,NG}]};
 		<<"users">> ->
-			ML = mngmnt_execute0(S),
+			ML = mngmnt_execute0({users,actordb_sharedstate:read_global_users()}, 
+				{auth,actordb_sharedstate:read_global_auth()},
+				S),
 			KL = [<<"id">>,<<"username">>,<<"host">>],
 			{ok,[{columns,list_to_tuple(KL)},{rows,map_rows(butil:maplistsort(<<"id">>,ML),KL)}]}
 	end.
@@ -237,7 +242,9 @@ interpret_writes(Cmds) ->
 	ExistingGroups = actordb_sharedstate:read_global(groups),
 	interpret_writes(Cmds,ExistingNodes,ExistingGroups).
 interpret_writes(Cmds,ExistingNodes,ExistingGroups) ->
-	Users = [mngmnt_execute0(I) || I <- Cmds, element(1,I) == management],
+	Users = update_users({users,actordb_sharedstate:read_global_users()}, 
+		{auth,actordb_sharedstate:read_global_auth()},
+		[I || I <- Cmds, element(1,I) == management]),
 	% {InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
 	NewNodes = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"nodes">>]),
 	NewGroups = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"groups">>]),
@@ -274,6 +281,13 @@ interpret_writes1([{K,V}|T],L) ->
 	interpret_writes1(T,[{K,V}|L]);
 interpret_writes1([],L) ->
 	L.
+
+update_users(Users,Auth,[H|T]) ->
+	?AINF("UPDATE ~p",[H]),
+	{NU,NA} = mngmnt_execute0(Users,Auth,H),
+	update_users(NU,NA,T);
+update_users(U,A,[]) ->
+	[U,A].
 
 % New nodes, list of all groups (including just added ones)
 add_nodes_if_missing([{Nd1,Grp1}|T],Grps) ->
@@ -389,7 +403,7 @@ check_el(_,_) ->
 cmd(P,<<";",Rem/binary>>) ->
 	cmd(P,Rem);
 cmd(P,<<>>) ->
-	P;
+	lists:reverse(P);
 cmd(P,Bin) when is_binary(Bin) ->
 	cmd(P,Bin,actordb_sql:parse(Bin)).
 cmd(P,Bin,Tuple) ->
@@ -411,7 +425,10 @@ cmd(P,Bin,Tuple) ->
 		#delete{} = R ->
 			cmd_delete(P,R,Bin);
 		_ when is_tuple(Tuple), is_tuple(element(1,Tuple)), is_binary(element(2,Tuple)) ->
-			[This,Next] = binary:split(Bin,element(2,Tuple)),
+			RemBin = element(2,Tuple),
+			ThisSize = byte_size(Bin) - byte_size(RemBin),
+			NextSize = byte_size(RemBin),
+			<<This:ThisSize/binary,Next:NextSize/binary>> = Bin,
 			cmd(cmd(P,This,element(1,Tuple)), Next);
 		_ ->
 			{error,bad_query}
@@ -436,86 +453,97 @@ cmd_delete(P,R,_Bin) ->
 
 
 
-mngmnt_execute0({fail,{expected,_,_}})->
+mngmnt_execute0(_,_,{fail,{expected,_,_}})->
 	check_sql;
-mngmnt_execute0(#management{action = create, data = #account{access =
+mngmnt_execute0({users,Users},A,#management{action = create, data = #account{access =
 	[#value{name = <<"password">>, value = Password},
 	#value{name = <<"username">>, value = Username},
-	#value{name = <<"host">>, value = Host}]}})->
-		Index = increment_index(actordb_sharedstate:read_global_users_index()),
-		case actordb_sharedstate:read_global_users(Username,Host) of
+	#value{name = <<"host">>, value = Host}]}}) ->
+		Index = increment_index([Index||{Index,_,_,_} <- Users]),
+		case [ok || {_,U,_Host,_} <- Users, U == Username] of
 			[_|_] ->
-				user_exists;
+				throw({error,user_exists});
 			_ ->
-				write_user(Index,Username,Host,Password)
+				write_user({users,Users},A,Index,Username,Host,Password)
 		end;
 
 %should grant append?
-mngmnt_execute0(#management{action = grant, data = #permission{
-	on = #table{name = ActorType,alias = ActorType},
+mngmnt_execute0({users,Users},{auth,Auth},#management{action = grant, data = #permission{
+	on = On,
 	conditions = Conditions,
 	account = [#value{name = <<"username">>,value = Username},
-		#value{name = <<"host">>,value = Host}]}})->
+		#value{name = <<"host">>,value = _Host}]}})->
+	
+	case On of
+		#table{name = ActorType,alias = ActorType} ->
+			ok;
+		{all,_} ->
+			ActorType = '*'
+	end,
 	case {lists:keyfind(value,1,Conditions), 
 		Conditions -- [read,write], 
-		lists:member(butil:toatom(ActorType),actordb:types())} of
+		ActorType == '*' orelse lists:member(butil:toatom(ActorType),actordb:types())} of
 		{false,[],true} ->
-			case actordb_sharedstate:read_global_users(Username,Host) of
+			% case actordb_sharedstate:read_global_users(Username,Host) of
+			case [X || {_,U,_,_} = X <- Users, U == Username] of
 				[{UserIndex,_,_,Sha}] ->
-					merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions);
+					merge_replace_or_insert({users,Users},{auth,Auth},ActorType,UserIndex,Sha,Conditions);
 				_ ->
-					user_not_found
+					throw({error,user_not_found})
 			end;
 		{_,_,false} ->
-			check_actor_type;
+			throw({error,invalid_actor_type});
 		_ ->
-			not_supported
+			throw({error,query_not_supported})
 	end;
-mngmnt_execute0(#management{action = grant, data = _})->
-	not_supported;
+mngmnt_execute0(_,_,#management{action = grant, data = _})->
+	throw({error,not_supported});
 
-mngmnt_execute0(#management{action = drop, 
+mngmnt_execute0({users,AllUsers},{auth,Authentication},#management{action = drop, 
 	data = #account{access =[#value{name = <<"username">>,value = Username},
-	#value{name = <<"host">>,value = Host}]}}) ->
-	User = actordb_sharedstate:read_global_users(Username, Host),
-	AllUsers = actordb_sharedstate:read_global_users(),
+	#value{name = <<"host">>,value = _Host}]}}) ->
+	% User = actordb_sharedstate:read_global_users(Username, Host),
+	User = [X || {_,U,_,_} = X <- AllUsers, U == Username],
 	case User of
-		[]-> user_not_found;
+		[]-> throw({error,user_not_found});
 		[{UserIndex,_,_,_}] ->
 			RemUser = AllUsers -- User,
-			Authentication = actordb_sharedstate:read_global_auth(),
-			UserAuthentication = actordb_sharedstate:read_global_auth(UserIndex),
-			[{auth,Authentication -- UserAuthentication},
-			{users,RemUser}]
+			% Authentication = actordb_sharedstate:read_global_auth(),
+			UserAuthentication = [UI || {_,UI,_,_} <- Authentication, UI == UserIndex],
+			% UserAuthentication = actordb_sharedstate:read_global_auth(UserIndex),
+			{{users,RemUser},{auth,Authentication -- UserAuthentication}}
 	end;
-mngmnt_execute0(#management{action = drop, data = _}) ->
-	not_supported;
-mngmnt_execute0(#management{action = rename, 
+mngmnt_execute0(_,_,#management{action = drop, data = _}) ->
+	throw({error,not_supported});
+mngmnt_execute0({users,AllUsers},{auth,Auth},#management{action = rename, 
 	data = [#account{access = [#value{name = <<"username">>,value = Username},
 	#value{name = <<"host">>,value = Host}]},
 	#value{name = <<"username">>,value = ToUsername},
 	#value{name = <<"host">>,value = ToHost}]}) ->
-	User = actordb_sharedstate:read_global_users(Username, Host),
-	AllUsers = actordb_sharedstate:read_global_users(),
-	FutureUser = actordb_sharedstate:read_global_users(ToUsername, ToHost),
+	% User = actordb_sharedstate:read_global_users(Username, Host),
+	User = [X || {_,U,_,_} = X <- AllUsers, U == Username],
+	% AllUsers = actordb_sharedstate:read_global_users(),
+	% FutureUser = actordb_sharedstate:read_global_users(ToUsername, ToHost),
+	FutureUser = [X || {_,U,_,_} = X <- AllUsers, U == ToUsername],
 	case FutureUser of
 		[]->
 			case User of
-				[]-> user_not_found;
+				[]-> throw({error,user_not_found});
 				[{Index,Username,Host,Sha}] ->
 					RemUser = AllUsers -- User,
-					[{users,[{Index,ToUsername,ToHost,Sha}|RemUser]}]
+					{{users,[{Index,ToUsername,ToHost,Sha}|RemUser]},{auth,Auth}}
 			end;
-		_ -> user_exists
+		_ -> throw({error,user_exists})
 	end;
-mngmnt_execute0(#management{action = rename, data = _ }) ->
-	not_supported;
-mngmnt_execute0(#management{action = revoke,
+mngmnt_execute0(_,_,#management{action = rename, data = _ }) ->
+	throw({error,not_supported});
+mngmnt_execute0({users,Users},{auth,Authentication},#management{action = revoke,
 	data = #permission{on = #table{name = ActorType,alias = ActorType},
 	account = [#value{name = <<"username">>, value = Username},#value{name = <<"host">>,value = Host}],
 	conditions = Conditions}}) ->
-	Authentication = actordb_sharedstate:read_global_auth(),
-	case actordb_sharedstate:read_global_users(Username, Host) of
+	% Authentication = actordb_sharedstate:read_global_auth(),
+	% case actordb_sharedstate:read_global_users(Username, Host) of
+	case [X || {_,U,_,_} = X <- Users, U == Username] of
 		[] -> user_not_found;
 		[{UserIndex,Username,Host,Sha}] ->
 			[{ActorType,UserIndex,Sha,OldConditions}] = lists:filter(fun(X)-> case X of
@@ -523,28 +551,30 @@ mngmnt_execute0(#management{action = revoke,
 				_ -> false end
 				end, Authentication),
 			NewConditions = OldConditions -- Conditions,
-			[{auth,(Authentication -- [{ActorType,UserIndex,Sha,OldConditions}])
-			++ [{ActorType,UserIndex,Sha,NewConditions}]}]
+			{{users,Users},{auth,(Authentication -- [{ActorType,UserIndex,Sha,OldConditions}])
+			++ [{ActorType,UserIndex,Sha,NewConditions}]}}
 	end;
-mngmnt_execute0(#management{action = revoke,data = _})->
-	not_supported;
-mngmnt_execute0(#management{action = setpasswd,
+mngmnt_execute0(_,_,#management{action = revoke,data = _})->
+	throw({error,not_supported});
+mngmnt_execute0({users,Users},{auth,Auth},#management{action = setpasswd,
 	data = #account{access = [#value{name = <<"password">>,value = Password},
 	#value{name = <<"username">>,value = Username},
 	#value{name = <<"host">>,value = Host}]}})->
-	Users = actordb_sharedstate:read_global_users(),
-	case actordb_sharedstate:read_global_users(Username, Host) of
-		[] -> user_not_found;
+	% Users = actordb_sharedstate:read_global_users(),
+	% case actordb_sharedstate:read_global_users(Username, Host) of
+	case [X || {_,U,_,_} = X <- Users, U == Username] of
+		[] -> throw({error,user_not_found});
 		[{UserIndex,Username,Host,_Sha}] = User ->
 			RemUser = Users -- User,
-			[{users,[{UserIndex,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}|RemUser]}]
+			{{users,[{UserIndex,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}|RemUser]},
+			{auth,Auth}}
 	end;
 
-mngmnt_execute0(#management{action = setpasswd, data = _})->
-	not_supported;
-mngmnt_execute0(#select{params = Params, tables = [#table{name = <<"users">>,alias = <<"users">>}],
+mngmnt_execute0(_,_,#management{action = setpasswd, data = _})->
+	throw({error,not_supported});
+mngmnt_execute0({users,Users},{auth,_Auth},#select{params = Params, tables = [#table{name = <<"users">>,alias = <<"users">>}],
 		conditions = Conditions, group = undefined,order = Order, limit = Limit,offset = Offset})->
-	Users = actordb_sharedstate:read_global_users(),%id,username,host,sha
+	% Users = actordb_sharedstate:read_global_users(),%id,username,host,sha
 	NumberOfUsers = length(Users),
 	Con = fun(UsersLO)->
 		case Conditions of
@@ -572,8 +602,8 @@ mngmnt_execute0(#select{params = Params, tables = [#table{name = <<"users">>,ali
 	end,
 	filter_by_keys_param(Params,Ordered);
 
-mngmnt_execute0(#select{params = _, tables = _, conditions = _,group = _,order = _, limit = _,offset = _})->
-	not_supported.
+mngmnt_execute0(_,_,#select{params = _, tables = _, conditions = _,group = _,order = _, limit = _,offset = _})->
+	throw({error,not_supported}).
 
 filter_by_keys_param(Params,Users)->
 	case Params of
@@ -614,21 +644,20 @@ increment_index(Indexes)->
 		IndexesNum -> lists:last(lists:sort(IndexesNum)) + 1
 	end.
 
-write_user(Index,Username,Host,Password) ->
-	case actordb_sharedstate:read_global_users() of
+write_user({users,U},A,Index,Username,Host,Password) ->
+	case U of
 		[] ->
-			[{users,[{Index,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}]}];
+			{{users,[{Index,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}]},A};
 		OtherUsers ->
-			[{users,[{Index,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}|OtherUsers]}]
+			{{users,[{Index,Username,Host,butil:sha256(<<Username/binary,";",Password/binary>>)}|OtherUsers]},A}
 	end.
 
-merge_replace_or_insert(ActorType,UserIndex,Sha,Conditions)->
-	Authentication = actordb_sharedstate:read_global_auth(),
-	case lists:filter(fun(X)-> case X of {ActorType,UserIndex,Sha,_} -> true; _ -> false end end, Authentication) of
+merge_replace_or_insert(U,{auth,A},ActorType,UserIndex,Sha,Conditions)->
+	case lists:filter(fun(X)-> case X of {ActorType,UserIndex,Sha,_} -> true; _ -> false end end, A) of
 	[]-> 
-		[{auth,[{ActorType,UserIndex,Sha,Conditions}|Authentication]}];
+		{U,{auth,[{ActorType,UserIndex,Sha,Conditions}|A]}};
 	Remove ->
-		[{auth,(Authentication -- Remove) ++ [{ActorType,UserIndex,Sha,Conditions}]}]
+		{U,{auth,(A -- Remove) ++ [{ActorType,UserIndex,Sha,Conditions}]}}
 	end.
 
 %NexoCondition is between op1 and op2Tail
@@ -654,18 +683,18 @@ conditions(Users,#condition{nexo = _, op1 = _, op2 = _} = Op,Part) ->
 		condition(Conditions,User)
 	end, Users).
 
-% lte(A,B)->
-% 	A =< B.
-% gte(A,B)->
-% 	A >= B.
-% lt(A,B)->
-% 	A < B.
-% gt(A,B)->
-% 	A > B.
-% eq(A,B)->
-% 	A =:= B.
-% neq(A,B)->
-% 	A =/= B.
+lte(A,B)->
+	A =< B.
+gte(A,B)->
+	A >= B.
+lt(A,B)->
+	A < B.
+gt(A,B)->
+	A > B.
+eq(A,B)->
+	A =:= B.
+neq(A,B)->
+	A =/= B.
 
 user_element(<<"id">>)->
 	1;

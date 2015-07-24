@@ -101,18 +101,6 @@ read_global_users(Username,Host) ->
 			end, OtherUsers)
 	end.
 
-read_global_users_index() ->
-	case ets:info(?GLOBALETS,size) of
-		undefined ->
-			nostate;
-		_ ->
-			case ets:match_object(?GLOBALETS,{users,'$1'}) of
-				[{users,OtherUsers}] ->
-					[Index||{Index,_,_,_} <- OtherUsers];
-				_ -> []
-			end
-	end.
-
 read_global(Key) ->
 	case ets:info(?GLOBALETS,size) of
 		undefined ->
