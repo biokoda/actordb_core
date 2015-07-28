@@ -391,7 +391,7 @@ import_legacy([H|T],Thr) ->
 	case get(<<"termstore">>) of
 		undefined ->
 			ok;
-		TermDb ->
+		{TermDb,_,_} ->
 			{ok,[[{columns,_},{rows,R}]]} = actordb_driver:exec_script(<<"select * from terms;">>,TermDb),
 			[begin
 				case VF of
@@ -438,7 +438,7 @@ import_db(Pth,Name,Thr) ->
 	{ok,Db} = actordb_driver:open(Name,actordb_util:hash(Name),wal),
 	Size = filelib:file_size(Pth),
 	cp_dbfile(F,Db,1,Size),
-	put(butil:tobin(Name),Db),
+	put(butil:tobin(Name),{Db,1,1}),
 	file:close(F),
 	case file:open(Pth++"-wal",[read,binary,raw]) of
 		{ok,Wal} ->
@@ -478,9 +478,21 @@ big_wal(F,<<Pgno:32/unsigned,DbSize:32/unsigned,WN:64,WTN:64,_:32,_:32,_:32,Name
 	case get(Name) of
 		undefined ->
 			ok;
-		Db ->
-			?AINF("Wal inject for ~p",[Name]),
-			Head = <<WTN:64,WN:64,Pgno:32/unsigned,DbSize:32/unsigned>>,
+		{Db,TN,TEN} ->
+			case WN + WTN of
+				0 when DbSize /= 0 ->
+					Term = TN,
+					Num = TEN,
+					put(Name,{Db,TN,TEN+1});
+				0 ->
+					Term = TN,
+					Num = TEN;
+				_ ->
+					Term = WTN,
+					Num = WN
+			end,
+			Head = <<Term:64,Num:64,Pgno:32/unsigned,DbSize:32/unsigned>>,
+			?AINF("Wal inject for ~p, term=~p, evnum=~p pgno=~p size=~p",[Name,WTN,WN,Pgno,DbSize]),
 			ok = actordb_driver:inject_page(Db,Page,Head)
 	end,
 	case file:read(F,144+4096) of

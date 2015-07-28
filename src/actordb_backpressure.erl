@@ -228,7 +228,7 @@ init(_) ->
 
 has_authentication(#caller{auth = Auth} = P,ActorType,Action)->
 	Auth = P#caller.auth,
-	has_authentication(Auth,ActorType,Action);
+	has_authentication(Auth,actordb_util:typeatom(ActorType),Action);
 
 % check for atom because of config. User must have explicit {config} type access.
 % For all other types, '*' is ok.

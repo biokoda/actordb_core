@@ -369,7 +369,7 @@ handle_call(Msg,From,P) ->
 			% 	[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			% Continue in doqueue
 			self() ! timeout,
-			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue), 
+			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue),
 				activity = actordb_local:actor_activity(P#dp.activity)}}
 	end.
 
@@ -861,7 +861,7 @@ read_call1(Sql,Recs,From,P) ->
 	% We could use seperate read/write connections. This also means there is a read and write
 	% sqlite page cache. After every write, read connection page cache must be cleared. How
 	% detrimental to performance that would be is something that needs to be tested.
-	% 
+	%
 	% Recompile driver with threadsafe=1 if using async reads.
 	%
 	% Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,read),
