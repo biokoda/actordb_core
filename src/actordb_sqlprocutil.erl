@@ -144,12 +144,14 @@ reply_maybe(P,N,[]) ->
 			% Because write to __transactions is safely replicated, transaction is guaranteed to be executed
 			%  before next write or read.
 			case Exec of
-				[{exec,From,{move,Node}}] ->
+				[{exec,From1,{move,Node}}] ->
 					NewActor = P#dp.actorname,
+					From = [case CC of _ when element(1,CC) == exec -> From1; _ -> CC end || CC <- P#dp.callfrom],
 					IsMove = true,
 					Msg = {move,actordb_conf:node_name()};
-				[{exec,From,{split,MFA,Node,OldActor,NewActor}}] ->
+				[{exec,From1,{split,MFA,Node,OldActor,NewActor}}] ->
 					IsMove = {split,MFA},
+					From = [case CC of _ when element(1,CC) == exec -> From1; _ -> CC end || CC <- P#dp.callfrom],
 					% Change node name back to this node, so that copy knows where split is from.
 					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor};
 				_ ->
@@ -181,14 +183,14 @@ reply_maybe(P,N,[]) ->
 			end,
 			BD = P#dp.wasync,
 			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, wasync = BD#ai{nreplies = BD#ai.nreplies + 1},
-									schemavers = NewVers})),
+				schemavers = NewVers})),
 			case Msg of
 				undefined ->
 					checkpoint(NP);
 				_ ->
 					Ref = make_ref(),
 					RpcParam = [{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
-								{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod],
+						{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod],
 					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,RpcParam}) of
 						ok ->
 							{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
