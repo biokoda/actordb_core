@@ -226,9 +226,15 @@ init(_) ->
 	{ok,#dp{}}.
 
 
-has_authentication(#caller{auth = Auth} = P,ActorType,Action)->
+has_authentication(#caller{auth = Auth} = P,ActorType1,Action)->
 	Auth = P#caller.auth,
-	has_authentication(Auth,actordb_util:typeatom(ActorType),Action);
+	case ActorType1 of
+		ActorType when is_tuple(ActorType) ->
+			ok;
+		_ ->
+			ActorType = actordb_util:typeatom(ActorType1)
+	end,
+	has_authentication(Auth,ActorType,Action);
 
 % check for atom because of config. User must have explicit {config} type access.
 % For all other types, '*' is ok.
