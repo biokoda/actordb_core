@@ -111,7 +111,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
 			% test_mon_stop(),
-			?ADBG("Redirect call ~p",[Node]),
+			?ADBG("Redirect call to=~p, for=~p",[Node,Name]),
 			case lists:member(Node,bkdcore:cluster_nodes()) of
 				true ->
 					case IsRedirect of
@@ -509,7 +509,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			NP = P#dp{masternode = LeaderNode,without_master_since = undefined,
 			masternodedist = bkdcore:dist_name(LeaderNode),
 			callfrom = undefined, callres = undefined,verified = true},
-			state_rw_call(What,From,actordb_sqlprocutil:reopen_db(NP));
+			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP)));
 		% This node is candidate or leader but someone with newer term is sending us log
 		_ when P#dp.mors == master ->
 			?ERR("AE start, stepping down as leader ~p ~p",
@@ -526,7 +526,8 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 				masternode = LeaderNode,without_master_since = undefined,
 				masternodedist = bkdcore:dist_name(LeaderNode),
 				current_term = Term},
-			state_rw_call(What,From,actordb_sqlprocutil:save_term(actordb_sqlprocutil:reopen_db(NP)));
+			state_rw_call(What,From,
+				actordb_sqlprocutil:save_term(actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP))));
 		_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
 			?ERR("AE start failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 						[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
@@ -548,7 +549,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			NP = P#dp{current_term = Term,voted_for = undefined,
 			masternode = LeaderNode, without_master_since = undefined,verified = true,
 			masternodedist = bkdcore:dist_name(LeaderNode)},
-			state_rw_call(What,From,actordb_sqlprocutil:save_term(NP));
+			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(NP)));
 		_ when AEType == empty ->
 			?DBG("AE start, ok for empty"),
 			reply(From,ok),
@@ -826,6 +827,9 @@ read_call(_Msg,_From,P) ->
 % Execute buffered read sqls
 read_call1(_,_,[],P) ->
 	P#dp{activity = actordb_local:actor_activity(P#dp.activity)};
+read_call1(_,_,From,#dp{mors = slave} = P) ->
+	[reply(F,{redirect,P#dp.masternode}) || F <- From],
+	P#dp{rasync = #ai{}};
 read_call1(Sql,Recs,From,P) ->
 	ComplSql = list_to_tuple(Sql),
 	Records = list_to_tuple(Recs),
@@ -935,6 +939,10 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 
 
 % Not a multiactor transaction write
+write_call1(_,From,_,#dp{mors = slave} = P) ->
+	?AINF("Redirecting write ~p",[P#dp.masternode]),
+	[reply(F,{redirect,P#dp.masternode}) || F <- From],
+	P#dp{wasync = #ai{}};
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	ComplSql = list_to_tuple([<<"#s00;">>|lists:reverse([<<"#s02;#s01;">>|Sql])]),
@@ -1086,27 +1094,27 @@ read_reply(P,[H|T],Pos,Res) ->
 				{write,Write} ->
 					case Write of
 						_ when is_binary(Write); is_list(Write) ->
-							{noreply,NP,_} = write_call(#write{sql = iolist_to_binary(Write)},From,P);
+							{noreply,NP} = write_call(#write{sql = iolist_to_binary(Write)},From,P);
 						{_,_,_} ->
-							{noreply,NP,_} = write_call(#write{mfa = Write},From,P)
+							{noreply,NP} = write_call(#write{mfa = Write},From,P)
 					end,
 					read_reply(NP,T,Pos+1,Res);
 				{write,Write,NS} ->
 					case Write of
 						_ when is_binary(Write); is_list(Write) ->
-							{noreply,NP,_} = write_call(#write{sql = iolist_to_binary(Write)},
+							{noreply,NP} = write_call(#write{sql = iolist_to_binary(Write)},
 									   From,P#dp{cbstate = NS});
 						{_,_,_} ->
-							{noreply,NP,_} = write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
+							{noreply,NP} = write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
 					end,
 					read_reply(NP,T,Pos+1,Res);
 				{reply_write,Reply,Write,NS} ->
 					reply(From,Reply),
 					case Write of
 						_ when is_binary(Write); is_list(Write) ->
-							{noreply,NP,_} = write_call(#write{sql = iolist_to_binary(Write)},undefined,P#dp{cbstate = NS});
+							{noreply,NP} = write_call(#write{sql = iolist_to_binary(Write)},undefined,P#dp{cbstate = NS});
 						{_,_,_} ->
-							{noreply,NP,_} = write_call(#write{mfa = Write},undefined,P#dp{cbstate = NS})
+							{noreply,NP} = write_call(#write{mfa = Write},undefined,P#dp{cbstate = NS})
 					end,
 					read_reply(NP,T,Pos+1,Res);
 				{reply,What,NS} ->
@@ -1582,7 +1590,7 @@ down_info(PID,_Ref,Reason,P) ->
 								node = C#cpto.node,time = os:timestamp(),
 								actorname = C#cpto.actorname}|WithoutCopy],
 			erlang:send_after(1000,self(),check_locks),
-			{noreply,P#dp{dbcopy_to = NewCopyto,locked = WithoutCopy1}}
+			{noreply,actordb_sqlprocutil:doqueue(P#dp{dbcopy_to = NewCopyto,locked = WithoutCopy1})}
 	end.
 
 
@@ -1661,8 +1669,7 @@ init([_|_] = Opts) ->
 					{ok,P}
 			end;
 		P when P#dp.copyfrom == undefined ->
-			?DBG("Actor start, copy=~p, flags=~p, mors=~p startreason=~p",[P#dp.copyfrom,
-							P#dp.flags,P#dp.mors,false]), %butil:ds_val(startreason,Opts)
+			?DBG("Actor start, copy=~p, flags=~p, mors=~p",[P#dp.copyfrom,P#dp.flags,P#dp.mors]),
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),

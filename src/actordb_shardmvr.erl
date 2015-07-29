@@ -179,7 +179,7 @@ handle_info({actordb,sharedstate_change},P) ->
 		[_|_] = TG when P#dp.shardstoget == [] ->
 			?AINF("cluster_connected shards to get ~p",[TG]),
 			{noreply,P#dp{shardstoget = TG, init = true}};
-		_ ->
+		_E ->
 			{noreply,P}
 	end;
 handle_info({stop},P) ->

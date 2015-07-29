@@ -56,7 +56,7 @@ ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 	Resp = {appendentries_response,actordb_conf:node_name(),
 		P#dp.current_term,Success,P#dp.evnum,P#dp.evterm,PrevEvnum,AEType,CallCount},
 	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[nostart],
-									{state_rw,Resp},P#dp.cbmod]}).
+		{state_rw,Resp},P#dp.cbmod]}).
 
 append_wal(P,Header,Bin) ->
 	actordb_driver:inject_page(P#dp.db,Bin,Header).
@@ -73,10 +73,19 @@ reply_maybe(P,N,[H|T]) ->
 			reply_maybe(P,N,T)
 	end;
 reply_maybe(P,N,[]) ->
+	% ?DBG("reply_maybe ~p",[P#dp.callfrom]),
+	case P#dp.callfrom of
+		[_|_] ->
+			Exec = [CC || CC <- P#dp.callfrom, element(1,CC) == exec];
+		_ when element(1,P#dp.callfrom) == exec ->
+			Exec = [P#dp.callfrom];
+		_ ->
+			Exec = []
+	end,
 	case N*2 > (length(P#dp.follower_indexes)+1) of
 	% case N == length(P#dp.follower_indexes)+1 of
 		% If transaction active or copy/move actor, we can continue operation now because it has been safely replicated.
-		true when P#dp.transactioninfo /= undefined; element(1,P#dp.callfrom) == exec ->
+		true when P#dp.transactioninfo /= undefined; Exec /= [] ->
 			Me = self(),
 			% Now it's time to execute second stage of transaction.
 			% This means actually executing the transaction sql, without releasing savepoint.
@@ -134,12 +143,12 @@ reply_maybe(P,N,[]) ->
 			% We can safely reply result of actual transaction sql. Even though it is not replicated completely yet.
 			% Because write to __transactions is safely replicated, transaction is guaranteed to be executed
 			%  before next write or read.
-			case P#dp.callfrom of
-				{exec,From,{move,Node}} ->
+			case Exec of
+				[{exec,From,{move,Node}}] ->
 					NewActor = P#dp.actorname,
 					IsMove = true,
 					Msg = {move,actordb_conf:node_name()};
-				{exec,From,{split,MFA,Node,OldActor,NewActor}} ->
+				[{exec,From,{split,MFA,Node,OldActor,NewActor}}] ->
 					IsMove = {split,MFA},
 					% Change node name back to this node, so that copy knows where split is from.
 					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor};
@@ -553,6 +562,8 @@ exec_reads(P) ->
 % schema_change(#dp{schemavers = undefined} = P) ->
 % 	% first write sets schema and vers variable
 % 	P;
+schema_change(#dp{mors = slave} = P) ->
+	P;
 schema_change(P) ->
 	case has_schema_updated(P,[]) of
 		ok ->
@@ -1652,7 +1663,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 										% 				Flw#flw{match_index = P#dp.evnum, next_index = P#dp.evnum+1})),force)};
 										Flw when is_tuple(Flw) ->
 											% CQ = queue:in_r({CallFrom,#write{sql = <<>>}},P#dp.callqueue),
-											{noreply,NP1} = actordb_sqlproc:write_call(#write{sql = <<>>},undefined,NP),
+											{noreply,NP1} = actordb_sqlproc:write_call(#write{sql = <<>>},CallFrom,NP),
 											{reply,ok,reply_maybe(store_follower(NP1,
 												Flw#flw{match_index = P#dp.evnum, match_term = P#dp.evterm,
 														next_index = P#dp.evnum+1})), 0};

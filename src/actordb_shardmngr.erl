@@ -408,7 +408,7 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
 					Local = [];
 				_ ->
 					Local = [{NewShard,OldShard,Nd,TypesToGo} || {NewShard,OldShard,Nd,TypesToGo} <- Local1,
-														lists:keymember(NewShard,1,P#dp.shardsbeingtaken) == false]
+						lists:keymember(NewShard,1,P#dp.shardsbeingtaken) == false]
 			end,
 			case GlobalShards of
 				[_|_] when P#dp.allshards == GlobalShards andalso P#dp.dirty == false ->
@@ -522,16 +522,16 @@ async_getstate() ->
 start_shards([{From,To,_Nd}|T],Existing) ->
 	% For every actor type, check if shard has been started for it.
 	StartedShards = butil:sparsemap(fun(Type) ->
-										case butil:findtrue(fun({_Pid1,From1,Type1}) -> From == From1 andalso Type == Type1
-															end,Existing) of
-											% Shard does not exist.
-											false ->
-												Pid = startshard(Type,From,To),
-												{Pid,From,Type};
-											_X ->
-												undefined
-										end
-									end,actordb_util:actor_types()),
+			case butil:findtrue(fun({_Pid1,From1,Type1}) -> From == From1 andalso Type == Type1
+								end,Existing) of
+				% Shard does not exist.
+				false ->
+					Pid = startshard(Type,From,To),
+					{Pid,From,Type};
+				_X ->
+					undefined
+			end
+		end,actordb_util:actor_types()),
 	start_shards(T,StartedShards ++ Existing);
 start_shards([],E) ->
 	E.
