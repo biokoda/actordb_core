@@ -1088,7 +1088,8 @@ handle_cast(_Msg,P) ->
 read_reply(P,[H|T],Pos,Res) ->
 	case H of
 		{tuple,What,From} ->
-			reply(From,{What,actordb_sqlite:exec_res({ok, element(Pos,Res)})});
+			reply(From,{What,actordb_sqlite:exec_res({ok, element(Pos,Res)})}),
+			read_reply(P,T,Pos+1,Res);
 		{mod,{Mod,Func,Args},From} ->
 			case apply(Mod,Func,[P#dp.cbstate,actordb_sqlite:exec_res({ok, element(Pos,Res)})|Args]) of
 				{write,Write} ->
