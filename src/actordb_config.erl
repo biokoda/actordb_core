@@ -165,8 +165,8 @@ exec1(false,Cmds) ->
 	check_el(Nodes1,missing_nodes_insert),
 	check_el(Usrs2,missing_root_user),
 
-	Me = bkdcore_changecheck:read_node(butil:tolist(node())),
-	case lists:member(Me,[bkdcore_changecheck:read_node(Nd) || Nd <- Nodes1]) of
+	Me = element(1,bkdcore_changecheck:read_node(butil:tolist(node()))),
+	case lists:member(Me,[element(1,bkdcore_changecheck:read_node(Nd)) || Nd <- Nodes1]) of
 		false ->
 			throw({error,local_node_missing});
 		true ->

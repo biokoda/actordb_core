@@ -730,8 +730,8 @@ return_mg(S,Nodes) ->
 	case lists:member(actordb_conf:node_name(),Nodes) of
 		true ->
 			{ok,S#st{current_write = lists:keystore(master_group,1,S#st.current_write,{master_group,Nodes}),
-					 master_group = Nodes},
-			    Nodes -- [actordb_conf:node_name()]};
+					master_group = Nodes},
+				Nodes -- [actordb_conf:node_name()]};
 		false ->
 			exit(normal)
 	end.
@@ -795,6 +795,22 @@ cb_init(#st{name = ?STATE_NM_GLOBAL} = _S,_EvNum) ->
 	{doread,<<"select * from state;">>}.
 cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	State = [{butil:toatom(Key),binary_to_term(base64:decode(Val))} || {Key,Val} <- State1],
+	
+	Nodes = butil:ds_val(nodes,State),
+	case Nodes of
+		[_|_] ->
+			Me = element(1,bkdcore_changecheck:read_node(butil:tolist(node()))),
+			Nodes1 = [element(1,bkdcore_changecheck:read_node(Nd)) || Nd <- Nodes],
+			case lists:member(Me,Nodes1) of
+				false ->
+					?AERR("Local node not part of node list. Me=~p, Nodes=~p",[Me,Nodes1]),
+					spawn(fun() -> actordb:stop() end);
+				true ->
+					ok
+			end;
+		_ ->
+			ok
+	end,
 	?ADBG("Init Setting global state ~p",[State]),
 	set_global_state(actordb_conf:node_name(),State),
 	{ok,S#st{evnum = Evnum, waiting = false}}.
