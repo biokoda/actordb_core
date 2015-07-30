@@ -13,10 +13,11 @@
 
 -record(caller,{ets, login, auth = []}).
 start_caller() ->
-	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
-	butil:ds_add(curcount,0,E),
-	butil:ds_add(cursize,0,E),
-	#caller{ets = E}.
+	% E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
+	% butil:ds_add(curcount,0,E),
+	% butil:ds_add(cursize,0,E),
+	% #caller{ets = E}.
+	start_caller(<<>>,<<>>).
 start_caller(<<>>, <<>>) ->
 	% Only if no state or no users
 	Authentication1 = actordb_sharedstate:read_global_auth(),

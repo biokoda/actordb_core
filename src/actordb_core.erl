@@ -438,7 +438,7 @@ import_db(Pth,Name,Thr) ->
 	{ok,Db} = actordb_driver:open(Name,actordb_util:hash(Name),wal),
 	Size = filelib:file_size(Pth),
 	cp_dbfile(F,Db,1,Size),
-	put(butil:tobin(Name),{Db,1,1}),
+	put(butil:tobin(Name),{Db,1,2}),
 	file:close(F),
 	case file:open(Pth++"-wal",[read,binary,raw]) of
 		{ok,Wal} ->
@@ -488,7 +488,8 @@ big_wal(F,<<Pgno:32/unsigned,DbSize:32/unsigned,WN:64,WTN:64,_:32,_:32,_:32,Name
 					Term = TN,
 					Num = TEN;
 				_ ->
-					Term = WTN,
+					% Term = WTN,
+					Term = 1,
 					Num = WN
 			end,
 			Head = <<Term:64,Num:64,Pgno:32/unsigned,DbSize:32/unsigned>>,

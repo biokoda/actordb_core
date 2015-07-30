@@ -695,7 +695,7 @@ cb_nodelist(#st{name = ?STATE_NM_LOCAL} = S,_HasSchema) ->
 			{ok,S,bkdcore:cluster_nodes()}
 	end;
 cb_nodelist(#st{name = ?STATE_NM_GLOBAL} = S,HasSchema) ->
-	?ADBG("global nodelist",[]),
+	?ADBG("global nodelist haveschema=~p",[HasSchema]),
 	case HasSchema of
 		true ->
 			file:delete([bkdcore:statepath(),"/stateglobal"]),
