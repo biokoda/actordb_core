@@ -32,32 +32,35 @@ exec_schema(BP,Sql) ->
 	end,
 
 	% actordb_sqlparse cares about actor statements and leaves sql statements intact.
-	{[{{_Type,_,_},_,_Statements}|_] = L1,_} = actordb_sqlparse:parse_statements(BP,butil:tobin(Sql)),
+	case actordb_sqlparse:parse_statements(BP,butil:tobin(Sql)) of
+		{[{{_Type,_,_},_,_Statements}|_] = L1,_} ->
+			L = [case Sub of
+			[<<"kv">>] ->
+				{butil:tolist(Type),[{"type","kv"},{"schema",tol(Statements)}]};
+			[_|_] ->
+				{butil:tolist(Type),tol(Statements)}
+			end || {{Type,Sub,_},_,Statements} <- L1],
+			
+			Existing = actordb_sharedstate:read_global('schema.yaml'),
+			Merged = merge_schema(L,Existing),
+			Parsed = actordb_util:parse_cfg_schema(Merged),
 
-	L = [case Sub of
-	[<<"kv">>] ->
-		{butil:tolist(Type),[{"type","kv"},{"schema",tol(Statements)}]};
-	[_|_] ->
-		{butil:tolist(Type),tol(Statements)}
-	end || {{Type,Sub,_},_,Statements} <- L1],
-	
-	Existing = actordb_sharedstate:read_global('schema.yaml'),
-	Merged = merge_schema(L,Existing),
-	Parsed = actordb_util:parse_cfg_schema(Merged),
-
-	case catch actordb_cmd:compare_schema(Types,Parsed) of
-		{ok,_} ->
-			case actordb_sharedstate:write_global([{'schema.yaml',Merged}]) of
-				ok ->
-					{ok,{changes,1,1}};
-				Err ->
-					Err
+			case catch actordb_cmd:compare_schema(Types,Parsed) of
+				{ok,_} ->
+					case actordb_sharedstate:write_global([{'schema.yaml',Merged}]) of
+						ok ->
+							{ok,{changes,1,1}};
+						Err ->
+							Err
+					end;
+				{error,E} ->
+					throw({error,E});
+				E ->
+					?AERR("Schema error: ~p",[E]),
+					throw({error,schema_unparsable})
 			end;
-		{error,E} ->
-			throw({error,E});
-		E ->
-			?AERR("Schema error: ~p",[E]),
-			throw({error,schema_unparsable})
+		[[{columns,_},_]|_] = St ->
+			{ok,St}
 	end.
 
 merge_schema([{Type,Schema}|T],Ex) ->
@@ -126,7 +129,12 @@ auth(BP,Init) ->
 exec1(true,Cmds) ->
 	Reads  = [S || S <- Cmds, element(1,S) == select],
 	Writes = [S || S <- Cmds, element(1,S) /= select],
+	Show = [show || show <- Cmds],
 	case Writes of
+		[] when Show /= [] ->
+			G = "CREATE TABLE groups (name TEXT, type TEXT DEFAULT 'cluster');",
+			N = "CREATE TABLE nodes (name TEXT, group_name TEXT);",
+			{ok,[{columns,{<<"sql">>}},{rows,[{G},{N}]}]};
 		[] ->
 			do_reads(Reads);
 		_ ->
@@ -410,6 +418,8 @@ cmd(P,Bin,Tuple) ->
 	case Tuple of
 		{fail,_} ->
 			{error,bad_query};
+		show ->
+			[show|P];
 		% #show{} = R ->
 		% 	cmd_show(P,R);
 		% create_table ->
