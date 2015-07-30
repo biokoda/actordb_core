@@ -21,6 +21,7 @@ stop_complete()	 ->
 	end,
 	init:stop().
 
+
 wait_done_queries(N) when N < 0 ->
 	ok;
 wait_done_queries(N) ->
@@ -268,7 +269,7 @@ fix_size(Max,Max1)->
 
 start() ->
 	% ?AINF("Starting actordb"),
-	application:ensure_all_started(actordb_core).
+	application:ensure_all_started(actordb_core,permanent).
 
 start(_Type, _Args) ->
 	prestart(),

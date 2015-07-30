@@ -804,7 +804,9 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 			case lists:member(Me,Nodes1) of
 				false ->
 					?AERR("Local node not part of node list. Me=~p, Nodes=~p",[Me,Nodes1]),
-					spawn(fun() -> actordb:stop() end);
+					spawn(fun() -> actordb:stop() end),
+					timer:sleep(2000),
+					spawn(fun() -> init:stop() end);
 				true ->
 					ok
 			end;

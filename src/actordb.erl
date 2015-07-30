@@ -298,13 +298,13 @@ exec1(P,St,BindingValues)->
 			Call = get_multiblock_map(P,lists:zip(Multiblock,BindingValues)),
 			actordb_multiupdate:exec(Call);
 		% Multiple blocks but only reads
-  	{undefined, _} ->
+		{undefined, _} ->
 			[];
 		{[],_} ->
 			[];
 		{[[{columns,_},_]|_],_} ->
-			St
- 	end.
+			{ok,St}
+	end.
 
 % exec_mngmnt(Sql)->
 % 	actordb_sharedstate:mngmnt_execute(actordb_sqlparse:parse_mngmt(Sql)).

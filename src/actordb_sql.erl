@@ -68,56 +68,8 @@ parse(Input) when is_binary(Input) ->
 
 -spec 'show_query'(input(), index()) -> parse_result().
 'show_query'(Input, Index) ->
-  p(Input, Index, 'show_query', fun(I,D) -> (p_choose([fun 'show_status'/2, fun 'show_create_table'/2, fun 'show_tables_from'/2, fun 'show_tables_like'/2, fun 'show_tables'/2, fun 'show_databases'/2, fun 'show_fields'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
-
--spec 'show_status'(input(), index()) -> parse_result().
-'show_status'(Input, Index) ->
-  p(Input, Index, 'show_status', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), fun 'show'/2, fun 'space'/2, fun 'table_keyword'/2, fun 'space'/2, fun 'status'/2, fun 'space'/2, fun 'like'/2, fun 'space'/2, p_label('like', fun 'string'/2), p_optional(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->
-    #show{type=status, from=proplists:get_value(like, Node)}
- end).
-
--spec 'show_tables'(input(), index()) -> parse_result().
-'show_tables'(Input, Index) ->
-  p(Input, Index, 'show_tables', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), fun 'show'/2, p_optional(p_seq([fun 'space'/2, fun 'full'/2])), fun 'space'/2, p_choose([fun 'tables_keyword'/2, fun 'schemas'/2]), p_optional(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->
-    case Node of
-        [_,show,[],_,_Tables,_] ->
-            #show{type=tables, full=false, from=undefined};
-        [_,show,[_,full],_,_Tables,_] ->
-            #show{type=tables, full=true, from=undefined}
-    end
- end).
-
--spec 'show_create_table'(input(), index()) -> parse_result().
-'show_create_table'(Input, Index) ->
-  p(Input, Index, 'show_create_table', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), fun 'show'/2, fun 'space'/2, p_regexp(<<"(?i)create">>), fun 'space'/2, fun 'table_keyword'/2, fun 'space'/2, p_label('key', fun 'key'/2), p_optional(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->
-    #show{type = create_table, from=proplists:get_value(key,Node)}
- end).
-
--spec 'show_tables_from'(input(), index()) -> parse_result().
-'show_tables_from'(Input, Index) ->
-  p(Input, Index, 'show_tables_from', fun(I,D) -> (p_seq([p_label('show_tables', fun 'show_tables'/2), fun 'space'/2, fun 'from'/2, fun 'space'/2, p_label('key', fun 'key'/2), p_optional(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->
-    ShowTables = proplists:get_value(show_tables, Node),
-    ShowTables#show{from=proplists:get_value(key,Node)}
- end).
-
--spec 'show_tables_like'(input(), index()) -> parse_result().
-'show_tables_like'(Input, Index) ->
-  p(Input, Index, 'show_tables_like', fun(I,D) -> (p_seq([p_label('show_tables', fun 'show_tables'/2), fun 'space'/2, fun 'like'/2, fun 'space'/2, p_label('pattern', fun 'string'/2), p_optional(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->
-    ShowTables = proplists:get_value(show_tables, Node),
-    ShowTables#show{from={like,proplists:get_value(pattern,Node)}}
- end).
-
--spec 'show_databases'(input(), index()) -> parse_result().
-'show_databases'(Input, Index) ->
-  p(Input, Index, 'show_databases', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), fun 'show'/2, fun 'space'/2, fun 'databases'/2, p_optional(fun 'space'/2)]))(I,D) end, fun(_Node, _Idx) ->
-    #show{type=databases}
- end).
-
--spec 'show_fields'(input(), index()) -> parse_result().
-'show_fields'(Input, Index) ->
-  p(Input, Index, 'show_fields', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), fun 'show'/2, p_label('full', p_optional(p_seq([fun 'space'/2, fun 'full'/2]))), fun 'space'/2, fun 'fields_keyword'/2, fun 'space'/2, fun 'from'/2, fun 'space'/2, p_label('key', fun 'key'/2), p_optional(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->
-    Full = lists:member(full,proplists:get_value(full,Node)),
-    #show{type=fields, full=Full, from = proplists:get_value(key,Node)}
+  p(Input, Index, 'show_query', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), p_regexp(<<"(?i)show">>), p_optional(fun 'space'/2), p_zero_or_more(p_anything())]))(I,D) end, fun(_Node, _Idx) ->
+    show
  end).
 
 -spec 'set_query'(input(), index()) -> parse_result().
@@ -432,8 +384,8 @@ end
 'user_at_host'(Input, Index) ->
   p(Input, Index, 'user_at_host', fun(I,D) -> (p_seq([fun 'param'/2, p_optional(p_string(<<"@">>)), p_optional(fun 'param'/2)]))(I,D) end, fun(Node, _Idx) ->
     case Node of
-        [{value,undefined,Username},<<"@">>,{value,undefined,Host}] ->
-            ok;
+        %[{value,undefined,Username},<<"@">>,{value,undefined,Host}] ->
+        %    ok;
         [{value,undefined,Username}|_] ->
             Host = <<>>
     end,
