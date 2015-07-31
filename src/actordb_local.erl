@@ -502,7 +502,12 @@ init(_) ->
 		win ->
 			Ulimit = (#dp{})#dp.ulimit;
 		_ ->
-			Ulimit = butil:toint(lists:flatten(string:tokens(os:cmd("ulimit -n"),"\n\r")))
+			case catch butil:toint(lists:flatten(string:tokens(os:cmd("ulimit -n"),"\n\r"))) of
+				Ulimit when is_integer(Ulimit) ->
+					ok;
+				_ ->
+					Ulimit = 256
+			end
 	end,
 	case memsup:get_memory_data() of
 		{0,0,_} ->

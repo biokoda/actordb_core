@@ -74,10 +74,11 @@ start_ready() ->
 							MaxCon = 1024
 					end,
 					TransOpts0 = [{port, Port},{max_connections,MaxCon}],
-					TransOpts = case get_network_interface() of
-						[] -> TransOpts0;
-						IP -> [{ip,IP}|TransOpts0]
-					end,
+					TransOpts = TransOpts0,
+					% TransOpts = case get_network_interface() of
+					% 	[] -> TransOpts0;
+					% 	IP -> [{ip,IP}|TransOpts0]
+					% end,
 					case ranch:start_listener(myactor, 20, ranch_tcp, TransOpts, myactor_proto, []) of
 						{ok, _} ->
 							ok;
@@ -494,7 +495,7 @@ big_wal(F,<<Pgno:32/unsigned,DbSize:32/unsigned,WN:64,WTN:64,_:32,_:32,_:32,Name
 					Num = WN
 			end,
 			Head = <<Term:64,Num:64,Pgno:32/unsigned,DbSize:32/unsigned>>,
-			?AINF("Wal inject for ~p, term=~p, evnum=~p pgno=~p size=~p",[Name,WTN,WN,Pgno,DbSize]),
+			?AINF("Wal inject for ~p, term=~p, evnum=~p pgno=~p size=~p",[Name,{WTN,Term},{WN,Num},Pgno,DbSize]),
 			ok = actordb_driver:inject_page(Db,Page,Head)
 	end,
 	case file:read(F,144+4096) of
