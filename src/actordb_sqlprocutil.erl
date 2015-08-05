@@ -1538,7 +1538,7 @@ retry_copy(P) ->
 					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor}
 			end,
 			Ref = make_ref(),
-			case actordb:rpc(Node,NewActor,{?MODULE,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+			case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
 					{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
 				ok ->
 					SDB = {send_db,{Node,Ref,IsMove,NewActor}},
