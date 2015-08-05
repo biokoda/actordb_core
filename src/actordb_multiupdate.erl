@@ -104,28 +104,12 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				ok = actordb_sqlite:okornot(
 						actordb_actor:write(#{actor => sqlname(P),flags => [create], statements => {<<"#s08;">>,[[[Num]]]}})),
 				% Inform all actors that they should commit.
-				% case S of
-				% 	[{_,_,[delete]}|_] ->
-				% 		ok;
-				% 	_ ->
-				% 		case catch do_multiupdate(P#dp{currow = Num, confirming = true},S) of
-				% 			ok ->
-				% 				ok;
-				% 			Err ->
-				% 				?AERR("Multiupdate confirm error ~p",[Err])
-				% 		end
-				% end,
-				[bkdcore_rpc:cast(NodeName,{actordb_sqlprocutil,transaction_done,[Num,P#dp.name,done]}) || {{node,NodeName},_} <- get()],
+				TC = [actordb:rpcast(NodeName,{actordb_sqlprocutil,transaction_done,[Num,P#dp.name,done]}) || {{node,NodeName},_} <- get()],
+				?ADBG("T Cast: ~p",[TC]),
 				exit({ok,{changes,0,get(nchanges)}});
 			Err ->
 				?AERR("Multiupdate failed ~p",[Err]),
-				% case catch do_multiupdate(P#dp{currow = Num, confirming = false},S) of
-				% 	ok ->
-				% 		ok;
-				% 	Err ->
-				% 		?AERR("Multiupdate confirm error ~p",[Err])
-				% end,
-				[bkdcore_rpc:cast(NodeName,{actordb_sqlprocutil,transaction_done,[Num,P#dp.name,abandoned]}) || {{node,NodeName},_} <- get()],
+				[actordb:rpcast(NodeName,{actordb_sqlprocutil,transaction_done,[Num,P#dp.name,abandoned]}) || {{node,NodeName},_} <- get()],
 				% commited = -1 means transaction has been abandoned.
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.

@@ -14,7 +14,7 @@
 % -export ([exec_mngmnt/1]).
 % Internal. Generally not to be called from outside actordb
 -export([direct_call/1,actor_id_type/1,configfiles/0,
-		 exec_bp1/3,rpc/3,hash_pick/2,hash_pick/1]).
+		 exec_bp1/3,rpc/3,rpcast/2,hash_pick/2,hash_pick/1]).
 -include_lib("actordb_core/include/actordb.hrl").
 
 %Maps are used for carrying query statements information:
@@ -377,6 +377,16 @@ rpc(Node,Actor,MFA) ->
 				Res ->
 					Res
 			end
+	end.
+rpcast(undefined,_MFA) ->
+	{error,badnode};
+rpcast(Node,MFA) ->
+	case actordb_conf:node_name() == Node of
+		true ->
+			{Mod,Func,Arg} = MFA,
+			spawn(fun() -> apply(Mod,Func,Arg) end);
+		_ ->
+			bkdcore_rpc:cast(Node,MFA)
 	end.
 
 call_loop(_,[],_) ->

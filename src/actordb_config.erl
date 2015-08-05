@@ -254,6 +254,7 @@ interpret_writes(Cmds,ExistingNodes,ExistingGroups) ->
 		{auth,actordb_sharedstate:read_global_auth()},
 		[I || I <- Cmds, element(1,I) == management]),
 	% {InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
+	% ?AINF("cmds=~p",[Cmds]),
 	NewNodes = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"nodes">>]),
 	NewGroups = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"groups">>]),
 	InsertGroups = [{butil:toatom(GName),[],butil:toatom(GType),[]} || {GName,GType} <- NewGroups],
@@ -291,7 +292,6 @@ interpret_writes1([],L) ->
 	L.
 
 update_users(Users,Auth,[H|T]) ->
-	?AINF("UPDATE ~p",[H]),
 	{NU,NA} = mngmnt_execute0(Users,Auth,H),
 	update_users(NU,NA,T);
 update_users(U,A,[]) ->

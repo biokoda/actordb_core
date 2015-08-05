@@ -1501,7 +1501,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
 	end;
 down_info(_PID,Ref,Reason,#dp{transactioncheckref = Ref} = P) ->
-	?DBG("Transactioncheck died ~p myid ~p",[Reason,P#dp.transactionid]),
+	?DBG("Transactioncheck died ~p myid ~p, pid=~p",[Reason,P#dp.transactionid,_PID]),
 	case P#dp.transactionid of
 		{Tid,Updaterid,Node} ->
 			case Reason of
