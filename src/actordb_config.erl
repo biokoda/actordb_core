@@ -255,6 +255,7 @@ interpret_writes(Cmds,ExistingNodes,ExistingGroups) ->
 		[I || I <- Cmds, element(1,I) == management]),
 	% {InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
 	% ?AINF("cmds=~p",[Cmds]),
+	DelNodes = lists:flatten([I || I <- Cmds, I#delete.table == <<"nodes">>]),
 	NewNodes = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"nodes">>]),
 	NewGroups = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"groups">>]),
 	InsertGroups = [{butil:toatom(GName),[],butil:toatom(GType),[]} || {GName,GType} <- NewGroups],
@@ -278,7 +279,14 @@ interpret_writes(Cmds,ExistingNodes,ExistingGroups) ->
 	% Now check for updates
 	case catch node_update(Nodes,Groups,NodeUpdates) of
 		{'EXIT',_} ->
-			GroupsFinal = NodeFinal = [],
+			GroupsUpdate = NodeUpdate = [],
+			throw({error,unsupported_update});
+		{NodeUpdate,GroupsUpdate} ->
+			ok
+	end,
+	case catch node_delete(NodeUpdate,GroupsUpdate,DelNodes) of
+		{'EXIT',_} ->
+			NodeFinal = GroupsFinal = [],
 			throw({error,unsupported_update});
 		{NodeFinal,GroupsFinal} ->
 			ok
@@ -316,6 +324,33 @@ add_nodes_if_missing([{Nd1,Grp1}|T],Grps) ->
 	end;
 add_nodes_if_missing([],G) ->
 	G.
+
+node_delete(Nodes,Groups,[D|T]) ->
+	#condition{nexo = Op, op1 = FromKey, op2 = FromVal} = D#delete.conditions,
+	<<"name">> = FromKey#key.name,
+	case Op of
+		eq ->
+			Node = butil:tolist(FromVal#value.value),
+			ToDel = [Node],
+			case lists:member(Node,Nodes) of
+				true ->
+					ok;
+				false ->
+					throw({error,update_nomatch})
+			end;
+		like ->
+			case like_match_list(FromVal#value.value,Nodes) of
+				[] = ToDel ->
+					throw({error,update_nomatch});
+				[_|_] = ToDel ->
+					ok
+			end
+	end,
+	BNames = [element(1,bkdcore_changecheck:read_node(butil:tolist(TD))) || TD <- ToDel],
+	Groups1 = [{GrpNm,GNodes--BNames,GrpTyp,GrpParam} || {GrpNm,GNodes,GrpTyp,GrpParam} <- Groups],
+	node_delete(Nodes -- ToDel, Groups1,T);
+node_delete(N,G,[]) ->
+	{N,G}.
 
 node_update(Nodes,Groups,[U|T]) ->
 	#condition{nexo = Op, op1 = FromKey, op2 = FromVal} = U#update.conditions,
@@ -458,8 +493,8 @@ cmd_update(P,#update{table = #table{name = Table}, set = Setlist} = R,_Bin) ->
 	Set1 = [S#set{value = just_value(S#set.value)} || S <- Setlist],
 	[R#update{table = Table, set = Set1}|P].
 
-cmd_delete(P,R,_Bin) ->
-	[R|P].
+cmd_delete(P,#delete{table = #table{name = Table}} = R,_Bin) ->
+	[R#delete{table = Table}|P].
 
 
 
@@ -751,10 +786,16 @@ test() ->
 	New = butil:tolist(Newb),
 	NewSql = ["insert into nodes values ('",New,"','",butil:tobin(GrpName),"');"],
 	Cmd1 = cmd([],butil:tobin([NewSql,UpdSql])),
-	[{groups,[OutG]},{nodes,OutN}] = interpret_writes(Cmd1),
+	[[OutG],OutN] = butil:ds_vals([groups,nodes],interpret_writes(Cmd1)),
 	GrpNodes = element(2,OutG),
 	[] = GrpNodes -- [element(1,bkdcore_changecheck:read_node(New)),Tob],
 	[] = OutN -- [New,To],
+
+	Cmd2 = cmd([],butil:tobin([NewSql,UpdSql,"delete from nodes where name like 'newnode%';"])),
+	[[OutG1],OutN1] = butil:ds_vals([groups,nodes],interpret_writes(Cmd2)),
+
+	[] = OutN1 -- [To],
+	[] = element(2,OutG1) -- [Tob],
 	ok.
 
 	% ok.
