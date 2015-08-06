@@ -144,18 +144,18 @@ reply_maybe(P,N,[]) ->
 			% Because write to __transactions is safely replicated, transaction is guaranteed to be executed
 			%  before next write or read.
 			case Exec of
-				[{exec,From1,{move,Node}}] ->
+				[{exec,From1,{move,Node} = OrigMsg}] ->
 					NewActor = P#dp.actorname,
 					From = [case CC of _ when element(1,CC) == exec -> From1; _ -> CC end || CC <- P#dp.callfrom],
 					IsMove = true,
 					Msg = {move,actordb_conf:node_name()};
-				[{exec,From1,{split,MFA,Node,OldActor,NewActor}}] ->
+				[{exec,From1,{split,MFA,Node,OldActor,NewActor} = OrigMsg}] ->
 					IsMove = {split,MFA},
 					From = [case CC of _ when element(1,CC) == exec -> From1; _ -> CC end || CC <- P#dp.callfrom],
 					% Change node name back to this node, so that copy knows where split is from.
 					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor};
 				_ ->
-					IsMove = Msg = Node = NewActor = undefined,
+					OrigMsg = IsMove = Msg = Node = NewActor = undefined,
 					From = P#dp.callfrom
 			end,
 			?DBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
@@ -198,7 +198,7 @@ reply_maybe(P,N,[]) ->
 						_ ->
 							erlang:send_after(3000,self(),retry_copy),
 							% Unable to start copy/move operation. Store it for later.
-							NP#dp{copylater = {os:timestamp(),Msg}}
+							NP#dp{copylater = {os:timestamp(),OrigMsg}}
 					end
 			end;
 		true ->
@@ -1526,7 +1526,7 @@ retry_copy(#dp{copylater = undefined} = P) ->
 	P;
 retry_copy(P) ->
 	{LastTry,Copy} = P#dp.copylater,
-	case timer:now_diff(os:timestamp(),LastTry) > 1000000*3 of
+	case timer:now_diff(os:timestamp(),LastTry) > 1000000*2.5 of
 		true ->
 			case Copy of
 				{move,Node} ->
@@ -1541,14 +1541,18 @@ retry_copy(P) ->
 			case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
 					{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
 				ok ->
+					?INF("Retry copy now"),
 					SDB = {send_db,{Node,Ref,IsMove,NewActor}},
 					{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call(SDB,undefined,P),
 					NP1#dp{copylater = undefined};
-				_ ->
+				Err ->
+					?INF("retry_copy in 3s, err=~p",[Err]),
 					erlang:send_after(3000,self(),retry_copy),
 					P#dp{copylater = {os:timestamp(),Msg}}
 			end;
 		false ->
+			?INF("retry_copy in 3s",[]),
+			erlang:send_after(3000,self(),retry_copy),
 			P
 	end.
 

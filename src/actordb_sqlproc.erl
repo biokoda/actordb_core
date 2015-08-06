@@ -1318,7 +1318,7 @@ handle_info(doelection1,P) ->
 			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
 	end;
 handle_info(retry_copy,P) ->
-	?DBG("Retry copy"),
+	?DBG("Retry copy mors=~p, ver=~p, cl=~p",[P#dp.mors,P#dp.verified,P#dp.copylater]),
 	case P#dp.mors == master andalso P#dp.verified == true of
 		true ->
 			{noreply,actordb_sqlprocutil:retry_copy(P)};

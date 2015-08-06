@@ -88,7 +88,8 @@ start(Name,Type1,Slave,Opt) ->
 % start_steal({Name,Type},Nd) ->
 % 	start_steal(Nd,Name,Type).
 start_steal(Nd,FromName,To,NewName,Type1) ->
-	?AINF("start_steal node=~p, shardfrom=~p newname=~p type=~p isrunning=~p",[Nd,FromName,NewName,Type1,try_whereis(NewName,Type1)]),
+	?AINF("start_steal node=~p, shardfrom=~p newname=~p type=~p isrunning=~p",
+		[Nd,FromName,NewName,Type1,try_whereis(NewName,Type1)]),
 	Type = butil:toatom(Type1),
 	Idtype = actordb:actor_id_type(Type),
 	case lists:member(Nd,bkdcore:cluster_nodes()) of
@@ -103,8 +104,8 @@ start_steal(Nd,FromName,To,NewName,Type1) ->
 								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}]);
 				false ->
 					{ok,Pid} = actordb_sqlproc:start([{actor,NewName},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
-														 {state,#state{idtype = Idtype, name = NewName, stealingfromshard = FromName,
-															 				to = To,stealingfrom = Nd,type = Type}}]),
+						 {state,#state{idtype = Idtype, name = NewName, stealingfromshard = FromName,
+							to = To,stealingfrom = Nd,type = Type}}]),
 					spawn(fun() -> actordb_sqlproc:call({NewName,Type},[create],{do_steal,Nd},{?MODULE,start_steal,[Nd]}) end),
 					{ok,Pid}
 			end;
@@ -112,8 +113,8 @@ start_steal(Nd,FromName,To,NewName,Type1) ->
 		% Master might be this new node or if shard already running on another node, it will remain master untill restart.
 		true ->
 			{ok,_Pid} = start(NewName,Type,false,[nohibernate,{state,#state{to = To,idtype = Idtype, name = NewName,type = Type}},
-								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
-								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}])
+				{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
+				{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}])
 	end.
 
 % Called on shard that is origin of moving shard.
