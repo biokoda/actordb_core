@@ -10,7 +10,7 @@
 -export([local_shards_changed/2,shard_moved/3,shard_has_split/3]).
 -include_lib("actordb_core/include/actordb.hrl").
 -include_lib("kernel/include/file.hrl").
--compile(export_all).
+% -compile(export_all).
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -36,17 +36,12 @@ reload() ->
 % Which shards local node is taking from other nodes
 % [{SplitPoint,From,To,Node,[Type1,Type2,..]},..]
 	shardstoget = [],
-% [{Pid,From,To,Nodename,Type}]
-	% shardstogetpid = [],
 	% [{From,Type,Nd}]
 	movingdone = [],
-	% [{Name,Type}]
-	% shards_splitting = [],
 	local_shards = [],
-	init = false,
 	badstop = false}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
--define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).	
+-define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
 
 handle_call({shard_moved,Nd,Name,Type},_,P) ->
@@ -90,8 +85,7 @@ handle_cast(can_start,P) ->
 		ok ->
 			case P#dp.allshards /= undefined of
 				true ->
-					handle_cast({local_shards_changed,P#dp.allshards,P#dp.localshards},
-						P#dp{can_start = true, allshards = undefined, localshards = undefined});
+					handle_cast({local_shards_changed,P#dp.allshards,P#dp.localshards},P#dp{can_start = true});
 				false ->
 					{noreply,P#dp{can_start = true}}
 			end;
@@ -104,19 +98,13 @@ handle_cast({local_shards_changed,A,L},P) ->
 	?AINF("local_shards_changed ~p ~p~n~p~n~p",[bkdcore:node_name(),A,L,P#dp.movingdone]),
 	?AINF("stillmoving ~p ~p",[bkdcore:node_name(),P#dp.shardstoget]),
 	% If first time this message sent, read if any toget in state
-	case P#dp.init of
-		false ->
+	case P#dp.shardstoget of
+		[] ->
 			TG = get_toget();
-		true ->
-			TG = P#dp.shardstoget
+		TG ->
+			ok
 	end,
-	{noreply,pick_shards(P#dp{init = true,
-							shardstoget = TG, 
-							% If shard has appeared in global state as being from this node, delete from movingdone
-							movingdone = lists:foldl(fun({Name,_,_},Moved) -> 
-											[{Nm,Typ,Ndx} || {Nm,Typ,Ndx} <- Moved, Nm /= Name] 
-										end,P#dp.movingdone,L)},
-					A,L)};
+	{noreply,pick_shards(P#dp{shardstoget = TG, allshards = A, localshards = L})};
 handle_cast(print_info,P) ->
 	?AINF("~p",[?R2P(P)]),
 	{noreply,P};
@@ -178,19 +166,21 @@ handle_info({actordb,sharedstate_change},P) ->
 	case get_toget() of
 		[_|_] = TG when P#dp.shardstoget == [] ->
 			?AINF("cluster_connected shards to get ~p",[TG]),
-			{noreply,P#dp{shardstoget = TG, init = true}};
+			{noreply,P#dp{shardstoget = TG}};
 		_E ->
 			{noreply,P}
 	end;
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info(check_steal,P) ->
-	erlang:send_after(60000,self(),check_steal),
-	case P#dp.init of
-		true ->
-			% ?ADBG("Check steal ~p",[P#dp.shardstoget]),
-			{noreply,start_shards(P)};
-		false ->
+	case ok of
+		_ when P#dp.localshards == undefined ->
+			erlang:send_after(1000,self(),check_steal),
+			{noreply,P};
+		_ when length(P#dp.localshards) < ?NUM_SHARDS ->
+			erlang:send_after(1000,self(),check_steal),
+			{noreply,pick_shards(P)};
+		_ ->
 			{noreply,P}
 	end;
 handle_info({stop,Reason},P) ->
@@ -204,7 +194,7 @@ terminate(_, _) ->
 code_change(_, P, _) ->
 	{ok, P}.
 init([]) ->
-	erlang:send_after(60000,self(),check_steal),
+	erlang:send_after(10000,self(),check_steal),
 	erlang:send_after(400,self(),can_start),
 	actordb_sharedstate:subscribe_changes(?MODULE),
 	{ok,#dp{}}.
@@ -233,6 +223,13 @@ start_shards(P) ->
 
 
 % Called on node without enough shards. Will start stealing shards from other nodes if it can find any.
+pick_shards(P) ->
+	% If shard has appeared in global state as being from this node, delete from movingdone
+	MD = lists:foldl(fun({Name,_,_},Moved) -> 
+		[{Nm,Typ,Ndx} || {Nm,Typ,Ndx} <- Moved, Nm /= Name] 
+	end,P#dp.movingdone,P#dp.localshards),
+	?ADBG("pick_shards done=~p, loc=~p, all=~p",[MD,P#dp.localshards,P#dp.allshards]),
+	pick_shards(P#dp{movingdone = MD},P#dp.allshards,P#dp.localshards).
 pick_shards(P,All,Local) ->
 	case ok of
 		_ when P#dp.shardstoget == [], P#dp.movingdone == [], length(Local) < ?NUM_SHARDS ->
@@ -246,6 +243,8 @@ pick_shards(P,All,Local) ->
 					TGFinal = try_start_steal(TG)
 			end,
 			start_shards(P#dp{shardstoget = TGFinal});
+		_ when P#dp.shardstoget /= [] ->
+			start_shards(P);
 		_ ->
 			P
 	end.

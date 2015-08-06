@@ -193,9 +193,11 @@ reply_maybe(P,N,[]) ->
 						{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod],
 					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,RpcParam}) of
 						ok ->
+							?DBG("dbcopy call ok"),
 							{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
 							NP1;
-						_ ->
+						Err ->
+							?DBG("dbcopy call retry_later=~p",[Err]),
 							erlang:send_after(3000,self(),retry_copy),
 							% Unable to start copy/move operation. Store it for later.
 							NP#dp{copylater = {os:timestamp(),OrigMsg}}
@@ -623,6 +625,7 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 					actordb_sqlproc:read_call(Msg,From,P#dp{callqueue = CQ});
 				{move,NewShard,Node,CopyReset,CbState} ->
 					SkippedNew = Skipped,
+					?INF("Received move call to=~p",[{NewShard,Node}]),
 					% Call to move this actor to another cluster.
 					% First store the intent to move with all needed data.
 					% This way even if a node chrashes, the actor will attempt to move on next startup.
@@ -1548,7 +1551,7 @@ retry_copy(P) ->
 				Err ->
 					?INF("retry_copy in 3s, err=~p",[Err]),
 					erlang:send_after(3000,self(),retry_copy),
-					P#dp{copylater = {os:timestamp(),Msg}}
+					P#dp{copylater = {os:timestamp(),Copy}}
 			end;
 		false ->
 			?INF("retry_copy in 3s",[]),
