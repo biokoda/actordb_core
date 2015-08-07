@@ -74,7 +74,13 @@ start_ready() ->
 							MaxCon = 1024
 					end,
 					TransOpts0 = [{port, Port},{max_connections,MaxCon}],
-					TransOpts = TransOpts0,
+					% TransOpts = TransOpts0,
+					case application:get_env(actordb_core,api_network_interface) of
+						{ok,Interface1} ->
+							TransOpts = [{ip,butil:ip_to_tuple(Interface1)}|TransOpts0];
+						_ ->
+							TransOpts = TransOpts0
+					end,
 					% TransOpts = case get_network_interface() of
 					% 	[] -> TransOpts0;
 					% 	IP -> [{ip,IP}|TransOpts0]
@@ -99,6 +105,7 @@ prestart() ->
 	application:ensure_all_started(os_mon),
 	application:ensure_all_started(yamerl),
 	application:ensure_all_started(folsom),
+	application:ensure_all_started(thrift),
 	application:set_env(bkdcore,usesharedstate,false),
 	case catch actordb_conf:paths() of
 		[_|_] ->
@@ -191,17 +198,6 @@ prestart1(Files) ->
 		_ ->
 			application:set_env(bkdcore,statepath,Statep)
 	end,
-	% case filelib:wildcard(Main++"/*.wal") of
-	% 	[] ->
-	% 		case filelib:wildcard(Main++"/shards/*-wal") of
-	% 			[] ->
-	% 				Driver = actordb_driver;
-	% 			_ ->
-	% 				Driver = esqlite3
-	% 		end;
-	% 	_ ->
-	% 		Driver = actordb_driver
-	% end,
 	actordb_util:createcfg(Main,Extra,Sync,QueryTimeout,Repl,Name),
 	ensure_folders(actordb_conf:paths()),
 
@@ -323,6 +319,12 @@ start(_Type, _Args) ->
 		wait ->
 			actordb_sharedstate:start_wait(?STATE_NM_GLOBAL,?STATE_TYPE)
 	end,
+	case application:get_env(actordb_core,api_network_interface) of
+		{ok,Interface1} ->
+			application:set_env(thrift,network_interface,butil:ip_to_table(Interface1));
+		_ ->
+			ok
+	end,
 	case application:get_env(actordb_core,thrift_port) of
 		{ok,ThriftPort} when ThriftPort > 0 ->
 			{ok,_} = adbt:start(ThriftPort);
@@ -340,33 +342,33 @@ ensure_folders([H|T])->
 	ok = filelib:ensure_dir(H++"/"),
 	ensure_folders(T).
 
-get_network_interface()->
-	case application:get_env(actordb_core, network_interface) of
-	  {ok, Value} ->
-		  case inet:parse_address(Value) of
-			{ok, IPAddress} -> ok;
-			_ ->
-			  {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Value)
-		  end;
-		_ ->
-		  case string:tokens(atom_to_list(node()), "@") of
-			["nonode","nohost"] -> IPAddress = {127,0,0,1};
-			[_Name, Value] ->
-			  case inet:parse_address(Value) of
-				{ok, IPAddress} -> ok;
-				_ ->
-				  {ok, Hostname} = inet:gethostname(),
-				  {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Hostname)
-			  end
-		  end
-	end,
-	{ok, Addresses} = inet:getif(),
-	case lists:keyfind(IPAddress, 1, Addresses) of
-	  false ->
-		[];
-	  _ ->
-		IPAddress
-	end.
+% get_network_interface()->
+% 	case application:get_env(actordb_core, network_interface) of
+% 	  {ok, Value} ->
+% 		  case inet:parse_address(Value) of
+% 			{ok, IPAddress} -> ok;
+% 			_ ->
+% 			  {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Value)
+% 		  end;
+% 		_ ->
+% 		  case string:tokens(atom_to_list(node()), "@") of
+% 			["nonode","nohost"] -> IPAddress = {127,0,0,1};
+% 			[_Name, Value] ->
+% 			  case inet:parse_address(Value) of
+% 				{ok, IPAddress} -> ok;
+% 				_ ->
+% 				  {ok, Hostname} = inet:gethostname(),
+% 				  {ok, {hostent, _, [], inet, _, [IPAddress]}} = inet:gethostbyname(Hostname)
+% 			  end
+% 		  end
+% 	end,
+% 	{ok, Addresses} = inet:getif(),
+% 	case lists:keyfind(IPAddress, 1, Addresses) of
+% 	  false ->
+% 		[];
+% 	  _ ->
+% 		IPAddress
+% 	end.
 
 import_legacy([H|T],Thr) ->
 	erase(),
