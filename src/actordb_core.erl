@@ -321,7 +321,7 @@ start(_Type, _Args) ->
 	end,
 	case application:get_env(actordb_core,api_network_interface) of
 		{ok,Interface1} ->
-			application:set_env(thrift,network_interface,butil:ip_to_table(Interface1));
+			application:set_env(thrift,network_interface,Interface1);
 		_ ->
 			ok
 	end,
