@@ -132,10 +132,11 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 							{redirect,Node};
 						_ ->
 							case actordb:rpc(Node,element(1,Name),{?MODULE,call,[Name,Flags,Msg,Start,false]}) of
-								{error,Connerr} when Connerr == econnrefused; Connerr == timeout ->
+								{error,Connerr} when Connerr == econnrefused; Connerr == timeout; Connerr == invalidnode ->
 									Pid ! doelection,
 									call(Name,Flags,Msg,Start,false,Pid);
 								Res ->
+									?AERR("Redirect rpc error=~p",[Res]),
 									Res
 							end
 					end

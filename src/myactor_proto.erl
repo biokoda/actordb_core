@@ -90,10 +90,11 @@ loop(Socket, Transport, State0) ->
 							State2 = State1#cst{sequenceid = SequenceId},
 							case State2#cst.phase of
 								handshake ->
-									_HsData = recv_handshake(ClientPayload),    % TODO in future versions Authentication implementation
+									HsData = recv_handshake(ClientPayload),    % TODO in future versions Authentication implementation
 									?PROTO_DBG("handshake data: ~p",[_HsData]),
 									StateHs = send_ok(State2),
-									State3 = StateHs#cst{phase=command};
+									State3 = StateHs#cst{phase=command,
+										username = butil:ds_val(username,HsData), password = butil:ds_val(password,HsData)};
 								command ->
 									State3 = recv_command(State2,ClientPayload);
 								_Phase ->
@@ -287,7 +288,7 @@ recv_command(Cst1,<<?COM_QUERY,Query/binary>>) ->
 	BpAction = Cst1#cst.bp_action,
 	case BpAction of
 		undefined ->
-			BpState = actordb:start_bp(),
+			BpState = actordb:start_bp(Cst1#cst.username,Cst1#cst.password),
 			Cst = Cst1#cst{bp_action = #bp_action{state = BpState}};
 		_ ->
 			BpState = BpAction#bp_action.state,

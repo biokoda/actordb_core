@@ -39,22 +39,27 @@ start_caller(Username, Password) ->
 	Authentication = actordb_sharedstate:read_global_auth(),
 	% butil:ds_add(auth,Authentication,E),
 	Key = butil:sha256(<<(Username)/binary,(<<";">>)/binary,(Password)/binary>>),
+	% ?AINF("Auths: ~p ~p ~p",[Authentication,Key, Username,Password]),
 	MyAuth = [A || A <- Authentication, element(3, A) == Key],
-	case MyAuth of
-		[] ->
-			case actordb_sharedstate:read_global_users() of
-				L ->
-					case lists:keymember(Key,4,L) of
-						true ->
-							% user with no auth, which means he cant do anything
-							ok;
-						_ ->
-							throw(invalid_login)
-					end
-			end;
-		_ ->
-			ok
-	end,
+
+	% 
+	% 	TODO: Auth  needs to be changed, leave all through for now (fix also has_authentication to return false when no match)
+	% 
+	% case MyAuth of
+	% 	[] ->
+	% 		case actordb_sharedstate:read_global_users() of
+	% 			L ->
+	% 				case lists:keymember(Key,4,L) of
+	% 					true ->
+	% 						% user with no auth, which means he cant do anything
+	% 						ok;
+	% 					_ ->
+	% 						throw(invalid_login)
+	% 				end
+	% 		end;
+	% 	_ ->
+	% 		ok
+	% end,
 	% P#caller.login,3,Authentication
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
@@ -246,5 +251,5 @@ has_authentication([{Type,_Index,_Key,ActionList}|_],Type,Action) ->
 has_authentication([_|T],Type,A) ->
 	has_authentication(T,Type,A);
 has_authentication([],_,_) ->
-	false.
+	true.
 

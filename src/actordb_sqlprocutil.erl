@@ -868,7 +868,8 @@ base_schema(SchemaVers,Type,MovedTo) ->
 	% 	[{?SCHEMA_VERS,SchemaVers},{?ATYPE,Type},{?EVNUM,0},{?EVTERM,0}|Moved]],
 
 	% ,[?EVNUMI,<<"0">>],[?EVTERMI,<<"0">>]
-	DefVals = [[[?SCHEMA_VERSI,butil:tobin(SchemaVers)],[?ATYPEI,Type]|Moved]],
+	ActorNum = actordb_util:hash(term_to_binary({Type,os:timestamp(),make_ref()})),
+	DefVals = [[[?SCHEMA_VERSI,butil:tobin(SchemaVers)],[?ANUMI,butil:tobin(ActorNum)],[?ATYPEI,Type]|Moved]],
 	{[<<"$CREATE TABLE IF NOT EXISTS __transactions (id INTEGER PRIMARY KEY, tid INTEGER,",
 		 	" updater INTEGER, node TEXT,schemavers INTEGER, sql TEXT);",
 		 "$CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);#s02;">>],DefVals}.

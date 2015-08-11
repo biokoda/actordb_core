@@ -135,25 +135,23 @@
 -define(T_STRING, 16#fe).
 -define(T_GEOMETRY, 16#ff).
 
--record(bp_action,{	action = undefined :: atom(),
-					state = undefined :: term() }).
+-record(bp_action,{action = undefined :: atom(),state = undefined :: term() }).
 
 % connection state record
--record(cst,{	socket = undefined :: port() , 
-				transport = undefined :: module() , 
-				phase = undefined :: atom() , 
-				buf = <<>> :: binary() , 
-				hash = undefined :: binary() , 
-				sequenceid = 0 :: integer() , 
-				capabilities = [] :: list() , 
-				current_actor = undefined :: list() , 
-                                current_actor_flags = [] :: list() , 
-				bp_action = undefined :: #bp_action{} ,  
-				queueing = false :: boolean(), 
-				query_queue = <<>> :: binary() }).
+-record(cst,{socket = undefined :: port() , 
+transport = undefined :: module() , 
+phase = undefined :: atom() , 
+buf = <<>> :: binary() , 
+hash = undefined :: binary() , 
+sequenceid = 0 :: integer() , 
+capabilities = [] :: list() , 
+current_actor = undefined :: list() , 
+current_actor_flags = [] :: list() , 
+bp_action = undefined :: #bp_action{} ,  
+queueing = false :: boolean(), 
+query_queue = <<>> :: binary(),
+username = <<>> :: binary(),
+password = <<>> :: binary() }).
 
 
--record(coltypes,{ 
-		defined = false :: boolean(),
-		cols = undefined :: term()
-	}).
+-record(coltypes,{defined = false :: boolean(),cols = undefined :: term()}).

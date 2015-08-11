@@ -6,7 +6,7 @@
 % API
 -export([exec/1,exec/2,types/0,tables/1,columns/2,prepare_statement/1]).
 % API backpressure
--export([start_bp/0,exec_bp/2,exec_bp/3,exec_bp/5,exec_bp/6,check_bp/0,sleep_bp/1,stop_bp/1]).
+-export([start_bp/2,exec_bp/2,exec_bp/3,exec_bp/5,exec_bp/6,check_bp/0,sleep_bp/1,stop_bp/1]).
 % start/stop
 -export([start/0,stop/0,stop_complete/0,is_ready/0]).
 % start/stop internal
@@ -142,8 +142,8 @@ prepare_statement(Sql) ->
 %   Send response to client
 %   call actordb:sleep_bp(P)
 %   start receiving again when it returns
-start_bp() ->
-	actordb_backpressure:start_caller().
+start_bp(Username,Password) ->
+	actordb_backpressure:start_caller(Username,Password).
 
 % Exec with backpressure keeps track of number of unanswered SQL calls and combined size of SQL statements.
 exec_bp(P,[_|_] = Sql) ->
@@ -367,7 +367,7 @@ rpc(Node,Actor,MFA) ->
 			apply(Mod,Func,Arg);
 		_ ->
 			case bkdcore:rpc(Node,MFA) of
-				{error,econnrefused} ->
+				{error,Err1} when Err1 == econnrefused ->
 					case lists:delete(Node,bkdcore:nodelist(bkdcore:cluster_group(Node))) of
 						[] ->
 							{error,econnrefused};

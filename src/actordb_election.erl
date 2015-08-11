@@ -58,7 +58,7 @@ handle_call({whois_leader, #election{actor = A, type = T} = EI},CallFrom,P) ->
 					{reply,later,P}
 			end;
 		{Master,ElectedWhen} ->
-			case timer:now_diff(os:timestamp(),ElectedWhen) > 3000000 of
+			case timer:now_diff(os:timestamp(),ElectedWhen) > 3000000 orelse bkdcore:node_address(Master) == undefined of
 				true ->
 					handle_call({whois_leader,EI},CallFrom,P#ep{ets = butil:ds_rem({A,T},P#ep.ets)});
 				false ->
