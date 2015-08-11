@@ -367,7 +367,9 @@ rpc(Node,Actor,MFA) ->
 			apply(Mod,Func,Arg);
 		_ ->
 			case bkdcore:rpc(Node,MFA) of
-				{error,Err1} when Err1 == econnrefused ->
+				{error,invalidnode} ->
+					{error,econnrefused};
+				{error,econnrefused} ->
 					case lists:delete(Node,bkdcore:nodelist(bkdcore:cluster_group(Node))) of
 						[] ->
 							{error,econnrefused};

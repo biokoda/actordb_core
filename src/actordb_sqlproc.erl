@@ -111,7 +111,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
 			% test_mon_stop(),
-			?ADBG("Redirect call to=~p, for=~p",[Node,Name]),
+			?ADBG("Redirect call to=~p, for=~p, ~p",[Node,Name,Msg]),
 			case lists:member(Node,bkdcore:cluster_nodes()) of
 				true ->
 					case IsRedirect of
