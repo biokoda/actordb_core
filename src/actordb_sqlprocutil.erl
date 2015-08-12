@@ -941,6 +941,7 @@ check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum,
 check_for_resync1(_,[],Action,_) ->
 	Action;
 check_for_resync1(P,[F|L],_Action,Now) ->
+	Addr = bkdcore:node_address(F#flw.node),
 	IsAlive = lists:member(F#flw.distname,nodes()),
 	case F#flw.wait_for_response_since of
 		undefined ->
@@ -951,6 +952,9 @@ check_for_resync1(P,[F|L],_Action,Now) ->
 	?DBG("check_resync nd=~p, alive=~p",[F#flw.node,IsAlive]),
 	LastSeen = timer:now_diff(Now,F#flw.last_seen),
 	case ok of
+		_ when Addr == undefined ->
+			self() ! {forget,F#flw.node},
+			check_for_resync1(P,L,_Action,Now);
 		_ when Wait > 1000000, IsAlive ->
 			resync;
 		_ when LastSeen > 1000000, F#flw.match_index /= P#dp.evnum, IsAlive ->

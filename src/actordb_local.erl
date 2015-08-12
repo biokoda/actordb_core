@@ -243,6 +243,7 @@ handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 			end,
 			{noreply,P#dp{mpids = lists:keydelete(PID,2,P#dp.mpids)}};
 		_Actor ->
+			% ?AINF("pid=~p, died=~p",[PID,_Reason]),
 			butil:ds_rem(PID,actorsalive),
 			case ets:member(?HIBERNATE,PID) of
 				true ->

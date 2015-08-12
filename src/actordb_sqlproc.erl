@@ -136,7 +136,7 @@ call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 									Pid ! doelection,
 									call(Name,Flags,Msg,Start,false,Pid);
 								Res ->
-									?AERR("Redirect rpc error=~p",[Res]),
+									?ADBG("Redirect rpc res=~p",[Res]),
 									Res
 							end
 					end
@@ -312,6 +312,7 @@ handle_call(Msg,From,P) ->
 						{reply,What,NS,_} ->
 							{reply,What,P#dp{cbstate = NS}};
 						ok ->
+							?DBG("Redirecting to master"),
 							actordb_sqlprocutil:redirect_master(P)
 					end
 			end;
@@ -1318,6 +1319,9 @@ handle_info(doelection1,P) ->
 			?DBG("Election timeout"),
 			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
 	end;
+handle_info({forget,Nd},P) ->
+	?INF("Forgetting node ~p",[Nd]),
+	{noreply,P#dp{follower_indexes = lists:keydelete(Nd,#flw.node,P#dp.follower_indexes)}};
 handle_info(retry_copy,P) ->
 	?DBG("Retry copy mors=~p, ver=~p, cl=~p",[P#dp.mors,P#dp.verified,P#dp.copylater]),
 	case P#dp.mors == master andalso P#dp.verified == true of
@@ -1589,8 +1593,8 @@ down_info(PID,_Ref,Reason,P) ->
 			false = lists:keyfind(C#cpto.ref,2,WithoutCopy),
 			% wait_copy not in list add it (2nd stage of lock)
 			WithoutCopy1 =  [#lck{ref = C#cpto.ref, ismove = C#cpto.ismove,
-								node = C#cpto.node,time = os:timestamp(),
-								actorname = C#cpto.actorname}|WithoutCopy],
+				node = C#cpto.node,time = os:timestamp(),
+				actorname = C#cpto.actorname}|WithoutCopy],
 			erlang:send_after(1000,self(),check_locks),
 			{noreply,actordb_sqlprocutil:doqueue(P#dp{dbcopy_to = NewCopyto,locked = WithoutCopy1})}
 	end.
