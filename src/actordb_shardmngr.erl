@@ -448,7 +448,7 @@ handle_info({actordb,sharedstate_change},P) ->
 			?ADBG("GLobal statechange ~p ~p",[bkdcore:node_name(),P#dp.getstatepid]),
 			case P#dp.getstatepid of
 				undefined ->
-					{noreply,getstate(P)};
+					{noreply,getstate(P,0)};
 				_ ->
 					{noreply,P}
 			end
@@ -492,9 +492,11 @@ init([]) ->
 	{ok,#dp{}}.
 
 getstate(P) ->
+	getstate(P,2000).
+getstate(P,SleepTime) ->
 	case P#dp.getstatepid of
 		undefined ->
-			{NPid,_} =  spawn_monitor(fun() -> timer:sleep(2000), async_getstate() end),
+			{NPid,_} =  spawn_monitor(fun() -> timer:sleep(SleepTime), async_getstate() end),
 			P#dp{getstatepid = NPid};
 		_ ->
 			P

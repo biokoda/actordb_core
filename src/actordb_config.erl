@@ -249,8 +249,9 @@ interpret_writes(Cmds) ->
 	% 4.Process updates/deletes
 	ExistingNodes = actordb_sharedstate:read_global(nodes),
 	ExistingGroups = actordb_sharedstate:read_global(groups),
-	interpret_writes(Cmds,ExistingNodes,ExistingGroups).
-interpret_writes(Cmds,ExistingNodes,ExistingGroups) ->
+	ExistingShards = actordb_sharedstate:read_global(shards),
+	interpret_writes(Cmds,ExistingNodes,ExistingGroups,ExistingShards).
+interpret_writes(Cmds,ExistingNodes,ExistingGroups,ExistingShards) ->
 	Users = update_users({users,actordb_sharedstate:read_global_users()}, 
 		[I || I <- Cmds, element(1,I) == management]),
 	% {InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
@@ -284,20 +285,38 @@ interpret_writes(Cmds,ExistingNodes,ExistingGroups) ->
 		{NodeUpdate,GroupsUpdate} ->
 			ok
 	end,
-	case catch node_delete(NodeUpdate,GroupsUpdate,DelNodes) of
-		{'EXIT',_} ->
-			NodeFinal = GroupsFinal = [],
-			throw({error,unsupported_update});
-		{NodeFinal,GroupsFinal} ->
-			ok
+	case DelNodes of
+		[] ->
+			Shards = [],
+			NodeFinal = NodeUpdate,
+			GroupsFinal = GroupsUpdate;
+		_ ->
+			case catch node_delete(NodeUpdate,GroupsUpdate,DelNodes,[]) of
+				{'EXIT',_} ->
+					Shards = NodeFinal = GroupsFinal = [],
+					throw({error,unsupported_update});
+				{NodeFinal,GroupsFinal,DelNames} ->
+					Shards = [{shards, fix_shards(ExistingShards,DelNames,0)}]
+			end
 	end,
-	interpret_writes1(lists:flatten([{nodes,NodeFinal},{groups,GroupsFinal},Users]),[]).
+	interpret_writes1(lists:flatten([{nodes,NodeFinal},{groups,GroupsFinal},Users,Shards]),[]).
 interpret_writes1([{_,[]}|T],L) ->
 	interpret_writes1(T,L);
 interpret_writes1([{K,V}|T],L) ->
 	interpret_writes1(T,[{K,V}|L]);
 interpret_writes1([],L) ->
 	L.
+
+fix_shards([{From,To,Nd}|T],Nodes,Pos) ->
+	case lists:member(Nd,Nodes) of
+		false ->
+			[{From,To,Nd}|fix_shards(T,Nodes,Pos)];
+		true ->
+			ClusterNodes = [Nd1 || Nd1 <- bkdcore:nodelist(bkdcore:cluster_group(Nd)), Nd1 /= Nd],
+			[{From,To,lists:nth((Pos rem length(ClusterNodes))+1, ClusterNodes)}|fix_shards(T,Nodes,Pos+1)]
+	end;
+fix_shards([],_,_) ->
+	[].
 
 update_users(Users,[H|T]) ->
 	update_users(mngmnt_execute0(Users,H),T);
@@ -324,7 +343,7 @@ add_nodes_if_missing([{Nd1,Grp1}|T],Grps) ->
 add_nodes_if_missing([],G) ->
 	G.
 
-node_delete(Nodes,Groups,[D|T]) ->
+node_delete(Nodes,Groups,[D|T],DelNames) ->
 	#condition{nexo = Op, op1 = FromKey, op2 = FromVal} = D#delete.conditions,
 	<<"name">> = FromKey#key.name,
 	case Op of
@@ -347,9 +366,9 @@ node_delete(Nodes,Groups,[D|T]) ->
 	end,
 	BNames = [element(1,bkdcore_changecheck:read_node(butil:tolist(TD))) || TD <- ToDel],
 	Groups1 = [{GrpNm,GNodes--BNames,GrpTyp,GrpParam} || {GrpNm,GNodes,GrpTyp,GrpParam} <- Groups],
-	node_delete(Nodes -- ToDel, Groups1,T);
-node_delete(N,G,[]) ->
-	{N,G}.
+	node_delete(Nodes -- ToDel, Groups1,T,DelNames++BNames);
+node_delete(N,G,[],DelNames) ->
+	{N,G,DelNames}.
 
 node_update(Nodes,Groups,[U|T]) ->
 	#condition{nexo = Op, op1 = FromKey, op2 = FromVal} = U#update.conditions,
