@@ -38,6 +38,9 @@ start_caller(Username, Password,Salt1) ->
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
 	Users = actordb_sharedstate:read_global_users(),
 	case lists:keyfind(butil:tobin(Username),1,Users) of
+		false when Users == [] ->
+			Pw = undefined,
+			Rights = [{'*',read},{'*',write},{{config},read},{{config},write}];
 		false = Rights ->
 			Pw = undefined,
 			throw(invalid_login);
@@ -45,7 +48,7 @@ start_caller(Username, Password,Salt1) ->
 			ok
 	end,
 	case Salt1 of
-		<<Salt:20/binary,_/binary>> ->
+		<<Salt:20/binary,_/binary>> when is_binary(Pw) ->
 			<<Num1:160>> = HashBin = crypto:hash(sha, Pw),
 			<<Num2:160>> = crypto:hash(sha, <<Salt/binary, (crypto:hash(sha, HashBin))/binary>>),
 			case <<(Num1 bxor Num2):160>> of
@@ -55,6 +58,8 @@ start_caller(Username, Password,Salt1) ->
 					throw(invalid_login)
 			end;
 		_ when Pw == Password ->
+			ok;
+		_ when Pw == undefined ->
 			ok;
 		_ ->
 			throw(invalid_login)
