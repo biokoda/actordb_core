@@ -296,7 +296,12 @@ interpret_writes(Cmds,ExistingNodes,ExistingGroups,ExistingShards) ->
 					Shards = NodeFinal = GroupsFinal = [],
 					throw({error,unsupported_update});
 				{NodeFinal,GroupsFinal,DelNames} ->
-					Shards = [{shards, fix_shards(ExistingShards,DelNames,0)}]
+					case fix_shards(ExistingShards,DelNames,0) of
+						ExistingShards ->
+							Shards = [];
+						NewShards ->
+							Shards = [{shards, NewShards}]
+					end
 			end
 	end,
 	interpret_writes1(lists:flatten([{nodes,NodeFinal},{groups,GroupsFinal},Users,Shards]),[]).
