@@ -214,9 +214,9 @@ insert_user <- space? create_user space user_at_host space identified password? 
 grant_sql <- space? grant space permission space? on space priv_level ('.' priv_level space / space) to space user_at_host space? (with grant_options*)? space?`
     case lists:nth(14,Node) of
     [_|_] ->
-      #management{action = grant, data = #permission{on = lists:nth(8,Node), account = lists:nth(12,Node), conditions = [lists:nth(4,Node)|lists:nth(2,lists:nth(14,Node))]}};
+      #management{action = grant, data = #permission{on = lists:nth(8,Node), account = lists:nth(12,Node), conditions = lists:flatten([lists:nth(4,Node)|lists:nth(2,lists:nth(14,Node))])}};
     _ ->
-      #management{action = grant, data = #permission{on = lists:nth(8,Node), account = lists:nth(12,Node), conditions = lists:nth(4,Node)}}
+      #management{action = grant, data = #permission{on = lists:nth(8,Node), account = lists:nth(12,Node), conditions = lists:flatten(lists:nth(4,Node))}}
     end
 `;
 
@@ -299,7 +299,8 @@ permission <- head:perms tail:( space? ',' space? perms )* `
 
 perms <- all / all_privileges / alter_routine / alter  / create_routine / create_temp_tables / create_user / create_view /
 event / file / grant_option / index / lock_tables / process / references / reload / repl_client / repl_slave /
-show_dbs / show_view / shutdown / super / trigger / update / usage / insert / create / delete / drop / execute / select / update / read / write ~;
+show_dbs / show_view / shutdown / super / trigger / update / 
+usage / insert / create / delete / drop / execute / select / update / read / write / rw / r / w  ~;
 
 % --------------- GRANT Syntax Account Names http://dev.mysql.com/doc/refman/5.6/en/account-names.html
 
@@ -479,6 +480,9 @@ grant_option <- #(?i)grant +option# `grant_option`;
 print <- #(?i)print# `print`;
 write <- #(?i)write# `write`;
 read <- #(?i)read# `read`;
+r <- #(?i)r# `read`;
+w <- #(?i)w# `write`;
+rw <- #(?i)rw# `[write,read]`;
 execute <- #(?i)execute# `execute`;
 create <- #(?i)create# `create`;
 usage <- #(?i)usage# `usage`;

@@ -262,9 +262,9 @@ parse(Input) when is_binary(Input) ->
   p(Input, Index, 'grant_sql', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), fun 'grant'/2, fun 'space'/2, fun 'permission'/2, p_optional(fun 'space'/2), fun 'on'/2, fun 'space'/2, fun 'priv_level'/2, p_choose([p_seq([p_string(<<".">>), fun 'priv_level'/2, fun 'space'/2]), fun 'space'/2]), fun 'to'/2, fun 'space'/2, fun 'user_at_host'/2, p_optional(fun 'space'/2), p_optional(p_seq([fun 'with'/2, p_zero_or_more(fun 'grant_options'/2)])), p_optional(fun 'space'/2)]))(I,D) end, fun(Node, _Idx) ->
     case lists:nth(14,Node) of
     [_|_] ->
-      #management{action = grant, data = #permission{on = lists:nth(8,Node), account = lists:nth(12,Node), conditions = [lists:nth(4,Node)|lists:nth(2,lists:nth(14,Node))]}};
+      #management{action = grant, data = #permission{on = lists:nth(8,Node), account = lists:nth(12,Node), conditions = lists:flatten([lists:nth(4,Node)|lists:nth(2,lists:nth(14,Node))])}};
     _ ->
-      #management{action = grant, data = #permission{on = lists:nth(8,Node), account = lists:nth(12,Node), conditions = lists:nth(4,Node)}}
+      #management{action = grant, data = #permission{on = lists:nth(8,Node), account = lists:nth(12,Node), conditions = lists:flatten(lists:nth(4,Node))}}
     end
  end).
 
@@ -378,7 +378,7 @@ end
 
 -spec 'perms'(input(), index()) -> parse_result().
 'perms'(Input, Index) ->
-  p(Input, Index, 'perms', fun(I,D) -> (p_choose([fun 'all'/2, fun 'all_privileges'/2, fun 'alter_routine'/2, fun 'alter'/2, fun 'create_routine'/2, fun 'create_temp_tables'/2, fun 'create_user'/2, fun 'create_view'/2, fun 'event'/2, fun 'file'/2, fun 'grant_option'/2, fun 'index'/2, fun 'lock_tables'/2, fun 'process'/2, fun 'references'/2, fun 'reload'/2, fun 'repl_client'/2, fun 'repl_slave'/2, fun 'show_dbs'/2, fun 'show_view'/2, fun 'shutdown'/2, fun 'super'/2, fun 'trigger'/2, fun 'update'/2, fun 'usage'/2, fun 'insert'/2, fun 'create'/2, fun 'delete'/2, fun 'drop'/2, fun 'execute'/2, fun 'select'/2, fun 'update'/2, fun 'read'/2, fun 'write'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
+  p(Input, Index, 'perms', fun(I,D) -> (p_choose([fun 'all'/2, fun 'all_privileges'/2, fun 'alter_routine'/2, fun 'alter'/2, fun 'create_routine'/2, fun 'create_temp_tables'/2, fun 'create_user'/2, fun 'create_view'/2, fun 'event'/2, fun 'file'/2, fun 'grant_option'/2, fun 'index'/2, fun 'lock_tables'/2, fun 'process'/2, fun 'references'/2, fun 'reload'/2, fun 'repl_client'/2, fun 'repl_slave'/2, fun 'show_dbs'/2, fun 'show_view'/2, fun 'shutdown'/2, fun 'super'/2, fun 'trigger'/2, fun 'update'/2, fun 'usage'/2, fun 'insert'/2, fun 'create'/2, fun 'delete'/2, fun 'drop'/2, fun 'execute'/2, fun 'select'/2, fun 'update'/2, fun 'read'/2, fun 'write'/2, fun 'rw'/2, fun 'r'/2, fun 'w'/2]))(I,D) end, fun(Node, _Idx) ->Node end).
 
 -spec 'user_at_host'(input(), index()) -> parse_result().
 'user_at_host'(Input, Index) ->
@@ -774,6 +774,18 @@ end
 -spec 'read'(input(), index()) -> parse_result().
 'read'(Input, Index) ->
   p(Input, Index, 'read', fun(I,D) -> (p_regexp(<<"(?i)read">>))(I,D) end, fun(_Node, _Idx) ->read end).
+
+-spec 'r'(input(), index()) -> parse_result().
+'r'(Input, Index) ->
+  p(Input, Index, 'r', fun(I,D) -> (p_regexp(<<"(?i)r">>))(I,D) end, fun(_Node, _Idx) ->read end).
+
+-spec 'w'(input(), index()) -> parse_result().
+'w'(Input, Index) ->
+  p(Input, Index, 'w', fun(I,D) -> (p_regexp(<<"(?i)w">>))(I,D) end, fun(_Node, _Idx) ->write end).
+
+-spec 'rw'(input(), index()) -> parse_result().
+'rw'(Input, Index) ->
+  p(Input, Index, 'rw', fun(I,D) -> (p_regexp(<<"(?i)rw">>))(I,D) end, fun(_Node, _Idx) ->[write,read] end).
 
 -spec 'execute'(input(), index()) -> parse_result().
 'execute'(Input, Index) ->

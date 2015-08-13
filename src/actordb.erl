@@ -6,7 +6,7 @@
 % API
 -export([exec/1,exec/2,types/0,tables/1,columns/2,prepare_statement/1]).
 % API backpressure
--export([start_bp/2,exec_bp/2,exec_bp/3,exec_bp/5,exec_bp/6,check_bp/0,sleep_bp/1,stop_bp/1]).
+-export([start_bp/3,exec_bp/2,exec_bp/3,exec_bp/5,exec_bp/6,check_bp/0,sleep_bp/1,stop_bp/1]).
 % start/stop
 -export([start/0,stop/0,stop_complete/0,is_ready/0]).
 % start/stop internal
@@ -142,8 +142,8 @@ prepare_statement(Sql) ->
 %   Send response to client
 %   call actordb:sleep_bp(P)
 %   start receiving again when it returns
-start_bp(Username,Password) ->
-	actordb_backpressure:start_caller(Username,Password).
+start_bp(Username,Password,Salt) ->
+	actordb_backpressure:start_caller(Username,Password,Salt).
 
 % Exec with backpressure keeps track of number of unanswered SQL calls and combined size of SQL statements.
 exec_bp(P,[_|_] = Sql) ->

@@ -48,34 +48,6 @@ start_wait(Name,Type) ->
 	start(Name,Type,#st{name = Name,type = Type, waiting = true},[{slave,false},create,
 			no_election_timeout,lock,{lockinfo,wait}]).
 
-read_global_auth() ->
-	case ets:info(?GLOBALETS,size) of
-		undefined ->
-			nostate;
-		_ ->
-			case ets:match_object(?GLOBALETS,{auth,'$1'}) of
-				[{auth,Auth}] -> Auth;
-				_ -> []
-			end
-	end.
-
-read_global_auth(UserIndex) ->
-	case ets:info(?GLOBALETS,size) of
-		undefined ->
-			nostate;
-		_ ->
-			case ets:match_object(?GLOBALETS,{auth,'$1'}) of
-				[{auth,Auth}] ->
-					lists:filtermap(fun(AuthUser) ->
-						case AuthUser of
-							{_,UserIndex,_,_} -> {true, AuthUser};
-							_ -> false
-						end
-					end, Auth);
-				_ -> []
-			end
-	end.
-
 read_global_users() ->
 	case ets:info(?GLOBALETS,size) of
 		undefined ->

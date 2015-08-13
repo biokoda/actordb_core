@@ -4,7 +4,7 @@
 -module(actordb_backpressure).
 -behaviour(gen_server).
 -export([start/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
--export([start_caller/0,start_caller/2,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
+-export([start_caller/0,start_caller/3,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
 			inc_callcount/0,inc_callcount/1,dec_callcount/0,dec_callcount/1,call_count/0,call_size/0,
 			inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2,
 			save/3,getval/2,delval/2,has_authentication/3]).
@@ -17,11 +17,11 @@ start_caller() ->
 	% butil:ds_add(curcount,0,E),
 	% butil:ds_add(cursize,0,E),
 	% #caller{ets = E}.
-	start_caller(<<>>,<<>>).
-start_caller(<<>>, <<>>) ->
+	start_caller(<<>>,<<>>,<<>>).
+start_caller(<<>>, <<>>,_) ->
 	% Only if no state or no users
-	Authentication1 = actordb_sharedstate:read_global_auth(),
-	case Authentication1 of
+	Users = actordb_sharedstate:read_global_users(),
+	case Users of
 		nostate ->
 			Authentication = [];
 		[] = Authentication ->
@@ -33,14 +33,38 @@ start_caller(<<>>, <<>>) ->
 	butil:ds_add(auth,Authentication,E),
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
-	#caller{ets = E, login = <<>>, auth = [{'*',ok,ok,[read,write]}]};
-start_caller(Username, Password) ->
+	#caller{ets = E, login = <<>>, auth = [{'*',read},{'*',write},{{config},read},{{config},write}]};
+start_caller(Username, Password,Salt1) ->
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
-	Authentication = actordb_sharedstate:read_global_auth(),
+	Users = actordb_sharedstate:read_global_users(),
+	case lists:keyfind(butil:tobin(Username),1,Users) of
+		false = Rights ->
+			Pw = undefined,
+			throw(invalid_login);
+		{_,Pw,Rights} ->
+			ok
+	end,
+	case Salt1 of
+		<<Salt:20/binary,_/binary>> ->
+			<<Num1:160>> = HashBin = crypto:hash(sha, Pw),
+			<<Num2:160>> = crypto:hash(sha, <<Salt/binary, (crypto:hash(sha, HashBin))/binary>>),
+			case <<(Num1 bxor Num2):160>> of
+				Password ->
+					ok;
+				_ ->
+					throw(invalid_login)
+			end;
+		_ when Pw == Password ->
+			ok;
+		_ ->
+			throw(invalid_login)
+	end,
+	% Authentication = actordb_sharedstate:read_global_auth(),
 	% butil:ds_add(auth,Authentication,E),
-	Key = butil:sha256(<<(Username)/binary,(<<";">>)/binary,(Password)/binary>>),
+	% Key = butil:sha256(<<(Username)/binary,(<<";">>)/binary,(Password)/binary>>),
+
 	% ?AINF("Auths: ~p ~p ~p",[Authentication,Key, Username,Password]),
-	MyAuth = [A || A <- Authentication, element(3, A) == Key],
+	% MyAuth = [A || A <- Authentication, element(3, A) == Key],
 
 	% 
 	% 	TODO: Auth  needs to be changed, leave all through for now (fix also has_authentication to return false when no match)
@@ -63,7 +87,7 @@ start_caller(Username, Password) ->
 	% P#caller.login,3,Authentication
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
-	#caller{ets = E, login = Key, auth = MyAuth}.
+	#caller{ets = E, auth = Rights}.
 stop_caller(P) ->
 	Tid = P#caller.ets,
 	Size = butil:ds_val(cursize,Tid),
@@ -244,12 +268,12 @@ has_authentication(#caller{auth = Auth} = P,ActorType1,Action)->
 
 % check for atom because of config. User must have explicit {config} type access.
 % For all other types, '*' is ok.
-has_authentication([{'*',_,_,ActionList}|_],Type,Action) when is_atom(Type) ->
-	lists:member(Action,ActionList);
-has_authentication([{Type,_Index,_Key,ActionList}|_],Type,Action) ->
-	lists:member(Action,ActionList);
+has_authentication([{'*',Action}|_],Type,Action) when is_atom(Type) ->
+	true;
+has_authentication([{Type,Action}|_],Type,Action) ->
+	true;
 has_authentication([_|T],Type,A) ->
 	has_authentication(T,Type,A);
 has_authentication([],_,_) ->
-	true.
+	false.
 

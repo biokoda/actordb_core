@@ -288,7 +288,7 @@ recv_command(Cst1,<<?COM_QUERY,Query/binary>>) ->
 	BpAction = Cst1#cst.bp_action,
 	case BpAction of
 		undefined ->
-			BpState = actordb:start_bp(Cst1#cst.username,Cst1#cst.password),
+			BpState = actordb:start_bp(Cst1#cst.username,Cst1#cst.password,Cst1#cst.hash),
 			Cst = Cst1#cst{bp_action = #bp_action{state = BpState}};
 		_ ->
 			BpState = BpAction#bp_action.state,
