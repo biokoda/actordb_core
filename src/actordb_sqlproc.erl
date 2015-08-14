@@ -80,9 +80,11 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 write(Name,Flags,[delete],Start) ->
 	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
 write(Name,Flags,{Sql,Records},Start) ->
+	?AINF("WRITE ~p",[{Sql,Records}]),
 	W = #write{sql = iolist_to_binary(Sql), records = Records, flags = Flags},
 	call(Name,[wait_election|Flags],W,Start);
 write(Name,Flags,Sql,Start) ->
+	?AINF("WRITE ~p",[Sql]),
 	W = #write{sql = iolist_to_binary(Sql), flags = Flags},
 	call(Name,[wait_election|Flags],W,Start).
 
@@ -918,10 +920,14 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
 						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1}};
-				{OutSql,State} ->
+				{OutSql,State} when element(1,State) == element(1,P#dp.cbstate) ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
 						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1, cbstate = State}};
+				{OutSql,Recs} ->
+					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+					{noreply,P#dp{wasync = A1}};
 				{OutSql,Recs,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
 						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},

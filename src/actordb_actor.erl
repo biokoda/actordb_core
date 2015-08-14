@@ -41,29 +41,29 @@ start_steal(Name,Type1,Node,ShardName) ->
 	{ok,Pid}.
 
 
-read(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql} = Call) ->
+read(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql, bindingvals := BV} = Call) ->
 	case actordb_schema:iskv(Type) of
 		true ->
-			actordb_shard:kvread(Shard,Actor,Type,Sql);
+			actordb_shard:kvread(Shard,Actor,Type,{Sql,BV});
 		_ ->
 			read(Call)
 	end.
-read(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql}) ->
-	actordb_sqlproc:read({Actor, Type},Flags,Sql,?MODULE);
-read(#{actor:= Actor, flags := Flags, statements := Sql}) ->
-	actordb_sqlproc:read(Actor,Flags,Sql,?MODULE).
+read(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql, bindingvals := BV}) ->
+	actordb_sqlproc:read({Actor, Type},Flags,{Sql,BV},?MODULE);
+read(#{actor:= Actor, flags := Flags, statements := Sql, bindingvals := BV}) ->
+	actordb_sqlproc:read(Actor,Flags,{Sql,BV},?MODULE).
 
-write(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql} = Call) ->
+write(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql, bindingvals := BV} = Call) ->
 	case actordb_schema:iskv(Type) of
 		true ->
-			actordb_shard:kvwrite(Shard,Actor,Type,Sql);
+			actordb_shard:kvwrite(Shard,Actor,Type,{Sql,BV});
 		_ ->
 			write(Call)
 	end.
-write(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql}) ->
-	actordb_sqlproc:write({Actor, Type},Flags,Sql,?MODULE);
-write(#{actor:= Actor, flags := Flags, statements := Sql}) ->
-	actordb_sqlproc:write(Actor,Flags,Sql,?MODULE).
+write(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql, bindingvals := BV}) ->
+	actordb_sqlproc:write({Actor, Type},Flags,{Sql,BV},?MODULE);
+write(#{actor:= Actor, flags := Flags, statements := Sql, bindingvals := BV}) ->
+	actordb_sqlproc:write(Actor,Flags,{Sql,BV},?MODULE).
 
 
 %
