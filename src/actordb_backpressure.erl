@@ -18,25 +18,37 @@ start_caller() ->
 	% butil:ds_add(cursize,0,E),
 	% #caller{ets = E}.
 	start_caller(<<>>,<<>>,<<>>).
-start_caller(<<>>, <<>>,_) ->
-	% Only if no state or no users
+
+start_caller(Username, Password, Salt1) ->
+	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
 	Users = actordb_sharedstate:read_global_users(),
 	case Users of
 		nostate ->
-			Authentication = [];
-		[] = Authentication ->
-			ok;
-		[_|_] = Authentication ->
-			throw({error,invalid_login})
-	end,
-	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
+			handle_login(E);
+		[] ->
+			handle_login(E);
+		[_|_] ->
+			handle_login(E, Username, Password, Salt1, Users)
+	end.
+
+stop_caller(P) ->
+	Tid = P#caller.ets,
+	Size = butil:ds_val(cursize,Tid),
+	Count = butil:ds_val(curcount,Tid),
+	dec_callcount(Count),
+	dec_callsize(Size),
+	ets:delete(Tid),
+	ok.
+
+handle_login(E)->
+	% Only if no state or no users
+	Authentication = [],
 	butil:ds_add(auth,Authentication,E),
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
-	#caller{ets = E, login = <<>>, auth = [{'*',read},{'*',write},{{config},read},{{config},write}]};
-start_caller(Username, Password,Salt1) ->
-	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
-	Users = actordb_sharedstate:read_global_users(),
+	#caller{ets = E, login = <<>>, auth = [{'*',read},{'*',write},{{config},read},{{config},write}]}.
+
+handle_login(E, Username, Password, Salt1, Users)->
 	case lists:keyfind(butil:tobin(Username),1,Users) of
 		false when Users == [] ->
 			Pw = undefined,
@@ -67,14 +79,6 @@ start_caller(Username, Password,Salt1) ->
 	butil:ds_add(curcount,0,E),
 	butil:ds_add(cursize,0,E),
 	#caller{ets = E, auth = Rights}.
-stop_caller(P) ->
-	Tid = P#caller.ets,
-	Size = butil:ds_val(cursize,Tid),
-	Count = butil:ds_val(curcount,Tid),
-	dec_callcount(Count),
-	dec_callsize(Size),
-	ets:delete(Tid),
-	ok.
 
 % Store data inside connection ets (for instance prepared statement info)
 save(#caller{ets = Ets},K,V) ->
@@ -255,4 +259,3 @@ has_authentication([_|T],Type,A) ->
 	has_authentication(T,Type,A);
 has_authentication([],_,_) ->
 	false.
-
