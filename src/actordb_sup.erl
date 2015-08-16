@@ -49,7 +49,13 @@ init([]) ->
 			 permanent,
 			 100,
 			 worker,
-			[actordb_latency]}
+			[actordb_latency]},
+		{actordb_dummy,
+			{actordb_dummy, start, []},
+			 permanent,
+			 100,
+			 worker,
+			[actordb_dummy]}
 		% {actordb_termstore,
 		% 	{actordb_termstore, start, []},
 		% 	 permanent,

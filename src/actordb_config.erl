@@ -157,16 +157,6 @@ exec1(false,Cmds) ->
 		#value{name = <<"username">>, value = Username},
 		#value{name = <<"host">>, value = Host}]}} <- Usrs1],
 
-	% [_,Users,Auths] = lists:foldl(fun({U,P,H},[Seq,GUsrs,GAuth]) ->
-	% 	Sha = P,
-	% 	% Set {config} so that it can not be created from outside.
-	% 	% {config} user is only created here
-	% 	Auth1 = {{config},Seq,Sha,[read,write]},
-	% 	Auth2 = {'*',Seq,Sha,[read,write]},
-	% 	Usr = {Seq,U,H,Sha},
-	% 	[Seq+1,[Usr|GUsrs],[Auth1,Auth2|GAuth]]
-	% end, [1,[],[]], Usrs2),
-
 	Users = [{U,P,[{'*',read},{'*',write},{{config},read},{{config},write}]} || {U,P,_H} <- Usrs2],
 
 	{Nodes1,Grp3} = insert_to_grpnd(Cmds),
@@ -183,7 +173,6 @@ exec1(false,Cmds) ->
 			ok
 	end,
 
-	% {auth,Auths}
 	case actordb_sharedstate:init_state(Nodes1,Grp3,[{users,Users}],[{'schema.yaml',[]}]) of
 		ok ->
 			case get(adbt) of
