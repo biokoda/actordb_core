@@ -90,8 +90,8 @@ loop(Socket, Transport, State0) ->
 							State2 = State1#cst{sequenceid = SequenceId},
 							case State2#cst.phase of
 								handshake ->
-									HsData = recv_handshake(ClientPayload),    % TODO in future versions Authentication implementation
-									?PROTO_DBG("handshake data: ~p",[_HsData]),
+									HsData = recv_handshake(ClientPayload),
+									?PROTO_DBG("handshake data: ~p",[HsData]),
 									StateHs = send_ok(State2),
 									State3 = StateHs#cst{phase=command,
 										username = butil:ds_val(username,HsData), password = butil:ds_val(password,HsData)};
@@ -133,8 +133,9 @@ create_packet_bin(Cst,Payload) ->
 %%      string[len]    payload
 %%  '''
 create_packet(Cst,Payload) when is_binary(Payload) ->
-	PacketSize = size(Payload),
-	create_packet(Cst,Payload,PacketSize).
+	create_packet(Cst,Payload,byte_size(Payload));
+create_packet(Cst,Payload) ->
+	create_packet(Cst,Payload,iolist_size(Payload)).
 
 %% @spec create_packet(#cst{},binary()|iolist(),integer()) -> iolist()
 %% @doc Creates a MySQL packet from list or binary where a precalculated PacketLength is used.<br/>
@@ -144,9 +145,10 @@ create_packet(Cst,Payload) when is_binary(Payload) ->
 %%      1              sequence id
 %%      string[len]    payload
 %%  '''
-create_packet(Cst,Payload,PacketLength) ->
-	SequenceId = Cst#cst.sequenceid,
+create_packet(#cst{sequenceid = SequenceId} = _Cst,Payload,PacketLength) ->
 	?PROTO_DBG("create_packet | sending packet with packet length = ~p , sequenceid = ~p , payload = ~p",[PacketLength,SequenceId,Payload]),
+	[<<PacketLength:24/little, SequenceId:8/big>>, Payload];
+create_packet(SequenceId,Payload,PacketLength) ->
 	[<<PacketLength:24/little, SequenceId:8/big>>, Payload].
 
 %% @spec send_packet(#cst{},binary()|iolist()) -> send()
@@ -193,6 +195,10 @@ send_handshake(Cst,Hash) when is_record(Cst,cst) ->
 		16#8000 bor %% for mysql_native_password
 		16#00002000 bor %% transactions
 		16#00000008 bor %% schema name
+		16#00008000 bor %% secure connection
+		16#00010000 bor %% client multi statements
+		16#00020000 bor %% client multi results
+		16#00040000 bor %% multiple results in execute
 		0,
 	<<CapsLow:16/little, CapsUp:16/little>> = <<Caps:32/little>>,
 	<<Auth1:8/binary, Auth2/binary>> = Hash,
@@ -273,6 +279,9 @@ send_err(Cst,ErrorDescription) ->
 %% @doc  Decodes command from client, prepares and sends a response and returns a new state #cst{}<br/>
 %%       Implemented after: <a target="_blank" href="http://dev.mysql.com/doc/internals/en/text-protocol.html">Link</a><br/>
 %%       Important: Not all commands are implemented.
+recv_command(#cst{bp_action = undefined} = Cst1,Bin) ->
+	BpState = actordb:start_bp(Cst1#cst.username,Cst1#cst.password,Cst1#cst.hash),
+	recv_command(Cst1#cst{bp_action = #bp_action{state = BpState}},Bin);
 recv_command(Cst,<<?COM_INIT_DB,_DbName/binary>>) ->
 	send_ok(Cst);
 recv_command(Cst,<<?COM_QUIT>>) ->
@@ -281,19 +290,10 @@ recv_command(Cst,<<?COM_QUIT>>) ->
 	Cst;
 recv_command(Cst,<<?COM_PING>>) ->
 	send_ok(Cst);
-recv_command(Cst1,<<?COM_QUERY,Query/binary>>) ->
+recv_command(#cst{bp_action = #bp_action{state = BpState}} = Cst,<<?COM_QUERY,Query/binary>>) ->
 	?PROTO_DBG("got query (~s)",[Query]),
 	Q0 = myactor_util:rem_spaces(Query),
 	HasActorCmd = myactor_util:is_actor(Q0),
-	BpAction = Cst1#cst.bp_action,
-	case BpAction of
-		undefined ->
-			BpState = actordb:start_bp(Cst1#cst.username,Cst1#cst.password,Cst1#cst.hash),
-			Cst = Cst1#cst{bp_action = #bp_action{state = BpState}};
-		_ ->
-			BpState = BpAction#bp_action.state,
-			Cst = Cst1
-	end,
 	case catch actordb_sqlparse:parse_statements(BpState,Query) of
 		[] ->
 			send_ok(Cst);
@@ -445,9 +445,116 @@ recv_command(Cst1,<<?COM_QUERY,Query/binary>>) ->
 			end
 
 	end;
+recv_command(#cst{bp_action = #bp_action{state = Bp}} = Cst,<<?COM_STMT_PREPARE,Query/binary>>) ->
+	case actordb_sqlparse:parse_statements(Query) of
+		{[{{Type,_,_},_IsWrite,[Sql|_]}],_} = Parsed ->
+			case (catch actordb_dummy:prepare(Type,Sql)) of
+				{ok,NParam,NCols} ->
+					case actordb_backpressure:getval(Bp,prepnum) of
+						undefined ->
+							PrepIndex = 0;
+						PrepIndex1 ->
+							PrepIndex = PrepIndex1+1
+					end,
+					actordb_backpressure:save(Bp,prepnum,PrepIndex),
+					actordb_backpressure:save(Bp,{prep,PrepIndex},{Parsed,NParam,NCols,Query}),
+					Resp = [<<0,PrepIndex:32/little,NCols:16/little, NParam:16/little,0,0:16/little>>],
+					Seq = Cst#cst.sequenceid+1,
+					send(Cst,create_packet(Seq,Resp)),
+					case NParam > 0 of
+						true ->
+							TupleParamCols = erlang:make_tuple(NParam,<<"nmparam">>),
+							ParamTypes = #coltypes{defined = false, cols = erlang:make_tuple(NParam,get_type(<<>>))},
+							{_,ColDefPack1} = multirow_columndefs(Cst#cst{sequenceid = Seq},TupleParamCols,ParamTypes),
+							send(Cst,ColDefPack1),
+							send(Cst,create_packet(Seq+NParam+1,<<?EOF_HEADER,0:16/little,16#0022:16/little>>)),
+							Seq1 = Seq+NParam+1;
+						false ->
+							Seq1 = Seq
+					end,
+
+					case NCols > 0 of
+						true ->
+							TupleColCols = erlang:make_tuple(NCols,<<"nmcol">>),
+							ColTypes = #coltypes{defined = false, cols = erlang:make_tuple(NCols,get_type(<<>>))},
+							{_,ColDefPack2} = multirow_columndefs(Cst#cst{sequenceid = Seq1},TupleColCols,ColTypes),
+							send(Cst,ColDefPack2),
+							send(Cst,create_packet(Seq1+NCols+1,<<?EOF_HEADER,0:16/little,16#0022:16/little>>));
+						_ ->
+							Cst
+					end;
+				_ ->
+					?ERR_DESC(Cst,{error,invalid_query}),
+					send_err(Cst,<<ErrDesc/binary>>)
+			end;
+		_ ->
+			case myactor_util:is_actor(myactor_util:rem_spaces(Query)) of
+				false ->
+					?ERR_DESC(Cst,{error,actor_statement_missing}),
+					send_err(Cst,<<ErrDesc/binary>>);
+				_ ->
+					?ERR_DESC(Cst,{error,invalid_query}),
+					send_err(Cst,<<ErrDesc/binary>>)
+			end
+	end;
+recv_command(#cst{bp_action = #bp_action{state = Bp}} = Cst, <<?COM_STMT_EXECUTE,Id:32/little,_Flags,1:32/little,BinRem/binary>>) ->
+	case actordb_backpressure:getval(Bp,{prep,Id}) of
+		undefined ->
+			Query = <<>>,
+			?ERR_DESC(Cst,{error,unknown_id}),
+			send_err(Cst,<<ErrDesc/binary>>);
+		{Parsed,NParam,_NCols,Sql} ->
+			BitmapSize = (NParam + 7) div 8,
+			TypesSize = NParam*2,
+			case BinRem of
+				<<_Bitmap:BitmapSize/binary,_NewParamBound,Types:TypesSize/binary,Values/binary>> ->
+					ok;
+				_ ->
+					Query = <<>>,
+					?ERR_DESC(Cst,{error,parse_error}),
+					send_err(Cst,<<ErrDesc/binary>>)
+			end
+	end;
 recv_command(Cst,_Comm) ->
 	?PROTO_ERR("unknown command received, responding with ok (~p)",[_Comm]),
 	send_ok(Cst).
+
+get_params(<<?T_NULL,0,Types/binary>>,Vals) ->
+	[undefined|get_params(Types,Vals)];
+get_params(<<?T_VAR_STRING,0,Types/binary>>,Vals) ->
+	{Val,Rem} = myactor_util:read_lenenc_string(Vals),
+	[Val|get_params(Types,Rem)];
+get_params(<<?T_TINY,16#80,Types/binary>>,<<V,Vals/binary>>) ->
+	[V|get_params(Types,Vals)];
+get_params(<<?T_SHORT,16#80,Types/binary>>,<<V:16/little,Vals/binary>>) ->
+	[V|get_params(Types,Vals)];
+get_params(<<?T_LONG,16#80,Types/binary>>,<<V:32/little,Vals/binary>>) ->
+	[V|get_params(Types,Vals)];
+get_params(<<?T_LONGLONG,16#80,Types/binary>>,<<V:64/little,Vals/binary>>) ->
+	[V|get_params(Types,Vals)];
+get_params(<<?T_FLOAT,0,Types/binary>>,<<V:32/float-little,Vals/binary>>) ->
+	Factor = math:pow(10, floor(6 - math:log10(abs(V)))),
+	[round(V * Factor) / Factor|get_params(Types,Vals)];
+get_params(<<?T_DOUBLE,0,Types/binary>>,<<V:64/float-little,Vals/binary>>) ->
+	[V|get_params(Types,Vals)];
+get_params(<<?T_DATE,0,Types/binary>>,<<4, Y:16/little, M, D,Vals/binary>>) ->
+	[butil:date_to_bstring({Y,M,D},<<"-">>)|get_params(Types,Vals)];
+get_params(<<?T_DATETIME,0,Types/binary>>,<<4, Y:16/little, M, D,Vals/binary>>) ->
+	[butil:date_to_bstring({Y,M,D},<<"-">>)|get_params(Types,Vals)];
+get_params(<<?T_DATETIME,0,Types/binary>>,<<7, Y:16/little, M, D, H, Mi, S,Vals/binary>>) ->
+	[<<(butil:date_to_bstring({Y,M,D},<<"-">>))/binary," ",(butil:time_to_bstring({H,Mi,S},<<":">>))/binary>>|get_params(Types,Vals)];
+get_params(<<?T_DATETIME,0,Types/binary>>,<<11, Y:16/little, M, D, H, Mi, S,Micro:32/little,Vals/binary>>) ->
+	[<<(butil:date_to_bstring({Y,M,D},<<"-">>))/binary," ",(butil:time_to_bstring({H,Mi,S+0.000001 * Micro},<<":">>))/binary>>|get_params(Types,Vals)];
+% get_params(<<?T_TIME,0>>,<<8, 1, D1:32/little, H1, M1, S1,Vals/binary>>) ->
+get_params(<<>>,<<>>) ->
+	[].
+
+floor(Value) ->
+	Trunc = trunc(Value),
+	if
+		Trunc =< Value -> Trunc;
+		Trunc > Value -> Trunc - 1
+	end.
 
 %% @spec queue_append(#cst{},binary()) -> #cst{}
 %% @doc  Appends query data to query queue and returns a new state.
@@ -470,7 +577,7 @@ queue_append(Cst,Query) ->
 %%
 execute_query(Cst,Stmts0,Query) ->
 	BpState = (Cst#cst.bp_action)#bp_action.state,
-	case catch actordb:exec_bp1(BpState,size(Stmts0),Stmts0) of   % -> {ok,Result} or {sleep,Result}
+	case catch actordb:exec_bp1(BpState,byte_size(Query),Stmts0) of   % -> {ok,Result} or {sleep,Result}
 		{'EXIT',Err} ->
 			?ERR_DESC(Cst,Err), % = ErrDesc
 			send_err(Cst,<<ErrDesc/binary>>);

@@ -18,47 +18,23 @@ rem_spaces(<<" ",X/binary>>) ->
 rem_spaces(X) ->
 	X.
 
-%% @spec is_use(binary()) -> true | false
-%% @doc  Detect if string/query starts with "use" statement.
-is_use({Bin,_}) ->
-	is_use(Bin);
-is_use(Bin) ->
-	case Bin of 
-		<<"use ",_Rem/binary>> ->
-			true;
-		<<"USE ",_Rem/binary>> ->
-			true;
-		<<"Use ",_Rem/binary>> ->
-			true;
-		<<"uSe ",_Rem/binary>> ->
-			true;
-		<<"usE ",_Rem/binary>> ->
-			true;
-		<<"USe ",_Rem/binary>> ->
-			true;
-		<<"uSE ",_Rem/binary>> ->
-			true;
-		_ ->
-			false
-	end.
-
 %% @spec is_actor(binary()) -> true | false
 %% @doc  Detect if string/query starts with "actor" statement.
 is_actor({Bin,_}) ->
 	is_actor(Bin);
 is_actor(Bin) ->
 	case Bin of 
-		<<"actor ",Rem/binary>> ->
+		<<"actor ",_Rem/binary>> ->
 			true;
-		<<"ACTOR ",Rem/binary>> ->
+		<<"ACTOR ",_Rem/binary>> ->
 			true;
-		<<"Actor ",Rem/binary>> ->
+		<<"Actor ",_Rem/binary>> ->
 			true;
-		<<A,C,T,O,R," ",Rem/binary>>  when (A == $a orelse A == $A) andalso
-										(C == $c orelse C == $C) andalso
-										(T == $t orelse T == $T) andalso
-										(O == $o orelse O == $O) andalso
-										(R == $t orelse R == $T) ->
+		<<A,C,T,O,R," ",_Rem/binary>>  when (A == $a orelse A == $A) andalso
+				(C == $c orelse C == $C) andalso
+				(T == $t orelse T == $T) andalso
+				(O == $o orelse O == $O) andalso
+				(R == $t orelse R == $T) ->
 			true;
 		_ ->
 			false

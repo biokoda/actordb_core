@@ -5,9 +5,18 @@
 -behaviour(gen_server).
 -export([start/0,stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 -include_lib("actordb_core/include/actordb.hrl").
+-define(DBS,dummydbs).
+-export([prepare/2]).
+% Maintains a memory only actor of every type. 
+% We use it parse prepare statement call over mysql protocol.
 
-% Maintains a memory only actor of every type. We use it for prepare statement call over mysql protocol.
-
+prepare(Type,Sql) ->
+	case butil:ds_val(actordb_util:typeatom(Type),?DBS) of
+		undefined ->
+			undefined;
+		{_,Db} ->
+			actordb_driver:stmt_info(Db,Sql)
+	end.
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -34,7 +43,7 @@ handle_info({actordb,sharedstate_change},P) ->
 	case catch actordb_schema:types() of
 		[_|_] = L ->
 			[begin
-				case butil:ds_val(T,dummydbs) of
+				case butil:ds_val(T,?DBS) of
 					undefined ->
 						Db = undefined,
 						Vers = 0,
@@ -48,10 +57,10 @@ handle_info({actordb,sharedstate_change},P) ->
 					_ when Db == undefined ->
 						{ok,Db1,_,_} = actordb_sqlite:init(":memory:"),
 						actordb_sqlite:exec(Db1,Sql,write),
-						butil:ds_add(T,{NV,Db1},dummydbs);
+						butil:ds_add(T,{NV,Db1},?DBS);
 					_ ->
 						actordb_sqlite:exec(Db,Sql,write),
-						butil:ds_add(T,{NV,Db},dummydbs)
+						butil:ds_add(T,{NV,Db},?DBS)
 				end
 			end || T <- L];
 		_ ->
@@ -70,9 +79,9 @@ terminate(_, _) ->
 code_change(_, P, _) ->
 	{ok, P}.
 init(_) ->
-	case ets:info(dummydbs,size) of
+	case ets:info(?DBS,size) of
 		undefined ->
-			ets:new(dummydbs, [named_table,public,set,{read_concurrency,true}]);
+			ets:new(?DBS, [named_table,public,set,{read_concurrency,true}]);
 		_ ->
 			ok
 	end,
