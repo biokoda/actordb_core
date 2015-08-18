@@ -314,15 +314,15 @@ recv_command(#cst{bp_action = #bp_action{state = BpState}} = Cst,<<?COM_QUERY,Qu
 									{<<"current_actor_flags">>,iolist_to_binary(Flags)},
 									{<<"bp_action">>,butil:tobin(CstBpState)},
 									{<<"queueing">>,butil:tobin(Cst#cst.queueing)},
-									{<<"query_queue">>,butil:tobin(Cst#cst.query_queue)}]);
+									{<<"query_queue">>,butil:tobin(Cst#cst.query_queue)}],text);
 		["select @@version_comment"++_] ->
 			?PROTO_DBG("got version comment query"),
 			multirow_response(Cst,  {<<"@@version_comment">>},
-									[{?MYACTOR_VER}]);
+									[{?MYACTOR_VER}],text);
 		["select timediff( curtime(), utc_time() )"++_] ->
 			?PROTO_DBG("got timediff query"),
 			multirow_response(Cst,  {<<"timediff( curtime(), utc_time() )">>},
-									[{<<"01:00:00">>}]);
+									[{<<"01:00:00">>}],text);
 		["select database()"++_] ->
 			?PROTO_DBG("got select database() query"),
 			send_ok(Cst);
@@ -349,20 +349,20 @@ recv_command(#cst{bp_action = #bp_action{state = BpState}} = Cst,<<?COM_QUERY,Qu
 			send_ok(Cst);
 		["show full tables"++_] ->
 			?PROTO_DBG("got show full tables query"),
-			multirow_response(Cst,{<<"tables_in_db">>},[]);
+			multirow_response(Cst,{<<"tables_in_db">>},[],text);
 		["select @@session."++Rest] ->
 			?PROTO_DBG("got session select variable"),
 			{Cols,Rows} = myactor_static:session_variable(Rest),
-			multirow_response(Cst,Cols,Rows);
+			multirow_response(Cst,Cols,Rows,text);
 		["show collation"++_] ->
 			?PROTO_DBG("got show collation query"),
 			multirow_response(Cst,{<<"collation">>,<<"charset">>,{<<"id">>,t_longlong},<<"default">>,<<"compiled">>,<<"sortlen">>},
-									myactor_static:show_collation());
+									myactor_static:show_collation(),text);
 		["show variables"++_] ->    % for java driver
 			?PROTO_DBG("got show variables query"),
 			%send_ok(Cst);
 			multirow_response(Cst,  {<<"variable_name">>,<<"value">>},
-									myactor_static:show_variables());
+									myactor_static:show_variables(),text);
 		["queue"++_]  when Cst#cst.queueing == true ->
 			?ERR_DESC(Cst,queuing_already_active), % = ErrDesc
 			send_err(Cst,<<ErrDesc/binary>>);
@@ -384,7 +384,7 @@ recv_command(#cst{bp_action = #bp_action{state = BpState}} = Cst,<<?COM_QUERY,Qu
 			?PROTO_DBG("query queue statement = ~p",[QQ]),
 			?PROTO_DBG("queue command = ~p",[Stmts0]),
 			Cst0 = Cst#cst{query_queue = <<>>, queueing = false},
-			execute_query(Cst0,Stmts0,QQ);
+			execute_query(Cst0,Stmts0,QQ,[],text);
 		{[{{Actor,ActorIds,Flags},false,[]}],false} -> % parsed "actor <actor>(ids)" statement
 			?PROTO_DBG("actor statement for ~p (~p) with flags ~p",[Actor,ActorIds,Flags]),
 			ActorIdsBin = myactor_util:build_idsbin(ActorIds),
@@ -441,7 +441,7 @@ recv_command(#cst{bp_action = #bp_action{state = BpState}} = Cst,<<?COM_QUERY,Qu
 					send_err(Cst,<<ErrDesc/binary>>);
 				_ ->
 					?PROTO_DBG("stmts0 query = ~p",[Stmts0]),
-					execute_query(Cst,Stmts0,Query)
+					execute_query(Cst,Stmts0,Query,[],text)
 			end
 
 	end;
@@ -497,7 +497,8 @@ recv_command(#cst{bp_action = #bp_action{state = Bp}} = Cst,<<?COM_STMT_PREPARE,
 					send_err(Cst,<<ErrDesc/binary>>)
 			end
 	end;
-recv_command(#cst{bp_action = #bp_action{state = Bp}} = Cst, <<?COM_STMT_EXECUTE,Id:32/little,_Flags,1:32/little,BinRem/binary>>) ->
+recv_command(#cst{bp_action = #bp_action{state = Bp}} = Cst,
+		<<?COM_STMT_EXECUTE,Id:32/little,_Flags,1:32/little,BinRem/binary>>) ->
 	case actordb_backpressure:getval(Bp,{prep,Id}) of
 		undefined ->
 			Query = <<>>,
@@ -508,7 +509,8 @@ recv_command(#cst{bp_action = #bp_action{state = Bp}} = Cst, <<?COM_STMT_EXECUTE
 			TypesSize = NParam*2,
 			case BinRem of
 				<<_Bitmap:BitmapSize/binary,_NewParamBound,Types:TypesSize/binary,Values/binary>> ->
-					ok;
+					Vals = myactor_util:exec_vals(Types,Values),
+					execute_query(Cst,Parsed,Sql,[[Vals]],binary);
 				_ ->
 					Query = <<>>,
 					?ERR_DESC(Cst,{error,parse_error}),
@@ -518,43 +520,6 @@ recv_command(#cst{bp_action = #bp_action{state = Bp}} = Cst, <<?COM_STMT_EXECUTE
 recv_command(Cst,_Comm) ->
 	?PROTO_ERR("unknown command received, responding with ok (~p)",[_Comm]),
 	send_ok(Cst).
-
-get_params(<<?T_NULL,0,Types/binary>>,Vals) ->
-	[undefined|get_params(Types,Vals)];
-get_params(<<?T_VAR_STRING,0,Types/binary>>,Vals) ->
-	{Val,Rem} = myactor_util:read_lenenc_string(Vals),
-	[Val|get_params(Types,Rem)];
-get_params(<<?T_TINY,16#80,Types/binary>>,<<V,Vals/binary>>) ->
-	[V|get_params(Types,Vals)];
-get_params(<<?T_SHORT,16#80,Types/binary>>,<<V:16/little,Vals/binary>>) ->
-	[V|get_params(Types,Vals)];
-get_params(<<?T_LONG,16#80,Types/binary>>,<<V:32/little,Vals/binary>>) ->
-	[V|get_params(Types,Vals)];
-get_params(<<?T_LONGLONG,16#80,Types/binary>>,<<V:64/little,Vals/binary>>) ->
-	[V|get_params(Types,Vals)];
-get_params(<<?T_FLOAT,0,Types/binary>>,<<V:32/float-little,Vals/binary>>) ->
-	Factor = math:pow(10, floor(6 - math:log10(abs(V)))),
-	[round(V * Factor) / Factor|get_params(Types,Vals)];
-get_params(<<?T_DOUBLE,0,Types/binary>>,<<V:64/float-little,Vals/binary>>) ->
-	[V|get_params(Types,Vals)];
-get_params(<<?T_DATE,0,Types/binary>>,<<4, Y:16/little, M, D,Vals/binary>>) ->
-	[butil:date_to_bstring({Y,M,D},<<"-">>)|get_params(Types,Vals)];
-get_params(<<?T_DATETIME,0,Types/binary>>,<<4, Y:16/little, M, D,Vals/binary>>) ->
-	[butil:date_to_bstring({Y,M,D},<<"-">>)|get_params(Types,Vals)];
-get_params(<<?T_DATETIME,0,Types/binary>>,<<7, Y:16/little, M, D, H, Mi, S,Vals/binary>>) ->
-	[<<(butil:date_to_bstring({Y,M,D},<<"-">>))/binary," ",(butil:time_to_bstring({H,Mi,S},<<":">>))/binary>>|get_params(Types,Vals)];
-get_params(<<?T_DATETIME,0,Types/binary>>,<<11, Y:16/little, M, D, H, Mi, S,Micro:32/little,Vals/binary>>) ->
-	[<<(butil:date_to_bstring({Y,M,D},<<"-">>))/binary," ",(butil:time_to_bstring({H,Mi,S+0.000001 * Micro},<<":">>))/binary>>|get_params(Types,Vals)];
-% get_params(<<?T_TIME,0>>,<<8, 1, D1:32/little, H1, M1, S1,Vals/binary>>) ->
-get_params(<<>>,<<>>) ->
-	[].
-
-floor(Value) ->
-	Trunc = trunc(Value),
-	if
-		Trunc =< Value -> Trunc;
-		Trunc > Value -> Trunc - 1
-	end.
 
 %% @spec queue_append(#cst{},binary()) -> #cst{}
 %% @doc  Appends query data to query queue and returns a new state.
@@ -575,9 +540,9 @@ queue_append(Cst,Query) ->
 %%       2. Executes the query<br/>
 %%       3. Sends the response to the socket where backpressure is handled<br/>
 %%
-execute_query(Cst,Stmts0,Query) ->
+execute_query(Cst,Stmts0,Query,BindVals,Protocol) ->
 	BpState = (Cst#cst.bp_action)#bp_action.state,
-	case catch actordb:exec_bp1(BpState,byte_size(Query),Stmts0) of   % -> {ok,Result} or {sleep,Result}
+	case catch actordb:exec_bp1(BpState,byte_size(Query),Stmts0,BindVals) of   % -> {ok,Result} or {sleep,Result}
 		{'EXIT',Err} ->
 			?ERR_DESC(Cst,Err), % = ErrDesc
 			send_err(Cst,<<ErrDesc/binary>>);
@@ -601,13 +566,13 @@ execute_query(Cst,Stmts0,Query) ->
 				{ok,{changes,LastInsertId,NumChanges}} -> % insert queries
 					send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
 				{ok,[{columns,Cols},{rows,Rows}]} ->    % data queries
-					multirow_response(Cst0,Cols,Rows);
+					multirow_response(Cst0,Cols,Rows,Protocol);
 				{ok,[{changes,_,_}|_] = MultiResponse} ->
 					case lists:last(MultiResponse) of
 						{changes,LastInsertId,NumChanges} ->
 							send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
 						[{columns,Cols},{rows,Rows}] ->
-							multirow_response(Cst0,Cols,Rows);
+							multirow_response(Cst0,Cols,Rows,Protocol);
 						_ ->
 							send_ok(Cst0)
 					end;
@@ -616,7 +581,7 @@ execute_query(Cst,Stmts0,Query) ->
 						{changes,LastInsertId,NumChanges} ->
 							send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
 						[{columns,Cols},{rows,Rows}] ->
-							multirow_response(Cst0,Cols,Rows);
+							multirow_response(Cst0,Cols,Rows,Protocol);
 						_ ->
 							send_ok(Cst0)
 					end;
@@ -637,7 +602,7 @@ execute_query(Cst,Stmts0,Query) ->
 
 %% @spec multirow_response(#cst{},term(),term()) -> #cst{}
 %% @doc  Builds a multirow response from actordb query response and sends it to socket
-multirow_response(Cst,Cols,Rows) ->
+multirow_response(Cst,Cols,Rows,Prot) ->
 	?PROTO_NTC("multirow response:~nstate:~p~ncolumns:~p~nrows:~p~n",[Cst,Cols,Rows]),
 	NumCols = size(Cols),
 	NumColsLenEnc = myactor_util:mysql_var_integer(NumCols),
@@ -654,7 +619,7 @@ multirow_response(Cst,Cols,Rows) ->
 	EofMarker = create_packet(Cst1,<<?EOF_HEADER,Warnings:16/little,ServerStatus:16/little>>),
 	ResultSetSize = length(Rows),
 	?PROTO_DBG("creating row data; size = ~p",[ResultSetSize]),
-	{ColTypes,ResultSetPack} = multirow_encoderows(Cst1,Rows),
+	{ColTypes,ResultSetPack} = multirow_encoderows(Cst1,Rows,Prot),
 	?PROTO_DBG("coltypes = ~p",[ColTypes]),
 	?PROTO_DBG("resulset pack = ~p",[ResultSetPack]),
 	Cst2 = Cst1#cst{sequenceid=Cst1#cst.sequenceid+ResultSetSize+1},    % eof marker 2 sequence id
@@ -671,6 +636,7 @@ multirow_response(Cst,Cols,Rows) ->
 	?PROTO_DBG("multirow_response | binary out = ~p",[BinOut]),
 	%send_ok(Cst).
 	send(Cst,BinOut).
+
 
 %% @spec multirow_columndefs_prep(#cst{},term()) -> #cst{}
 %% @doc  Calculate a new after "column-definitions" state. We need this since we detect types while we build the request.<br/>
@@ -726,14 +692,14 @@ multirow_columndefs0(Cst,Cols,ColTypes,ColId,NumCols,Bin) ->
 
 %% @spec multirow_encoderows(#cst{},list()) -> {#cst{},iolist()}
 %% @doc  Utility funciton. Encode multirow response into binary data. While encoding we detect types that are used to build correct column definitions.
-multirow_encoderows(Cst,Rows) ->
+multirow_encoderows(Cst,Rows,Prot) ->
 	Cst0 = Cst#cst{sequenceid=Cst#cst.sequenceid+length(Rows)}, % we need to go in reverse order since ActorDB gives us data in that day
-	multirow_encoderows(Cst0,Rows,[],undefined).
+	multirow_encoderows(Cst0,Rows,Prot,[],undefined).
 %% @spec multirow_encoderows(#cst{},list(),io_list(),#coltypes{}) -> {#cst{},iolist()}
 %% @doc  Encode multirow response into binary data. While encoding we detect types that are used to build correct column definitions.
-multirow_encoderows(_,[],Bin,ColTypes) ->   % ColTypes = we need to detect column types
+multirow_encoderows(_,[],_,Bin,ColTypes) ->   % ColTypes = we need to detect column types
 	{ColTypes,Bin};
-multirow_encoderows(Cst,[Row|Rest],Bin,ColTypes) ->
+multirow_encoderows(Cst,[Row|Rest],Prot,Bin,ColTypes) ->
 	case ColTypes of
 		undefined ->
 			ColTypes0 = #coltypes{defined = false, cols = erlang:make_tuple(size(Row),get_type(undefined))};
@@ -744,21 +710,24 @@ multirow_encoderows(Cst,[Row|Rest],Bin,ColTypes) ->
 			?PROTO_DBG("all column types are now defined. "),
 			ColTypes0 = ColTypes
 	end,
-	{ColTypes1,RowPacket} = multirow_encoderow(Cst,Row,ColTypes0),
+	{ColTypes1,RowPacket} = multirow_encoderow(Cst,Row,Prot,ColTypes0),
 	Cst0 = Cst#cst{sequenceid=Cst#cst.sequenceid-1},    % again, reverse order
-	multirow_encoderows(Cst0,Rest,[RowPacket|Bin],ColTypes1).
+	multirow_encoderows(Cst0,Rest,Prot,[RowPacket|Bin],ColTypes1).
 
 %% @spec multirow_encoderow(#cst{},term(),#coltypes{}) -> {#coltypes{},iolist()}
 %% @doc  Encode a single row and check for types while encoding.
-multirow_encoderow(Cst,Row,ColTypes) ->
-	{ColTypes0,RowBin,BinSize} = multirow_encoderow0(Row,ColTypes),
+multirow_encoderow(Cst,Row,Prot,ColTypes) ->
+	{ColTypes0,RowBin,BinSize} = multirow_encoderow0(Row,Prot,ColTypes),
 	{ColTypes0,create_packet(Cst,RowBin,BinSize)}.
 
 %% @spec multirow_encoderow0(term(),#coltypes{}) -> {#coltypes{},iolist(),integer()}
 %% @doc  Utility funciton. Encode a single row and check for types while encoding. We precalculate the size of the row for faster package creation.
-multirow_encoderow0(Row,ColTypes) ->
+multirow_encoderow0(Row,text,ColTypes) ->
 	RowLength = size(Row),
-	multirow_encoderow0(Row,RowLength,RowLength,[],0,ColTypes).
+	multirow_encoderow0(Row,RowLength,RowLength,[],0,ColTypes);
+multirow_encoderow0(Row,binary,ColTypes) ->
+	BM = myactor_util:null_bitmap(Row),
+	ok.
 
 %% @spec multirow_encoderow0(term(),integer(),integer(),io_list(),integer(),#coltypes{}) -> {#coltypes{},iolist(),integer()}
 %% @doc  Encode a single row and check for types while encoding. We precalculate the size of the row for faster package creation.

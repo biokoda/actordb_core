@@ -18,6 +18,100 @@ rem_spaces(<<" ",X/binary>>) ->
 rem_spaces(X) ->
 	X.
 
+% decoding binary protocol
+exec_vals(<<?T_NULL,0,Types/binary>>,Vals) ->
+	[undefined|exec_vals(Types,Vals)];
+exec_vals(<<?T_VAR_STRING,0,Types/binary>>,Vals) ->
+	{Val,Rem} = myactor_util:read_lenenc_string(Vals),
+	[Val|exec_vals(Types,Rem)];
+exec_vals(<<?T_TINY,16#80,Types/binary>>,<<V,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_TINY,0,Types/binary>>,<<V:8/signed,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_SHORT,16#80,Types/binary>>,<<V:16/unsigned-little,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_SHORT,0,Types/binary>>,<<V:16/signed-little,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_LONG,16#80,Types/binary>>,<<V:32/unsigned-little,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_LONG,0,Types/binary>>,<<V:32/little,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_LONGLONG,16#80,Types/binary>>,<<V:64/unsigned-little,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_LONGLONG,0,Types/binary>>,<<V:64/signed-little,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_FLOAT,0,Types/binary>>,<<V:32/float-signed-little,Vals/binary>>) ->
+	Factor = math:pow(10, floor(6 - math:log10(abs(V)))),
+	[round(V * Factor) / Factor|exec_vals(Types,Vals)];
+exec_vals(<<?T_DOUBLE,0,Types/binary>>,<<V:64/float-signed-little,Vals/binary>>) ->
+	[V|exec_vals(Types,Vals)];
+exec_vals(<<?T_DATE,0,Types/binary>>,<<4, Y:16/little, M, D,Vals/binary>>) ->
+	[butil:date_to_bstring({Y,M,D},<<"-">>)|exec_vals(Types,Vals)];
+exec_vals(<<?T_DATETIME,0,Types/binary>>,<<4, Y:16/little, M, D,Vals/binary>>) ->
+	[butil:date_to_bstring({Y,M,D},<<"-">>)|exec_vals(Types,Vals)];
+exec_vals(<<?T_DATETIME,0,Types/binary>>,<<7, Y:16/little, M, D, H, Mi, S,Vals/binary>>) ->
+	[<<(butil:date_to_bstring({Y,M,D},<<"-">>))/binary," ",(butil:time_to_bstring({H,Mi,S},<<":">>))/binary>>|exec_vals(Types,Vals)];
+exec_vals(<<?T_DATETIME,0,Types/binary>>,<<11, Y:16/little, M, D, H, Mi, S,Micro:32/little,Vals/binary>>) ->
+	[<<(butil:date_to_bstring({Y,M,D},<<"-">>))/binary," ",(butil:time_to_bstring({H,Mi,S+0.000001 * Micro},<<":">>))/binary>>|exec_vals(Types,Vals)];
+exec_vals(<<?T_TIME,0,Types/binary>>,<<8, 1, 0:32/little, H1, M1, S1,Vals/binary>>) ->
+	[(butil:time_to_bstring({H1,M1,S1},<<":">>))|exec_vals(Types,Vals)];
+exec_vals(<<?T_TIME,0,Types/binary>>,<<8, 1, D:32/little, H1, M1, S1,Vals/binary>>) ->
+	[butil:tobin(D),"d ",(butil:time_to_bstring({H1,M1,S1},<<":">>))|exec_vals(Types,Vals)];
+exec_vals(<<?T_TIME,0,Types/binary>>,<<12, 0, D:32/little, H, M, S1, Micro:32/little,Vals/binary>>) ->
+	[butil:tobin(D),"d ",(butil:time_to_bstring({H,M,S1+0.000001 * Micro},<<":">>))|exec_vals(Types,Vals)];
+exec_vals(<<>>,<<>>) ->
+	[].
+
+enc_vals([undefined|T]) ->
+	enc_vals(T);
+enc_vals([null|T]) ->
+	enc_vals(T);
+enc_vals([<<_/binary>> = V|T]) ->
+	[<<?T_VAR_STRING,0>>,binary_to_varchar(V)|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H), H =< 16#ff, H >= 0 ->
+	[<<?T_TINY,16#80,H:8>>|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H), H >= -16#80, H < 0 ->
+	[<<?T_TINY,0,H:8>>|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H), H =< 16#ffff, H >= 0 ->
+	[<<?T_SHORT,16#80,H:16/little>>|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H), H >= -16#8000, H < 0 ->
+	[<<?T_SHORT,0,H:16/little>>|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H), H =< 16#ffffffff, H >= 0 ->
+	[<<?T_LONG,16#80,H:32/little>>|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H), H >= -16#80000000, H < 0 ->
+	[<<?T_LONG,0,H:32/little>>|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H), H =< 16#ffffffffffffffff, H >= 0 ->
+	[<<?T_LONGLONG,16#80,H:64/little>>|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H), H >= -16#8000000000000000, H < 0 ->
+	[<<?T_LONGLONG,0,H:64/little>>|enc_vals(T)];
+enc_vals([H|T]) when is_integer(H) ->
+	[enc_vals([butil:tobin(H)])|enc_vals(T)];
+enc_vals([H|T]) when is_float(H) ->
+	[<<?T_DOUBLE,0,H:64/float-little>>|enc_vals(T)];
+enc_vals([]) ->
+	[].
+
+floor(Value) ->
+	Trunc = trunc(Value),
+	if
+		Trunc =< Value -> Trunc;
+		Trunc > Value -> Trunc - 1
+	end.
+
+null_bitmap(Vals) ->
+	NullBits = << <<(bit(V)):1>> || V <- tuple_to_list(Vals) >>,
+	OrigLen = bit_size(NullBits) + 2,
+	PadLen = ((OrigLen + 7) band (bnot 7)) - OrigLen,
+	Full = <<0:2, NullBits/bitstring, 0:PadLen>>,
+	<< <<H:1, G:1, F:1, E:1, D:1, C:1, B:1, A:1>> || <<A:1, B:1, C:1, D:1, E:1, F:1, G:1, H:1>> <= Full >>.
+
+bit(undefined) ->
+	1;
+bit(null) ->
+	1;
+bit(_) ->
+	0.
+
 %% @spec is_actor(binary()) -> true | false
 %% @doc  Detect if string/query starts with "actor" statement.
 is_actor({Bin,_}) ->
