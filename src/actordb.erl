@@ -14,7 +14,7 @@
 % -export ([exec_mngmnt/1]).
 % Internal. Generally not to be called from outside actordb
 -export([direct_call/1,actor_id_type/1,configfiles/0,
-		 exec_bp1/3,rpc/3,rpcast/2,hash_pick/2,hash_pick/1]).
+		 exec_bp1/3,exec_bp1/4,rpc/3,rpcast/2,hash_pick/2,hash_pick/1]).
 -include_lib("actordb_core/include/actordb.hrl").
 
 %Maps are used for carrying query statements information:

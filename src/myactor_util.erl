@@ -62,44 +62,69 @@ exec_vals(<<?T_TIME,0,Types/binary>>,<<12, 0, D:32/little, H, M, S1, Micro:32/li
 exec_vals(<<>>,<<>>) ->
 	[].
 
-enc_vals([undefined|T]) ->
-	enc_vals(T);
-enc_vals([null|T]) ->
-	enc_vals(T);
-enc_vals([<<_/binary>> = V|T]) ->
-	[<<?T_VAR_STRING,0>>,binary_to_varchar(V)|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H), H =< 16#ff, H >= 0 ->
-	[<<?T_TINY,16#80,H:8>>|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H), H >= -16#80, H < 0 ->
-	[<<?T_TINY,0,H:8>>|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H), H =< 16#ffff, H >= 0 ->
-	[<<?T_SHORT,16#80,H:16/little>>|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H), H >= -16#8000, H < 0 ->
-	[<<?T_SHORT,0,H:16/little>>|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H), H =< 16#ffffffff, H >= 0 ->
-	[<<?T_LONG,16#80,H:32/little>>|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H), H >= -16#80000000, H < 0 ->
-	[<<?T_LONG,0,H:32/little>>|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H), H =< 16#ffffffffffffffff, H >= 0 ->
-	[<<?T_LONGLONG,16#80,H:64/little>>|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H), H >= -16#8000000000000000, H < 0 ->
-	[<<?T_LONGLONG,0,H:64/little>>|enc_vals(T)];
-enc_vals([H|T]) when is_integer(H) ->
-	[enc_vals([butil:tobin(H)])|enc_vals(T)];
-enc_vals([H|T]) when is_float(H) ->
-	[<<?T_DOUBLE,0,H:64/float-little>>|enc_vals(T)];
+
+enc_vals([H|T]) ->
+	[enc_val(H)|enc_vals(T)];
 enc_vals([]) ->
 	[].
 
+enc_val(undefined) ->
+	[];
+enc_val(null) ->
+	[];
+enc_val(<<_/binary>> = V) ->
+	binary_to_varchar(V); %<<?T_VAR_STRING,0>>,
+enc_val(H) when is_integer(H), H =< 16#ff, H >= 0 ->
+	% [<<?T_TINY,16#80,H:8>>];
+	<<H>>;
+enc_val(H) when is_integer(H), H >= -16#80, H < 0 ->
+	% [<<?T_TINY,0,H:8>>];
+	<<H>>;
+enc_val(H) when is_integer(H), H =< 16#ffff, H >= 0 ->
+	% [<<?T_SHORT,16#80,H:16/little>>];
+	<<H:16/little>>;
+enc_val(H) when is_integer(H), H >= -16#8000, H < 0 ->
+	% [<<?T_SHORT,0,H:16/little>>];
+	<<H:16/little>>;
+enc_val(H) when is_integer(H), H =< 16#ffffffff, H >= 0 ->
+	% [<<?T_LONG,16#80,H:32/little>>];
+	<<H:32/little>>;
+enc_val(H) when is_integer(H), H >= -16#80000000, H < 0 ->
+	% [<<?T_LONG,0,H:32/little>>];
+	<<H:32/little>>;
+enc_val(H) when is_integer(H), H =< 16#ffffffffffffffff, H >= 0 ->
+	% [<<?T_LONGLONG,16#80,H:64/little>>];
+	<<H:64/little>>;
+enc_val(H) when is_integer(H), H >= -16#8000000000000000, H < 0 ->
+	% [<<?T_LONGLONG,0,H:64/little>>];
+	<<H:64/little>>;
+enc_val(H) when is_integer(H) ->
+	enc_val(butil:tobin(H));
+enc_val(H) when is_float(H) ->
+	% [<<?T_DOUBLE,0,H:64/float-little>>];
+	<<H:64/float-little>>;
+enc_val({blob,V}) when byte_size(V) < 256 ->
+	% [<<?T_TINY_BLOB,0>>,binary_to_varchar(V)];
+	binary_to_varchar(V);
+enc_val({blob,V}) when byte_size(V) < 65536 ->
+	binary_to_varchar(V);
+enc_val({blob,V}) when byte_size(V) < 16777216 ->
+	binary_to_varchar(V);
+enc_val({blob,V}) when byte_size(V) < 4294967296 ->
+	binary_to_varchar(V).
+
 floor(Value) ->
-	Trunc = trunc(Value),
-	if
-		Trunc =< Value -> Trunc;
-		Trunc > Value -> Trunc - 1
+	case trunc(Value) of
+		Trunc when Trunc =< Value -> 
+			Trunc;
+		Trunc when Trunc > Value ->
+			Trunc - 1
 	end.
 
+null_bitmap(Vals) when is_tuple(Vals) ->
+	null_bitmap(tuple_to_list(Vals));
 null_bitmap(Vals) ->
-	NullBits = << <<(bit(V)):1>> || V <- tuple_to_list(Vals) >>,
+	NullBits = << <<(bit(V)):1>> || V <- Vals >>,
 	OrigLen = bit_size(NullBits) + 2,
 	PadLen = ((OrigLen + 7) band (bnot 7)) - OrigLen,
 	Full = <<0:2, NullBits/bitstring, 0:PadLen>>,
@@ -154,8 +179,7 @@ binary_to_varchar(undefined) ->
 binary_to_varchar(null) ->
 		<<16#fb>>;
 binary_to_varchar(Binary) ->
-	Len = mysql_var_integer(byte_size(Binary)),
-	<<Len/binary, Binary/binary>>.
+	[mysql_var_integer(byte_size(Binary)), Binary].
 
 %% @spec mysql_var_integer(integer()) -> binary()
 %% @doc  Encodes integer that it can be used for integer representation within packets.

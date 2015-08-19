@@ -115,16 +115,6 @@ loop(Socket, Transport, State0) ->
 			exit(normal)
 	end.
 
-%% @spec create_packet_bin(#cst{},list()) -> iolist()
-%% @doc Creates a MySQL packet from list.
-%%  ```
-%%      3              payload length
-%%      1              sequence id
-%%      string[len]    payload
-%%  '''
-create_packet_bin(Cst,Payload) ->
-	iolist_to_binary(create_packet(Cst,Payload)).
-
 %% @spec create_packet(#cst{},binary()) -> iolist()
 %% @doc Creates a MySQL packet from binary.
 %%  ```
@@ -682,13 +672,11 @@ multirow_columndefs0(Cst,Cols,ColTypes,ColId,NumCols,Bin) ->
 	Flags = 0,
 	Decimals = 0,
 	% column definition data
-	ColBin = create_packet_bin(Cst0,
-		<<Def/binary, Schema/binary,Table/binary,
-		OriginalTable/binary, Name/binary, OriginalName/binary,
-		16#0c, Charset:16/little,Length:32/little,
-		Type:8, Flags:16/little,
-		Decimals:8/little,0:16/little>>),
-	multirow_columndefs0(Cst0,Cols,ColTypes,ColId+1,NumCols,<<Bin/binary,ColBin/binary>>).
+	ColBin = create_packet(Cst0,
+		[Def, Schema,Table,	OriginalTable, Name, OriginalName,
+		<<16#0c, Charset:16/little,Length:32/little,Type:8, Flags:16/little,
+		Decimals:8/little,0:16/little>>]),
+	multirow_columndefs0(Cst0,Cols,ColTypes,ColId+1,NumCols,[Bin,ColBin]).
 
 %% @spec multirow_encoderows(#cst{},list()) -> {#cst{},iolist()}
 %% @doc  Utility funciton. Encode multirow response into binary data. While encoding we detect types that are used to build correct column definitions.
@@ -727,7 +715,13 @@ multirow_encoderow0(Row,text,ColTypes) ->
 	multirow_encoderow0(Row,RowLength,RowLength,[],0,ColTypes);
 multirow_encoderow0(Row,binary,ColTypes) ->
 	BM = myactor_util:null_bitmap(Row),
-	ok.
+	row_vals_t(ColTypes,Row,1,byte_size(BM)+1,[<<0>>,BM]).
+
+row_vals_t(CT,T,Pos,Size,Out) when tuple_size(T) >= Pos ->
+	Bin = myactor_util:enc_val(element(Pos,T)),
+	row_vals_t(set_type(CT,Pos,element(Pos,T)),T,Pos+1,Size+iolist_size(Bin),[Out,Bin]);
+row_vals_t(CT,_,_,Size,Out) ->
+	{CT,Out,Size}.
 
 %% @spec multirow_encoderow0(term(),integer(),integer(),io_list(),integer(),#coltypes{}) -> {#coltypes{},iolist(),integer()}
 %% @doc  Encode a single row and check for types while encoding. We precalculate the size of the row for faster package creation.
@@ -751,7 +745,7 @@ multirow_encoderow0(Row,RowLength,DataIdx,Bin,BinSize,ColTypes) ->
 			BinData = butil:tobin(Val),
 			BinPacket = myactor_util:binary_to_varchar(BinData)
 	end,
-	multirow_encoderow0(Row,RowLength,DataIdx-1,[BinPacket|Bin],BinSize+size(BinPacket),ColTypes0).
+	multirow_encoderow0(Row,RowLength,DataIdx-1,[BinPacket|Bin],BinSize+iolist_size(BinPacket),ColTypes0).
 
 %% @spec set_type(#coltypes{},integer(),binary()|integer()|float()) -> #coltypes{}
 %% @doc  Sets a type for a column where a value is defined. If a value is unknown we skip setting this column's type.
@@ -776,8 +770,14 @@ set_type(ColTypes,Index,Value) ->
 %% @doc  Returns an atom representing the detected value. If type is not detected <i>t_unknown</i> is returned.
 get_type(undefined) ->
 	t_unknown;
-get_type(Val) when is_integer(Val) ->
+get_type(Val) when is_integer(Val), Val >= -16#80, Val =< 16#ff ->
+	t_tiny;
+get_type(Val) when is_integer(Val), Val >= -16#8000, Val =< 16#ffff ->
+	t_short;
+get_type(Val) when is_integer(Val), Val >= -16#80000000, Val =< 16#ffffffff ->
 	t_int;
+get_type(Val) when is_integer(Val), Val >= -16#8000000000000000, Val =< 16#ffffffffffffffff ->
+	t_longlong;
 get_type(Val) when is_float(Val) ->
 	t_double;
 get_type({blob,_}) ->
