@@ -68,7 +68,7 @@ handle_call({getid,Val},_,P) when P#dp.curto > Val, is_integer(P#dp.curto) ->
 handle_call({getid,_Val},_,#dp{ranges = [{From,To}|Rem]} = P) ->
 	butil:ds_add({idcounter,From,To},?MODULE),
 	% butil:savetermfile([bkdcore:statepath(),"/ranges"],Rem),
-	{ok,{[]}} = actordb_driver:exec_script({1},{term_to_binary(Rem)},P#dp.storage),
+	{ok,{[]}} = actordb_driver:exec_script({1},{term_to_binary({actordb_conf:node_name(),Rem})},P#dp.storage),
 	case Rem of
 		[_,_,_|_] ->
 			ok;
@@ -92,7 +92,7 @@ handle_call(getstorerange,MFrom,P) ->
 			Ranges = P#dp.ranges ++ [{Num-100,Num} || Num <- lists:seq(From+100,To,100)],
 			% io:format("getid getranges ~p   ~p ~n",[{Val,From,To},Ranges]),
 			% butil:savetermfile([bkdcore:statepath(),"/ranges"],Ranges),
-			{ok,{[]}} = actordb_driver:exec_script({1},{term_to_binary(Ranges)},P#dp.storage),
+			{ok,{[]}} = actordb_driver:exec_script({1},{term_to_binary({actordb_conf:node_name(),Ranges})},P#dp.storage),
 			{reply,ok,NP#dp{ranges = Ranges}};
 		Err ->
 			Err
@@ -165,8 +165,9 @@ handle_info({actordb,sharedstate_change},P) ->
 							{noreply,P#dp{storage = Blob}}
 					end;
 				{ok,{[Bin]}} ->
+					Me = actordb_conf:node_name(),
 					case binary_to_term(Bin) of
-						Ranges when is_list(Ranges) ->
+						{Me,Ranges} when is_list(Ranges) ->
 							{noreply,P#dp{ranges = Ranges, storage = Blob}};
 						_ ->
 							{noreply,P#dp{storage = Blob}}
@@ -202,7 +203,7 @@ test(_,N) when N =< 0 ->
 	ok;
 test(PrevVal,N) ->
 	NV = getid(),
-	% io:format("~p~n",[NV]),
+	io:format("~p~n",[NV]),
 	case PrevVal < NV of
 		true ->
 			ok;
