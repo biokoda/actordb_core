@@ -162,16 +162,11 @@ is_actor(Bin) ->
 %% @spec genhash() -> binary()
 %% @doc  Generate a random 20 byte long hash for password encryption.
 genhash() ->    % 20 bytes long id
-	crypto:rand_bytes(20).
- %   Bin = << <<B:8>> || <<B:8>> <= term_to_binary(make_ref()), B /= 0 >>,
- %   case size(Bin) of
-	% L when L < 20 ->       
-	% 	<<Bin/binary,11111111111111111111:(20 - L)/unit:8>>;
-	% _ ->
-	% 	<<Bin0:160/bitstring, _R/binary>> = Bin,
-	% 	Bin0
- %   end.
-
+	<< <<(nozero(B)):8>> || <<B:8>> <= crypto:rand_bytes(20) >>.
+nozero(0) ->
+	1;
+nozero(N) ->
+	N.
 %% @spec binary_to_varchar(binary()) -> binary()
 %% @doc  Creates length-encoded binary that can be used for string representation within packets.
 binary_to_varchar(undefined) ->
