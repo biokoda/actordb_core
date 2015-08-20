@@ -408,6 +408,9 @@ recv_command(#cst{bp_action = #bp_action{state = BpState}} = Cst,<<?COM_QUERY,Qu
 		{error,Err} ->
 			?ERR_DESC(Cst,{error,Err}),
 			send_err(Cst,<<ErrDesc/binary>>);
+		[[{columns,_C},{rows,_}] = Stmts|_] ->
+			BpState = (Cst#cst.bp_action)#bp_action.state,
+			execute_query_result(Cst,BpState,Query,text,{ok,{ok,Stmts}});
 		Stmts ->
 			?PROTO_DBG("stmts term = ~p",[Stmts]),
 			case HasActorCmd of
@@ -532,63 +535,64 @@ queue_append(Cst,Query) ->
 %%
 execute_query(Cst,Stmts0,Query,BindVals,Protocol) ->
 	BpState = (Cst#cst.bp_action)#bp_action.state,
-	case catch actordb:exec_bp1(BpState,byte_size(Query),Stmts0,BindVals) of   % -> {ok,Result} or {sleep,Result}
-		{'EXIT',Err} ->
-			?ERR_DESC(Cst,Err), % = ErrDesc
-			send_err(Cst,<<ErrDesc/binary>>);
-		{Rs,Result} ->
-			?PROTO_DBG("actor responded with ~p",[Result]),
-			% sleep
-			case Rs of
-				sleep ->
-					?PROTO_DBG("exec_bp1 status = ~p, sleeping actor with state ~p",[Rs,BpState]),
-					Cst0 = Cst#cst{bp_action=#bp_action{action=sleep,state=BpState}};
-				_ ->
-					?PROTO_DBG("exec_bp1 status = ~p",[Rs]),
-					Cst0 = Cst#cst{bp_action=#bp_action{action=undefined,state=BpState}},
-					%Cst0 = Cst,
-					ok
-			end,
-			?PROTO_DBG("result = ~p",[Result]),
-			case Result of
-				ok ->   % update queries
-					send_ok(Cst0);
-				{ok,{changes,LastInsertId,NumChanges}} -> % insert queries
+	Res = (catch actordb:exec_bp1(BpState,byte_size(Query),Stmts0,BindVals)),
+	execute_query_result(Cst,BpState,Query,Protocol,Res).
+
+execute_query_result(Cst,_BpState,Query,_Protocol,{'EXIT',Err}) ->
+	?ERR_DESC(Cst,Err), % = ErrDesc
+	send_err(Cst,<<ErrDesc/binary>>);
+execute_query_result(Cst,BpState,Query,Protocol,{Rs,Result}) ->
+	?PROTO_DBG("actor responded with ~p",[Result]),
+	% sleep
+	case Rs of
+		sleep ->
+			?PROTO_DBG("exec_bp1 status = ~p, sleeping actor with state ~p",[Rs,BpState]),
+			Cst0 = Cst#cst{bp_action=#bp_action{action=sleep,state=BpState}};
+		_ ->
+			?PROTO_DBG("exec_bp1 status = ~p",[Rs]),
+			Cst0 = Cst#cst{bp_action=#bp_action{action=undefined,state=BpState}},
+			%Cst0 = Cst,
+			ok
+	end,
+	?PROTO_DBG("result = ~p",[Result]),
+	case Result of
+		ok ->   % update queries
+			send_ok(Cst0);
+		{ok,{changes,LastInsertId,NumChanges}} -> % insert queries
+			send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
+		{ok,[{columns,Cols},{rows,Rows}]} ->    % data queries
+			multirow_response(Cst0,Cols,Rows,Protocol);
+		{ok,[{changes,_,_}|_] = MultiResponse} ->
+			case lists:last(MultiResponse) of
+				{changes,LastInsertId,NumChanges} ->
 					send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
-				{ok,[{columns,Cols},{rows,Rows}]} ->    % data queries
+				[{columns,Cols},{rows,Rows}] ->
 					multirow_response(Cst0,Cols,Rows,Protocol);
-				{ok,[{changes,_,_}|_] = MultiResponse} ->
-					case lists:last(MultiResponse) of
-						{changes,LastInsertId,NumChanges} ->
-							send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
-						[{columns,Cols},{rows,Rows}] ->
-							multirow_response(Cst0,Cols,Rows,Protocol);
-						_ ->
-							send_ok(Cst0)
-					end;
-				{ok,[[{columns,_},{rows,_}]|_] = MultiResponse } ->    % data queries
-					case lists:last(MultiResponse) of
-						{changes,LastInsertId,NumChanges} ->
-							send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
-						[{columns,Cols},{rows,Rows}] ->
-							multirow_response(Cst0,Cols,Rows,Protocol);
-						_ ->
-							send_ok(Cst0)
-					end;
-				{sql_error,SqlErr} ->
-					?ERR_DESC(Cst0,SqlErr), % = ErrDesc
-					send_err(Cst0,<<ErrDesc/binary>>);
-				{sql_error,SqlErr,ErrQuery} ->
-					?ERR_DESC(Cst0,{SqlErr,{err_query,ErrQuery}}),  % = ErrDesc
-					send_err(Cst0,<<ErrDesc/binary>>);
-				_Oth ->
-					?ERR_DESC(Cst0,{unknown_query,_Oth}),
-					send_err(Cst0,<<ErrDesc/binary>>)
+				_ ->
+					send_ok(Cst0)
 			end;
-		Error ->
-			?ERR_DESC(Cst,Error),
-			send_err(Cst,<<ErrDesc/binary>>)
-	end.
+		{ok,[[{columns,_},{rows,_}]|_] = MultiResponse } ->    % data queries
+			case lists:last(MultiResponse) of
+				{changes,LastInsertId,NumChanges} ->
+					send_ok(Cst0,{affected_count,NumChanges},{rowid,LastInsertId});
+				[{columns,Cols},{rows,Rows}] ->
+					multirow_response(Cst0,Cols,Rows,Protocol);
+				_ ->
+					send_ok(Cst0)
+			end;
+		{sql_error,SqlErr} ->
+			?ERR_DESC(Cst0,SqlErr), % = ErrDesc
+			send_err(Cst0,<<ErrDesc/binary>>);
+		{sql_error,SqlErr,ErrQuery} ->
+			?ERR_DESC(Cst0,{SqlErr,{err_query,ErrQuery}}),  % = ErrDesc
+			send_err(Cst0,<<ErrDesc/binary>>);
+		_Oth ->
+			?ERR_DESC(Cst0,{unknown_query,_Oth}),
+			send_err(Cst0,<<ErrDesc/binary>>)
+	end;
+execute_query_result(Cst,_BpState,Query,_Protocol,Error) ->
+	?ERR_DESC(Cst,Error),
+	send_err(Cst,<<ErrDesc/binary>>).
 
 %% @spec multirow_response(#cst{},term(),term()) -> #cst{}
 %% @doc  Builds a multirow response from actordb query response and sends it to socket

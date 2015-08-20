@@ -115,7 +115,8 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 							Id = actordb_sharedstate:save_prepared(ActorType,IsWriteH,Sql),
 							<<_/binary>> = Id,
 							actordb_backpressure:save(BP,{prepared,Name},{ActorType,Id,Types}),
-							parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite, GIsWrite)
+							% parse_statements(BP,T,L,PreparedRows,CurUse,CurStatements,IsWrite, GIsWrite)
+							[[{columns,{<<"token">>}},{rows,[{Id}]}]]
 					end;
 				{execute,ExecRem} ->
 					{Name,Vals1} = parse_execute(rem_spaces(ExecRem)),
