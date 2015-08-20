@@ -14,9 +14,9 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -record(st,{name,type,time_since_ping = {0,0,0},
-			master_group = [], waiting = false,
-			current_write = [], evnum = 0, am_i_master = false, timer,
-			nodelist, nodepos = 0}).
+master_group = [], waiting = false,
+current_write = [], evnum = 0, am_i_master = false, timer,
+nodelist, nodepos = 0}).
 % Prepared statement. We need version so that an individual actor can detect when
 %  an old statement has been deleted and another one has taken its place.
 -record(ps,{iswrite, actor_type, version = 0, sql}).
@@ -82,6 +82,17 @@ read_global(Key) ->
 	end.
 read_cluster(Key) ->
 	read(?STATE_NM_LOCAL,Key).
+
+get_id_chunk(Size) ->
+	case actordb_sqlproc:write({?STATE_NM_GLOBAL,?STATE_TYPE},[create],
+			{{?MODULE,cb_idchunk,[Size]},undefined,undefined},?MODULE) of
+		{ok,_} ->
+			ok;
+		ok ->
+			ok;
+		Err ->
+			Err
+	end.
 
 write_global_on(Node,K,V) ->
 	case actordb_sqlproc:write({?STATE_NM_GLOBAL,?STATE_TYPE},[create],
@@ -347,7 +358,7 @@ add_master_group(ExistingGroup) ->
 			{Nodes,_} = lists:split(?MASTER_GROUP_SIZE,ClusterCandidates);
 		false ->
 			Nodes = ClusterCandidates ++ takemax(?MASTER_GROUP_SIZE - length(ClusterCandidates) - length(ExistingGroup),
-												 (AllNodes -- ClusterCandidates) -- ExistingGroup)
+				(AllNodes -- ClusterCandidates) -- ExistingGroup)
 	end,
 	Nodes.
 
@@ -502,6 +513,14 @@ find_free_prep_el(N,PT) when N =< tuple_size(PT) ->
 find_free_prep_el(_,_) ->
 	undefined.
 
+cb_idchunk(S,Chunk) ->
+	case butil:ds_val(idmax,?GLOBALETS) of
+		undefined ->
+			From = 1000;
+		From ->
+			ok
+	end,
+	{reply,{From+1,From+Chunk},write_sql(idmax,From+Chunk),S#st{current_write = [{idmax,From+Chunk}]}}.
 
 cb_write(#st{name = ?STATE_NM_GLOBAL} = S,Master,L) ->
 	Me = actordb_conf:node_name(),

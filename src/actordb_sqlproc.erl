@@ -284,7 +284,7 @@ handle_call(Msg,_,P) when is_binary(P#dp.movedtonode) ->
 		ok ->
 			{reply,{redirect,P#dp.movedtonode},P}
 	end;
-handle_call({dbcopy,Msg},CallFrom,P) when element(1,Msg) /= reached_end ->
+handle_call({dbcopy,Msg},CallFrom,P) -> %when element(1,Msg) /= reached_end ->
 	Me = actordb_conf:node_name(),
 	case ok of
 		_ when element(1,Msg) == send_db andalso P#dp.verified == false ->

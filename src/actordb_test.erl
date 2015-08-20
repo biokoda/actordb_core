@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch/0]).
+-export([batch/0, idtest/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
@@ -51,3 +51,50 @@ recbatch([{{_,Ref},R}|T],Id) ->
 	end;
 recbatch([],_) ->
 	ok.
+
+
+idtest() ->
+	N = 100,
+	{ok,From} = actordb_idgen:getid(),
+	ets:new(idtest,[named_table,public,set,{write_concurrency,true}]),
+	Pids = [element(1,spawn_monitor(fun() -> idtest1(From+500000,0) end)) || _ <- lists:seq(1,N)],
+	Res = idtest_wait(Pids),
+	% io:format("list: ~p~n",[ets:tab2list(idtest)]),
+	ets:delete(idtest),
+	case Res of
+		ok ->
+			ok;
+		_ ->
+			throw(Res)
+	end.
+
+idtest_wait([]) ->
+	ok;
+idtest_wait(Pids) ->
+	receive
+		{'DOWN',_Monitor,_Ref,PID,Reason} when Reason == normal ->
+			% io("Done ~p",[PID]),
+			idtest_wait(lists:delete(PID,Pids));
+		{'DOWN',_Monitor,_Ref,_PID,Reason} ->
+			Reason
+	end.
+
+idtest1(Max,Run) when Run rem 1000 == 0 ->
+	io:format("~p at ~p~n",[self(),Run]),
+	idtest1(Max,Run+1);
+idtest1(Max,Run) ->
+	{ok,N} = actordb_idgen:getid(),
+	case N < Max of
+		true ->
+			case catch ets:insert_new(idtest,{N,self()}) of
+				true ->
+					% io:format("ok: ~p me=~p~n",[N,self()]),
+					idtest1(Max,Run+1);
+				_ ->
+					io:format("Failed on ~p, me=~p, ex=~p~n",[N,self(),ets:lookup(idtest,N)]),
+					exit(error)
+			end;
+		false ->
+			exit(normal)
+	end.
+

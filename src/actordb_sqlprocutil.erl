@@ -660,11 +660,6 @@ doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked
 					SkippedNew = Skipped,
 					?DBG("Received stop call"),
 					{stop, stopped, P};
-				{dbcopy,{reached_end,{FromPid,Ref,Evnum}}} ->
-					SkippedNew = Skipped,
-					erlang:send_after(1000,self(),check_locks),
-					?DBG("dbcopy reached_end? ~p",[P#dp.evnum == Evnum]),
-					{reply,P#dp.evnum > Evnum,P#dp{callqueue = CQ,locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 				Msg ->
 					SkippedNew = Skipped,
 					% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
@@ -1448,6 +1443,11 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 			?DBG("senddb already exists with same ref!"),
 			{reply,{ok,Ref},P}
 	end;
+dbcopy_call({reached_end,{FromPid,Ref,Evnum}},_,P) ->
+	erlang:send_after(1000,self(),check_locks),
+	?DBG("dbcopy reached_end? my=~p, in=~p",[P#dp.evnum, Evnum]),
+	?DBG("actor_info ~p",[actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath))]),
+	{reply,P#dp.evnum > Evnum,P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 % Initial call on node that is destination of copy
 dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 	?DBG("start receive entire db ~p ~p",[Copyfrom,P#dp.db]),
@@ -1537,6 +1537,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 
 
 dbcopy_start(P,Home,ActorTo) ->
+	?DBG("dbcopy_start, to=~p",[ActorTo]),
 	ok = actordb_driver:checkpoint_lock(P#dp.db,1),
 	Me = self(),
 	spawn(fun() ->
@@ -1550,6 +1551,7 @@ dbcopy_start(P,Home,ActorTo) ->
 
 dbcopy_done(P,Head,Home,ActorTo) ->
 	{Evterm,Evnum} = read_header(Head),
+	?DBG("DBCOPY DONE! term=~p, num=~p",[Evterm,Evnum]),
 	case gen_server:call(Home,{dbcopy,{reached_end,{self(),P#dp.dbcopyref,Evnum}}}, infinity) of
 		% false = nothing more to send
 		false ->
@@ -1560,7 +1562,6 @@ dbcopy_done(P,Head,Home,ActorTo) ->
 			dbcopy(P#dp{evterm = Evterm, evnum = Evnum},Home,ActorTo,undefined,[],[],0)
 	end.
 dbcopy_do(P,Bin) ->
-	?DBG("dbcopy_do"),
 	Param = [{bin,Bin},{status,wal},{origin,original},{curterm,P#dp.current_term}],
 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}).
 
@@ -1678,6 +1679,7 @@ read_header(<<Evterm:64,Evnum:64,_/binary>>) ->
 	{Evterm,Evnum}.
 
 dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
+	?AINF("Receive wait!"),
 	receive
 		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
 			[{Bin,Header},Status,Origin] = butil:ds_vals([bin,status,origin],Param),
