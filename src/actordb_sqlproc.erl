@@ -19,7 +19,8 @@ try_actornum(Name,Type,CbMod) ->
 		{ok,Path,NumNow} ->
 			{Path,NumNow}
 	end.
-
+read(Name,Flags,{[{copy,CopyFrom}],_},Start) ->
+	read(Name,Flags,[{copy,CopyFrom}],Start);
 read(Name,Flags,[{copy,CopyFrom}],Start) ->
 	case distreg:whereis(Name) of
 		undefined ->
@@ -42,13 +43,14 @@ read(Name,Flags,[{copy,CopyFrom}],Start) ->
 			end
 	end;
 read(Name,Flags,[delete],Start) ->
-	% transaction = {0,0,<<>>}
 	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
 read(Name,Flags,{Sql,[]},Start) ->
-	call(Name,Flags,#read{sql = Sql, flags = Flags},Start);
+	read(Name,Flags,Sql,Start);
 read(Name,Flags,Sql,Start) ->
 	call(Name,Flags,#read{sql = Sql, flags = Flags},Start).
 
+write(Name,Flags,{Sql,[]},Start) ->
+	write(Name,Flags,Sql,Start);
 write(Name,Flags,{{_,_,_} = TransactionId,Sql},Start) ->
 	write(Name,Flags,{undefined,TransactionId,Sql},Start);
 write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
@@ -73,6 +75,10 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 			end;
 		_ when Sql == undefined ->
 			call(Name,Flags,#write{mfa = MFA, flags = Flags},Start);
+		_ when tuple_size(Sql) == 2 ->
+			{Sql0,Rec} = Sql,
+			W = #write{mfa = MFA, sql = iolist_to_binary(Sql0), records = Rec, flags = Flags},
+			call(Name,[wait_election|Flags],W,Start);
 		_ ->
 			W = #write{mfa = MFA, sql = iolist_to_binary(Sql), flags = Flags},
 			call(Name,[wait_election|Flags],W,Start)
@@ -80,11 +86,9 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 write(Name,Flags,[delete],Start) ->
 	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
 write(Name,Flags,{Sql,Records},Start) ->
-	?AINF("WRITE ~p",[{Sql,Records}]),
 	W = #write{sql = iolist_to_binary(Sql), records = Records, flags = Flags},
 	call(Name,[wait_election|Flags],W,Start);
 write(Name,Flags,Sql,Start) ->
-	?AINF("WRITE ~p",[Sql]),
 	W = #write{sql = iolist_to_binary(Sql), flags = Flags},
 	call(Name,[wait_election|Flags],W,Start).
 
@@ -799,6 +803,10 @@ read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
 					{reply,What,P#dp{cbstate = NS}};
 				{reply,What} ->
 					{reply,What,P};
+				{Sql,Recs} when is_list(Recs) ->
+					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
+						buffer_recs = [Recs|AR#ai.buffer_recs]},
+					{noreply,P#dp{rasync = AR1}};
 				{Sql,State} ->
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
 						buffer_recs = [[]|AR#ai.buffer_recs]},
@@ -920,14 +928,14 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
 						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1}};
-				{OutSql,State} when element(1,State) == element(1,P#dp.cbstate) ->
-					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
-					{noreply,P#dp{wasync = A1, cbstate = State}};
-				{OutSql,Recs} ->
+				{OutSql,Recs} when is_list(Recs) ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
 						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1}};
+				{OutSql,State} ->
+					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+					{noreply,P#dp{wasync = A1, cbstate = State}};
 				{OutSql,Recs,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
 						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
@@ -1463,8 +1471,10 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 
 			case butil:ds_val(?COPYFROMI,Rows) of
 				CopyFrom1 when byte_size(CopyFrom1) > 0 ->
+					CbInit = true,%P#dp.cbinit,
 					{CopyFrom,CopyReset,CbState} = binary_to_term(base64:decode(CopyFrom1));
 				_ ->
+					CbInit = false,%P#dp.cbinit,
 					CopyFrom = CopyReset = undefined,
 					CbState = P#dp.cbstate
 			end,
@@ -1475,7 +1485,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
 			NP1 = P#dp{verified = true,copyreset = CopyReset,movedtonode = Moved,
-				cbstate = CbState, schemavers = SchemaVers},
+				cbstate = CbState, schemavers = SchemaVers, cbinit = CbInit},
 			{NP,Sql,AdbRecords,Callfrom} =
 				actordb_sqlprocutil:post_election_sql(NP1,Transaction,CopyFrom,[],P#dp.callfrom),
 			% If nothing to store and all nodes synced, send an empty AE.

@@ -238,22 +238,15 @@ multiread(L) ->
 		ok ->
 			case get({<<"RESULT">>,cols}) of
 				undefined ->
-					?ADBG("Nothing in result? ~p",[get()]),
-					Result = case [B||{{empty_shard,_},B}<-get()] of
-						[_|_] ->
-							erase(),
-							{ok,[{columns,[]},{rows,[]}]};
-						_ ->
-							ok
-					end,
-					[put(K,V) || {K,V} <- ExistingPD],
-					Result;
+					put({<<"RESULT">>,nrows},0),
+					Cols = {<<"actor">>};
 				Cols ->
-					Rows = read_mr_rows(get({<<"RESULT">>,nrows})-1,[]),
-					erase(),
-					[put(K,V) || {K,V} <- ExistingPD],
-					{ok,[{columns,Cols},{rows,Rows}]}
-			end;
+					ok
+			end,
+			Rows = read_mr_rows(get({<<"RESULT">>,nrows})-1,[]),
+			erase(),
+			[put(K,V) || {K,V} <- ExistingPD],
+			{ok,[{columns,Cols},{rows,Rows}]};
 		Err ->
 			?AERR("Error multiread ~p",[Err])
 	end.

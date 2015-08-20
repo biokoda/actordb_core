@@ -41,28 +41,36 @@ start_steal(Name,Type1,Node,ShardName) ->
 	{ok,Pid}.
 
 
-read(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql, bindingvals := BV} = Call) ->
+read(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql} = Call) ->
+	BV = maps:get(bindingvals, Call, []),
 	case actordb_schema:iskv(Type) of
 		true ->
 			actordb_shard:kvread(Shard,Actor,Type,{Sql,BV});
 		_ ->
 			read(Call)
 	end.
-read(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql, bindingvals := BV}) ->
+read(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql} = Call) ->
+	BV = maps:get(bindingvals, Call, []),
 	actordb_sqlproc:read({Actor, Type},Flags,{Sql,BV},?MODULE);
-read(#{actor:= Actor, flags := Flags, statements := Sql, bindingvals := BV}) ->
+read(#{actor:= Actor, flags := Flags, statements := Sql} = Call) ->
+	BV = maps:get(bindingvals, Call, []),
 	actordb_sqlproc:read(Actor,Flags,{Sql,BV},?MODULE).
 
-write(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql, bindingvals := BV} = Call) ->
+write(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql} = Call) ->
+	BV = maps:get(bindingvals, Call, []),
 	case actordb_schema:iskv(Type) of
 		true ->
 			actordb_shard:kvwrite(Shard,Actor,Type,{Sql,BV});
 		_ ->
 			write(Call)
 	end.
-write(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql, bindingvals := BV}) ->
+write(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql} = Call) ->
+	?AINF("WRITE! ~p",[Call]),
+	BV = maps:get(bindingvals, Call, []),
 	actordb_sqlproc:write({Actor, Type},Flags,{Sql,BV},?MODULE);
-write(#{actor:= Actor, flags := Flags, statements := Sql, bindingvals := BV}) ->
+write(#{actor:= Actor, flags := Flags, statements := Sql} = Call) ->
+	?AINF("WRITE! ~p",[Call]),
+	BV = maps:get(bindingvals, Call, []),
 	actordb_sqlproc:write(Actor,Flags,{Sql,BV},?MODULE).
 
 
@@ -88,7 +96,7 @@ cb_slave_pid(Name,Type,Opts) ->
 	case distreg:whereis(Actor) of
 		undefined ->
 			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{state,#st{name = Name,type = Type}},
-												{type,Type},{mod,?MODULE},{slave,true},create|Opts]),
+				{type,Type},{mod,?MODULE},{slave,true},create|Opts]),
 			{ok,Pid};
 		Pid ->
 			{ok,Pid}

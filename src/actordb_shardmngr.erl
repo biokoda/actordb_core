@@ -355,9 +355,10 @@ handle_cast(_, P) ->
 
 
 handle_info(startshards,P) ->
-	Pidl = start_shards(P#dp.localshards,P#dp.localshardpids),
-	[Pid ! borders_changed || {Pid,_From,_Type} <- Pidl],
-	{noreply,P#dp{localshardpids = Pidl}};
+	% Pidl = start_shards(P#dp.localshards,P#dp.localshardpids),
+	% [Pid ! borders_changed || {Pid,_From,_Type} <- Pidl],
+	% {noreply,P#dp{localshardpids = Pidl}};
+	{noreply,P};
 handle_info(compileshards,P) ->
 	Local = create_shard_tree(P#dp.localshards),
 	All = create_shard_tree(P#dp.allshards),
@@ -521,32 +522,32 @@ async_getstate() ->
 	exit({Global,Local}).
 
 
-start_shards([{From,To,_Nd}|T],Existing) ->
-	% For every actor type, check if shard has been started for it.
-	StartedShards = butil:sparsemap(fun(Type) ->
-			case butil:findtrue(fun({_Pid1,From1,Type1}) -> From == From1 andalso Type == Type1
-								end,Existing) of
-				% Shard does not exist.
-				false ->
-					Pid = startshard(Type,From,To),
-					{Pid,From,Type};
-				_X ->
-					undefined
-			end
-		end,actordb_util:actor_types()),
-	start_shards(T,StartedShards ++ Existing);
-start_shards([],E) ->
-	E.
+% start_shards([{From,To,_Nd}|T],Existing) ->
+% 	% For every actor type, check if shard has been started for it.
+% 	StartedShards = butil:sparsemap(fun(Type) ->
+% 			case butil:findtrue(fun({_Pid1,From1,Type1}) -> From == From1 andalso Type == Type1
+% 								end,Existing) of
+% 				% Shard does not exist.
+% 				false ->
+% 					Pid = startshard(Type,From,To),
+% 					{Pid,From,Type};
+% 				_X ->
+% 					undefined
+% 			end
+% 		end,actordb_util:actor_types()),
+% 	start_shards(T,StartedShards ++ Existing);
+% start_shards([],E) ->
+% 	E.
 
-startshard(Type,From,To) ->
-	case actordb_shard:try_whereis(From,Type) of
-		undefined ->
-			{ok,Pid} = actordb_shard:start(From,Type,[{to,To}]);
-		Pid ->
-			ok
-	end,
-	erlang:monitor(process,Pid),
-	Pid.
+% startshard(Type,From,To) ->
+% 	case actordb_shard:try_whereis(From,Type) of
+% 		undefined ->
+% 			{ok,Pid} = actordb_shard:start(From,Type,[{to,To}]);
+% 		Pid ->
+% 			ok
+% 	end,
+% 	erlang:monitor(process,Pid),
+% 	Pid.
 
 create_shard_tree(L) ->
 	create_shard_tree1(lists:keysort(1,L)).

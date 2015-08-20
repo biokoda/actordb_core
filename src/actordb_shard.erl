@@ -195,16 +195,23 @@ kvread(ShardName,Actor,Type,Sql) ->
 %  a transaction at all. It will delete on transaction start instead of commit.
 kvwrite(Shard,{A,1},Type,S) ->
 	kvwrite(Shard,A,Type,S);
+kvwrite(Shard,Actor,Type,{[delete],_}) ->
+	kvwrite(Shard,Actor,Type,[delete]);
 kvwrite(Shard,Actor,Type,[delete]) ->
 	?ADBG("kvwrite delete ~p.~p",[Actor,Type]),
 	ok = actordb_shard:del_actor(Shard,Actor,Type);
 kvwrite(Shard,Actor,Type,{_Transaction,[delete]}) ->
 	?ADBG("kvwrite delete transactions ~p.~p",[Actor,Type]),
 	ok = actordb_shard:del_actor(Shard,Actor,Type);
+kvwrite(Shard,Actor,Type,{{_Transaction,[delete]},_}) ->
+	?ADBG("kvwrite delete transactions ~p.~p",[Actor,Type]),
+	ok = actordb_shard:del_actor(Shard,Actor,Type);
 kvwrite(ShardName,Actor,Type,Sql) ->
 	?ADBG("kvwrite ~p",[{ShardName,Actor,Sql}]),
 	case Sql of
-		{Transaction,Sql1} ->
+		{{{_,_,_} = Transaction,Sql1},_Recs} ->
+			WriteParam = {{?MODULE,cb_kvexec,[Actor,Sql1]},Transaction,Sql1};
+		{{_,_,_} = Transaction,Sql1} ->
 			WriteParam = {{?MODULE,cb_kvexec,[Actor,Sql1]},Transaction,Sql1};
 		_ ->
 			WriteParam = {{?MODULE,cb_kvexec,[Actor,Sql]},undefined,Sql}
@@ -365,7 +372,7 @@ cb_reg_actor(P,ActorName) ->
 	end.
 
 cb_kvexec(P,Actor,Sql) ->
-	?AINF("kvexec ~p ~p",[P#state.nextshard,Sql]),
+	?ADBG("kvexec ~p ~p",[P#state.nextshard,Sql]),
 	case is_integer(P#state.nextshard) of
 		true ->
 			Hash = actordb_util:hash(butil:tobin(Actor)),
