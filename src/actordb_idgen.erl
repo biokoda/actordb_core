@@ -8,7 +8,7 @@
 -export([getid/0]).
 -include_lib("actordb_core/include/actordb.hrl").
 % -compile(export_all).
-
+-define(CHUNKSIZE,1000).
 
 
 % Public ets table stores idcounter:
@@ -67,7 +67,7 @@ handle_call(getstorerange,_MFrom,P) ->
 			case actordb_sharedstate:get_id_chunk(P#dp.chunk_size) of
 				{From,To} when is_integer(From), is_integer(To) ->
 					% Master gives a big range, split into smaller chunks of 100 ids.
-					Ranges = P#dp.ranges ++ [{Num-1000,Num} || Num <- lists:seq(From+1000,To,1000)],
+					Ranges = P#dp.ranges ++ [{Num-?CHUNKSIZE,Num} || Num <- lists:seq(From+?CHUNKSIZE,To,?CHUNKSIZE)],
 					NextChunk = progression(P#dp.chunk_size),
 					{ok,{[]}} = actordb_driver:exec_script({1},{term_to_binary({actordb_conf:node_name(),NextChunk,Ranges})},P#dp.storage),
 					{reply,ok,P#dp{ranges = Ranges, chunk_size = NextChunk}};
