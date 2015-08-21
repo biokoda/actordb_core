@@ -65,11 +65,9 @@ write(Shard, #{actor := Actor, type := Type, flags := _Flags, statements := Sql}
 			write(Call)
 	end.
 write(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql} = Call) ->
-	?AINF("WRITE! ~p",[Call]),
 	BV = maps:get(bindingvals, Call, []),
 	actordb_sqlproc:write({Actor, Type},Flags,{Sql,BV},?MODULE);
 write(#{actor:= Actor, flags := Flags, statements := Sql} = Call) ->
-	?AINF("WRITE! ~p",[Call]),
 	BV = maps:get(bindingvals, Call, []),
 	actordb_sqlproc:write(Actor,Flags,{Sql,BV},?MODULE).
 
