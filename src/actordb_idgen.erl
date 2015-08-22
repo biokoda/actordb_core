@@ -88,7 +88,7 @@ handle_cast(_, P) ->
 
 
 handle_info({actordb,sharedstate_change},P) ->
-	case P#dp.ranges == [] of
+	case P#dp.ranges == [] andalso P#dp.storage == undefined of
 		true ->
 			{ok,Blob} = actordb_driver:open("ranges",0,blob),
 			case actordb_driver:exec_script({1},Blob) of
