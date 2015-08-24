@@ -754,16 +754,26 @@ multirow_encoderow0(Row,RowLength,DataIdx,Bin,BinSize,ColTypes) ->
 %% @spec set_type(#coltypes{},integer(),binary()|integer()|float()) -> #coltypes{}
 %% @doc  Sets a type for a column where a value is defined. If a value is unknown we skip setting this column's type.
 %% When all types are known we skip further type setting.
-set_type(#coltypes{defined=true} = ColTypes ,_,_) ->
-	?PROTO_DBG("notice skippping, all is known"),
-	ColTypes;
+% set_type(#coltypes{defined=true} = ColTypes ,_,_) ->
+% 	?PROTO_DBG("notice skippping, all is known"),
+% 	ColTypes;
 set_type(ColTypes,_,undefined)  ->
 	ColTypes;
 set_type(ColTypes,_,null) ->
 	ColTypes;
 set_type(ColTypes,Index,Value) ->
+	VType = get_type(Value),
 	case element(Index,ColTypes#coltypes.cols) of
 		t_unknown ->
+			ColTypes0 = ColTypes#coltypes{ cols = setelement(Index,ColTypes#coltypes.cols,get_type(Value)) },
+			ColTypes0#coltypes{defined = cols_defined(ColTypes0)};
+		t_tiny when VType == t_short; VType == t_int; VType == t_longlong ->
+			ColTypes0 = ColTypes#coltypes{ cols = setelement(Index,ColTypes#coltypes.cols,get_type(Value)) },
+			ColTypes0#coltypes{defined = cols_defined(ColTypes0)};
+		t_short when VType == t_int; VType == t_longlong ->
+			ColTypes0 = ColTypes#coltypes{ cols = setelement(Index,ColTypes#coltypes.cols,get_type(Value)) },
+			ColTypes0#coltypes{defined = cols_defined(ColTypes0)};
+		t_int when VType == t_longlong ->
 			ColTypes0 = ColTypes#coltypes{ cols = setelement(Index,ColTypes#coltypes.cols,get_type(Value)) },
 			ColTypes0#coltypes{defined = cols_defined(ColTypes0)};
 		_ ->
@@ -774,13 +784,15 @@ set_type(ColTypes,Index,Value) ->
 %% @doc  Returns an atom representing the detected value. If type is not detected <i>t_unknown</i> is returned.
 get_type(undefined) ->
 	t_unknown;
-get_type(Val) when is_integer(Val), Val >= -16#80, Val =< 16#ff ->
-	t_tiny;
-get_type(Val) when is_integer(Val), Val >= -16#8000, Val =< 16#ffff ->
-	t_short;
-get_type(Val) when is_integer(Val), Val >= -16#80000000, Val =< 16#ffffffff ->
-	t_int;
-get_type(Val) when is_integer(Val), Val >= -16#8000000000000000, Val =< 16#ffffffffffffffff ->
+% get_type(Val) when is_integer(Val), Val >= -16#80, Val =< 16#ff ->
+% 	t_tiny;
+% get_type(Val) when is_integer(Val), Val >= -16#8000, Val =< 16#ffff ->
+% 	t_short;
+% get_type(Val) when is_integer(Val), Val >= -16#80000000, Val =< 16#ffffffff ->
+% 	t_int;
+% get_type(Val) when is_integer(Val), Val >= -16#8000000000000000, Val =< 16#ffffffffffffffff ->
+% 	t_longlong;
+get_type(V) when is_integer(V) ->
 	t_longlong;
 get_type(Val) when is_float(Val) ->
 	t_double;
@@ -791,10 +803,10 @@ get_type(_) ->
 
 %% @spec map_coltype(atom()) -> binary()
 %% @doc  Maps a type atom to binary representation to be used in packet when creating a column definition. See: {@link myactor_proto:multirow_columndefs0/6}
-map_coltype(t_tiny) ->
-	?T_TINY;
-map_coltype(t_int) ->
-	?T_LONG;
+% map_coltype(t_tiny) ->
+% 	?T_TINY;
+% map_coltype(t_int) ->
+% 	?T_LONG;
 map_coltype(t_longlong) ->
 	?T_LONGLONG;
 map_coltype(t_double) ->

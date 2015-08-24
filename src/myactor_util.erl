@@ -74,32 +74,33 @@ enc_val(null) ->
 	[];
 enc_val(<<_/binary>> = V) ->
 	binary_to_varchar(V); %<<?T_VAR_STRING,0>>,
-enc_val(H) when is_integer(H), H =< 16#ff, H >= 0 ->
-	% [<<?T_TINY,16#80,H:8>>];
-	<<H>>;
-enc_val(H) when is_integer(H), H >= -16#80, H < 0 ->
-	% [<<?T_TINY,0,H:8>>];
-	<<H>>;
-enc_val(H) when is_integer(H), H =< 16#ffff, H >= 0 ->
-	% [<<?T_SHORT,16#80,H:16/little>>];
-	<<H:16/little>>;
-enc_val(H) when is_integer(H), H >= -16#8000, H < 0 ->
-	% [<<?T_SHORT,0,H:16/little>>];
-	<<H:16/little>>;
-enc_val(H) when is_integer(H), H =< 16#ffffffff, H >= 0 ->
-	% [<<?T_LONG,16#80,H:32/little>>];
-	<<H:32/little>>;
-enc_val(H) when is_integer(H), H >= -16#80000000, H < 0 ->
-	% [<<?T_LONG,0,H:32/little>>];
-	<<H:32/little>>;
-enc_val(H) when is_integer(H), H =< 16#ffffffffffffffff, H >= 0 ->
-	% [<<?T_LONGLONG,16#80,H:64/little>>];
-	<<H:64/little>>;
-enc_val(H) when is_integer(H), H >= -16#8000000000000000, H < 0 ->
-	% [<<?T_LONGLONG,0,H:64/little>>];
-	<<H:64/little>>;
+% enc_val(H) when is_integer(H), H =< 16#ff, H >= 0 ->
+% 	% [<<?T_TINY,16#80,H:8>>];
+% 	<<H>>;
+% enc_val(H) when is_integer(H), H >= -16#80, H < 0 ->
+% 	% [<<?T_TINY,0,H:8>>];
+% 	<<H>>;
+% enc_val(H) when is_integer(H), H =< 16#ffff, H >= 0 ->
+% 	% [<<?T_SHORT,16#80,H:16/little>>];
+% 	<<H:16/little>>;
+% enc_val(H) when is_integer(H), H >= -16#8000, H < 0 ->
+% 	% [<<?T_SHORT,0,H:16/little>>];
+% 	<<H:16/little>>;
+% enc_val(H) when is_integer(H), H =< 16#ffffffff, H >= 0 ->
+% 	% [<<?T_LONG,16#80,H:32/little>>];
+% 	<<H:32/little>>;
+% enc_val(H) when is_integer(H), H >= -16#80000000, H < 0 ->
+% 	% [<<?T_LONG,0,H:32/little>>];
+% 	<<H:32/little>>;
+% enc_val(H) when is_integer(H), H =< 16#ffffffffffffffff, H >= 0 ->
+% 	% [<<?T_LONGLONG,16#80,H:64/little>>];
+% 	<<H:64/little>>;
+% enc_val(H) when is_integer(H), H >= -16#8000000000000000, H < 0 ->
+% 	% [<<?T_LONGLONG,0,H:64/little>>];
+% 	<<H:64/little>>;
 enc_val(H) when is_integer(H) ->
-	enc_val(butil:tobin(H));
+	% enc_val(butil:tobin(H));
+	<<H:64/little>>;
 enc_val(H) when is_float(H) ->
 	% [<<?T_DOUBLE,0,H:64/float-little>>];
 	<<H:64/float-little>>;
