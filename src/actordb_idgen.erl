@@ -70,7 +70,13 @@ handle_call(getstorerange,_MFrom,P) ->
 					Ranges = P#dp.ranges ++ [{Num-?CHUNKSIZE,Num} || Num <- lists:seq(From+?CHUNKSIZE,To,?CHUNKSIZE)],
 					NextChunk = progression(P#dp.chunk_size),
 					{ok,{[]}} = actordb_driver:exec_script({1},{term_to_binary({actordb_conf:node_name(),NextChunk,Ranges})},P#dp.storage),
-					{reply,ok,P#dp{ranges = Ranges, chunk_size = NextChunk}};
+					case P#dp.curfrom of
+						undefined ->
+							[{RFrom,RTo}|RemRanges] = Ranges,
+							{reply,ok,P#dp{curfrom = RFrom+1, curto = RTo,ranges = RemRanges, chunk_size = NextChunk}};
+						_ ->
+							{reply,ok,P#dp{ranges = Ranges, chunk_size = NextChunk}}
+					end;
 				Err ->
 					{reply, Err,P}
 			end
