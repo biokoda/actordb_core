@@ -139,11 +139,42 @@ exec1(true,Cmds) ->
 			do_reads(Reads);
 		_ ->
 			Out = interpret_writes(Writes),
-			case actordb_sharedstate:write_global(Out) of
-				ok ->
-					{ok,{changes,1,1}};
-				Err ->
-					Err
+			case lists:member(force,Writes) of
+				% Force can only be executed when isolated in a multi node cluster
+				% and it must delete nodes. Creating a single node cluster.
+				true ->
+					ConnectedNodes = nodes(),
+					Groups = bkdcore:groups_of_type(cluster),
+					case bkdcore:nodelist(bkdcore:cluster_group()) of
+						[_,_|_] when ConnectedNodes == [], length(Groups) == 1 ->
+							% NodesOld = actordb_sharedstate:read_global(nodes),
+							case butil:ds_val(nodes,Out) of
+								[RemNode] ->
+									Me = actordb_conf:node_name(),
+									case element(1,bkdcore_changecheck:read_node(RemNode)) of
+										Me ->
+											case actordb_sharedstate:force_write(Out) of
+												ok ->
+													{ok,{changes,1,1}};
+												Err ->
+													Err
+											end;
+										_ ->
+											throw({error,"force_not_allowed_here"})
+									end;
+								_ ->
+									throw({error,"force_not_allowed_here"})
+							end;
+						_ ->
+							throw({error,"force_not_allowed_here"})
+					end;
+				_ ->
+					case actordb_sharedstate:write_global(Out) of
+						ok ->
+							{ok,{changes,1,1}};
+						Err ->
+							Err
+					end
 			end
 	end;
 exec1(false,Cmds) ->
@@ -455,6 +486,8 @@ check_el([],E) ->
 check_el(_,_) ->
 	ok.
 
+cmd(P,<<"force;",Rem/binary>>) ->
+	cmd(Rem,[force|P]);
 cmd(P,<<";",Rem/binary>>) ->
 	cmd(P,Rem);
 cmd(P,<<>>) ->

@@ -1,10 +1,10 @@
 % This Source Code Form is subject to the terms of the Mozilla Public
 % License, v. 2.0. If a copy of the MPL was not distributed with this
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
-
 -module(actordb_sharedstate).
 -compile(export_all).
--include_lib("actordb_core/include/actordb.hrl").
+% -include_lib("actordb_core/include/actordb.hrl").
+-include("actordb_sqlproc.hrl").
 -define(GLOBALETS,globalets).
 -define(MASTER_GROUP_SIZE,7).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -12,7 +12,6 @@
 % 							API
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
 -record(st,{name,type,time_since_ping = {0,0,0},
 master_group = [], waiting = false,
 current_write = [], evnum = 0, am_i_master = false, timer,
@@ -39,14 +38,14 @@ start(Name,Type1,State,Opt) ->
 	case distreg:whereis({Name,Type}) of
 		undefined ->
 			actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},create,
-							  {state,State},no_election_timeout|Opt]);
+				{state,State},no_election_timeout|Opt]);
 		Pid ->
 			{ok,Pid}
 	end.
 
 start_wait(Name,Type) ->
 	start(Name,Type,#st{name = Name,type = Type, waiting = true},[{slave,false},create,
-			no_election_timeout,lock,{lockinfo,wait}]).
+		no_election_timeout,lock,{lockinfo,wait}]).
 
 read_global_users() ->
 	case ets:info(?GLOBALETS,size) of
@@ -83,6 +82,17 @@ read_global(Key) ->
 read_cluster(Key) ->
 	read(?STATE_NM_LOCAL,Key).
 
+force_write(L) ->
+	case actordb_sqlproc:write({?STATE_NM_GLOBAL,?STATE_TYPE},[create],
+			{{?MODULE,cb_force_write,[L]},undefined,undefined},?MODULE) of
+		{ok,_} ->
+			ok;
+		ok ->
+			ok;
+		Err ->
+			Err
+	end.
+
 get_id_chunk(Size) ->
 	case actordb_sqlproc:write({?STATE_NM_GLOBAL,?STATE_TYPE},[create],
 			{{?MODULE,cb_idchunk,[Size]},undefined,undefined},?MODULE) of
@@ -96,7 +106,7 @@ get_id_chunk(Size) ->
 
 write_global_on(Node,K,V) ->
 	case actordb_sqlproc:write({?STATE_NM_GLOBAL,?STATE_TYPE},[create],
-					{{?MODULE,cb_write,[Node,[{K,V}]]},undefined,undefined},?MODULE) of
+			{{?MODULE,cb_write,[Node,[{K,V}]]},undefined,undefined},?MODULE) of
 		{ok,_} ->
 			ok;
 		ok ->
@@ -513,6 +523,10 @@ find_free_prep_el(N,PT) when N =< tuple_size(PT) ->
 find_free_prep_el(_,_) ->
 	undefined.
 
+cb_force_write(#st{name = ?STATE_NM_GLOBAL} = S,L) ->
+	{Sql,NS} = cb_write(S,L),
+	{isolate,Sql,NS}.
+
 cb_idchunk(S,Chunk) ->
 	case butil:ds_val(idmax,?GLOBALETS) of
 		undefined ->
@@ -571,7 +585,7 @@ cb_slave_pid(Name,Type,Opts) ->
 	case distreg:whereis(Actor) of
 		undefined ->
 			{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{slave,true},
-											  {state,#st{name = Name,type = Type}},create|Opts]),
+				{state,#st{name = Name,type = Type}},create|Opts]),
 			{ok,Pid};
 		Pid ->
 			{ok,Pid}
@@ -672,6 +686,8 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Misc,Configs}) ->
 			?ADBG("Writing init state ~p",[Sql]),
 			{reinit,Sql,S#st{current_write = [{nodes,Nodes},{groups,Groups}|Misc++Configs]}}
 	end;
+cb_unverified_call(S,#write{mfa = {?MODULE,cb_force_write,[L]}}) ->
+	cb_force_write(S,L);
 cb_unverified_call(_S,_Msg)  ->
 	queue.
 

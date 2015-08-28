@@ -927,7 +927,7 @@ actor_start(_P) ->
 check_for_resync(P,L,Action) ->
 	check_for_resync1(P,L,Action,os:timestamp()).
 check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum,
-				F#flw.wait_for_response_since == undefined ->
+		F#flw.wait_for_response_since == undefined ->
 	check_for_resync1(P,L,Action,Now);
 check_for_resync1(_,[],Action,_) ->
 	Action;

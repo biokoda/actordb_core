@@ -340,6 +340,8 @@ handle_call(Msg,From,P) ->
 						{reinit_master,Mors} ->
 							{ok,NP} = init(P#dp{mors = Mors},cb_reinit),
 							{noreply,NP};
+						{isolate,_OutSql,_State} ->
+							write_call(Msg,From,P);
 						{reinit,Sql,NS} ->
 							{ok,NP} = init(P#dp{cbstate = NS,
 								callqueue = queue:in_r({From,#write{sql = Sql}},P#dp.callqueue)},cb_reinit),
@@ -928,6 +930,11 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
 						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
 					{noreply,P#dp{wasync = A1}};
+				% For when a node wants to take its marbles and go play by itself.
+				{isolate,OutSql,State} ->
+					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+					{noreply,P#dp{wasync = A1, cbstate = State, verified = true, mors = master, follower_indexes = []}};
 				{OutSql,Recs} when is_list(Recs) ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
 						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},

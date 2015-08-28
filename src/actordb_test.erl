@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch/0, idtest/0]).
+-export([batch/0, idtest/0, ins/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
@@ -98,3 +98,20 @@ idtest1(Max,Run) ->
 			exit(normal)
 	end.
 
+
+ins() ->
+	{ok,B} = file:read_file("inserts.sql"),
+	Lines = binary:split(B,<<"\n">>,[global]),
+	S = os:timestamp(),
+	ins(Lines),
+	io:format("Diff=~p, inserts=~p~n",[timer:now_diff(os:timestamp(),S),length(Lines)]).
+ins([<<"[\"ACTORDB QUERY (mapl):\",<<\"",Rem/binary>>|T]) ->
+	Sz = (byte_size(Rem)-5),
+	<<Useful:Sz/binary,_/binary>> = Rem,
+	% io:format("Useful: ~p~n",[Useful]),
+	{ok,_} = actordb:exec(Useful),
+	ins(T);
+ins([<<>>]) ->
+	[];
+ins([]) ->
+	ok.
