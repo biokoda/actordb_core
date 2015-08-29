@@ -897,14 +897,15 @@ do_cb(P) ->
 			P
 	end.
 
-election_timer(undefined) ->
+election_timer(undefined,undefined) ->
+	election_timer(os:timestamp(),undefined);
+election_timer(Now,undefined) ->
 	Latency = actordb_latency:latency(),
-	% run_queue is a good indicator of system overload.
 	Fixed = max(300,Latency),
 	T = Fixed+random:uniform(Fixed),
 	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
-	erlang:send_after(T,self(),{doelection,Latency,os:timestamp()});
-election_timer(T) ->
+	erlang:send_after(T,self(),{doelection,Latency,Now});
+election_timer(Now,T) ->
 	case is_reference(T) andalso erlang:read_timer(T) /= false of
 		true ->
 			T;
@@ -912,8 +913,12 @@ election_timer(T) ->
 			?ADBG("Election pid active"),
 			T;
 		_ ->
-			election_timer(undefined)
+			election_timer(Now,undefined)
 	end.
+election_timer(undefined) ->
+	election_timer(os:timestamp(),undefined);
+election_timer(T) ->
+	election_timer(undefined,T).
 
 actor_start(_P) ->
 	actordb_local:actor_started().

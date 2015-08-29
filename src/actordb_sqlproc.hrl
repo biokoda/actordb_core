@@ -95,7 +95,7 @@ evnum, evterm, newvers, moved, fsync}).
 	cbmod, cbstate,cbinit = false,
 	% callfrom is who is calling,
 	% callres result of sqlite call (need to replicate before replying)
-	callfrom,callres,
+	callfrom,callres,callat,
 	% queue which holds misc gen_server:calls that can not be processed immediately.
 	callqueue,
 	% Writes/reads are processed asynchronously, this stores info while call is executing
