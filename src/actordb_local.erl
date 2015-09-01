@@ -12,13 +12,12 @@
 -export([actor_started/0,actor_mors/2,actor_activity/1]).
 -export([subscribe_stat/0,report_write/0, report_read/0,get_nreads/0,get_nwrites/0,get_nactors/0]).
 % Ref age
--export([net_changes/0,mod_netchanges/0]).
+-export([net_changes/0,mod_netchanges/0, elapsed_time/0, timer/1]).
 -define(LAGERDBG,true).
 -include_lib("actordb_core/include/actordb.hrl").
 -define(MB,1024*1024).
 -define(GB,1024*1024*1024).
-% -define(STATS,runningstats).
-% -define(REF_TIMES,reftimes).
+-define(TIMETABLE,timetable).
 % Stores net changes, current and previous active table.
 -define(GLOBAL_INFO,globalinfo).
 
@@ -39,7 +38,13 @@ net_changes() ->
 	butil:ds_val(netchanges,?GLOBAL_INFO).
 mod_netchanges() ->
 	ets:update_counter(?GLOBAL_INFO,netchanges,1).
-
+% ActorDB rarely cares about actual time. It mostly just cares how long something took and even that
+%  in relatively large chunks. 
+% Elapsed time is a counter that gets incremented by 100ms on a timer.
+% This way we avoid too many calls to os:timestamp and just do a simple ETS lookup.
+elapsed_time() ->
+	[{_,N}] = ets:lookup(?TIMETABLE,elapsed_time),
+	N.
 
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
 %
@@ -466,6 +471,13 @@ init(_) ->
 		_ ->
 			ok
 	end,
+	case ets:info(?TIMETABLE,size) of
+		undefined ->
+			ets:new(?TIMETABLE, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]),
+			butil:ds_add(elapsed_time,0,?TIMETABLE);
+		_ ->
+			ok
+	end,
 	% case ets:info(actoractivity,size) of
 	% 	undefined ->
 	% 		ets:new(actoractivity, [named_table,public,ordered_set,{heir,whereis(actordb_sup),<<>>},{write_concurrency,true}]);
@@ -541,38 +553,21 @@ init(_) ->
 	{ok,P}.
 
 
--record(tmr,{proclimit, memlimit, lastcull = {0,0,0},n = 0}).
+-record(tmr,{proclimit, memlimit, n = 0}).
 
 start_timer(P) ->
 	case whereis(short_timer) of
 		undefined ->
 			spawn_monitor(fun() -> register(short_timer,self()),
-				timer(#tmr{proclimit = P#dp.proclimit, memlimit = P#dp.memlimit}) end);
+				timer(#tmr{proclimit = P#dp.proclimit, memlimit = P#dp.memlimit, n = elapsed_time()}) end);
 		_ ->
 			ok
 	end.
 timer(P) ->
 	receive
-	after 200 ->
-		% NProc = ets:info(actoractivity,size),
-		% Memsize = (butil:ds_val(0,actorsalive))#actor.cachesize,
-		% case NProc < P#tmr.proclimit andalso Memsize < P#tmr.memlimit of
-		% 	true ->
-		% 		% io:format("NOKILL ~p ~p~n",[Memsize,0.1*P#dp.memlimit]),
-		% 		LastCull1 = P#tmr.lastcull;
-		% 	false ->
-				Now = os:timestamp(),
-		% 		case timer:now_diff(Now,P#tmr.lastcull) > 1000000 of
-		% 			true ->
-		% 				?AINF("Killing off inactive actors proc ~p, mem ~p",[{NProc,P#tmr.proclimit},{Memsize,P#tmr.memlimit}]),
-		% 				Killn = NProc - P#tmr.proclimit - erlang:round(P#tmr.proclimit*0.2),
-						LastCull1 = Now,
-		% 				killactors(Killn,ets:last(actoractivity));
-		% 			false ->
-		% 				LastCull1 = P#tmr.lastcull
-		% 		end
-		% end,
-		timer(P#tmr{lastcull = LastCull1, n = P#tmr.n+1})
+	after 100 ->
+		ets:update_counter(?TIMETABLE,elapsed_time,{2,100}),
+		?MODULE:timer(P#tmr{n = P#tmr.n+100})
 	end.
 
 create_mupdaters(0,L) ->

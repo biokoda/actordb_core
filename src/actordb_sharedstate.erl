@@ -12,7 +12,7 @@
 % 							API
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
--record(st,{name,type,time_since_ping = {0,0,0},
+-record(st,{name,type,time_since_ping = 0,
 master_group = [], waiting = false,
 current_write = [], evnum = 0, am_i_master = false, timer,
 nodelist, nodepos = 0}).
@@ -640,7 +640,7 @@ cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
 % But master_ping needs to be handled. It tells us if state has changed.
 cb_redirected_call(S,MovedTo,{master_ping,MasterNode,Evnum,State},_MovedOrSlave) ->
 	% ?ADBG("received ping ~p",[S#st.name]),
-	Now = os:timestamp(),
+	Now = actordb_local:elapsed_time(),
 	case S#st.evnum < Evnum of
 		true ->
 			?ADBG("Setting new state from ping"),
@@ -759,7 +759,7 @@ cb_cast(_Msg,_S) ->
 cb_info(ping_timer,#st{am_i_master = false,nodelist = undefined} = S)  ->
 	cb_info(ping_timer,S#st{nodelist = create_nodelist()});
 cb_info(ping_timer,#st{} = S)  ->
-	Now = os:timestamp(),
+	Now = actordb_local:elapsed_time(),
 	% self() ! raft_refresh,
 	case S#st.name of
 		?STATE_NM_GLOBAL ->

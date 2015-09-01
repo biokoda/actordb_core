@@ -196,7 +196,7 @@ reply_maybe(P,N,[]) ->
 							?DBG("dbcopy call retry_later=~p",[Err]),
 							erlang:send_after(3000,self(),retry_copy),
 							% Unable to start copy/move operation. Store it for later.
-							NP#dp{copylater = {os:timestamp(),OrigMsg}}
+							NP#dp{copylater = {actordb_local:elapsed_time(),OrigMsg}}
 					end
 			end;
 		true ->
@@ -257,7 +257,7 @@ send_empty_ae(P,F) ->
 			{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 			 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 			 F#flw.match_index,F#flw.match_term,empty,{F#flw.match_index,F#flw.match_term}}}]}),
-	F#flw{wait_for_response_since = os:timestamp()}.
+	F#flw{wait_for_response_since = actordb_local:elapsed_time()}.
 
 reopen_db(#dp{mors = master} = P) ->
 	case ok of
@@ -422,15 +422,15 @@ continue_maybe(P,F,SuccessHead) ->
 					end,
 					case SendResp of
 						wal_corruption ->
-							store_follower(P,F#flw{file = undefined, wait_for_response_since = os:timestamp()});
+							store_follower(P,F#flw{file = undefined, wait_for_response_since = actordb_local:elapsed_time()});
 						error ->
 							?ERR("Error iterating wal"),
-							store_follower(P,F#flw{file = undefined, wait_for_response_since = os:timestamp()});
+							store_follower(P,F#flw{file = undefined, wait_for_response_since = actordb_local:elapsed_time()});
 						NF when element(1,NF) == flw ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
 							CP = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}],
 							bkdcore_rpc:cast(NF#flw.node,{actordb_sqlproc,call_slave,CP}),
-							store_follower(P,NF#flw{file = undefined, wait_for_response_since = os:timestamp()})
+							store_follower(P,NF#flw{file = undefined, wait_for_response_since = actordb_local:elapsed_time()})
 					end;
 				% to be continued in appendentries_response
 				_ ->
@@ -440,7 +440,7 @@ continue_maybe(P,F,SuccessHead) ->
 						_ ->
 							ok
 					end,
-					store_follower(P,F#flw{file = undefined, pagebuf = <<>>, wait_for_response_since = os:timestamp()})
+					store_follower(P,F#flw{file = undefined, pagebuf = <<>>, wait_for_response_since = actordb_local:elapsed_time()})
 			end;
 		% Follower uptodate, close file if open
 		false when F#flw.file == undefined ->
@@ -588,7 +588,7 @@ net_changes(P) ->
 doqueue(P) ->
 	doqueue(P,[]).
 % Execute queued calls and execute reads/writes. handle_call just batched r/w's together.
-doqueue(#dp{verified = true,callres = undefined,transactionid = undefined,locked = [],
+doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactionid = undefined,locked = [],
 		wasync = #ai{wait = undefined, nreplies = NR}} = P, Skipped) ->
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
@@ -898,7 +898,7 @@ do_cb(P) ->
 	end.
 
 election_timer(undefined,undefined) ->
-	election_timer(os:timestamp(),undefined);
+	election_timer(actordb_local:elapsed_time(),undefined);
 election_timer(Now,undefined) ->
 	Latency = actordb_latency:latency(),
 	Fixed = max(300,Latency),
@@ -916,7 +916,7 @@ election_timer(Now,T) ->
 			election_timer(Now,undefined)
 	end.
 election_timer(undefined) ->
-	election_timer(os:timestamp(),undefined);
+	election_timer(undefined,undefined);
 election_timer(T) ->
 	election_timer(undefined,T).
 
@@ -930,7 +930,7 @@ actor_start(_P) ->
 % wait_longer -> wait for 3s and run election
 % timer -> run normal timer again
 check_for_resync(P,L,Action) ->
-	check_for_resync1(P,L,Action,os:timestamp()).
+	check_for_resync1(P,L,Action,actordb_local:elapsed_time()).
 check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum,
 		F#flw.wait_for_response_since == undefined ->
 	check_for_resync1(P,L,Action,Now);
@@ -943,19 +943,19 @@ check_for_resync1(P,[F|L],_Action,Now) ->
 		undefined ->
 			Wait = 0;
 		_ ->
-			Wait = timer:now_diff(Now,F#flw.wait_for_response_since)
+			Wait = Now-F#flw.wait_for_response_since
 	end,
 	?DBG("check_resync nd=~p, alive=~p",[F#flw.node,IsAlive]),
-	LastSeen = timer:now_diff(Now,F#flw.last_seen),
+	LastSeen = Now-F#flw.last_seen,
 	case ok of
 		_ when Addr == undefined ->
 			self() ! {forget,F#flw.node},
 			check_for_resync1(P,L,_Action,Now);
-		_ when Wait > 1000000, IsAlive ->
+		_ when Wait > 1000, IsAlive ->
 			resync;
-		_ when LastSeen > 1000000, F#flw.match_index /= P#dp.evnum, IsAlive ->
+		_ when LastSeen > 1000, F#flw.match_index /= P#dp.evnum, IsAlive ->
 			resync;
-		% _ when IsAlive == false, LastSeen > 3000000 ->
+		% _ when IsAlive == false, LastSeen > 3000 ->
 		% 	resync;
 		_ when IsAlive == false ->
 			check_for_resync1(P,L,wait_longer,Now);
@@ -1381,7 +1381,7 @@ parse_opts(P,[]) ->
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 check_locks(P,[H|T],L) when is_tuple(H#lck.time) ->
-	case timer:now_diff(os:timestamp(),H#lck.time) > 3000000 of
+	case actordb_local:elapsed_time()-H#lck.time > 3000 of
 		true ->
 			?ERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,H#lck.node,H#lck.ref]),
 			check_locks(P,T,L);
@@ -1397,7 +1397,7 @@ retry_copy(#dp{copylater = undefined} = P) ->
 	P;
 retry_copy(P) ->
 	{LastTry,Copy} = P#dp.copylater,
-	case timer:now_diff(os:timestamp(),LastTry) > 1000000*2.5 of
+	case actordb_local:elapsed_time()-LastTry > 1000*2.5 of
 		true ->
 			case Copy of
 				{move,Node} ->
@@ -1419,7 +1419,7 @@ retry_copy(P) ->
 				Err ->
 					?INF("retry_copy in 3s, err=~p",[Err]),
 					erlang:send_after(3000,self(),retry_copy),
-					P#dp{copylater = {os:timestamp(),Copy}}
+					P#dp{copylater = {actordb_local:elapsed_time(),Copy}}
 			end;
 		false ->
 			?INF("retry_copy in 3s",[]),
@@ -1534,7 +1534,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 					{reply,false,P};
 				Cpto ->
 					NLC = LC#lck{actorname = Cpto#cpto.actorname, node = Cpto#cpto.node,
-									ismove = Cpto#cpto.ismove, time = os:timestamp()},
+									ismove = Cpto#cpto.ismove, time = actordb_local:elapsed_time()},
 					dbcopy_call({unlock,Data},CallFrom,
 							P#dp{locked = lists:keystore(LC#lck.ref,#lck.ref,P#dp.locked,NLC)})
 			end

@@ -473,12 +473,10 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 	case ok of
 		_ when P#dp.inrecovery, AEType == head ->
 			?DBG("Ignoring head because inrecovery"),
-			Now = os:timestamp(),
-			Diff = timer:now_diff(Now,P#dp.recovery_age),
 			% Reply may have gotten lost or leader could have changed.
-			case Diff > 2000000 of
+			case actordb_local:elapsed_time() - P#dp.recovery_age > 2000 of
 				true ->
-					?ERR("Recovery mode timeout ~p",[Diff]),
+					?ERR("Recovery mode timeout",[]),
 					state_rw_call(What,From,P#dp{inrecovery = false});
 				false ->
 					{reply,false,P}
@@ -502,12 +500,9 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			end;
 		_ when P#dp.mors == slave, P#dp.masternode /= LeaderNode ->
 			?DBG("AE start, slave now knows leader ~p ~p",[AEType,LeaderNode]),
-			case P#dp.callres /= undefined of
-				true ->
-					reply(P#dp.callfrom,{redirect,LeaderNode});
-				false ->
-					ok
-			end,
+			% If we have any pending replies, this must result in a rewind for this node
+			% and a new write to master.
+			reply(P#dp.callfrom,{redirect,LeaderNode}),
 			actordb_local:actor_mors(slave,LeaderNode),
 			NP = P#dp{masternode = LeaderNode,without_master_since = undefined,
 			masternodedist = bkdcore:dist_name(LeaderNode),
@@ -517,12 +512,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 		_ when P#dp.mors == master ->
 			?ERR("AE start, stepping down as leader ~p ~p",
 					[AEType,{Term,P#dp.current_term}]),
-			case P#dp.callres /= undefined of
-				true ->
-					reply(P#dp.callfrom,{redirect,LeaderNode});
-				false ->
-					ok
-			end,
+			reply(P#dp.callfrom,{redirect,LeaderNode}),
 			actordb_local:actor_mors(slave,LeaderNode),
 			NP = P#dp{mors = slave, verified = true, election = undefined,
 				voted_for = undefined,callfrom = undefined, callres = undefined,
@@ -562,7 +552,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 		_ ->
 			case AEType == recover of
 				true ->
-					Age = os:timestamp(),
+					Age = actordb_local:elapsed_time(),
 					?INF("AE start ok for recovery from ~p, evnum=~p, evterm=~p",
 						[LeaderNode,P#dp.evnum,P#dp.evterm]);
 				false ->
@@ -572,7 +562,9 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			{reply,ok,P#dp{verified = true, inrecovery = AEType == recover, recovery_age = Age}}
 	end;
 % Executed on follower.
-% sqlite wal, header tells you if done (it has db size in header)
+% Appends pages, a single write is split into multiple calls. 
+% Header tells you if this is last call. If we reached header, this means we must have received
+% all preceding calls as well.
 state_rw_call({appendentries_wal,Term,Header,Body,AEType,CallCount},From,P) ->
 	case ok of
 		_ when Term == P#dp.current_term; AEType == head ->
@@ -603,7 +595,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 		_ ->
 			?DBG("AE resp,from=~p,success=~p,type=~p,prevnum=~p,prevterm=~p evnum=~p,evterm=~p,matchev=~p",
 				[Node,Success,AEType,Follower#flw.match_index,Follower#flw.match_term,EvNum,EvTerm,MatchEvnum]),
-			Now = os:timestamp(),
+			Now = actordb_local:elapsed_time(),
 			NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
 									wait_for_response_since = undefined, last_seen = Now},
 			case Success of
@@ -631,7 +623,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 					% Follower is up to date. He replied false. Maybe our term was too old.
 					{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw))};
 				false ->
-					% If we are copying entire db to that node already, do nothing.
+					% Check if we are copying entire db to that node already, do nothing.
 					case [C || C <- P#dp.dbcopy_to, C#cpto.node == Node, C#cpto.actorname == P#dp.actorname] of
 						[_|_] ->
 							?DBG("Ignoring appendendentries false response because copying to"),
@@ -679,7 +671,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 				true
 		end,
 	Follower = lists:keyfind(Candidate,#flw.node,P#dp.follower_indexes),
-	Now = os:timestamp(),
+	Now = actordb_local:elapsed_time(),
 	case Follower of
 		false when P#dp.mors == master ->
 			?DBG("Adding node to follower list ~p",[Candidate]),
@@ -770,7 +762,7 @@ append_wal(P,From,CallCount,Header,Body,AEType) ->
 					% Prevent any timeouts on next ae since recovery process is progressing.
 					case P#dp.inrecovery of
 						true ->
-							RecoveryAge = os:timestamp();
+							RecoveryAge = actordb_local:elapsed_time();
 						false ->
 							RecoveryAge = P#dp.recovery_age
 					end,
@@ -956,6 +948,15 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 % print_sqls(_,_,_) ->
 % 	ok.
 
+% If waiting for response unusually long, do an empty write.
+write_again(P) ->
+	EvNum = P#dp.evnum+1,
+	ComplSql = list_to_tuple([<<"#s00;">>,<<"#s02;#s01;">>]),
+	ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+	Records = list_to_tuple([[]|ADBW]),
+	VarHeader = actordb_sqlprocutil:create_var_header(P),
+	actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
+	P#dp{evnum = P#dp.evnum}.
 
 % Not a multiactor transaction write
 write_call1(_,From,_,#dp{mors = slave} = P) ->
@@ -1065,9 +1066,9 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 	end.
 
 ae_timer(P) ->
-	Now = os:timestamp(),
+	Now = actordb_local:elapsed_time(),
 	P#dp{election = actordb_sqlprocutil:election_timer(Now,P#dp.election),
-	callat = Now,activity = actordb_local:actor_activity(P#dp.activity),
+	callat = {Now,0},activity = actordb_local:actor_activity(P#dp.activity),
 	follower_indexes = [F#flw{wait_for_response_since = Now} || F <- P#dp.follower_indexes]}.
 
 
@@ -1164,7 +1165,7 @@ handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference
 		% 	{noreply,P#dp{rasync = NewBD}}
 	end;
 % async write result
-handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
+handle_info({Ref,Res1}, #dp{callat = {_,0}, wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
 	?DBG("Write result ~p",[Res1]),
 	% ?DBG("Buffer=~p",[BD#ai.buffer]),
 	% ?DBG("CQ=~p",[P#dp.callqueue]),
@@ -1256,7 +1257,8 @@ handle_info({'DOWN',Monitor,_,PID,Reason},P) ->
 handle_info(doelection,P) ->
 	self() ! doelection1,
 	{noreply,P};
-handle_info({doelection,LatencyBefore,TimerFrom},P) ->
+% First check if latencies changed.
+handle_info({doelection,LatencyBefore,_TimerFrom},P) ->
 	LatencyNow = actordb_latency:latency(),
 	% Delay if latency significantly increased since start of timer.
 	% But only if more than 100ms latency. Which should mean significant load or bad network which
@@ -1266,21 +1268,49 @@ handle_info({doelection,LatencyBefore,TimerFrom},P) ->
 			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
 				activity = actordb_local:actor_activity(P#dp.activity)}};
 		false ->
-			case [F || F <- P#dp.follower_indexes, F#flw.last_seen > TimerFrom] of
-				[] ->
+			% case [F || F <- P#dp.follower_indexes, F#flw.last_seen > TimerFrom] of
+			% 	[] ->
 					% Clear out msg queue first.
 					self() ! doelection1,
-					{noreply,P#dp{activity = actordb_local:actor_activity(P#dp.activity)}};
-				_ ->
+					{noreply,P#dp{activity = actordb_local:actor_activity(P#dp.activity)}}
+				% _ ->
+				% 	{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
+				% 		activity = actordb_local:actor_activity(P#dp.activity)}}
+			% end
+	end;
+% Are any write results pending?
+handle_info(doelection1,P) ->
+	case P#dp.callfrom of
+		undefined ->
+			handle_info(doelection2,P);
+		_ ->
+			Now = actordb_local:elapsed_time(),
+			{CallTime,Noops} = P#dp.callat,
+			% More than a second after write is finished (and sent to followers)
+			case Now - CallTime > 1000 of
+				true when Noops == 0 ->
+					?ERR("Write is taking long to reach consensus, trying empty write"),
+					% Try an empty write.
+					{noreply,write_again(P#dp{callat = {CallTime,1}, election = actordb_sqlprocutil:election_timer(undefined)})};
+				true when Noops == 1 ->
+					?ERR("Still have not reached consensus"),
+					{noreply,P#dp{callat = {CallTime,2}, election = actordb_sqlprocutil:election_timer(undefined)}};
+				true when Noops == 2 ->
+					?ERR("Write abandon with consensus_timeout"),
+					% Already tried an empty write with extra time. Return error. 
+					reply(P#dp.callfrom,{error,consensus_timeout}),
+					handle_info(doelection2,P#dp{callfrom = undefined, callres = undefined});
+				false ->
 					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
 						activity = actordb_local:actor_activity(P#dp.activity)}}
 			end
 	end;
-handle_info(doelection1,P) ->
+% Check if there is anything we need to do, like run another election or wait some more.
+handle_info(doelection2,P) ->
 	Empty = queue:is_empty(P#dp.callqueue),
 	?DBG("Election timeout, master=~p, verified=~p, followers=~p",
 		[P#dp.masternode,P#dp.verified,P#dp.follower_indexes]),
-	Now = os:timestamp(),
+	Now = actordb_local:elapsed_time(),
 	case ok of
 		_ when P#dp.verified, P#dp.mors == master, P#dp.dbcopy_to /= [] ->
 			% Do not run elections while db is being copied
@@ -1317,10 +1347,10 @@ handle_info(doelection1,P) ->
 				false ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-					case timer:now_diff(Now,P#dp.without_master_since) >= 3000000 of
+					case Now - P#dp.without_master_since >= 3000 of
 						true when Empty == false ->
 							A = P#dp.wasync,
-							actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_timeout}),
+							actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
 							A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 							buffer_nv = undefined, buffer_moved = undefined},
 							{noreply,actordb_sqlprocutil:start_verify(
@@ -1513,7 +1543,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
 		follower ->
 			P = P1,
 			?DBG("Continue as follower"),
-			Now = os:timestamp(),
+			Now = actordb_local:elapsed_time(),
 			{noreply,actordb_sqlprocutil:reopen_db(P#dp{
 				election = actordb_sqlprocutil:election_timer(Now,undefined),
 				masternode = undefined, mors = slave, without_master_since = Now})};
@@ -1610,7 +1640,7 @@ down_info(PID,_Ref,Reason,P) ->
 			false = lists:keyfind(C#cpto.ref,2,WithoutCopy),
 			% wait_copy not in list add it (2nd stage of lock)
 			WithoutCopy1 =  [#lck{ref = C#cpto.ref, ismove = C#cpto.ismove,
-				node = C#cpto.node,time = os:timestamp(),
+				node = C#cpto.node,time = actordb_local:elapsed_time(),
 				actorname = C#cpto.actorname}|WithoutCopy],
 			erlang:send_after(1000,self(),check_locks),
 			{noreply,actordb_sqlprocutil:doqueue(P#dp{dbcopy_to = NewCopyto,locked = WithoutCopy1})}
@@ -1646,7 +1676,7 @@ init([_|_] = Opts) ->
 	% put(opt,Opts),
 	% Random needs to be unique per-node, not per-actor.
 	random:seed(actordb_conf:cfgtime()),
-	Now = os:timestamp(),
+	Now = actordb_local:elapsed_time(),
 	P1 = #dp{mors = master, callqueue = queue:new(),statequeue = queue:new(), without_master_since = Now,
 		schemanum = catch actordb_schema:num()},
 	case actordb_sqlprocutil:parse_opts(P1,Opts) of

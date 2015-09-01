@@ -38,7 +38,7 @@ handle_call(stop, _, P) ->
 handle_cast({return_call,_Nd,Time},P) ->
 	Now = os:timestamp(),
 	%?AINF("Latency from=~p, is=~p",[_Nd,timer:now_diff(Now,Time)]),
-	Latency = min(3000,timer:now_diff(Now,Time) div 1000),
+	Latency = min(3000,erlang:abs(timer:now_diff(Now,Time)) div 1000),
 	% Time is received from all nodes. Keep the last received one (highest latency)
 	case lists:keyfind(Time,1,P#dp.interval) of
 		false ->

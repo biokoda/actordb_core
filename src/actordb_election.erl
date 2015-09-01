@@ -58,7 +58,7 @@ handle_call({whois_leader, #election{actor = A, type = T} = EI},CallFrom,P) ->
 					{reply,later,P}
 			end;
 		{Master,ElectedWhen} ->
-			case timer:now_diff(os:timestamp(),ElectedWhen) > 3000000 orelse bkdcore:node_address(Master) == undefined of
+			case actordb_local:elapsed_time()-ElectedWhen > 3000 orelse bkdcore:node_address(Master) == undefined of
 				true ->
 					handle_call({whois_leader,EI},CallFrom,P#ep{ets = butil:ds_rem({A,T},P#ep.ets)});
 				false ->
@@ -81,7 +81,7 @@ handle_cast(_, P) ->
 handle_info({'DOWN',_Monitor,_,PID,Reason},P) ->
 	case lists:keyfind(PID,#e.pid,P#ep.elections) of
 		#e{} = E when element(1,Reason) == leader ->
-			{noreply,P#ep{ets = butil:ds_add({E#e.actor,E#e.type},{E#e.nd,os:timestamp()},P#ep.ets),
+			{noreply,P#ep{ets = butil:ds_add({E#e.actor,E#e.type},{E#e.nd,actordb_local:elapsed_time()},P#ep.ets),
 						  elections = lists:keydelete(E#e.id,#e.id,P#ep.elections)}};
 		#e{} = E ->
 			{noreply,P#ep{elections = lists:keydelete(E#e.id,#e.id,P#ep.elections)}};
@@ -121,7 +121,7 @@ doelection(E1) ->
 	Me = E#election.candidate,
 	Msg = {state_rw,{request_vote,Me,E#election.term,E#election.evnum,E#election.evterm}},
 	?ADBG("Election for ~p.~p, multicall",[E#election.actor,E#election.type]),
-	Start = os:timestamp(),
+	Start = actordb_local:elapsed_time(),
 	case E#election.cbmod of
 		actordb_sharedstate ->
 			Nodes = actordb_sqlprocutil:follower_nodes(E#election.followers),
@@ -132,8 +132,8 @@ doelection(E1) ->
 			{Results,_GetFailed} = rpc:multicall(Nodes,actordb_sqlproc,call_slave,
 				[E#election.cbmod,E#election.actor,E#election.type,Msg,[{flags,E#election.flags}]],2000)
 	end,
-	Stop = os:timestamp(),
-	?ADBG("Election took=~p, results ~p failed ~p, contacted ~p",[timer:now_diff(Stop,Start),Results,_GetFailed,Nodes]),
+	Stop = actordb_local:elapsed_time(),
+	?ADBG("Election took=~p, results ~p failed ~p, contacted ~p",[Stop-Start,Results,_GetFailed,Nodes]),
 
 	% Sum votes. Start with 1 (we vote for ourselves)
 	case count_votes(Results,{E#election.evnum,E#election.evterm},true,E#election.followers,1) of
