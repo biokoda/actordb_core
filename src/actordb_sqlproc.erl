@@ -1304,7 +1304,8 @@ handle_info(doelection1,P) ->
 	end;
 % Check if there is anything we need to do, like run another election or wait some more.
 handle_info(doelection2,P) ->
-	Empty = queue:is_empty(P#dp.callqueue),
+	A = P#dp.wasync,
+	Empty = queue:is_empty(P#dp.callqueue) andalso A#ai.buffer_cf == [],
 	?DBG("Election timeout, master=~p, verified=~p, followers=~p",
 		[P#dp.masternode,P#dp.verified,P#dp.follower_indexes]),
 	Now = actordb_local:elapsed_time(),
@@ -1344,9 +1345,8 @@ handle_info(doelection2,P) ->
 				false ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-					A = P#dp.wasync,
 					case Now - P#dp.without_master_since >= 3000 of
-						true when Empty == false; A#ai.buffer_cf /= [] ->
+						true when Empty == false ->
 							actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
 							A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 							buffer_nv = undefined, buffer_moved = undefined},
