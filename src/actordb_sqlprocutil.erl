@@ -576,12 +576,16 @@ schema_change(P) ->
 			NP
 	end.
 
-net_changes(P) ->
+net_changes(#dp{wasync = W} = P) ->
 	case P#dp.netchanges == actordb_local:net_changes() of
 		true ->
 			P;
+		false when W#ai.buffer == [] ->
+			% start_verify(P#dp{netchanges = actordb_local:net_changes()},false)
+			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = []},undefined, P),
+			NP;
 		false ->
-			start_verify(P#dp{netchanges = actordb_local:net_changes()},false)
+			P
 	end.
 
 

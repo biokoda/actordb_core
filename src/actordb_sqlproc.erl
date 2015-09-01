@@ -366,10 +366,6 @@ handle_call(Msg,From,P) ->
 			Flags = element(#write.flags,Msg),
 			case lists:member(create,Flags) of
 				true ->
-					% WC = actordb_sqlprocutil:actually_delete(P),
-					% write_call(WC, undefined,
-					% 	P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue),
-					% 		activity = make_ref(), movedtonode = undefined});
 					{stop,normal,P};
 				false ->
 					{reply, {error,nocreate},P}
@@ -491,10 +487,11 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType,CallCount),
 			% Some node thinks its master and sent us appendentries start.
 			% Because we are master with higher term, we turn it down.
-			% But we also start a new election so that nodes get synchronized.
+			% But we also start a new write so that nodes get synchronized.
 			case P#dp.mors of
 				master ->
-					{noreply, actordb_sqlprocutil:start_verify(P,false)};
+					% {noreply, actordb_sqlprocutil:start_verify(P,false)};
+					{noreply,write_call(#write{sql = []},undefined,P)};
 				_ ->
 					{noreply,P}
 			end;
@@ -1347,9 +1344,9 @@ handle_info(doelection2,P) ->
 				false ->
 					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
+					A = P#dp.wasync,
 					case Now - P#dp.without_master_since >= 3000 of
-						true when Empty == false ->
-							A = P#dp.wasync,
+						true when Empty == false; A#ai.buffer_cf /= [] ->
 							actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
 							A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 							buffer_nv = undefined, buffer_moved = undefined},
