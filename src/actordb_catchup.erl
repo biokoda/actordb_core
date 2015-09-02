@@ -6,6 +6,7 @@
 -export([print_info/0, start/0, stop/0, init/1, handle_call/3, 
 		 handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([report/2,synced/2]).
+-export([synced_local/2]). % internal
 -include_lib("actordb_core/include/actordb.hrl").
 -define(ETS,catchup_actors).
 -compile(export_all).
@@ -22,6 +23,11 @@ report(Actor,Type) ->
 			ok
 	end.
 synced(A,T) ->
+	% We don't actually know which node wanted us to report when synced. So call on all.
+	[rpc:cast(Nd,?MODULE,synced_local,[A,T]) || Nd <- [bkdcore:cluster_nodes()|node()]],
+	ok.
+
+synced_local(A,T) ->
 	K = key(A,T),
 	case butil:ds_val(K,?ETS) of
 		undefined ->
