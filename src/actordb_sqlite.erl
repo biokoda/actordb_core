@@ -88,15 +88,15 @@ exec(Db,S,Records,write) ->
 exec(Db,Sql) ->
 	Res = actordb_driver:exec_script(Sql,Db,actordb_conf:query_timeout()),
 	exec_res(Res,Sql).
-exec(Db,Sql,Evnum,Evterm,VarHeader) ->
+exec(Db,Sql,Evterm,Evnum,VarHeader) ->
 	actordb_local:report_write(),
-	Res =  actordb_driver:exec_script(Sql,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
+	Res =  actordb_driver:exec_script(Sql,Db,actordb_conf:query_timeout(),Evterm,Evnum,VarHeader),
 	exec_res(Res,Sql).
-exec(Db,Sql,[],Evnum,Evterm,VarHeader) ->
-	exec(Db,Sql,Evnum,Evterm,VarHeader);
-exec(Db,Sql,Records,Evnum,Evterm,VarHeader) ->
+exec(Db,Sql,[],Evterm,Evnum,VarHeader) ->
+	exec(Db,Sql,Evterm,Evnum,VarHeader);
+exec(Db,Sql,Records,Evterm,Evnum,VarHeader) ->
 	actordb_local:report_write(),
-	Res =  actordb_driver:exec_script(Sql,Records,Db,actordb_conf:query_timeout(),Evnum,Evterm,VarHeader),
+	Res =  actordb_driver:exec_script(Sql,Records,Db,actordb_conf:query_timeout(),Evterm,Evnum,VarHeader),
 	exec_res(Res,Sql).
 
 exec_async(Db,Sql,read) ->
@@ -115,14 +115,14 @@ exec_async(Db,S,Records,write) ->
 	exec_async(Db,S,Records).
 exec_async(Db,Sql) ->
 	actordb_driver:exec_script_async(Sql,Db).
-exec_async(Db,Sql,Evnum,Evterm,VarHeader) ->
+exec_async(Db,Sql,Evterm,Evnum,VarHeader) ->
 	actordb_local:report_write(),
-	actordb_driver:exec_script_async(Sql,Db,Evnum,Evterm,VarHeader).
-exec_async(Db,Sql,[],Evnum,Evterm,VarHeader) ->
-	exec_async(Db,Sql,Evnum,Evterm,VarHeader);
-exec_async(Db,Sql,Records,Evnum,Evterm,VarHeader) ->
+	actordb_driver:exec_script_async(Sql,Db,Evterm,Evnum,VarHeader).
+exec_async(Db,Sql,[],Evterm,Evnum,VarHeader) ->
+	exec_async(Db,Sql,Evterm,Evnum,VarHeader);
+exec_async(Db,Sql,Records,Evterm,Evnum,VarHeader) ->
 	actordb_local:report_write(),
-	actordb_driver:exec_script_async(Sql,Records,Db,Evnum,Evterm,VarHeader).
+	actordb_driver:exec_script_async(Sql,Records,Db,Evterm,Evnum,VarHeader).
 
 exec_res(Res) ->
 	exec_res(Res,[]).

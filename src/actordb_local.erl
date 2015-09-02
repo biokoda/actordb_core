@@ -57,17 +57,25 @@ subscribe_stat() ->
 	ok.
 % 	gen_server:call(?MODULE,{subscribe_stat,self()}).
 report_read() ->
-	folsom_metrics_counter:inc(reads, 1).
+	(catch folsom_metrics_counter:inc(reads, 1)).
 
 report_write() ->
-	folsom_metrics_counter:inc(writes, 1).
+	(catch folsom_metrics_counter:inc(writes, 1)).
 
 get_nreads() ->
-	folsom_metrics_counter:get_value(reads).
-% 	butil:ds_val(reads,?STATS).
+	case catch folsom_metrics_counter:get_value(reads) of
+		N when is_integer(N) ->
+			N;
+		_ ->
+			0
+	end.
 get_nwrites() ->
-	folsom_metrics_counter:get_value(writes).
-% 	butil:ds_val(writes,?STATS).
+	case catch folsom_metrics_counter:get_value(writes) of
+		N when is_integer(N) ->
+			N;
+		_ ->
+			0
+	end.
 
 get_nactors() ->
 	case ets:info(actorsalive,size) of
@@ -142,19 +150,6 @@ actor_started() ->
 % mors = master/slave
 actor_mors(Mors,MasterNode) ->
 	ets:update_element(actorsalive,self(),[{#actor.mors,Mors},{#actor.masternode,MasterNode}]).
-	% DN = bkdcore:dist_name(MasterNode),
-	% case DN == node() of
-	% 	false ->
-	% 		case lists:member(DN,nodes()) of
-	% 			false ->
-	% 				?AERR("Not in nodes ~p ~p",[DN,nodes()]),
-	% 				actordb_sqlproc:diepls(self(),not_in_nodes);
-	% 			_ ->
-	% 				ok
-	% 		end;
-	% 	_ ->
-	% 		ok
-	% end.
 
 % Called when actor does something relevant (write,read,copy).
 actor_activity(PrevTable) ->

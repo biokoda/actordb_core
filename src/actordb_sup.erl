@@ -55,12 +55,12 @@ init([]) ->
 			 permanent,
 			 100,
 			 worker,
-			[actordb_dummy]}
-		% {actordb_termstore,
-		% 	{actordb_termstore, start, []},
-		% 	 permanent,
-		% 	 100,
-		% 	 worker,
-		% 	[actordb_termstore]}
+			[actordb_dummy]},
+		{actordb_catchup,
+			{actordb_catchup, start, []},
+			 permanent,
+			 100,
+			 worker,
+			[actordb_catchup]}
 			]
 	}}.

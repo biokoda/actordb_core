@@ -657,6 +657,9 @@ doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactio
 						Err ->
 							{reply, Err,P#dp{callqueue = CQ}}
 					end;
+				report_synced ->
+					SkippedNew = Skipped,
+					{reply,ok,P#dp{callqueue = CQ, flags = P#dp.flags bor ?FLAG_REPORT_SYNC}};
 				delete ->
 					SkippedNew = Skipped,
 					{reply,ok,P#dp{movedtonode = deleted, callqueue = CQ}};
@@ -942,7 +945,12 @@ check_for_resync1(_,[],Action,_) ->
 	Action;
 check_for_resync1(P,[F|L],_Action,Now) ->
 	Addr = bkdcore:node_address(F#flw.node),
-	IsAlive = lists:member(F#flw.distname,nodes()),
+	case lists:member(F#flw.distname,nodes()) of
+		true = IsAlive ->
+			ok;
+		false ->
+			IsAlive = bkdcore_rpc:is_connected(F#flw.node)
+	end,
 	case F#flw.wait_for_response_since of
 		undefined ->
 			Wait = 0;

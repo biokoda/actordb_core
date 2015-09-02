@@ -594,7 +594,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 				[Node,Success,AEType,Follower#flw.match_index,Follower#flw.match_term,EvNum,EvTerm,MatchEvnum]),
 			Now = actordb_local:elapsed_time(),
 			NFlw = Follower#flw{match_index = EvNum, match_term = EvTerm,next_index = EvNum+1,
-									wait_for_response_since = undefined, last_seen = Now},
+					wait_for_response_since = undefined, last_seen = Now},
 			case Success of
 				% An earlier response.
 				_ when P#dp.mors == slave ->
@@ -953,7 +953,14 @@ write_again(P) ->
 	Records = list_to_tuple([[]|ADBW]),
 	VarHeader = actordb_sqlprocutil:create_var_header(P),
 	actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
-	P#dp{evnum = P#dp.evnum}.
+	Now = actordb_local:elapsed_time(),
+	P#dp{evnum = P#dp.evnum,
+	follower_indexes = [F#flw{wait_for_response_since = if_undef(F#flw.wait_for_response_since,Now)} || F <- P#dp.follower_indexes]}.
+
+if_undef(undefined,V) ->
+	V;
+if_undef(V,_) ->
+	V.
 
 % Not a multiactor transaction write
 write_call1(_,From,_,#dp{mors = slave} = P) ->
@@ -1302,7 +1309,7 @@ handle_info(doelection1,P) ->
 						activity = actordb_local:actor_activity(P#dp.activity)}}
 			end
 	end;
-% Check if there is anything we need to do, like run another election or wait some more.
+% Check if there is anything we need to do, like run another election, issue an empty write or wait some more.
 handle_info(doelection2,P) ->
 	A = P#dp.wasync,
 	Empty = queue:is_empty(P#dp.callqueue) andalso A#ai.buffer_cf == [],
@@ -1311,8 +1318,9 @@ handle_info(doelection2,P) ->
 	Now = actordb_local:elapsed_time(),
 	case ok of
 		_ when P#dp.verified, P#dp.mors == master, P#dp.dbcopy_to /= [] ->
-			% Do not run elections while db is being copied
+			% Copying db, wait some more
 			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(Now,undefined)}};
+		% Leaders establish consensus through writes.
 		_ when P#dp.verified, P#dp.mors == master ->
 			RSY = actordb_sqlprocutil:check_for_resync(P,P#dp.follower_indexes,synced),
 			?DBG("Election timer action ~p",[RSY]),
@@ -1321,15 +1329,20 @@ handle_info(doelection2,P) ->
 					?DBG("Stopping because deleted"),
 					% actordb_sqlprocutil:delete_actor(P),
 					{stop,normal,P};
+				synced when P#dp.flags bor ?FLAG_REPORT_SYNC ->
+					ok = actordb_catchup:synced(P#dp.actorname,P#dp.actortype),
+					{noreply,P#dp{flags = P#dp.flags band (bnot ?FLAG_REPORT_SYNC)}};
 				synced ->
 					{noreply,P#dp{election = undefined}};
 				resync ->
-					{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)};
+					{noreply,write_again(P#dp{election = actordb_sqlprocutil:election_timer(Now,undefined)})};
 				wait_longer ->
-					{noreply,P#dp{election = erlang:send_after(3000,self(),doelection)}};
+					actordb_catchup:report(P#dp.actorname,P#dp.actortype),
+					{noreply,P};
 				timer ->
 					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(Now,undefined)}}
 			end;
+		% Followers/candidates establish consensus by issuing elections.
 		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined;
 					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
 			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso
