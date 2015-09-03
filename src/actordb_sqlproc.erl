@@ -8,7 +8,7 @@
 -export([print_info/1]).
 -export([read/4,write/4,call/4,call/5,diepls/2,try_actornum/3]).
 -export([call_slave/4,call_slave/5,start_copylock/2]). %call_master/4,call_master/5
--export([write_call/3, write_call1/4, read_call/3, read_call1/4]).
+-export([write_call/3, write_call1/4, read_call/3, read_call1/4,write_again/1]).
 -include_lib("actordb_sqlproc.hrl").
 
 % Read actor number without creating actor.
@@ -1262,117 +1262,10 @@ handle_info(doelection,P) ->
 	self() ! doelection1,
 	{noreply,P};
 % First check if latencies changed.
-handle_info({doelection,LatencyBefore,_TimerFrom},P) ->
-	LatencyNow = actordb_latency:latency(),
-	% Delay if latency significantly increased since start of timer.
-	% But only if more than 100ms latency. Which should mean significant load or bad network which
-	%  from here means same thing.
-	case LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100 of
-		true ->
-			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
-				activity = actordb_local:actor_activity(P#dp.activity)}};
-		false ->
-			% case [F || F <- P#dp.follower_indexes, F#flw.last_seen > TimerFrom] of
-			% 	[] ->
-					% Clear out msg queue first.
-					self() ! doelection1,
-					{noreply,P#dp{activity = actordb_local:actor_activity(P#dp.activity)}}
-				% _ ->
-				% 	{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
-				% 		activity = actordb_local:actor_activity(P#dp.activity)}}
-			% end
-	end;
-% Are any write results pending?
+handle_info({doelection,_LatencyBefore,_TimerFrom} = Msg,P) ->
+	election_timer(Msg,P);
 handle_info(doelection1,P) ->
-	case P#dp.callfrom of
-		undefined ->
-			handle_info(doelection2,P);
-		_ ->
-			Now = actordb_local:elapsed_time(),
-			{CallTime,Noops} = P#dp.callat,
-			% More than a second after write is finished (and sent to followers)
-			case Now - CallTime > 1000 of
-				true when Noops == 0 ->
-					?ERR("Write is taking long to reach consensus, trying empty write"),
-					% Try an empty write.
-					{noreply,write_again(P#dp{callat = {CallTime,1}, election = actordb_sqlprocutil:election_timer(undefined)})};
-				true when Noops == 1 ->
-					?ERR("Still have not reached consensus"),
-					{noreply,P#dp{callat = {CallTime,2}, election = actordb_sqlprocutil:election_timer(undefined)}};
-				true when Noops == 2 ->
-					?ERR("Write abandon with consensus_timeout"),
-					% Already tried an empty write with extra time. Return error. 
-					reply(P#dp.callfrom,{error,consensus_timeout}),
-					handle_info(doelection2,P#dp{callfrom = undefined, callres = undefined});
-				false ->
-					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
-						activity = actordb_local:actor_activity(P#dp.activity)}}
-			end
-	end;
-% Check if there is anything we need to do, like run another election, issue an empty write or wait some more.
-handle_info(doelection2,P) ->
-	A = P#dp.wasync,
-	Empty = queue:is_empty(P#dp.callqueue) andalso A#ai.buffer_cf == [],
-	?DBG("Election timeout, master=~p, verified=~p, followers=~p",
-		[P#dp.masternode,P#dp.verified,P#dp.follower_indexes]),
-	Now = actordb_local:elapsed_time(),
-	case ok of
-		_ when P#dp.verified, P#dp.mors == master, P#dp.dbcopy_to /= [] ->
-			% Copying db, wait some more
-			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(Now,undefined)}};
-		% Leaders establish consensus through writes.
-		_ when P#dp.verified, P#dp.mors == master ->
-			RSY = actordb_sqlprocutil:check_for_resync(P,P#dp.follower_indexes,synced),
-			?DBG("Election timer action ~p",[RSY]),
-			case RSY of
-				synced when P#dp.movedtonode == deleted ->
-					?DBG("Stopping because deleted"),
-					% actordb_sqlprocutil:delete_actor(P),
-					{stop,normal,P};
-				synced when P#dp.flags bor ?FLAG_REPORT_SYNC ->
-					ok = actordb_catchup:synced(P#dp.actorname,P#dp.actortype),
-					{noreply,P#dp{flags = P#dp.flags band (bnot ?FLAG_REPORT_SYNC)}};
-				synced ->
-					{noreply,P#dp{election = undefined}};
-				resync ->
-					{noreply,write_again(P#dp{election = actordb_sqlprocutil:election_timer(Now,undefined)})};
-				wait_longer ->
-					actordb_catchup:report(P#dp.actorname,P#dp.actortype),
-					{noreply,P};
-				timer ->
-					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(Now,undefined)}}
-			end;
-		% Followers/candidates establish consensus by issuing elections.
-		_ when Empty; is_pid(P#dp.election); P#dp.masternode /= undefined;
-					P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
-			case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso
-					bkdcore_rpc:is_connected(P#dp.masternode) of
-				true ->
-					?DBG("Election timeout, do nothing, master=~p",[P#dp.masternode]),
-					{noreply,P#dp{without_master_since = undefined}};
-				false when P#dp.without_master_since == undefined ->
-					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
-						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-					NP = P#dp{election = undefined,without_master_since = Now},
-					{noreply,actordb_sqlprocutil:start_verify(NP,false)};
-				false ->
-					?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
-						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-					case Now - P#dp.without_master_since >= 3000 of
-						true when Empty == false ->
-							actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
-							A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
-							buffer_nv = undefined, buffer_moved = undefined},
-							{noreply,actordb_sqlprocutil:start_verify(
-								P#dp{callqueue = queue:new(),election = undefined,wasync = A1},false)};
-						_ ->
-							{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
-					end
-			end;
-		_ ->
-			?DBG("Election timeout"),
-			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
-	end;
+	election_timer(doelection1,P);
 handle_info({forget,Nd},P) ->
 	?INF("Forgetting node ~p",[Nd]),
 	{noreply,P#dp{follower_indexes = lists:keydelete(Nd,#flw.node,P#dp.follower_indexes)}};
@@ -1451,114 +1344,240 @@ handle_info(_Msg,P) ->
 	{noreply,P}.
 
 
+election_timer({doelection,LatencyBefore,_TimerFrom},P) ->
+	LatencyNow = actordb_latency:latency(),
+	% Delay if latency significantly increased since start of timer.
+	% But only if more than 100ms latency. Which should mean significant load or bad network which
+	%  from here means same thing.
+	case LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100 of
+		true ->
+			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
+				activity = actordb_local:actor_activity(P#dp.activity)}};
+		false ->
+			% Clear out msg queue first.
+			self() ! doelection1,
+			{noreply,P#dp{activity = actordb_local:actor_activity(P#dp.activity)}}
+	end;
+% Are any write results pending?
+election_timer(doelection1,P) ->
+	case P#dp.callfrom of
+		undefined ->
+			election_timer(doelection2,P);
+		_ ->
+			LatencyNow = actordb_latency:latency(),
+			Now = actordb_local:elapsed_time(),
+			{CallTime,Noops} = P#dp.callat,
+			% More than a second after write is finished (and sent to followers)
+			case Now - CallTime > 1000+LatencyNow of
+				true when Noops == 0 ->
+					?ERR("Write is taking long to reach consensus, trying empty write"),
+					% Try an empty write.
+					{noreply,write_again(P#dp{callat = {CallTime,1}, election = actordb_sqlprocutil:election_timer(undefined)})};
+				true when Noops == 1 ->
+					?ERR("Still have not reached consensus"),
+					{noreply,P#dp{callat = {CallTime,2}, election = actordb_sqlprocutil:election_timer(undefined)}};
+				true when Noops == 2 ->
+					?ERR("Write abandon with consensus_timeout"),
+					% Already tried an empty write with extra time. Return error. 
+					reply(P#dp.callfrom,{error,consensus_timeout}),
+					% Step down as leader.
+					election_timer(doelection2,P#dp{callfrom = undefined, callres = undefined, 
+						masternode = undefined,
+						verified = false, mors = slave, without_master_since = CallTime});
+				false ->
+					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
+						activity = actordb_local:actor_activity(P#dp.activity)}}
+			end
+	end;
+% Check if there is anything we need to do, like run another election, issue an empty write or wait some more.
+election_timer(doelection2,P) ->
+	A = P#dp.wasync,
+	Empty = queue:is_empty(P#dp.callqueue) andalso A#ai.buffer_cf == [],
+	?DBG("Election timeout, master=~p, verified=~p, followers=~p",
+		[P#dp.masternode,P#dp.verified,P#dp.follower_indexes]),
+	Now = actordb_local:elapsed_time(),
+	Me = actordb_conf:node_name(),
+	LatencyNow = actordb_latency:latency(),
+	case ok of
+		_ when P#dp.verified, P#dp.mors == master, P#dp.dbcopy_to /= [] ->
+			% Copying db, wait some more
+			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(Now,undefined)}};
+		_ when P#dp.verified, P#dp.mors == master ->
+			actordb_sqlprocutil:follower_check_handle(P);
+		_ when is_pid(P#dp.election) ->
+			% We are candidate, wait for election to complete.
+			{noreply,P};
+		_ when P#dp.masternode /= undefined, P#dp.masternode /= Me ->
+			% We are follower and masternode is set. This means leader sent us at least one AE.
+			% Is connection active?
+			case bkdcore_rpc:is_connected(P#dp.masternode) of
+				true ->
+					?DBG("Election timeout, do nothing, leader=~p",[P#dp.masternode]),
+					{noreply,P#dp{without_master_since = undefined}};
+				false ->
+					% We had leader, but he is gone
+					?DBG("Leader is gone, leader=~p, election=~p, empty=~p, me=~p",
+						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
+					NP = P#dp{election = undefined,without_master_since = Now, 
+						masternode = undefined, masternodedist = undefined},
+					{noreply,actordb_sqlprocutil:start_verify(NP,false)}
+			end;
+		_ when P#dp.without_master_since == undefined ->
+			?DBG("Leader timeout, leader=~p, election=~p, empty=~p, me=~p",
+				[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
+			% Start counter how long we are looking for leader for.
+			NP = P#dp{election = undefined,without_master_since = Now},
+			{noreply,actordb_sqlprocutil:start_verify(NP,false)};
+		_ when Now - P#dp.without_master_since >= 3000+LatencyNow, Empty == false ->
+			?ERR("Unable to establish leader, responding with error"),
+			% It took too long. Respond with error.
+			actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
+			A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
+				buffer_nv = undefined, buffer_moved = undefined},
+			{noreply,actordb_sqlprocutil:start_verify(
+				P#dp{callqueue = queue:new(),election = undefined,wasync = A1},false)};
+		% _ when Empty; P#dp.masternode /= undefined;
+		% 			P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
+			% case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso
+			% 		bkdcore_rpc:is_connected(P#dp.masternode) of
+				% true ->
+				% 	?DBG("Election timeout, do nothing, master=~p",[P#dp.masternode]),
+				% 	{noreply,P#dp{without_master_since = undefined}};
+				% false when P#dp.without_master_since == undefined ->
+				% 	?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
+				% 		[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
+				% 	NP = P#dp{election = undefined,without_master_since = Now},
+				% 	{noreply,actordb_sqlprocutil:start_verify(NP,false)};
+				% false ->
+			% 		?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
+			% 			[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
+			% 		case Now - P#dp.without_master_since >= 3000 of
+			% 			true when Empty == false ->
+			% 				actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
+			% 				A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
+			% 				buffer_nv = undefined, buffer_moved = undefined},
+			% 				{noreply,actordb_sqlprocutil:start_verify(
+			% 					P#dp{callqueue = queue:new(),election = undefined,wasync = A1},false)};
+			% 			_ ->
+			% 				{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+			% 		end
+			% end;
+		_ ->
+			?DBG("Election timeout"),
+			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
+	end.
 
-down_info(PID,_Ref,Reason,#dp{election = PID} = P1) ->
+down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0, 
+		P#dp.schemavers == undefined ->
+	?INF("Stopping with nocreate ",[]),
+	{stop,nocreate,P};
+down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0, 
+		P#dp.movedtonode == deleted ->
+	?INF("Stopping with nocreate ",[]),
+	{stop,nocreate,P};
+down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
+	actordb_local:actor_mors(master,actordb_conf:node_name()),
+	P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined,
+		masternode = actordb_conf:node_name(),
+		without_master_since = undefined,
+		masternodedist = bkdcore:dist_name(actordb_conf:node_name()),
+		flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
+		locked = lists:delete(ae,P1#dp.locked)}),
+	case P#dp.movedtonode of
+		deleted ->
+			actordb_sqlprocutil:actually_delete(P1),
+			Moved = undefined,
+			SchemaVers = undefined;
+		_ ->
+			Moved = P#dp.movedtonode,
+			SchemaVers = P#dp.schemavers
+	end,
+	ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
+	?DBG("Elected leader term=~p, nodes_synced=~p, moved=~p",[P1#dp.current_term,AllSynced,P#dp.movedtonode]),
+	ReplBin = term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),
+	ok = actordb_sqlite:replicate_opts(P#dp.db,ReplBin,ReplType),
+
+	case P#dp.schemavers of
+		undefined ->
+			Transaction = [],
+			Rows = [];
+		_ ->
+			case actordb_sqlite:exec(P#dp.db,
+					<<"SELECT * FROM __adb;",
+					  "SELECT * FROM __transactions;">>,read) of
+				{ok,[[{columns,_},{rows,Transaction}],[{columns,_},{rows,Rows}]]} ->
+					ok;
+				Err ->
+					?ERR("Unable read from db for, error=~p after election.",[Err]),
+					Transaction = Rows = [],
+					exit(error)
+			end
+	end,
+
+	case butil:ds_val(?COPYFROMI,Rows) of
+		CopyFrom1 when byte_size(CopyFrom1) > 0 ->
+			CbInit = true,%P#dp.cbinit,
+			{CopyFrom,CopyReset,CbState} = binary_to_term(base64:decode(CopyFrom1));
+		_ ->
+			CbInit = false,%P#dp.cbinit,
+			CopyFrom = CopyReset = undefined,
+			CbState = P#dp.cbstate
+	end,
+	% After election is won a write needs to be executed. What we will write depends on the situation:
+	%  - If this actor has been moving, do a write to clean up after it (or restart it)
+	%  - If transaction active continue with write.
+	%  - If empty db or schema not up to date create/update it.
+	%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
+	%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
+	NP1 = P#dp{verified = true,copyreset = CopyReset,movedtonode = Moved,
+		cbstate = CbState, schemavers = SchemaVers, cbinit = CbInit},
+	{NP,Sql,AdbRecords,Callfrom} =
+		actordb_sqlprocutil:post_election_sql(NP1,Transaction,CopyFrom,[],P#dp.callfrom),
+	% If nothing to store and all nodes synced, send an empty AE.
+	case is_number(P#dp.schemavers) andalso is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
+		true when AllSynced, NewFollowers == [] ->
+			?DBG("Nodes synced, no followers"),
+			W = NP#dp.wasync,
+			{noreply,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:do_cb(
+				NP#dp{follower_indexes = [],netchanges = actordb_local:net_changes(),
+				wasync = W#ai{nreplies = W#ai.nreplies+1}}))};
+		true when AllSynced ->
+			?DBG("Nodes synced, running empty AE."),
+			NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
+			W = NP#dp.wasync,
+			{noreply,actordb_sqlprocutil:doqueue(ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
+				wasync = W#ai{nreplies = W#ai.nreplies+1},
+				netchanges = actordb_local:net_changes()}))};
+		_ ->
+			?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, withdb ~p, vers ~p",
+				[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,
+				NP#dp.flags band ?FLAG_SEND_DB > 0,NP#dp.schemavers]),
+			W = #write{sql = Sql, transaction = NP#dp.transactionid,records = AdbRecords},
+			Now = actordb_local:elapsed_time(),
+			% Since we won election nodes are accessible.
+			Followers = [F#flw{last_seen = Now} || F <- P#dp.follower_indexes],
+			write_call(W,Callfrom, NP#dp{follower_indexes = Followers})
+	end;
+down_info(PID,_Ref,Reason,#dp{election = PID} = P) ->
 	case Reason of
 		noproc ->
-			{noreply, P1#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
+			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
 		{failed,Err} ->
-			P = P1,
 			?ERR("Election failed, retrying later ~p",[Err]),
 			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
-		{leader,_,_} when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.movedtonode == deleted ->
-			P = P1,
-			?INF("Stopping with nocreate ",[]),
-			{stop,nocreate,P1};
-		% We are leader, evnum == 0, which means no other node has any data.
-		% If create flag not set stop.
-		{leader,_,_} when (P1#dp.flags band ?FLAG_CREATE) == 0, P1#dp.schemavers == undefined ->
-			P = P1,
-			?INF("Stopping with nocreate ",[]),
-			{stop,nocreate,P1};
-		{leader,NewFollowers,AllSynced} ->
-			actordb_local:actor_mors(master,actordb_conf:node_name()),
-			P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined,
-				masternode = actordb_conf:node_name(),
-				without_master_since = undefined,
-				masternodedist = bkdcore:dist_name(actordb_conf:node_name()),
-				flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
-				locked = lists:delete(ae,P1#dp.locked)}),
-			case P#dp.movedtonode of
-				deleted ->
-					actordb_sqlprocutil:actually_delete(P1),
-					Moved = undefined,
-					SchemaVers = undefined;
-				_ ->
-					Moved = P#dp.movedtonode,
-					SchemaVers = P#dp.schemavers
-			end,
-			ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
-			?DBG("Elected leader term=~p, nodes_synced=~p, moved=~p",[P1#dp.current_term,AllSynced,P#dp.movedtonode]),
-			ReplBin = term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),
-			ok = actordb_sqlite:replicate_opts(P#dp.db,ReplBin,ReplType),
-
-			case P#dp.schemavers of
-				undefined ->
-					Transaction = [],
-					Rows = [];
-				_ ->
-					case actordb_sqlite:exec(P#dp.db,
-							<<"SELECT * FROM __adb;",
-							  "SELECT * FROM __transactions;">>,read) of
-						{ok,[[{columns,_},{rows,Transaction}],[{columns,_},{rows,Rows}]]} ->
-							ok;
-						Err ->
-							?ERR("Unable read from db for, error=~p after election.",[Err]),
-							Transaction = Rows = [],
-							exit(error)
-					end
-			end,
-
-			case butil:ds_val(?COPYFROMI,Rows) of
-				CopyFrom1 when byte_size(CopyFrom1) > 0 ->
-					CbInit = true,%P#dp.cbinit,
-					{CopyFrom,CopyReset,CbState} = binary_to_term(base64:decode(CopyFrom1));
-				_ ->
-					CbInit = false,%P#dp.cbinit,
-					CopyFrom = CopyReset = undefined,
-					CbState = P#dp.cbstate
-			end,
-			% After election is won a write needs to be executed. What we will write depends on the situation:
-			%  - If this actor has been moving, do a write to clean up after it (or restart it)
-			%  - If transaction active continue with write.
-			%  - If empty db or schema not up to date create/update it.
-			%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
-			%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
-			NP1 = P#dp{verified = true,copyreset = CopyReset,movedtonode = Moved,
-				cbstate = CbState, schemavers = SchemaVers, cbinit = CbInit},
-			{NP,Sql,AdbRecords,Callfrom} =
-				actordb_sqlprocutil:post_election_sql(NP1,Transaction,CopyFrom,[],P#dp.callfrom),
-			% If nothing to store and all nodes synced, send an empty AE.
-			case is_number(P#dp.schemavers) andalso is_atom(Sql) == false andalso iolist_size(Sql) == 0 of
-				true when AllSynced, NewFollowers == [] ->
-					?DBG("Nodes synced, no followers"),
-					W = NP#dp.wasync,
-					{noreply,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:do_cb(
-						NP#dp{follower_indexes = [],netchanges = actordb_local:net_changes(),
-						wasync = W#ai{nreplies = W#ai.nreplies+1}}))};
-				true when AllSynced ->
-					?DBG("Nodes synced, running empty AE."),
-					NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- NewFollowers],
-					W = NP#dp.wasync,
-					{noreply,actordb_sqlprocutil:doqueue(ae_timer(NP#dp{callres = ok,follower_indexes = NewFollowers1,
-						wasync = W#ai{nreplies = W#ai.nreplies+1},
-						netchanges = actordb_local:net_changes()}))};
-				_ ->
-					?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, withdb ~p, vers ~p",
-						[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,
-						NP#dp.flags band ?FLAG_SEND_DB > 0,NP#dp.schemavers]),
-					W = #write{sql = Sql, transaction = NP#dp.transactionid,records = AdbRecords},
-					write_call(W,Callfrom, NP)
-			end;
-		follower ->
-			P = P1,
+		follower when P#dp.without_master_since == undefined ->
 			?DBG("Continue as follower"),
 			Now = actordb_local:elapsed_time(),
 			{noreply,actordb_sqlprocutil:reopen_db(P#dp{
 				election = actordb_sqlprocutil:election_timer(Now,undefined),
-				masternode = undefined, mors = slave, without_master_since = Now})};
+				masternode = undefined, masternodedist = undefined, mors = slave, without_master_since = Now})};
+		follower ->
+			?DBG("Continue as follower"),
+			Now = actordb_local:elapsed_time(),
+			% case Now - P#dp.without_master_since > 3000
+			{noreply,P#dp{election = actordb_sqlprocutil:election_timer(Now,undefined),
+				masternode = undefined, masternodedist = undefined, mors = slave}};
 		_Err ->
-			P = P1,
 			?ERR("Election invalid result ~p",[_Err]),
 			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}}
 	end;

@@ -40,8 +40,10 @@ mod_netchanges() ->
 	ets:update_counter(?GLOBAL_INFO,netchanges,1).
 % ActorDB rarely cares about actual time. It mostly just cares how long something took and even that
 %  in relatively large chunks. 
-% Elapsed time is a counter that gets incremented by 100ms on a timer.
-% This way we avoid too many calls to os:timestamp and just do a simple ETS lookup.
+% Elapsed time is a counter that gets incremented by 100ms on a timer. 
+% This way we avoid too many calls to os:timestamp and just do a simple ETS lookup. 
+% Also if node is overloaded, that 100ms will actually be longer which is great. Under high load
+% all timings that node relies upon can go out the window.
 elapsed_time() ->
 	[{_,N}] = ets:lookup(?TIMETABLE,elapsed_time),
 	N.
@@ -548,7 +550,7 @@ init(_) ->
 	{ok,P}.
 
 
--record(tmr,{proclimit, memlimit, n = 0}).
+-record(tmr,{proclimit, memlimit, n = 0, rqs = [], mx = 0}).
 
 start_timer(P) ->
 	case whereis(short_timer) of
@@ -558,11 +560,15 @@ start_timer(P) ->
 		_ ->
 			ok
 	end.
+timer(#tmr{rqs = [A,B,C,D,E,F,G,H,I,J,_|_]} = P) ->
+	Mx = lists:max(P#tmr.rqs),
+	[actordb_latency:set_run_queue(Mx) || Mx /= P#tmr.mx],
+	timer(#tmr{rqs = [A,B,C,D,E,F,G,H,I,J], mx = Mx});
 timer(P) ->
 	receive
 	after 100 ->
 		ets:update_counter(?TIMETABLE,elapsed_time,{2,100}),
-		?MODULE:timer(P#tmr{n = P#tmr.n+100})
+		?MODULE:timer(P#tmr{n = P#tmr.n+100, rqs = [Q|P#tmr.rqs]})
 	end.
 
 create_mupdaters(0,L) ->

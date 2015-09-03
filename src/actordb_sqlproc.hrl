@@ -53,7 +53,7 @@
 -record(write,{sql, flags = [], mfa, transaction, records = [], newvers}).
 -record(read,{sql, flags = []}).
 -record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0,
-			  file, wait_for_response_since, last_seen = {0,0,0}, pagebuf = <<>>}).
+			  file, wait_for_response_since, last_seen = 0, pagebuf = <<>>}).
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
@@ -96,6 +96,8 @@ evnum, evterm, newvers, moved, fsync}).
 	cbmod, cbstate,cbinit = false,
 	% callfrom is who is calling,
 	% callres result of sqlite call (need to replicate before replying)
+	% callat time when call was executed and sent over to nodes but before any replies from nodes
+	%  {Time,NumberOfRetries}
 	callfrom,callres,callat = {0,0},
 	% queue which holds misc gen_server:calls that can not be processed immediately.
 	callqueue,

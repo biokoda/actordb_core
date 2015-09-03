@@ -60,15 +60,20 @@ append_wal(P,Header,Bin) ->
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	doqueue(P);
 reply_maybe(P) ->
-	reply_maybe(P,1,P#dp.follower_indexes).
-reply_maybe(P,N,[H|T]) ->
+	reply_maybe(P,1,1,P#dp.follower_indexes).
+reply_maybe(P,NReplicated,NNodes,[H|T]) ->
 	case H of
 		_ when H#flw.next_index > P#dp.evnum ->
-			reply_maybe(P,N+1,T);
+			reply_maybe(P,NReplicated+1,NNodes+1,T);
 		_ ->
-			reply_maybe(P,N,T)
+			reply_maybe(P,NReplicated,NNodes+1,T)
 	end;
-reply_maybe(P,N,[]) ->
+% reply_maybe(P,NReplicated,NFollowers,[]) when NReplicated == NFollowers, P#dp.flags bor ?FLAG_REPORT_SYNC ->
+% 	ok = actordb_catchup:synced(P#dp.actorname,P#dp.actortype),
+% 	reply_maybe(P#dp{flags = P#dp.flags band (bnot ?FLAG_REPORT_SYNC)}, NReplicated,NFollowers,[]);
+reply_maybe(#dp{callfrom = undefined, callres = undefined} = P,_,_,[]) ->
+	doqueue(P);
+reply_maybe(P,NReplicated,NNodes,[]) ->
 	% ?DBG("reply_maybe ~p",[P#dp.callfrom]),
 	case P#dp.callfrom of
 		[_|_] ->
@@ -78,7 +83,7 @@ reply_maybe(P,N,[]) ->
 		_ ->
 			Exec = []
 	end,
-	case N*2 > (length(P#dp.follower_indexes)+1) of
+	case NReplicated*2 > NNodes of
 	% case N == length(P#dp.follower_indexes)+1 of
 		% If transaction active or copy/move actor, we can continue operation now because it has been safely replicated.
 		true when P#dp.transactioninfo /= undefined; Exec /= [] ->
@@ -493,10 +498,11 @@ send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 							recover,{F#flw.match_index,F#flw.match_term}}},
 						[nostart]]}),
 			case WalRes == ok orelse WalRes == done of
+				% If successful response, always set last_seen so we know node active.
 				true when Commit == 0 ->
-					send_wal(P,F#flw{file = Iter, pagebuf = <<>>},[],[],0);
+					send_wal(P,F#flw{file = Iter, pagebuf = <<>>, last_seen = actordb_local:elapsed_time()},[],[],0);
 				true ->
-					F#flw{file = Iter, pagebuf = <<>>};
+					F#flw{file = Iter, pagebuf = <<>>, last_seen = actordb_local:elapsed_time()};
 				_ ->
 					error
 			end
@@ -930,27 +936,68 @@ election_timer(T) ->
 actor_start(_P) ->
 	actordb_local:actor_started().
 
+is_alive(F) ->
+	case lists:member(F#flw.distname,nodes()) of
+		true ->
+			true;
+		false ->
+			bkdcore_rpc:is_connected(F#flw.node)
+	end.
 
 % Returns:
 % synced -> do nothing, do not set timer again
 % resync -> run election immediately
 % wait_longer -> wait for 3s and run election
 % timer -> run normal timer again
-check_for_resync(P,L,Action) ->
-	check_for_resync1(P,L,Action,actordb_local:elapsed_time()).
-check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum,
+% check_for_resync(P,L,Action) ->
+% 	check_for_resync1(P,L,Action,actordb_local:elapsed_time()).
+% check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum,
+% 		F#flw.wait_for_response_since == undefined ->
+% 	check_for_resync1(P,L,Action,Now);
+% check_for_resync1(_,[],Action,_) ->
+% 	Action;
+% check_for_resync1(P,[F|L],_Action,Now) ->
+	% Addr = bkdcore:node_address(F#flw.node),
+	% IsAlive = is_alive(F),
+	% case F#flw.wait_for_response_since of
+	% 	undefined ->
+	% 		Wait = 0;
+	% 	_ ->
+	% 		Wait = Now-F#flw.wait_for_response_since
+	% end,
+	% ?DBG("check_resync nd=~p, alive=~p",[F#flw.node,IsAlive]),
+	% LastSeen = Now-F#flw.last_seen,
+	% case ok of
+	% 	_ when Addr == undefined ->
+	% 		self() ! {forget,F#flw.node},
+	% 		check_for_resync1(P,L,_Action,Now);
+	% 	_ when Wait > 1000, IsAlive ->
+	% 		resync;
+	% 	_ when LastSeen > 1000, F#flw.match_index /= P#dp.evnum, IsAlive ->
+	% 		resync;
+	% 	% _ when IsAlive == false, LastSeen > 3000 ->
+	% 	% 	resync;
+	% 	_ when IsAlive == false ->
+	% 		check_for_resync1(P,L,wait_longer,Now);
+	% 	_ ->
+	% 		check_for_resync1(P,L,timer,Now)
+	% end.
+
+% Will categorize followers then decide what to do.
+% Categories:
+% - synced: all is perfect
+% - waiting: we are waiting for response, nothing is taking unusually long
+% - delayed: we are waiting for response, it is taking unusually long
+% - dead: node is offline from what we see
+follower_check(P) ->
+	follower_check(P,P#dp.follower_indexes,[],[],[],[]).
+follower_check(P,[F|T],Synced,Waiting,Delayed,Dead) when F#flw.match_index == P#dp.evnum,
 		F#flw.wait_for_response_since == undefined ->
-	check_for_resync1(P,L,Action,Now);
-check_for_resync1(_,[],Action,_) ->
-	Action;
-check_for_resync1(P,[F|L],_Action,Now) ->
+	follower_check(P,T,[F|Synced],Waiting,Delayed,Dead);
+follower_check(P,[F|T],Synced,Waiting,Delayed,Dead) ->
 	Addr = bkdcore:node_address(F#flw.node),
-	case lists:member(F#flw.distname,nodes()) of
-		true = IsAlive ->
-			ok;
-		false ->
-			IsAlive = bkdcore_rpc:is_connected(F#flw.node)
-	end,
+	IsAlive = is_alive(F),
+	Now = actordb_local:elapsed_time(),
 	case F#flw.wait_for_response_since of
 		undefined ->
 			Wait = 0;
@@ -959,20 +1006,58 @@ check_for_resync1(P,[F|L],_Action,Now) ->
 	end,
 	?DBG("check_resync nd=~p, alive=~p",[F#flw.node,IsAlive]),
 	LastSeen = Now-F#flw.last_seen,
+	Latency = actordb_latency:latency(),
 	case ok of
 		_ when Addr == undefined ->
-			self() ! {forget,F#flw.node},
-			check_for_resync1(P,L,_Action,Now);
-		_ when Wait > 1000, IsAlive ->
-			resync;
-		_ when LastSeen > 1000, F#flw.match_index /= P#dp.evnum, IsAlive ->
-			resync;
-		% _ when IsAlive == false, LastSeen > 3000 ->
-		% 	resync;
+			follower_check(P#dp{follower_indexes = lists:keydelete(F#flw.node,#flw.node,P#dp.follower_indexes)}, T, Synced,Waiting,Delayed,Dead);
 		_ when IsAlive == false ->
-			check_for_resync1(P,L,wait_longer,Now);
+			follower_check(P,T,Synced,Waiting,Delayed,[F|Dead]);
+		_ when Wait > (1000+Latency) ->
+			follower_check(P,T,Synced,Waiting,[F|Delayed],Dead);
+		_ when LastSeen > (1000+Latency), F#flw.match_index /= P#dp.evnum ->
+			follower_check(P,T,Synced,Waiting,[F|Delayed],Dead);
 		_ ->
-			check_for_resync1(P,L,timer,Now)
+			follower_check(P,T,Synced,[F|Waiting],Delayed,Dead)
+	end;
+follower_check(P,[],Synced,Waiting,Delayed,Dead) ->
+	{P,[Synced,Waiting,Delayed,Dead]}.
+
+follower_check_handle({P,Res}) ->
+	follower_check_handle(P,Res);
+follower_check_handle(P) ->
+	follower_check_handle(follower_check(P)).
+follower_check_handle(P,[S,W,D,Dead]) ->
+	follower_check_handle(P,S,W,D,Dead).
+follower_check_handle(P,_Synced,[],[],[]) ->
+	case ok of
+		_ when P#dp.movedtonode == deleted ->
+			{stop,normal,P};
+		_ when P#dp.flags bor ?FLAG_REPORT_SYNC ->
+			ok = actordb_catchup:synced(P#dp.actorname,P#dp.actortype),
+			{noreply,P#dp{flags = P#dp.flags band (bnot ?FLAG_REPORT_SYNC), election = undefined}};
+		_ ->
+			{noreply,P#dp{election = undefined}}
+	end;
+follower_check_handle(P,_Synced,_Waiting,[],[]) ->
+	{noreply,P#dp{election = election_timer(undefined)}};
+% Some nodes are delayed unreasonably long. If response was lost, try to issue another write,
+% which should prompt those nodes to respond.
+follower_check_handle(P,_Synced,_Waiting,_Delayed,[]) ->
+	{noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
+follower_check_handle(P,Synced,Waiting,Delayed,Dead) ->
+	% Some node is not reponding. Report to catchup.
+	actordb_catchup:report(P#dp.actorname,P#dp.actortype),
+	case length(Synced)+length(Waiting)+length(Delayed)+1 > length(Dead) of
+		true ->
+			% We can still continue.
+			follower_check_handle(P,Synced,Waiting,Delayed,[]);
+		false ->
+			% We can not continue. Step down. 
+			% Any pending writes/reads will return error, unless nodes come back online fast enough.
+			{noreply,P#dp{verified = false, mors = slave, masternode = undefined,
+				masternodedist = undefined,
+				without_master_since = actordb_local:elapsed_time(),
+				election = election_timer(undefined)}}
 	end.
 
 
@@ -991,9 +1076,9 @@ start_verify(P,JustStarted) ->
 			CurrentTerm = P#dp.current_term+1,
 			Me = actordb_conf:node_name(),
 			E = #election{actor = P#dp.actorname, type = P#dp.actortype, candidate = Me,
-						wait = P#dp.flags band ?FLAG_WAIT_ELECTION > 0, term = CurrentTerm,evnum = P#dp.evnum,
-						evterm = P#dp.evterm, flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
-						followers = P#dp.follower_indexes, cbmod = P#dp.cbmod},
+				wait = P#dp.flags band ?FLAG_WAIT_ELECTION > 0, term = CurrentTerm,evnum = P#dp.evnum,
+				evterm = P#dp.evterm, flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
+				followers = P#dp.follower_indexes, cbmod = P#dp.cbmod},
 			case actordb_election:whois_leader(E) of
 				Result when is_pid(Result); Result == Me ->
 					store_term(P,actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm),
@@ -1016,7 +1101,8 @@ start_verify(P,JustStarted) ->
 					case lists:member(DistName,nodes()) of
 						true ->
 							actordb_local:actor_mors(slave,LeaderNode),
-							doqueue(reopen_db(P#dp{masternode = LeaderNode, election = undefined,
+							doqueue(reopen_db(P#dp{masternode = LeaderNode, 
+								election = election_timer(P#dp.election),
 								masternodedist = DistName, mors = slave,
 								callfrom = undefined, callres = undefined,
 								verified = true}));

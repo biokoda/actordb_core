@@ -5,11 +5,23 @@
 -behaviour(gen_server).
 -export([latency/0]).
 -export([start/0,stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
--export([tunnel_callback/2, return_call/2]).
+-export([tunnel_callback/2, return_call/2, set_run_queue/1]).
 -include_lib("actordb_core/include/actordb.hrl").
 
+% Replication requires some fixed timing values. But those are dangerous in real world. 
+% What if nodes are far apart? What if network conditions are bad? What if node is overloaded?
+% A node may issue elections or writes because it thinks it needs to resync, which makes a bad
+% situation worse. Piling on more work through a bottleneck. 
+% To mitigate this we keep track of network latency to nodes in our cluster and we keep track of
+% run_queue length on local node.
 latency() ->
-	butil:ds_val(latency,latency) + min(3000,statistics(run_queue)*20).
+	L = ets:tab2list(latency),
+	% Network latency + scheduling latency
+	butil:ds_val(latency,L) + min(3000,butil:ds_val(run_queue,L)*20).
+
+set_run_queue(Q) ->
+	butil:ds_add(run_queue,Q,latency).
+
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -108,7 +120,8 @@ init(_) ->
 	case ets:info(latency,size) of
 		undefined ->
 			ets:new(latency, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]),
-			butil:ds_add(latency,0,latency);
+			butil:ds_add(latency,0,latency),
+			butil:ds_add(run_queue,0,latency);
 		_ ->
 			ok
 	end,
