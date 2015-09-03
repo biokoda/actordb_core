@@ -381,7 +381,7 @@ handle_info({nodedown, Nd},P) ->
 	case bkdcore:name_from_dist_name(Nd) of
 		undefined ->
 			{noreply,P};
-		Nm ->
+		_Nm ->
 			ets:update_counter(?GLOBAL_INFO,netchanges,1),
 			% Some node has gone down, kill all slaves on this node.
 			% spawn(fun() ->
@@ -568,7 +568,7 @@ timer(P) ->
 	receive
 	after 100 ->
 		ets:update_counter(?TIMETABLE,elapsed_time,{2,100}),
-		?MODULE:timer(P#tmr{n = P#tmr.n+100, rqs = [Q|P#tmr.rqs]})
+		?MODULE:timer(P#tmr{n = P#tmr.n+100, rqs = [statistics(run_queue)|P#tmr.rqs]})
 	end.
 
 create_mupdaters(0,L) ->
