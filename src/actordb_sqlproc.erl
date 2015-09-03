@@ -307,12 +307,20 @@ handle_call({commit,Doit,Id},From, P) ->
 handle_call(Msg,From,P) ->
 	case Msg of
 		_ when P#dp.mors == slave ->
+			% Now = actordb_local:elapsed_time(),
 			case P#dp.masternode of
+				undefined when P#dp.election == undefined, is_integer(P#dp.without_master_since) ->
+					% P#dp.without_master_since < Now-3000 ->
+					% We have given up. But since we are getting a call from outside, try again.
+					% Execute election.
+					{noreply,actordb_sqlprocutil:start_verify(
+						P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue),
+						flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)},false)};
 				undefined ->
 					?DBG("Queing msg no master yet ~p",[Msg]),
 					{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue),
-									election = actordb_sqlprocutil:election_timer(P#dp.election),
-									flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}};
+						election = actordb_sqlprocutil:election_timer(P#dp.election),
+						flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}};
 				_ ->
 					case apply(P#dp.cbmod,cb_redirected_call,[P#dp.cbstate,P#dp.masternode,Msg,slave]) of
 						{reply,What,NS,_} ->
@@ -1382,7 +1390,7 @@ election_timer(doelection1,P) ->
 					reply(P#dp.callfrom,{error,consensus_timeout}),
 					% Step down as leader.
 					election_timer(doelection2,P#dp{callfrom = undefined, callres = undefined, 
-						masternode = undefined,
+						masternode = undefined,masternodedist = undefined,
 						verified = false, mors = slave, without_master_since = CallTime});
 				false ->
 					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
@@ -1407,6 +1415,7 @@ election_timer(doelection2,P) ->
 		_ when is_pid(P#dp.election) ->
 			% We are candidate, wait for election to complete.
 			{noreply,P};
+		% Unless leader is known and available, start an election.
 		_ when P#dp.masternode /= undefined, P#dp.masternode /= Me ->
 			% We are follower and masternode is set. This means leader sent us at least one AE.
 			% Is connection active?
@@ -1428,40 +1437,23 @@ election_timer(doelection2,P) ->
 			% Start counter how long we are looking for leader for.
 			NP = P#dp{election = undefined,without_master_since = Now},
 			{noreply,actordb_sqlprocutil:start_verify(NP,false)};
+		_ when P#dp.election == undefined ->
+			% If election undefined this should be a hint from outside. 
+			{noreply,actordb_sqlprocutil:start_verify(P,false)};
 		_ when Now - P#dp.without_master_since >= 3000+LatencyNow, Empty == false ->
 			?ERR("Unable to establish leader, responding with error"),
 			% It took too long. Respond with error.
 			actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
 			A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
-			{noreply,actordb_sqlprocutil:start_verify(
-				P#dp{callqueue = queue:new(),election = undefined,wasync = A1},false)};
-		% _ when Empty; P#dp.masternode /= undefined;
-		% 			P#dp.flags band ?FLAG_NO_ELECTION_TIMEOUT > 0 ->
-			% case P#dp.masternode /= undefined andalso P#dp.masternode /= actordb_conf:node_name() andalso
-			% 		bkdcore_rpc:is_connected(P#dp.masternode) of
-				% true ->
-				% 	?DBG("Election timeout, do nothing, master=~p",[P#dp.masternode]),
-				% 	{noreply,P#dp{without_master_since = undefined}};
-				% false when P#dp.without_master_since == undefined ->
-				% 	?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
-				% 		[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-				% 	NP = P#dp{election = undefined,without_master_since = Now},
-				% 	{noreply,actordb_sqlprocutil:start_verify(NP,false)};
-				% false ->
-			% 		?DBG("Election timeout, master=~p, election=~p, empty=~p, me=~p",
-			% 			[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-			% 		case Now - P#dp.without_master_since >= 3000 of
-			% 			true when Empty == false ->
-			% 				actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
-			% 				A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
-			% 				buffer_nv = undefined, buffer_moved = undefined},
-			% 				{noreply,actordb_sqlprocutil:start_verify(
-			% 					P#dp{callqueue = queue:new(),election = undefined,wasync = A1},false)};
-			% 			_ ->
-			% 				{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
-			% 		end
-			% end;
+			% Give up for now. Do not run elections untill we get a hint from outside.
+			% Hint will come from catchup or a client wanting to execute read/write.
+			actordb_catchup:report(P#dp.actorname,P#dp.actortype),
+			{noreply,P#dp{callqueue = queue:new(),election = undefined,wasync = A1}};
+		_ when Now - P#dp.without_master_since >= 3000+LatencyNow ->
+			actordb_catchup:report(P#dp.actorname,P#dp.actortype),
+			% Give up and wait for hint.
+			{noreply,P#dp{election = undefined}};
 		_ ->
 			?DBG("Election timeout"),
 			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
@@ -1565,12 +1557,14 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P) ->
 		{failed,Err} ->
 			?ERR("Election failed, retrying later ~p",[Err]),
 			{noreply, P#dp{election = actordb_sqlprocutil:election_timer(undefined)}};
+		% Election lost. Start an election timer.
 		follower when P#dp.without_master_since == undefined ->
 			?DBG("Continue as follower"),
 			Now = actordb_local:elapsed_time(),
 			{noreply,actordb_sqlprocutil:reopen_db(P#dp{
 				election = actordb_sqlprocutil:election_timer(Now,undefined),
-				masternode = undefined, masternodedist = undefined, mors = slave, without_master_since = Now})};
+				masternode = undefined, masternodedist = undefined, mors = slave, 
+				without_master_since = Now})};
 		follower ->
 			?DBG("Continue as follower"),
 			Now = actordb_local:elapsed_time(),
@@ -1769,6 +1763,7 @@ init([_|_] = Opts) ->
 				_ when P#dp.mors == slave ->
 					{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
 					voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm,
+					election = actordb_sqlprocutil:election_timer(Now,undefined),
 					last_checkpoint = LastCheck})};
 				_ when MovedToNode == undefined; RightCluster ->
 					NP = P#dp{current_term = VotedCurrentTerm,voted_for = VotedFor, evnum = VoteEvnum,
