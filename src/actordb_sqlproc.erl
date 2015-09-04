@@ -613,7 +613,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 					NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(
 						P,NFlw,AEType == head orelse AEType == empty)),
 					?DBG("AE response for node ~p, followers=~p",
-							[Node,[{F#flw.node,F#flw.match_index,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
+							[Node,[{F#flw.node,F#flw.match_index,F#flw.match_term,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
 					{noreply,NP};
 				% What we thought was follower is ahead of us and we need to step down
 				false when P#dp.current_term < CurrentTerm ->
@@ -955,15 +955,17 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 
 % If waiting for response unusually long, do an empty write.
 write_again(P) ->
-	EvNum = P#dp.evnum+1,
-	ComplSql = list_to_tuple([<<"#s00;">>,<<"#s02;#s01;">>]),
-	ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
-	Records = list_to_tuple([[]|ADBW]),
-	VarHeader = actordb_sqlprocutil:create_var_header(P),
-	actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
-	Now = actordb_local:elapsed_time(),
-	P#dp{evnum = P#dp.evnum,
-	follower_indexes = [F#flw{wait_for_response_since = if_undef(F#flw.wait_for_response_since,Now)} || F <- P#dp.follower_indexes]}.
+	?DBG("Write again"),
+	P.
+	% EvNum = P#dp.evnum+1,
+	% ComplSql = list_to_tuple([<<"#s00;">>,<<"#s02;#s01;">>]),
+	% ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+	% Records = list_to_tuple([[]|ADBW]),
+	% VarHeader = actordb_sqlprocutil:create_var_header(P),
+	% actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
+	% Now = actordb_local:elapsed_time(),
+	% P#dp{evnum = P#dp.evnum,
+	% follower_indexes = [F#flw{wait_for_response_since = if_undef(F#flw.wait_for_response_since,Now)} || F <- P#dp.follower_indexes]}.
 
 if_undef(undefined,V) ->
 	V;
@@ -1038,7 +1040,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 						transactioncheckref = CheckRef,force_sync = ForceSync,
 						transactioninfo = {ComplSql,EvNum,NewVers},
 						activity = actordb_local:actor_activity(P#dp.activity),
-						callfrom = From, callres = Res},1,[])};
+						callfrom = From, callres = Res})};
 				_Err ->
 					ok = actordb_sqlite:rollback(P#dp.db),
 					erlang:demonitor(CheckRef),
@@ -1203,7 +1205,7 @@ handle_info({Ref,Res1}, #dp{callat = {_,0}, wasync = #ai{wait = Ref} = BD} = P) 
 					flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 					netchanges = actordb_local:net_changes(), force_sync = ForceSync,
 					schemavers = NewVers,evterm = EvTerm,movedtonode = Moved,
-					wasync = NewAsync},1,[]))};
+					wasync = NewAsync}))};
 		ok ->
 			% reply on appendentries response or later if nodes are behind.
 			case P#dp.callres of

@@ -1043,7 +1043,9 @@ follower_check_handle(P,_Synced,_Waiting,[],[]) ->
 % Some nodes are delayed unreasonably long. If response was lost, try to issue another write,
 % which should prompt those nodes to respond.
 follower_check_handle(P,_Synced,_Waiting,_Delayed,[]) ->
-	{noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
+	?ADBG("Have delayed nodes, executing a sync write"),
+	% {noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
+	{noreply,P#dp{election = election_timer(undefined)}};
 follower_check_handle(P,Synced,Waiting,Delayed,Dead) ->
 	% Some node is not reponding. Report to catchup.
 	actordb_catchup:report(P#dp.actorname,P#dp.actortype),

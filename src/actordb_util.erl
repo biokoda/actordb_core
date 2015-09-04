@@ -105,7 +105,7 @@ actor_ae_stream(ActorPid,Count,AD,TD) ->
 	receive
 		{start,Cb,Actor,Type,Term,VarPrefix} ->
 			check_actor(AD,TD,Actor,Type),
-			% ?ADBG("AE stream proc start ~p.~p",[Actor,Type]),
+			?ADBG("AE stream proc start ~p.~p",[Actor,Type]),
 			case binary_to_term(VarPrefix) of
 				{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
 					DbFile = undefined;
