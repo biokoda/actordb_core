@@ -589,9 +589,9 @@ net_changes(#dp{wasync = W} = P) ->
 		false when W#ai.buffer == [], P#dp.mors == master ->
 			% start_verify(P#dp{netchanges = actordb_local:net_changes()},false)
 			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = []},undefined, P),
-			NP;
+			NP#dp{netchanges = actordb_local:net_changes()};
 		false ->
-			P
+			P#dp{netchanges = actordb_local:net_changes()}
 	end.
 
 
@@ -700,36 +700,6 @@ doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactio
 					self() ! stop,
 					NP
 			end
-			% case actordb_sqlproc:handle_call(Msg,From,P#dp{callqueue = CQ}) of
-			% 	{reply,Res,NP} ->
-			% 		reply(From,Res),
-			% 		doqueue(NP);
-			% 	{stop,_,NP} ->
-			% 		?DBG("Doqueue for call stop ~p",[Msg]),
-			% 		self() ! stop,
-			% 		NP;
-			% 	{noreply,NP} when element(1,Msg) == state_rw ->
-			% 		doqueue(NP);
-			% 	% If call returns noreply, it will continue processing later.
-			% 	{noreply,NP} ->
-			% 		% We may have just inserted the same call back in the queue. If we did, it
-			% 		%  is placed in the wrong position. It should be in rear not front. So that
-			% 		%  we continue with this call next time we try to execute queue.
-			% 		% If we were to leave it as is, process might execute calls in a different order
-			% 		%  than it received them.
-			% 		case queue:is_empty(NP#dp.callqueue) of
-			% 			false ->
-			% 				{{value,Call1},CQ1} = queue:out(NP#dp.callqueue),
-			% 				case Call1 == Call of
-			% 					true ->
-			% 						NP#dp{callqueue = queue:in(Call,CQ1)};
-			% 					false ->
-			% 						NP
-			% 				end;
-			% 			_ ->
-			% 				NP
-			% 		end
-			% end
 	end;
 doqueue(P,[]) ->
 	% ?DBG("doqueue can't execute: verified=~p, callres=~p, transid=~p, locked=~p",
@@ -943,45 +913,6 @@ is_alive(F) ->
 		false ->
 			bkdcore_rpc:is_connected(F#flw.node)
 	end.
-
-% Returns:
-% synced -> do nothing, do not set timer again
-% resync -> run election immediately
-% wait_longer -> wait for 3s and run election
-% timer -> run normal timer again
-% check_for_resync(P,L,Action) ->
-% 	check_for_resync1(P,L,Action,actordb_local:elapsed_time()).
-% check_for_resync1(P, [F|L],Action,Now) when F#flw.match_index == P#dp.evnum,
-% 		F#flw.wait_for_response_since == undefined ->
-% 	check_for_resync1(P,L,Action,Now);
-% check_for_resync1(_,[],Action,_) ->
-% 	Action;
-% check_for_resync1(P,[F|L],_Action,Now) ->
-	% Addr = bkdcore:node_address(F#flw.node),
-	% IsAlive = is_alive(F),
-	% case F#flw.wait_for_response_since of
-	% 	undefined ->
-	% 		Wait = 0;
-	% 	_ ->
-	% 		Wait = Now-F#flw.wait_for_response_since
-	% end,
-	% ?DBG("check_resync nd=~p, alive=~p",[F#flw.node,IsAlive]),
-	% LastSeen = Now-F#flw.last_seen,
-	% case ok of
-	% 	_ when Addr == undefined ->
-	% 		self() ! {forget,F#flw.node},
-	% 		check_for_resync1(P,L,_Action,Now);
-	% 	_ when Wait > 1000, IsAlive ->
-	% 		resync;
-	% 	_ when LastSeen > 1000, F#flw.match_index /= P#dp.evnum, IsAlive ->
-	% 		resync;
-	% 	% _ when IsAlive == false, LastSeen > 3000 ->
-	% 	% 	resync;
-	% 	_ when IsAlive == false ->
-	% 		check_for_resync1(P,L,wait_longer,Now);
-	% 	_ ->
-	% 		check_for_resync1(P,L,timer,Now)
-	% end.
 
 % Will categorize followers then decide what to do.
 % Categories:
