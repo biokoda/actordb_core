@@ -1446,10 +1446,16 @@ election_timer(doelection2,P) ->
 down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0, 
 		P#dp.schemavers == undefined ->
 	?INF("Stopping with nocreate ",[]),
+	Nodes = actordb_sqlprocutil:follower_nodes(P#dp.follower_indexes),
+	spawn(fun() -> bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
+		[P#dp.cbmod,P#dp.actorname,P#dp.actortype,stop]}) end),
 	{stop,nocreate,P};
 down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0, 
 		P#dp.movedtonode == deleted ->
 	?INF("Stopping with nocreate ",[]),
+	Nodes = actordb_sqlprocutil:follower_nodes(P#dp.follower_indexes),
+	spawn(fun() -> bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
+		[P#dp.cbmod,P#dp.actorname,P#dp.actortype,stop]}) end),
 	{stop,nocreate,P};
 down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 	actordb_local:actor_mors(master,actordb_conf:node_name()),
