@@ -586,7 +586,7 @@ net_changes(#dp{wasync = W} = P) ->
 	case P#dp.netchanges == actordb_local:net_changes() of
 		true ->
 			P;
-		false when W#ai.buffer == [] ->
+		false when W#ai.buffer == [], P#dp.mors == master ->
 			% start_verify(P#dp{netchanges = actordb_local:net_changes()},false)
 			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = []},undefined, P),
 			NP;
@@ -1045,6 +1045,7 @@ follower_check_handle(P,_Synced,_Waiting,[],[]) ->
 follower_check_handle(P,_Synced,_Waiting,_Delayed,[]) ->
 	?ADBG("Have delayed nodes, executing a sync write"),
 	% {noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
+	% {noreply,actordb_sqlproc:write_call(#write{sql = []},undefined,P)};
 	{noreply,P#dp{election = election_timer(undefined)}};
 follower_check_handle(P,Synced,Waiting,Delayed,Dead) ->
 	% Some node is not reponding. Report to catchup.

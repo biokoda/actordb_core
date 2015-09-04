@@ -8,7 +8,7 @@
 -export([print_info/1]).
 -export([read/4,write/4,call/4,call/5,diepls/2,try_actornum/3]).
 -export([call_slave/4,call_slave/5,start_copylock/2]). %call_master/4,call_master/5
--export([write_call/3, write_call1/4, read_call/3, read_call1/4,write_again/1]).
+-export([write_call/3, write_call1/4, read_call/3, read_call1/4]).
 -include_lib("actordb_sqlproc.hrl").
 
 % Read actor number without creating actor.
@@ -499,6 +499,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			case P#dp.mors of
 				master ->
 					% {noreply, actordb_sqlprocutil:start_verify(P,false)};
+					?DBG("Executing empty write"),
 					{noreply,write_call(#write{sql = []},undefined,P)};
 				_ ->
 					{noreply,P}
@@ -953,28 +954,9 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 % print_sqls(_,_,_) ->
 % 	ok.
 
-% If waiting for response unusually long, do an empty write.
-write_again(P) ->
-	?DBG("Write again"),
-	P.
-	% EvNum = P#dp.evnum+1,
-	% ComplSql = list_to_tuple([<<"#s00;">>,<<"#s02;#s01;">>]),
-	% ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
-	% Records = list_to_tuple([[]|ADBW]),
-	% VarHeader = actordb_sqlprocutil:create_var_header(P),
-	% actordb_sqlite:exec(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
-	% Now = actordb_local:elapsed_time(),
-	% P#dp{evnum = P#dp.evnum,
-	% follower_indexes = [F#flw{wait_for_response_since = if_undef(F#flw.wait_for_response_since,Now)} || F <- P#dp.follower_indexes]}.
-
-if_undef(undefined,V) ->
-	V;
-if_undef(V,_) ->
-	V.
-
 % Not a multiactor transaction write
-write_call1(_,From,_,#dp{mors = slave} = P) ->
-	?AINF("Redirecting write ~p",[P#dp.masternode]),
+write_call1(_W,From,_CF,#dp{mors = slave} = P) ->
+	?ADBG("Redirecting write ~p from=~p, w=~p",[P#dp.masternode,From,_W]),
 	[reply(F,{redirect,P#dp.masternode}) || F <- From],
 	P#dp{wasync = #ai{}};
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
@@ -1382,7 +1364,7 @@ election_timer(doelection1,P) ->
 				true when Noops == 0 ->
 					?ERR("Write is taking long to reach consensus, trying empty write"),
 					% Try an empty write.
-					{noreply,write_again(P#dp{callat = {CallTime,1}, election = actordb_sqlprocutil:election_timer(undefined)})};
+					{noreply,P#dp{callat = {CallTime,1}, election = actordb_sqlprocutil:election_timer(undefined)}};
 				true when Noops == 1 ->
 					?ERR("Still have not reached consensus"),
 					{noreply,P#dp{callat = {CallTime,2}, election = actordb_sqlprocutil:election_timer(undefined)}};
