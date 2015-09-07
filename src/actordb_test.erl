@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch/0, idtest/0, ins/0]).
+-export([batch/0, idtest/0, ins/0, read_timebin/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
@@ -114,4 +114,33 @@ ins([<<"[\"ACTORDB QUERY (mapl):\",<<\"",Rem/binary>>|T]) ->
 ins([<<>>]) ->
 	[];
 ins([]) ->
+	ok.
+
+
+read_timebin() ->
+	{ok,<<Numer:64/unsigned-little,Delim:64/unsigned-little,Times/binary>>} = file:read_file("time.bin"),
+	read_timebin(Numer,Delim,Times,[]).
+
+read_timebin(N,D,<<Id,Val:64/unsigned-little,Rem/binary>>,L) ->
+	Int = round((Val*N/D)/1000),
+	case Id of
+		0 ->
+			print_times(lists:reverse(L)),
+			read_timebin(N,D,Rem,[{0,Int}]);
+		_ ->
+			read_timebin(N,D,Rem,[{Id,Int}|L])
+	end;
+read_timebin(_,_,_,_) ->
+	ok.
+
+print_times([]) ->
+	ok;
+print_times([{0,Time}|T]) ->
+	io:format("Start:~p~n",[Time]),
+	print_times(T,Time,Time).
+
+print_times([{Id,Int}|T],First,Prev) ->
+	io:format("~p: ~p first_diff=~p prev_diff=~p~n",[Id,Int, Int-First, Int-Prev]),
+	print_times(T,First,Int);
+print_times([],_,_) ->
 	ok.

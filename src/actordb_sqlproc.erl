@@ -1362,7 +1362,7 @@ election_timer(doelection1,P) ->
 			% More than a second after write is finished (and sent to followers)
 			case Now - CallTime > 1000+LatencyNow of
 				true when Noops == 0 ->
-					?ERR("Write is taking long to reach consensus, trying empty write"),
+					?ERR("Write is taking long to reach consensus"),
 					% Try an empty write.
 					{noreply,P#dp{callat = {CallTime,1}, election = actordb_sqlprocutil:election_timer(undefined)}};
 				true when Noops == 1 ->
@@ -1370,7 +1370,6 @@ election_timer(doelection1,P) ->
 					{noreply,P#dp{callat = {CallTime,2}, election = actordb_sqlprocutil:election_timer(undefined)}};
 				true when Noops == 2 ->
 					?ERR("Write abandon with consensus_timeout"),
-					% Already tried an empty write with extra time. Return error. 
 					reply(P#dp.callfrom,{error,consensus_timeout}),
 					% Step down as leader.
 					election_timer(doelection2,P#dp{callfrom = undefined, callres = undefined, 

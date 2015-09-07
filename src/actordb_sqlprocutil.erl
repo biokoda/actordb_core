@@ -971,10 +971,9 @@ follower_check_handle(P,_Synced,[],[],[]) ->
 	end;
 follower_check_handle(P,_Synced,_Waiting,[],[]) ->
 	{noreply,P#dp{election = election_timer(undefined)}};
-% Some nodes are delayed unreasonably long. If response was lost, try to issue another write,
-% which should prompt those nodes to respond.
+% Some nodes are delayed unreasonably long.
 follower_check_handle(P,_Synced,_Waiting,_Delayed,[]) ->
-	?ADBG("Have delayed nodes, executing a sync write"),
+	?INF("Have delayed nodes: ~p",[_Delayed]),
 	% {noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
 	% {noreply,actordb_sqlproc:write_call(#write{sql = []},undefined,P)};
 	{noreply,P#dp{election = election_timer(undefined)}};
