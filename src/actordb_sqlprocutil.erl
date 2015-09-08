@@ -34,8 +34,10 @@ reply(undefined,_Msg) ->
 	ok;
 reply([batch|From],{ok,Msg}) ->
 	reply_tuple(From,1,Msg);
+reply([batch|From],{error,Msg}) ->
+	reply(From,{error,Msg});
 reply([_|_] = From,Msg) ->
-	[gen_server:reply(F,Msg) || F <- From];
+	[gen_server:reply(F,Msg) || F <- From, F /= undefined];
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
