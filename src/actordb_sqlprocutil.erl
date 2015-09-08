@@ -371,17 +371,19 @@ try_wal_recover(P,F) ->
 	% 	Evnum ->
 	% 		Evterm = F#flw.match_term
 	% end,
-	case actordb_driver:iterate_db(P#dp.db,F#flw.match_index,F#flw.match_term) of
+	case actordb_driver:iterate_db(P#dp.db,F#flw.match_term,F#flw.match_index) of
 		{ok,Iter2,Bin,Head,Done} ->
-			% , match_term = Evterm, match_index = Evnum
+			?DBG("try_wal_recover success",[]),
 			NF = F#flw{file = Iter2, pagebuf = {Bin,Head,Done}},
 			{true,store_follower(P,NF),NF};
 		% Term conflict. We found evnum, but term is different. Store this term for follower and send it.
 		% Follower will reject and rewind and they will move one write back.
 		{ok,Term} ->
+			?DBG("try_wal_recover, rewind necessary=~p",[Term]),
 			NF = F#flw{match_term = Term, file = 1},
-			{false,store_follower(P,NF),NF};
+			{true,store_follower(P,NF),NF};
 		done ->
+			?DBG("try_wal_recover done"),
 			{false,P,F}
 	end.
 
@@ -490,10 +492,11 @@ send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 	end,
 	case Commit of
 		0 when BufSize < 1024*128 ->
-			send_wal(P,F,[Header|HeaderBuf],[PageCompressed|PageBuf],BufSize+byte_size(PageCompressed));
+			?DBG("Buffering page ~p",[byte_size(PageCompressed)]),
+			send_wal(P,F#flw{pagebuf = <<>>, file = Iter},[Header|HeaderBuf],[PageCompressed|PageBuf],BufSize+byte_size(PageCompressed));
 		_ when Commit > 0; BufSize >= 1024*128 ->
 			<<ET:64,EN:64,Pgno:32,_:32>> = Header,
-			?DBG("send_wal et=~p, en=~p, pgno=~p, commit=~p",[ET,EN,Pgno,Commit]),
+			?DBG("send_wal et=~p, en=~p, pgno=~p, commit=~p, bufsize=~p",[ET,EN,Pgno,Commit,BufSize]),
 			WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 						{state_rw,{appendentries_wal,P#dp.current_term,
 							lists:reverse([Header|HeaderBuf]),lists:reverse([PageCompressed|PageBuf]),
@@ -1190,17 +1193,22 @@ read_num(P) ->
 % Current formula is max(XPages,X*DBSIZE). Default values: XPages=5000, X=0.1
 % This way if a large DB, replication space is max 10%. Or if small DB, max 5000 pages.
 % Page is 4096 bytes max, but with compression it is usually much smaller.
-checkpoint(P) when P#dp.last_checkpoint == P#dp.evnum orelse P#dp.last_checkpoint+6 =< P#dp.evnum ->
+checkpoint(#dp{mors = master, follower_indexes = []} = P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
+	actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3),
+	P#dp{last_checkpoint = P#dp.evnum-3};
+checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 	case P#dp.mors of
 		master ->
-			case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.last_checkpoint] of
+			case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.last_checkpoint andalso F#flw.next_index > 0] of
 				[] ->
+					?DBG("No followers far behind"),
 					actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3);
 				_ ->
 					% One of the followers is at least 6 events behind
 					{_,_,_,MxPage,AllPages,_,_} = actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)),
 					{MxPages,MxFract} = actordb_conf:replication_space(),
 					Diff = AllPages - MxPage,
+					?DBG("checkpoint allpages=~p, mxpage=~p, max=~p",[AllPages,MxPage,max(MxPages,0.1*MxFract)]),
 					case Diff > max(MxPages,0.1*MxFract) of
 						true ->
 							actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3);
@@ -1209,6 +1217,7 @@ checkpoint(P) when P#dp.last_checkpoint == P#dp.evnum orelse P#dp.last_checkpoin
 					end
 			end;
 		slave ->
+			?DBG("Slave checkpoint"),
 			actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3)
 	end,
 	% This way checkpoint gets executed every 6 writes.

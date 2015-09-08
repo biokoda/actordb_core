@@ -15,9 +15,13 @@
 % To mitigate this we keep track of network latency to nodes in our cluster and we keep track of
 % run_queue length on local node.
 latency() ->
-	L = ets:tab2list(latency),
-	% Network latency + scheduling latency
-	butil:ds_val(latency,L) + min(3000,butil:ds_val(run_queue,L)*20).
+	case (catch ets:tab2list(latency)) of
+		[_|_] = L ->
+			% Network latency + scheduling latency
+			butil:ds_val(latency,L) + min(3000,butil:ds_val(run_queue,L)*20);
+		_ ->
+			3000
+	end.
 
 set_run_queue(Q) ->
 	butil:ds_add(run_queue,Q,latency).
