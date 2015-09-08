@@ -53,10 +53,10 @@ tunnel_bin(Pid,<<LenBin:16/unsigned,Bin:LenBin/binary>>) ->
 	apply(Mod,tunnel_callback,Param),
 	Pid;
 tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
-             LenVarPrefix:16/unsigned,VarPrefix:LenVarPrefix/binary,
-             LenHeader,Header:LenHeader/binary,
-             LenPage:16,Page:LenPage/binary>>) ->
-	{Cb,Actor,Type,Term} = binary_to_term(FixedPrefix),
+		LenVarPrefix:16/unsigned,VarPrefix:LenVarPrefix/binary,
+		LenHeader,Header:LenHeader/binary,
+		LenPage:16,Page:LenPage/binary>>) ->
+	{Cb,Actor,Type} = binary_to_term(FixedPrefix),
 	case VarPrefix of
 		<<>> ->
 			PidOut = Pid;
@@ -93,9 +93,9 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 				PidOut ->
 					ok
 			end,
-			PidOut ! {start,Cb,Actor,Type,Term,VarPrefix}
+			PidOut ! {start,Cb,Actor,Type,VarPrefix}
 	end,
-	PidOut ! {call_slave,Cb,Actor,Type,Term,Header,Page},
+	PidOut ! {call_slave,Cb,Actor,Type,Header,Page},
 	PidOut;
 tunnel_bin(Pid,Bin) ->
 	?AERR("Tunnel invalid data ~p",[Bin]),
@@ -103,7 +103,7 @@ tunnel_bin(Pid,Bin) ->
 
 actor_ae_stream(ActorPid,Count,AD,TD) ->
 	receive
-		{start,Cb,Actor,Type,Term,VarPrefix} ->
+		{start,Cb,Actor,Type,VarPrefix} ->
 			check_actor(AD,TD,Actor,Type),
 			?ADBG("AE stream proc start ~p.~p",[Actor,Type]),
 			case binary_to_term(VarPrefix) of
@@ -112,7 +112,7 @@ actor_ae_stream(ActorPid,Count,AD,TD) ->
 				{Term,Leader,PrevEvnum,PrevTerm,CallCount,DbFile} ->
 					ok;
 				Invalid ->
-					DbFile = CallCount = Leader = PrevEvnum = PrevTerm = undefined,
+					Term = DbFile = CallCount = Leader = PrevEvnum = PrevTerm = undefined,
 					?AERR("Variable header invalid fixed=~p, var=~p",[{Cb,Actor,Type,Term},Invalid]),
 					exit(error)
 			end,
@@ -145,10 +145,10 @@ actor_ae_stream(ActorPid,Count,AD,TD) ->
 			end;
 		{'DOWN',_,_,ActorPid,_} ->
 			ok;
-		{call_slave,Cb,Actor,Type,Term,Header,Page} ->
+		{call_slave,Cb,Actor,Type,Header,Page} ->
 			check_actor(AD,TD,Actor,Type),
 			?ADBG("Calling slave ~p",[Actor]),
-			case actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Term,Header,Page,head,Count}},[nostart]) of
+			case actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Header,Page,head,Count}},[nostart]) of
 				ok ->
 					actor_ae_stream(ActorPid,Count,AD,TD);
 				done ->

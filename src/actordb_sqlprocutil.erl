@@ -437,9 +437,8 @@ continue_maybe(P,F,SuccessHead) ->
 							store_follower(P,F#flw{file = undefined, wait_for_response_since = actordb_local:elapsed_time()});
 						NF when element(1,NF) == flw ->
 							?DBG("Sent AE on evnum=~p",[F#flw.next_index]),
-							CP = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}],
-							bkdcore_rpc:cast(NF#flw.node,{actordb_sqlproc,call_slave,CP}),
-							store_follower(P,NF#flw{file = undefined, wait_for_response_since = actordb_local:elapsed_time()})
+							store_follower(P,NF#flw{file = undefined, inrecovery = true,
+								wait_for_response_since = actordb_local:elapsed_time()})
 					end;
 				% to be continued in appendentries_response
 				_ ->
@@ -461,13 +460,15 @@ continue_maybe(P,F,SuccessHead) ->
 				_ ->
 					ok
 			end,
-			CP = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}],
-			bkdcore_rpc:cast(F#flw.node,{actordb_sqlproc,call_slave,CP}),
 			store_follower(P,F#flw{file = undefined, pagebuf = <<>>})
 	end.
 
 store_follower(P,#flw{distname = undefined} = F) ->
 	store_follower(P,F#flw{distname = bkdcore:dist_name(F#flw.node)});
+store_follower(P,NF) when NF#flw.next_index > P#dp.evnum, NF#flw.inrecovery ->
+	CP = [P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,recovered}],
+	bkdcore_rpc:cast(NF#flw.node,{actordb_sqlproc,call_slave,CP}),
+	store_follower(P,NF#flw{inrecovery = false});
 store_follower(P,NF) ->
 	P#dp{follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
 
@@ -498,10 +499,11 @@ send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 			<<ET:64,EN:64,Pgno:32,_:32>> = Header,
 			?DBG("send_wal et=~p, en=~p, pgno=~p, commit=~p, bufsize=~p",[ET,EN,Pgno,Commit,BufSize]),
 			WalRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-						{state_rw,{appendentries_wal,P#dp.current_term,
+						{state_rw,{appendentries_wal,
 							lists:reverse([Header|HeaderBuf]),lists:reverse([PageCompressed|PageBuf]),
 							recover,{F#flw.match_index,F#flw.match_term}}},
 						[nostart]]}),
+			?DBG("send_wal resp=~p",[WalRes]),
 			case WalRes == ok orelse WalRes == done of
 				% If successful response, always set last_seen so we know node active.
 				true when Commit == 0 ->
@@ -981,6 +983,7 @@ follower_check_handle(P,_Synced,_Waiting,_Delayed,[]) ->
 	?INF("Have delayed nodes: ~p",[_Delayed]),
 	% {noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
 	% {noreply,actordb_sqlproc:write_call(#write{sql = []},undefined,P)};
+	self() ! doqueue,
 	{noreply,P#dp{election = election_timer(undefined)}};
 follower_check_handle(P,Synced,Waiting,Delayed,Dead) ->
 	% Some node is not reponding. Report to catchup.

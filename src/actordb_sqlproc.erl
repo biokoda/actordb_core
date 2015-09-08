@@ -467,6 +467,7 @@ commit_call(Doit,Id,From,P) ->
 state_rw_call(donothing,_From,P) ->
 	{reply,ok,P};
 state_rw_call(recovered,_From,P) ->
+	?DBG("No longer in recovery!"),
 	{reply,ok,P#dp{inrecovery = false}};
 state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,CallCount} = What,From,P) ->
 	% Executed on follower.
@@ -571,16 +572,8 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 % Appends pages, a single write is split into multiple calls. 
 % Header tells you if this is last call. If we reached header, this means we must have received
 % all preceding calls as well.
-state_rw_call({appendentries_wal,Term,Header,Body,AEType,CallCount},From,P) ->
-	case ok of
-		_ when Term == P#dp.current_term; AEType == head ->
-			append_wal(P,From,CallCount,Header,Body,AEType);
-		_ ->
-			?ERR("AE WAL received wrong term ~p",[{Term,P#dp.current_term}]),
-			reply(From,false),
-			actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
-			{noreply, P}
-	end;
+state_rw_call({appendentries_wal,Header,Body,AEType,CallCount},From,P) ->
+	append_wal(P,From,CallCount,Header,Body,AEType);
 % Executed on leader.
 state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 			EvNum,EvTerm,MatchEvnum,AEType,{SentIndex,SentTerm}} = What,From,P) ->
@@ -614,7 +607,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 					NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(
 						P,NFlw,AEType == head orelse AEType == empty)),
 					?DBG("AE response for node ~p, followers=~p",
-							[Node,[{F#flw.node,F#flw.match_index,F#flw.match_term,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
+						[Node,[{F#flw.node,F#flw.match_index,F#flw.match_term,F#flw.next_index} || F <- NP#dp.follower_indexes]]),
 					{noreply,NP};
 				% What we thought was follower is ahead of us and we need to step down
 				false when P#dp.current_term < CurrentTerm ->
@@ -778,6 +771,7 @@ append_wal(P,From,CallCount,Header,Body,AEType) ->
 					{noreply,NP}
 			end;
 		_ ->
+			?ERR("Append failed"),
 			reply(From,false),
 			actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
 			{noreply,P}
@@ -1475,7 +1469,7 @@ down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 	end,
 	ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
 	?DBG("Elected leader term=~p, nodes_synced=~p, moved=~p",[P1#dp.current_term,AllSynced,P#dp.movedtonode]),
-	ReplBin = term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype,P#dp.current_term}),
+	ReplBin = term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype}),
 	ok = actordb_sqlite:replicate_opts(P#dp.db,ReplBin,ReplType),
 
 	case P#dp.schemavers of

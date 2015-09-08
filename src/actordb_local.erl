@@ -378,6 +378,7 @@ handle_info(save_updaters,P) ->
 			{noreply,P#dp{updaters_saved = false}}
 	end;
 handle_info({nodedown, Nd},P) ->
+	?AINF("Nodedown=~p",[Nd]),
 	case bkdcore:name_from_dist_name(Nd) of
 		undefined ->
 			{noreply,P};
@@ -391,6 +392,7 @@ handle_info({nodedown, Nd},P) ->
 			{noreply,P}
 	end;
 handle_info({nodeup,Nd},P)  ->
+	?AINF("Nodeup=~p",[Nd]),
 	case bkdcore:name_from_dist_name(Nd) of
 		undefined ->
 			ok;
