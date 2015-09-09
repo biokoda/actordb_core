@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch/0, idtest/0, ins/0, read_timebin/0]).
+-export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
@@ -144,3 +144,14 @@ print_times([{Id,Int}|T],First,Prev) ->
 	print_times(T,First,Int);
 print_times([],_,_) ->
 	ok.
+
+loop(N) ->
+	S = os:timestamp(),
+	loop1(N),
+	timer:now_diff(os:timestamp(),S).
+
+loop1(0) ->
+	ok;
+loop1(N) ->
+	% term_to_binary({self(),{appendentries_response,12084,<<"asdlhf">>,aasdf,1,2,3,5}},[compressed,{minor_version,1}]),
+	loop1(N-1).

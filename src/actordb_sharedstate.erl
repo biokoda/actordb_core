@@ -266,7 +266,7 @@ write_sql({A,B},Val) ->
 	write_sql([butil:tobin(A),",",butil:tobin(B)],Val);
 write_sql(Key,Val) ->
 	[<<"INSERT OR REPLACE INTO state VALUES ('">>,butil:tobin(Key),
-		"','",base64:encode(term_to_binary(Val,[compressed])),"');"].
+		"','",base64:encode(term_to_binary(Val)),"');"].
 
 state_to_sql(Name) ->
 	case Name of

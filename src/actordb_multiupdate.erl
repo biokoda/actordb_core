@@ -22,7 +22,6 @@ exec(Name,S) when is_integer(Name) ->
 			erlang:yield(),
 			exec(Name,S);
 		Pid ->
-			% Bin = butil:dec2hex(term_to_binary(S,[compressed])),
 			gen_server:call(Pid,{exec,S})
 	end.
 
