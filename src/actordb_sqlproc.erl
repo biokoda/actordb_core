@@ -692,9 +692,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 							reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate,
 							current_term = NewTerm,
-							election = actordb_sqlprocutil:election_timer(Now,P#dp.election),
-							masternode = undefined, without_master_since = Now,
-							masternodedist = undefined});
+							election = actordb_sqlprocutil:election_timer(Now,P#dp.election)});
 						true ->
 							DoElection = (P#dp.mors == master andalso P#dp.verified == true),
 							reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
@@ -710,9 +708,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 					DoElection = false,
 					reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
-					election = actordb_sqlprocutil:election_timer(Now,P#dp.election),
-					masternode = undefined, without_master_since = Now,
-					masternodedist = undefined});
+					election = actordb_sqlprocutil:election_timer(Now,P#dp.election)});
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
 				_ ->
@@ -721,9 +717,6 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,
 						election = actordb_sqlprocutil:election_timer(Now,P#dp.election)})
 			end,
-			% If voted no and we are leader, start a new term,
-			% which causes a new write and gets all nodes synchronized.
-			% If the other node is actually more up to date, vote was yes and we do not do election.
 			?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
 			{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(Now,P#dp.election)}}
