@@ -375,7 +375,8 @@ move_over_shard_actors(Nd,#{type := Type, statements := [count]} = H, Shard, [],
 	H;
 move_over_shard_actors(Nd,#{type := Type, flags := _Flags, statements := _StBin, iswrite := _IsWrite} = H,
 				Shard, [], CountNow, CountAll, P, Varlist, Next) ->
-	Iskv = actordb_schema:iskv(Type),
+	% If  _StBin=[{list,_}] then do not treat it like a kv type
+	Iskv = actordb_schema:iskv(Type) andalso is_tuple(hd(_StBin)) == false,
 	case ok of
 		_ when Iskv ->
 			do_actor(P,true,H#{actor := {Shard,1}},Varlist),
