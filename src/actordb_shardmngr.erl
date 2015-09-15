@@ -519,6 +519,7 @@ async_getstate() ->
 		Local ->
 			exit(nostate)
 	end,
+	?ADBG("Getstate ~p",[{Global,Local}]),
 	exit({Global,Local}).
 
 

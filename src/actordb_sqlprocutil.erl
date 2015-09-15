@@ -1253,8 +1253,10 @@ delete_actor(P) ->
 		[] ->
 			ok;
 		_ ->
+			spawn(fun() ->
 			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
 				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,deleted}}]})
+			end)
 	% 		{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,stop,
 	% 						[{P#dp.actorname,P#dp.actortype}]})
 	end,

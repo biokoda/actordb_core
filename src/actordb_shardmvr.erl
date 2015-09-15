@@ -124,8 +124,10 @@ can_start() ->
 					ok;
 				_ ->
 					[spawn_monitor(fun() ->  
+									?ADBG("Check shard tree on=~p",[Nd]),
 									case bkdcore:rpc(Nd,{actordb_shardtree,local,[]}) of
 										{'EXIT',_} ->
+											?ADBG("Nd=~p, does not have shard tree",[Nd]),
 											exit(false);
 										_ ->
 											exit(true)
