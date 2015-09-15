@@ -687,12 +687,10 @@ split_actor(CanEmpty,Bin) ->
 			Res
 	end.
 split_actor(CE,<<" ",Bin/binary>>,Word,Type,L) when Type == undefined, Word /= <<>> ->
-	?AINF("SETTING ACTOR=~p",[Word]),
 	split_actor(CE,Bin,<<>>,Word,L);
 split_actor(CE,<<" ",Bin/binary>>,Word,Type,L) ->
 	split_actor(CE,Bin,Word,Type,L);
 split_actor(CE,<<"(",Bin/binary>>,Word,Type,L) when Type == undefined ->
-	?AINF("SETTING ACTOR=~p",[Word]),
 	split_actor(CE,Bin,<<>>,Word,L);
 split_actor(CE,<<"(",Bin/binary>>,_Word,Type,L) ->
 	split_actor(CE,Bin,<<>>,Type,L);
