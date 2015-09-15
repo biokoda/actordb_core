@@ -416,8 +416,8 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
 					{noreply,P#dp{getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local}};
 				GlobalShards when GlobalShards /= nostate ->
 					self() ! readshards,
-					{noreply,P#dp{allshards = GlobalShards,getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local,
-									dirty = false}};
+					{noreply,P#dp{allshards = GlobalShards,getstatepid = undefined, 
+						shardsbeingtaken = P#dp.shardsbeingtaken++Local, dirty = false}};
 				_G->
 					{noreply,getstate(P#dp{shardsbeingtaken = P#dp.shardsbeingtaken++Local})}
 			end;
@@ -432,21 +432,15 @@ handle_info({'DOWN',_Monitor,_,PID,Result},P) ->
 		{PID,_,_} ->
 			{noreply,P#dp{localshardpids = lists:keydelete(PID,1,P#dp.localshardpids)}}
 	end;
-% handle_info({bkdcore_sharedstate,cluster_state_change},P) ->
-% 	case bkdcore:nodelist() /= [] andalso actordb_sharedstate:is_ok() andalso  of
-% 		true ->
-% 			handle_info({bkdcore_sharedstate,global_state_change},P);
-% 		false ->
-% 			{noreply,P}
-% 	end;
 handle_info({actordb,sharedstate_change},P) ->
 	HaveNodes = bkdcore:nodelist() /= [],
 	case HaveNodes andalso actordb_sharedstate:is_ok() andalso P#dp.haveschema of
 		false ->
-			?ADBG("Global statechange conditions failed havenodes=~p, sharedok=~p, haveschema=~p",[HaveNodes,actordb_sharedstate:is_ok(),P#dp.haveschema]),
+			?ADBG("Global statechange conditions failed havenodes=~p, sharedok=~p, haveschema=~p",
+				[HaveNodes,actordb_sharedstate:is_ok(),P#dp.haveschema]),
 			{noreply,P};
 		_ ->
-			?ADBG("GLobal statechange ~p ~p",[bkdcore:node_name(),P#dp.getstatepid]),
+			?ADBG("GLobal statechange"),
 			case P#dp.getstatepid of
 				undefined ->
 					{noreply,getstate(P,0)};
@@ -505,6 +499,7 @@ getstate(P,SleepTime) ->
 
 async_getstate() ->
 	Global = actordb_sharedstate:read_global(shards),
+	% Global = actordb_sharedstate:read(?STATE_NM_GLOBAL, shards),
 	case Global of
 		nostate ->
 			exit(nostate);
@@ -513,14 +508,12 @@ async_getstate() ->
 	end,
 	case actordb_sharedstate:read_cluster([<<"shardsbeingtaken,">>,bkdcore:node_name()]) of
 		undefined ->
-			Local = [];
-		Local when Local /= nostate ->
-			ok;
+			exit({Global,[]});
+		nostate ->
+			exit(nostate);
 		Local ->
-			exit(nostate)
-	end,
-	?ADBG("Getstate ~p",[{Global,Local}]),
-	exit({Global,Local}).
+			exit({Global,Local})
+	end.
 
 
 % start_shards([{From,To,_Nd}|T],Existing) ->
