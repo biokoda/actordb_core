@@ -792,7 +792,7 @@ cb_info(ping_timer,#st{} = S)  ->
 	end,
 	{noreply,check_timer(S#st{time_since_ping = Now, nodepos = Pos})};
 cb_info(_Msg,_S) ->
-	% ?AERR("Invalid info msg ~p ~p",[_Msg,S]),
+	?AERR("Invalid info msg ~p ~p",[_Msg,_S]),
 	noreply.
 cb_init(#st{name = ?STATE_NM_LOCAL} = S,_EvNum) ->
 	?ADBG("local cb_init",[]),

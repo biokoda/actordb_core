@@ -298,7 +298,7 @@ handle_call({dbcopy,Msg},CallFrom,P) -> %when element(1,Msg) /= reached_end ->
 				P#dp{activity = actordb_local:actor_activity(P#dp.activity)})
 	end;
 handle_call({state_rw,_} = Msg,From, #dp{wasync = #ai{wait = WRef}} = P) when is_reference(WRef) ->
-	?DBG("Queuing state call"),
+	?DBG("Queuing state call, waitingfor=~p",[WRef]),
 	{noreply,P#dp{statequeue = queue:in_r({From,Msg},P#dp.statequeue)}};
 handle_call({state_rw,What},From,P) ->
 	state_rw_call(What,From,P#dp{activity = actordb_local:actor_activity(P#dp.activity)});
@@ -1148,7 +1148,7 @@ handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference
 		% 	{noreply,P#dp{rasync = NewBD}}
 	end;
 % async write result
-handle_info({Ref,Res1}, #dp{callat = {_,0}, wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
+handle_info({Ref,Res1}, #dp{callat = {_,_}, wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
 	?DBG("Write result ~p",[Res1]),
 	% ?DBG("Buffer=~p",[BD#ai.buffer]),
 	% ?DBG("CQ=~p",[P#dp.callqueue]),
