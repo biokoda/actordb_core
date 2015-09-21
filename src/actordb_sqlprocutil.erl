@@ -1731,7 +1731,6 @@ read_header(<<Evterm:64,Evnum:64,_/binary>>) ->
 	{Evterm,Evnum}.
 
 dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
-	?AINF("Receive wait!"),
 	receive
 		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
 			[{Bin,Header},Status,Origin] = butil:ds_vals([bin,status,origin],Param),
