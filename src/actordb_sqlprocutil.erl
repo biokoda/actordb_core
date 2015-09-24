@@ -980,7 +980,7 @@ follower_check_handle(P,_Synced,_Waiting,[],[]) ->
 	{noreply,P#dp{election = election_timer(undefined)}};
 % Some nodes are delayed unreasonably long.
 follower_check_handle(P,_Synced,_Waiting,_Delayed,[]) ->
-	?INF("Have delayed nodes: ~p",[_Delayed]),
+	?DBG("Have delayed nodes: ~p",[_Delayed]),
 	% {noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
 	% {noreply,actordb_sqlproc:write_call(#write{sql = []},undefined,P)};
 	self() ! doqueue,
