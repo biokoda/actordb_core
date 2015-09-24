@@ -163,7 +163,10 @@ wal_test(Writers) ->
 	ets:insert(E,{offset,0}),
 	ets:insert(E,{writes,0}),
 	file:delete("logfile"),
-	Pids = [spawn(fun() -> writer(E) end) || _ <- lists:seq(1,Writers)],
+	% Faster if workers are bound to schedulers.
+	SchOnline = erlang:system_info(schedulers_online),
+	Pids = [spawn_opt(fun() -> writer(E) end, [{scheduler, N rem SchOnline}]) || N <- lists:seq(1,Writers)],
+	% Pids = [spawn(fun() -> writer(E) end) || _ <- lists:seq(1,Writers)],
 	receive
 		{'DOWN',_Monitor,_,_PID,Reason} ->
 			exit(Reason)

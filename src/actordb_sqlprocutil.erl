@@ -1395,8 +1395,8 @@ parse_opts(P,[nohibernate|T]) ->
 	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NOHIBERNATE},T);
 parse_opts(P,[wait_election|T]) ->
 	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_WAIT_ELECTION},T);
-parse_opts(P,[no_election_timeout|T]) ->
-	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NO_ELECTION_TIMEOUT},T);
+% parse_opts(P,[no_election_timeout|T]) ->
+% 	parse_opts(P#dp{flags = P#dp.flags bor ?FLAG_NO_ELECTION_TIMEOUT},T);
 parse_opts(_,[nostart|_]) ->
 	{stop,nostart};
 parse_opts(P,[_|T]) ->

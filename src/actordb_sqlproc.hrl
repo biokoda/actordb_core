@@ -42,8 +42,8 @@
 -define(FLAG_NOHIBERNATE,64).
 % internal flags
 -define(FLAG_WAIT_ELECTION,128).
--define(FLAG_SEND_DB,256).
--define(FLAG_NO_ELECTION_TIMEOUT,512).
+% -define(FLAG_SEND_DB,256).
+% -define(FLAG_NO_ELECTION_TIMEOUT,512).
 -define(FLAG_REPORT_SYNC,1024).
 
 

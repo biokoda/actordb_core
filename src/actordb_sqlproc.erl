@@ -1171,7 +1171,6 @@ handle_info({Ref,Res1}, #dp{callat = {_,_}, wasync = #ai{wait = Ref} = BD} = P) 
 		ok when P#dp.follower_indexes == []  ->
 			{noreply,actordb_sqlprocutil:statequeue(actordb_sqlprocutil:reply_maybe(
 				P#dp{callfrom = From, callres = Res,evnum = EvNum,
-					flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 					netchanges = actordb_local:net_changes(), force_sync = ForceSync,
 					schemavers = NewVers,evterm = EvTerm,movedtonode = Moved,
 					wasync = NewAsync}))};
@@ -1184,7 +1183,6 @@ handle_info({Ref,Res1}, #dp{callat = {_,_}, wasync = #ai{wait = Ref} = BD} = P) 
 					ok
 			end,
 			{noreply, actordb_sqlprocutil:statequeue(ae_timer(P#dp{callfrom = From, callres = Callres,
-				flags = P#dp.flags band (bnot ?FLAG_SEND_DB),
 				netchanges = actordb_local:net_changes(),force_sync = ForceSync,
 				evterm = EvTerm, evnum = EvNum,schemavers = NewVers,movedtonode = Moved,
 				wasync = NewAsync}))};
@@ -1517,9 +1515,8 @@ down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 				wasync = W#ai{nreplies = W#ai.nreplies+1},
 				netchanges = actordb_local:net_changes()}))};
 		_ ->
-			?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, withdb ~p, vers ~p",
-				[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,
-				NP#dp.flags band ?FLAG_SEND_DB > 0,NP#dp.schemavers]),
+			?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, vers ~p",
+				[P#dp.follower_indexes,P#dp.evterm,P#dp.current_term,NP#dp.schemavers]),
 			W = #write{sql = Sql, transaction = NP#dp.transactionid,records = AdbRecords},
 			Now = actordb_local:elapsed_time(),
 			% Since we won election nodes are accessible.
