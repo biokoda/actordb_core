@@ -417,7 +417,7 @@ commit_call(Doit,Id,From,P) ->
 							VarHeader = actordb_sqlprocutil:create_var_header(P),
 							ok = actordb_sqlite:okornot(actordb_sqlite:exec(
 								P#dp.db,<<"#s01;">>,P#dp.evterm,EvNum,VarHeader)),
-							actordb_driver:replication_done(P#dp.db)
+							actordb_sqlite:replication_done(P#dp.db)
 					end,
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined,
 						transactioncheckref = undefined,
@@ -431,7 +431,7 @@ commit_call(Doit,Id,From,P) ->
 					VarHeader = actordb_sqlprocutil:create_var_header(P),
 					actordb_sqlite:okornot(actordb_sqlite:exec(P#dp.db,<<"#s01;">>,
 												P#dp.evterm,EvNum,VarHeader)),
-					actordb_driver:replication_done(P#dp.db),
+					actordb_sqlite:replication_done(P#dp.db),
 					{noreply,ae_timer(P#dp{callfrom = From,
 						callres = ok,evnum = EvNum,movedtonode = Moved,
 						transactionid = undefined, transactioninfo = undefined,
@@ -722,7 +722,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 			{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(Now,P#dp.election)}}
 	end;
 state_rw_call({delete,_MovedToNode},From,P) ->
-	ok = actordb_driver:wal_rewind(P#dp.db,0),
+	ok = actordb_sqlite:wal_rewind(P,0),
 	reply(From,ok),
 	{stop,normal,P};
 state_rw_call(checkpoint,_From,P) ->
@@ -778,7 +778,6 @@ read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
 				{reply,What,Sql,NS} ->
-					% {reply,{What,actordb_sqlite:exec(P#dp.db,Sql,read)},P#dp{cbstate = NS}};
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [{tuple,What,From}|AR#ai.buffer_cf],
 					buffer_recs = [[]|AR#ai.buffer_recs]},
 					{noreply,P#dp{cbstate = NS, rasync = AR1}};
@@ -797,7 +796,6 @@ read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
 				Sql ->
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
 						buffer_recs = [[]|AR#ai.buffer_recs]},
-					% {reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
 					{noreply,P#dp{rasync = AR1}}
 			end;
 		{Sql,{Mod,Func,Args}} ->
@@ -805,12 +803,10 @@ read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
 				buffer_recs = [[]|AR#ai.buffer_recs]},
 			{noreply,P#dp{rasync = AR1}};
 		{Sql,Recs} ->
-			% {reply,actordb_sqlite:exec(P#dp.db,Sql,Recs,read),P};
 			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
 				buffer_recs = [Recs|AR#ai.buffer_recs]},
 			{noreply,P#dp{rasync = AR1}};
 		Sql ->
-			% {reply,actordb_sqlite:exec(P#dp.db,Sql,read),P}
 			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
 				buffer_recs = [[]|AR#ai.buffer_recs]},
 			{noreply,P#dp{rasync = AR1}}
@@ -1461,7 +1457,7 @@ down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 	ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
 	?DBG("Elected leader term=~p, nodes_synced=~p, moved=~p",[P1#dp.current_term,AllSynced,P#dp.movedtonode]),
 	ReplBin = term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype}),
-	ok = actordb_sqlite:replicate_opts(P#dp.db,ReplBin,ReplType),
+	ok = actordb_sqlite:replicate_opts(P,ReplBin,ReplType),
 
 	case P#dp.schemavers of
 		undefined ->
@@ -1645,7 +1641,7 @@ down_info(PID,_Ref,Reason,P) ->
 
 terminate(Reason, P) ->
 	?DBG("Terminating ~p",[Reason]),
-	actordb_sqlite:stop(P#dp.db),
+	actordb_sqlite:stop(P),
 	distreg:unreg(self()),
 	ok.
 code_change(_, P, _) ->
@@ -1653,7 +1649,7 @@ code_change(_, P, _) ->
 init(#dp{} = P,_Why) ->
 	% ?DBG("Reinit because ~p, ~p, ~p",[_Why,?R2P(P),get()]),
 	?DBG("Reinit because ~p",[_Why]),
-	actordb_sqlite:stop(P#dp.db),
+	actordb_sqlite:stop(P),
 	Flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION) band (bnot ?FLAG_STARTLOCK),
 	case ok of
 		_ when is_reference(P#dp.election) ->
@@ -1722,7 +1718,7 @@ init([_|_] = Opts) ->
 			% Could be normal start after moving to another node though.
 			MovedToNode = apply(P#dp.cbmod,cb_checkmoved,[P#dp.actorname,P#dp.actortype]),
 			RightCluster = lists:member(MovedToNode,bkdcore:all_cluster_nodes()),
-			case actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)) of
+			case actordb_sqlite:actor_info(P) of
 				% {_,VotedFor,VotedCurrentTerm,VoteEvnum,VoteEvTerm} ->
 				{{_FCT,LastCheck},{VoteEvTerm,VoteEvnum},_InProg,_MxPage,_AllPages,VotedCurrentTerm,<<>>} ->
 					VotedFor = undefined;

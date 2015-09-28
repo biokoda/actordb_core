@@ -1,20 +1,25 @@
 % This Source Code Form is subject to the terms of the Mozilla Public
 % License, v. 2.0. If a copy of the MPL was not distributed with this
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
-
 -module(actordb_sqlite).
 -export([init/1,init/2,init/3,exec/2,exec/3,exec/4,exec/5,exec/6,okornot/1,
-		exec_async/2,exec_async/3,exec_async/4,exec_async/5,exec_async/6,
-		stop/1,close/1,checkpoint/1,rollback/1,
-		lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,
-		all_tunnel_call/1,tcp_reconnect/0,exec_res/2,exec_res/1,
-		tcp_connect_async/5,store_prepared_table/2]).
--include_lib("actordb_core/include/actordb.hrl").
+exec_async/2,exec_async/3,exec_async/4,exec_async/5,exec_async/6,
+stop/1,close/1,checkpoint/2,rollback/1,
+lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,
+all_tunnel_call/1,tcp_reconnect/0,exec_res/2,exec_res/1,
+tcp_connect_async/5,store_prepared_table/2, wal_rewind/2, term_store/3, actor_info/1,replication_done/1,
+iterate_close/1, inject_page/3,fsync/1, iterate_db/2, iterate_db/3, checkpoint_lock/2]).
+% -include_lib("actordb_core/include/actordb.hrl").
+-include_lib("actordb_sqlproc.hrl").
+
+% Interface module to storage/sql engine. Either actordb_driver or queue.
 
 init(Path) ->
 	init(Path,wal).
 init(Path,JournalMode) ->
 	init(Path,JournalMode,actordb_util:hash(Path)).
+init(queue,_,_) ->
+	{ok,queue,[1],?PAGESIZE};
 init(Path,JournalMode,Thread) ->
 			% "$PRAGMA cache_size=",(butil:tobin(?DEF_CACHE_PAGES))/binary,";"
 	Sql = <<"select name, sql from sqlite_master where type='table';">>,
@@ -26,16 +31,42 @@ init(Path,JournalMode,Thread) ->
 			{error,Err}
 	end.
 
+wal_rewind(P,Evnum) when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:wal_rewind(P#dp.db,Evnum);
+wal_rewind(Db,Evnum) when element(1,Db) == actordb_driver ->
+	actordb_driver:wal_rewind(Db,Evnum).
+
+term_store(P,CurrentTerm,VotedFor) when element(1,P#dp.db) == actordb_driver ->
+	ok = actordb_driver:term_store(P#dp.db, CurrentTerm, VotedFor);
+term_store(Db,CurrentTerm,VotedFor) when element(1,Db) == actordb_driver ->
+	ok = actordb_driver:term_store(Db, CurrentTerm, VotedFor);
+term_store(P, CurrentTerm, VotedFor) when is_list(P#dp.dbpath) ->
+	ok = actordb_driver:term_store(P#dp.dbpath, CurrentTerm, VotedFor,actordb_util:hash(P#dp.dbpath)).
+
+actor_info(P) when is_list(P#dp.dbpath) ->
+	actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath));
+actor_info(Pth) when is_list(Pth) ->
+	actordb_driver:actor_info(Pth,actordb_util:hash(Pth)).
+
 lz4_compress(Bin) ->
 	actordb_driver:lz4_compress(Bin).
 lz4_decompress(Bin,Size) ->
 	actordb_driver:lz4_decompress(Bin,Size).
 
-replicate_opts(Db,Bin,Type) ->
+replicate_opts(P,Bin,Type) when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:replicate_opts(P#dp.db,Bin,Type);
+replicate_opts(Db,Bin,Type) when element(1,Db) == actordb_driver ->
 	actordb_driver:replicate_opts(Db,Bin,Type).
 
-replicate_opts(Db,Bin) ->
+replicate_opts(P,Bin) when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:replicate_opts(P#dp.db,Bin);
+replicate_opts(Db,Bin) when element(1,Db) == actordb_driver ->
 	actordb_driver:replicate_opts(Db,Bin).
+
+replication_done(P) when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:replication_done(P#dp.db);
+replication_done(Db) when element(1,Db) == actordb_driver ->
+	actordb_driver:replication_done(Db).
 
 parse_helper(Bin,Offset) ->
 	actordb_driver:parse_helper(Bin,Offset).
@@ -52,18 +83,62 @@ tcp_connect_async(IP,Port,Bin,Pos,Type) ->
 store_prepared_table(Vers,Sqls) ->
 	actordb_driver:store_prepared_table(Vers,Sqls).
 
-rollback(Db) ->
+rollback(P) when element(1,P#dp.db) == actordb_driver ->
+	rollback(P#dp.db);
+rollback(Db) when element(1,Db) == actordb_driver ->
 	okornot(exec(Db,<<"ROLLBACK;">>)).
 
-checkpoint(Db) when element(1,Db) == connection ->
-	exec(Db,<<"PRAGMA wal_checkpoint;">>).
+checkpoint(P,Pos)  when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:checkpoint(P#dp.db,Pos);
+checkpoint(Db,Pos) when element(1,Db) == actordb_driver ->
+	actordb_driver:checkpoint(Db,Pos);
+checkpoint(#dp{db = queue} = _P, _) ->
+	ok;
+checkpoint(queue, _) ->
+	ok.
+
+checkpoint_lock(P,N)  when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:checkpoint_lock(P#dp.db,N);
+checkpoint_lock(Db,N) when element(1,Db) == actordb_driver ->
+	actordb_driver:checkpoint_lock(Db,N);
+checkpoint_lock(#dp{db = queue} = _P,_)  ->
+	ok;
+checkpoint_lock(queue,_) ->
+	ok.
+
+iterate_db(P,Iter)  when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:iterate_db(P#dp.db,Iter);
+iterate_db(Db,Iter) when element(1,Db) == actordb_driver ->
+	actordb_driver:iterate_db(Db,Iter).
+
+iterate_db(P,Term,Evnum)  when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:iterate_db(P#dp.db,Term,Evnum);
+iterate_db(Db,Term,Evnum) when element(1,Db) == actordb_driver ->
+	actordb_driver:iterate_db(Db,Term,Evnum).
+
+iterate_close(I) when element(1,I) == iter ->
+	actordb_driver:iterate_close(I).
+
+inject_page(P,Bin,Header) when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:inject_page(P#dp.db,Bin,Header);
+inject_page(Db,Bin,Header) when element(1,Db) == actordb_driver ->
+	actordb_driver:inject_page(Db,Bin,Header).
+
+fsync(P) when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:fsync(P#dp.db);
+fsync(Db) when element(1,Db) == actordb_driver ->
+	actordb_driver:fsync(Db).
 
 close(Db) ->
 	stop(Db).
 stop(undefined) ->
 	ok;
+stop(P) when element(1,P#dp.db) == actordb_driver ->
+	stop(P#dp.db);
 stop(Db) when element(1,Db) == actordb_driver ->
 	actordb_driver:close(Db),
+	ok;
+stop(_) ->
 	ok.
 
 exec(Db,Sql,read) ->

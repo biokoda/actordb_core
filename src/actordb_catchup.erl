@@ -54,7 +54,7 @@ handle_call({report,K},_,P) ->
 	ok = actordb_sqlite:exec(P#dp.db,<<"#s05;">>,[[K]],1,P#dp.evnum+1,<<>>),
 	case P#dp.evnum+1 rem 10 of
 		0 ->
-			actordb_driver:checkpoint(P#dp.db,P#dp.evnum-2);
+			actordb_sqlite:checkpoint(P#dp.db,P#dp.evnum-2);
 		_ ->
 			ok
 	end,
@@ -64,7 +64,7 @@ handle_call({synced,K},_,P) ->
 	{ok,_} = actordb_sqlite:exec(P#dp.db,<<"DELETE FROM actors WHERE actor=? AND type=?;">>,[[K]],1,P#dp.evnum+1,<<>>),
 	case P#dp.evnum+1 rem 10 of
 		0 ->
-			actordb_driver:checkpoint(P#dp.db,P#dp.evnum-2);
+			actordb_sqlite:checkpoint(P#dp.db,P#dp.evnum-2);
 		_ ->
 			ok
 	end,
@@ -132,7 +132,7 @@ code_change(_, P, _) ->
 	{ok, P}.
 init([]) ->
 	Pth = "catchup",
-	case actordb_driver:actor_info(Pth,actordb_util:hash(Pth)) of
+	case actordb_sqlite:actor_info(Pth) of
 		{_FC,{_,Evnum},_InProg,_MxPage,_AllPages,_,<<>>} ->
 			ok;
 		_ ->

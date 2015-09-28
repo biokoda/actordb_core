@@ -442,7 +442,8 @@ configfiles() ->
 			[{autoload,true},
 			{mod,actordb_schema},
 			{preload,{actordb_util,parse_cfg_schema,[]}},
-			{onload,{actordb,schema_changed,[]}}]}
+			{onload,{actordb,schema_changed,[]}}]},
+		{cluster_types,[cluster,ingest,router]}
 	].
 
 has_authentication(undefined,_,_) ->

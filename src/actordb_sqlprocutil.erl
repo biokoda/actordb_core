@@ -57,7 +57,7 @@ ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 		{state_rw,Resp},P#dp.cbmod]}).
 
 append_wal(P,Header,Bin) ->
-	actordb_driver:inject_page(P#dp.db,Bin,Header).
+	actordb_sqlite:inject_page(P,Bin,Header).
 
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	doqueue(P);
@@ -172,7 +172,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 							% Some time goes by between write and replication.
 							% We are syncing when replication is done.
 							% Another actor may already have synced and this will be a noop.
-							actordb_driver:fsync(P#dp.db);
+							actordb_sqlite:fsync(P);
 						_ ->
 							ok
 					end
@@ -180,7 +180,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 			reply(From,Res),
 			case P#dp.transactioninfo of
 				undefined ->
-					actordb_driver:replication_done(P#dp.db);
+					actordb_sqlite:replication_done(P);
 				_ ->
 					ok
 			end,
@@ -220,13 +220,13 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 							% Some time goes by between write and replication.
 							% We are syncing when replication is done.
 							% Another actor may already have synced and this will be a noop.
-							actordb_driver:fsync(P#dp.db);
+							actordb_sqlite:fsync(P);
 						_ ->
 							ok
 					end
 			end,
 			reply(P#dp.callfrom,P#dp.callres),
-			actordb_driver:replication_done(P#dp.db),
+			actordb_sqlite:replication_done(P),
 			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined,
 				force_sync = false, wasync = BD#ai{nreplies = BD#ai.nreplies + 1}})));
 		false ->
@@ -268,7 +268,7 @@ send_empty_ae(P,F) ->
 
 reopen_db(#dp{mors = master} = P) ->
 	case ok of
-		_ when P#dp.db == undefined  ->
+		_ when P#dp.db == undefined; P#dp.db == queue  ->
 			init_opendb(P);
 		_ ->
 			case actordb_sqlite:exec(P#dp.db,<<"SeLECT * FROM __adb;">>,read) of
@@ -281,23 +281,30 @@ reopen_db(#dp{mors = master} = P) ->
 	end;
 reopen_db(P) ->
 	case ok of
-		_ when P#dp.db == undefined  ->
+		_ when P#dp.db == undefined; P#dp.db == queue  ->
 			NP = init_opendb(P),
-			actordb_sqlite:replicate_opts(NP#dp.db,<<>>),
+			actordb_sqlite:replicate_opts(NP,<<>>),
 			NP;
 		_ ->
-			actordb_sqlite:replicate_opts(P#dp.db,<<>>),
+			actordb_sqlite:replicate_opts(P,<<>>),
 			P
 	end.
 
 init_opendb(P) ->
 	case P#dp.db of
-		undefined ->
+		undefined when P#dp.dbpath /= queue ->
 			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 			NP = P#dp{db = Db};
-		_ ->
+		undefined ->
+			SchemaTables = [1],
+			NP = P#dp{db = queue};
+		_ when element(1,P#dp.db) == actordb_driver ->
 			Sql = <<"select name, sql from sqlite_master where type='table';">>,
 			{ok,[[{columns,_},{rows,SchemaTables}]]} = actordb_sqlite:exec(P#dp.db,Sql),
+			NP = P;
+		_ ->
+			% If not driver, it is queue. No schema there.
+			SchemaTables = [1],
 			NP = P
 	end,
 	case SchemaTables of
@@ -309,10 +316,13 @@ init_opendb(P) ->
 			set_followers(false,NP)
 	end.
 
-read_db_state(P) ->
+read_db_state(P) when element(1,P#dp.db) == actordb_driver ->
 	{ok,[{columns,_},{rows,[_|_] = Rows}]} = actordb_sqlite:exec(P#dp.db,
 			<<"sELECT * FROM __adb;">>,read),
-	read_db_state(P,Rows).
+	read_db_state(P,Rows);
+read_db_state(P) ->
+	{Term,Evnum} = apply(P#dp.cbmod,cb_term_info,[P#dp.cbstate]),
+	read_db_state(P,[[{?SCHEMA_VERS,1},{?EVTERMI,Term},{?EVNUMI,Evnum}]]).
 read_db_state(P,Rows) ->
 	?DBG("Adb rows ~p",[Rows]),
 	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
@@ -337,7 +347,7 @@ read_db_state(P,Rows) ->
 actually_delete(P) ->
 	% -> This function should no longer get called. With updated driver actor is actually safely deleted
 	%  on first call.
-	ok = actordb_driver:wal_rewind(P#dp.db,0),
+	ok = actordb_sqlite:wal_rewind(P,0),
 	[].
 
 set_followers(HaveSchema,P) ->
@@ -356,7 +366,7 @@ set_followers(HaveSchema,P) ->
 try_wal_recover(P,F) when F#flw.file /= undefined ->
 	case F#flw.file of
 		{iter,_} ->
-			actordb_driver:iterate_close(F#flw.file);
+			actordb_sqlite:iterate_close(F#flw.file);
 		_ ->
 			ok
 	end,
@@ -371,7 +381,7 @@ try_wal_recover(P,F) ->
 	% 	Evnum ->
 	% 		Evterm = F#flw.match_term
 	% end,
-	case actordb_driver:iterate_db(P#dp.db,F#flw.match_term,F#flw.match_index) of
+	case actordb_sqlite:iterate_db(P,F#flw.match_term,F#flw.match_index) of
 		{ok,Iter2,Bin,Head,Done} ->
 			?DBG("try_wal_recover success",[]),
 			NF = F#flw{file = Iter2, pagebuf = {Bin,Head,Done}},
@@ -425,7 +435,7 @@ continue_maybe(P,F,SuccessHead) ->
 					SendResp = (catch send_wal(P,F)),
 					case F#flw.file of
 						{iter,_} ->
-							actordb_driver:iterate_close(F#flw.file);
+							actordb_sqlite:iterate_close(F#flw.file);
 						_ ->
 							ok
 					end,
@@ -444,7 +454,7 @@ continue_maybe(P,F,SuccessHead) ->
 				_ ->
 					case F#flw.file of
 						{iter,_} ->
-							actordb_driver:iterate_close(F#flw.file);
+							actordb_sqlite:iterate_close(F#flw.file);
 						_ ->
 							ok
 					end,
@@ -456,7 +466,7 @@ continue_maybe(P,F,SuccessHead) ->
 		false ->
 			case F#flw.file of
 				{iter,_} ->
-					actordb_driver:iterate_close(F#flw.file);
+					actordb_sqlite:iterate_close(F#flw.file);
 				_ ->
 					ok
 			end,
@@ -479,7 +489,7 @@ send_wal(P,F) ->
 send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 	case F#flw.pagebuf of
 		<<>> ->
-			case actordb_driver:iterate_db(P#dp.db,F#flw.file) of
+			case actordb_sqlite:iterate_db(P,F#flw.file) of
 				% {ok,Iter,<<Header:144/binary,Page/binary>>,_IsLastWal} ->
 				{ok,Iter,PageCompressed,Header,Commit} ->
 					ok;
@@ -517,11 +527,7 @@ send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 
 % Go back one entry
 rewind_wal(P) ->
-	actordb_driver:wal_rewind(P#dp.db,P#dp.evnum),
-	% case actordb_driver:wal_rewind(P#dp.db,P#dp.evnum) of
-	% 	{ok,0} ->
-	% 		P;
-	% 	{ok,_} ->
+	actordb_sqlite:wal_rewind(P,P#dp.evnum),
 	Sql = <<"SElECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
 	{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
 	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
@@ -535,9 +541,9 @@ save_term(P) ->
 store_term(P, undefined, CurrentTerm, _EN, _ET) ->
 	store_term(P, <<>>, CurrentTerm, _EN, _ET);
 store_term(#dp{db = undefined} = P, VotedFor, CurrentTerm, _EN, _ET) ->
-	ok = actordb_driver:term_store(P#dp.dbpath, CurrentTerm, VotedFor,actordb_util:hash(P#dp.dbpath));
+	ok = actordb_sqlite:term_store(P, CurrentTerm, VotedFor);
 store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->
-	ok = actordb_driver:term_store(P#dp.db, CurrentTerm, VotedFor).
+	ok = actordb_sqlite:term_store(P, CurrentTerm, VotedFor).
 
 statequeue(P) ->
 	case queue:is_empty(P#dp.statequeue) of
@@ -1169,6 +1175,8 @@ post_election_sql(P,Transaction,Copyfrom,Sql,Callfrom) when Transaction /= [], C
 
 read_num(P) ->
 	case P#dp.db of
+		queue ->
+			Db = SchemaTables = [];
 		undefined ->
 			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal);
 		Db ->
@@ -1197,7 +1205,7 @@ read_num(P) ->
 % This way if a large DB, replication space is max 10%. Or if small DB, max 5000 pages.
 % Page is 4096 bytes max, but with compression it is usually much smaller.
 checkpoint(#dp{mors = master, follower_indexes = []} = P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
-	actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3),
+	actordb_sqlite:checkpoint(P,P#dp.evnum-3),
 	P#dp{last_checkpoint = P#dp.evnum-3};
 checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 	case P#dp.mors of
@@ -1205,23 +1213,23 @@ checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 			case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.last_checkpoint andalso F#flw.next_index > 0] of
 				[] ->
 					?DBG("No followers far behind"),
-					actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3);
+					actordb_sqlite:checkpoint(P,P#dp.evnum-3);
 				_ ->
 					% One of the followers is at least 6 events behind
-					{_,_,_,MxPage,AllPages,_,_} = actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath)),
+					{_,_,_,MxPage,AllPages,_,_} = actordb_sqlite:actor_info(P),
 					{MxPages,MxFract} = actordb_conf:replication_space(),
 					Diff = AllPages - MxPage,
 					?DBG("checkpoint allpages=~p, mxpage=~p, max=~p",[AllPages,MxPage,max(MxPages,0.1*MxFract)]),
 					case Diff > max(MxPages,0.1*MxFract) of
 						true ->
-							actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3);
+							actordb_sqlite:checkpoint(P,P#dp.evnum-3);
 						false ->
 							ok
 					end
 			end;
 		slave ->
 			?DBG("Slave checkpoint"),
-			actordb_driver:checkpoint(P#dp.db,P#dp.evnum-3)
+			actordb_sqlite:checkpoint(P,P#dp.evnum-3)
 	end,
 	% This way checkpoint gets executed every 6 writes.
 	P#dp{last_checkpoint = P#dp.evnum};
@@ -1248,7 +1256,7 @@ delete_actor(P) ->
 			ok
 	end,
 	% ?DBG("Deleted from shard ~p",[P#dp.follower_indexes]),
-	ok = actordb_driver:wal_rewind(P#dp.db,0),
+	ok = actordb_sqlite:wal_rewind(P,0),
 	case P#dp.follower_indexes of
 		[] ->
 			ok;
@@ -1260,7 +1268,7 @@ delete_actor(P) ->
 	% 		{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,stop,
 	% 						[{P#dp.actorname,P#dp.actortype}]})
 	end,
-	actordb_sqlite:stop(P#dp.db).
+	actordb_sqlite:stop(P).
 	% delactorfile(P).
 empty_queue(A,Q,ReplyMsg) ->
 	case queue:is_empty(Q) of
@@ -1405,10 +1413,14 @@ parse_opts(P,[]) ->
 	Name = {P#dp.actorname,P#dp.actortype},
 	case distreg:reg(self(),Name) of
 		ok ->
-			DbPath = lists:flatten(apply(P#dp.cbmod,cb_path,
-				[P#dp.cbstate,P#dp.actorname,P#dp.actortype]))++
-				butil:encode_percent(butil:tolist(P#dp.actorname))++"."++
-				butil:encode_percent(butil:tolist(P#dp.actortype)),
+			case apply(P#dp.cbmod,cb_path,[P#dp.cbstate,P#dp.actorname,P#dp.actortype]) of
+				Pth when is_list(Pth) ->
+					DbPath = lists:flatten(Pth)++
+						butil:encode_percent(butil:tolist(P#dp.actorname))++"."++
+						butil:encode_percent(butil:tolist(P#dp.actortype));
+				DbPath ->
+					ok
+			end,
 			P#dp{dbpath = DbPath,activity = actor_start(P), netchanges = actordb_local:net_changes()};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
@@ -1498,19 +1510,21 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 dbcopy_call({reached_end,{FromPid,Ref,Evnum}},_,P) ->
 	erlang:send_after(1000,self(),check_locks),
 	?DBG("dbcopy reached_end? my=~p, in=~p",[P#dp.evnum, Evnum]),
-	?DBG("actor_info ~p",[actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath))]),
+	?DBG("actor_info ~p",[actordb_sqlite:actor_info(P)]),
 	{reply,P#dp.evnum > Evnum,P#dp{locked = butil:lists_add(#lck{pid = FromPid,ref = Ref},P#dp.locked)}};
 % Initial call on node that is destination of copy
 dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 	?DBG("start receive entire db ~p ~p",[Copyfrom,P#dp.db]),
 	case P#dp.db of
+		_ when P#dp.db == queue ->
+			Db = P#dp.db;
 		_ when element(1,P#dp.db) == actordb_driver ->
-			N = actordb_driver:wal_rewind(P#dp.db,0),
+			N = actordb_sqlite:wal_rewind(P,0),
 			?DBG("Start receive rewinding data result=~p",[N]),
 			Db = P#dp.db;
 		_ when P#dp.db == undefined ->
 			{ok,Db,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-			N = actordb_driver:wal_rewind(Db,0),
+			N = actordb_sqlite:wal_rewind(Db,0),
 			?DBG("Start receive open and rewind data result=~p",[N])
 	end,
 	% If move, split or copy actor to a new actor this must be called on master.
@@ -1590,13 +1604,13 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 
 dbcopy_start(P,Home,ActorTo) ->
 	?DBG("dbcopy_start, to=~p",[ActorTo]),
-	ok = actordb_driver:checkpoint_lock(P#dp.db,1),
+	ok = actordb_sqlite:checkpoint_lock(P,1),
 	Me = self(),
 	spawn(fun() ->
 		erlang:monitor(process,Me),
 		receive
 			{'DOWN',_Ref,_,_Me,_} ->
-				actordb_driver:checkpoint_lock(P#dp.db,0)
+				actordb_sqlite:checkpoint_lock(P,0)
 		end
 	end),
 	dbcopy(P#dp{evnum = 0, evterm = 0},Home,ActorTo,undefined,[],[],0).
@@ -1618,7 +1632,7 @@ dbcopy_do(P,Bin) ->
 	ok = rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}).
 
 dbcopy(P,Home,ActorTo,{iter,_} = Iter, BufHead, BufBin, SizeBuf) ->
-	case actordb_driver:iterate_db(P#dp.db,Iter) of
+	case actordb_sqlite:iterate_db(P,Iter) of
 		{ok,Iter1,Bin,Head,Done} when Done == 0, SizeBuf < 1024*128 ->
 			dbcopy(P,Home,ActorTo,Iter1,[Head|BufHead],[Bin|BufBin],SizeBuf+byte_size(Bin));
 		{ok,Iter1,Bin,Head,Done} when Done > 0; SizeBuf >= 1024*128 ->
@@ -1634,7 +1648,7 @@ dbcopy(P,Home,ActorTo,_F, BufHead,BufBin,SizeBuf) ->
 	still_alive(P,Home,ActorTo),
 	% Evterm/evnum is set to 0 for first loop around, then to evterm/evnum of last run.
 	% Do this as long as there are events to replicate. We have to reach the end sometime.
-	case actordb_driver:iterate_db(P#dp.db,P#dp.evterm,P#dp.evnum) of
+	case actordb_sqlite:iterate_db(P,P#dp.evterm,P#dp.evnum) of
 		{ok,Iter,Bin,Head,Done} when Done == 0 ->
 			% dbcopy_do(P,{Bin,Head}),
 			dbcopy(P,Home,ActorTo,Iter, [Head|BufHead], [Bin|BufBin],SizeBuf+byte_size(Bin));
@@ -1723,7 +1737,7 @@ dbcopy_inject(Db,[Bin|BT],[Header|HT]) ->
 dbcopy_inject(_,[],[]) ->
 	ok;
 dbcopy_inject(Db,Bin,Header) ->
-	ok = actordb_driver:inject_page(Db,Bin,Header).
+	ok = actordb_sqlite:inject_page(Db,Bin,Header).
 
 read_header([Header|_]) ->
 	read_header(Header);
@@ -1749,7 +1763,6 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 					ok = dbcopy_inject(P#dp.db,Bin,Header);
 				false when Status == wal ->
 					?DBG("Opening new at ~p",[P#dp.dbpath]),
-					% {ok,F1,_,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 					?DBG("Inject page evterm=~p evnum=~p",[Evterm,Evnum]),
 					ok = dbcopy_inject(P#dp.db,Bin,Header);
 				false when Status == done ->
@@ -1770,7 +1783,7 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 					case SchemaTables of
 						[] ->
 							?ERR("DB open after move without schema?",[]),
-							actordb_driver:wal_rewind(P#dp.db,0),
+							actordb_sqlite:wal_rewind(P,0),
 							% actordb_sqlite:move_to_trash(P#dp.fullpath),
 							exit(copynoschema);
 						_ ->
