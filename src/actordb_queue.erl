@@ -5,12 +5,15 @@
 -module(actordb_queue).
 -compile(export_all).
 -include_lib("actordb_core/include/actordb.hrl").
+-define(TYPE_EVENT,0).
+-define(TYPE_STATE,1).
+
 %
 % Implements a queue on top of actordb_sqlproc. Instead of using the sql engine, it uses
 % and append only log file, which is replicated exactly the same as sqlproc. 
 %
 
--record(st,{name}).
+-record(st,{name, fd, wmap = #{}, cursize = 0, curterm, evnum, prev_event = {0,0}}).
 
 start({Name,queue}) ->
 	start(Name,queue);
@@ -44,40 +47,38 @@ start_steal(Name,queue,Node,ShardName) ->
 
 read(_Shard, #{actor := _Actor, flags := _Flags, statements := _Sql} = _Call) ->
 	ok.
-	% BV = maps:get(bindingvals, Call, []),
-	% case actordb_schema:iskv(Type) of
-	% 	true ->
-	% 		actordb_shard:kvread(Shard,Actor,Type,{Sql,BV});
-	% 	_ ->
-	% 		read(Call)
-	% end.
-% read(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql} = Call) ->
-% 	BV = maps:get(bindingvals, Call, []),
-% 	actordb_sqlproc:read({Actor, Type},Flags,{Sql,BV},?MODULE);
-% read(#{actor:= Actor, flags := Flags, statements := Sql} = Call) ->
-% 	BV = maps:get(bindingvals, Call, []),
-% 	actordb_sqlproc:read(Actor,Flags,{Sql,BV},?MODULE).
 
-write(_Shard, #{actor := _Actor, flags := _Flags, statements := _Sql} = _Call) ->
-	ok.
-	% BV = maps:get(bindingvals, Call, []),
-	% case actordb_schema:iskv(Type) of
-	% 	true ->
-	% 		actordb_shard:kvwrite(Shard,Actor,Type,{Sql,BV});
-	% 	_ ->
-	% 		write(Call)
-	% end.
-% write(#{actor:= Actor, type:= Type, flags := Flags, statements := Sql} = Call) ->
-% 	BV = maps:get(bindingvals, Call, []),
-% 	actordb_sqlproc:write({Actor, Type},Flags,{Sql,BV},?MODULE);
-% write(#{actor:= Actor, flags := Flags, statements := Sql} = Call) ->
-% 	BV = maps:get(bindingvals, Call, []),
-% 	actordb_sqlproc:write(Actor,Flags,{Sql,BV},?MODULE).
-
+write(_Shard, #{actor := Actor, flags := Flags, statements := Sql} = _Call) ->
+	% TODO: determine wactor based on actual actor. There should be a shard tree.
+	WActor = 1,
+	actordb_sqlproc:write({WActor,queue},[create],{?MODULE,cb_write,[Actor,Sql]},?MODULE).
 
 %
 % Callbacks from actordb_sqlproc
 %
+
+% Buffer write
+cb_write(#st{wmap = Map} = S,A,Data) ->
+	case Map of
+		#{A := Positions} ->
+			ok;
+		_ ->
+			Positions = []
+	end,
+	Size = iolist_size(Data),
+	{Data,S#st{wmap = Map#{A => [{S#st.cursize,Size}|Positions]}, cursize = S#st.cursize + Size}}.
+% Write to disk
+cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S,Items,Term,Evnum) ->
+	% [?TYPE_EVENT,],
+	Body = [<<Term:64/unsigned-little, Evnum:64/unsigned-little,
+	PrevFile:64/unsigned-little,
+	PrevOffset:32/unsigned-little,
+	(erlang:system_time()):64/unsigned-little>>],
+	S#st{curterm = Term, evnum = Evnum};
+% Write replicated
+cb_write_done(S,_Evnum) ->
+	{ok,S#st{wmap = #{}, cursize = 0}}.
+
 
 
 cb_schema(_,queue,_) ->
@@ -86,7 +87,6 @@ cb_schema(_,queue,_) ->
 cb_path(_,_Name,queue) ->
 	queue.
 
-% Start or get pid of slave process for actor (executed on slave nodes in cluster)
 cb_slave_pid(Name,Type) ->
 	cb_slave_pid(Name,Type,[]).
 cb_slave_pid(Name,Type,Opts) ->
@@ -123,10 +123,7 @@ cb_redirected_call(_S,_MovedTo,_Call,queue) ->
 cb_unverified_call(_S,_Msg)  ->
 	queue.
 
-cb_write_done(_S,_Evnum) ->
-	ok.
-
-% These only get called on master
+% These only get called on leader
 cb_call(_Msg,_From,_S) ->
 	{reply,{error,uncrecognized_call}}.
 cb_cast(_Msg,_S) ->
@@ -137,8 +134,31 @@ cb_init(S,_EvNum) ->
 	S.
 
 
-% queue specific callbacks
-cb_term_info(S) ->
-	{1,1}.
+% 
+% Storage engine callbacks
+% 
+cb_actor_info(S) ->
+	% {{_FCT,LastCheck},{VoteEvTerm,VoteEvnum},_InProg,0,0,VotedCurrentTerm,<<>>} ->
+	ok.
 
+cb_term_store(S, CurrentTerm, VotedFor) ->
+	ok.
+
+cb_wal_rewind(S,Evnum) ->
+	ok.
+
+cb_replicate_opts(S, Bin, Type) ->
+	ok.
+
+cb_replicate_opts(S, Bin) ->
+	ok.
+
+cb_replication_done(S) ->
+	ok.
+
+cb_fsync(S) ->
+	ok.
+
+cb_inject_page(S,Bin,Header) ->
+	ok.
 

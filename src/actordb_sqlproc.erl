@@ -937,6 +937,11 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 % print_sqls(_,_,_) ->
 % 	ok.
 
+write_call2(#dp{db = queue, wasync = #ai{wait = Ref}} = P) ->
+	element(2,handle_info({Ref,ok},P));
+write_call2(P) ->
+	P.
+
 % Not a multiactor transaction write
 write_call1(_W,From,_CF,#dp{mors = slave} = P) ->
 	?ADBG("Redirecting write ~p from=~p, w=~p",[P#dp.masternode,From,_W]),
@@ -944,21 +949,28 @@ write_call1(_W,From,_CF,#dp{mors = slave} = P) ->
 	P#dp{wasync = #ai{}};
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
-	ComplSql = list_to_tuple([<<"#s00;">>|lists:reverse([<<"#s02;#s01;">>|Sql])]),
-	ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
-	Records = list_to_tuple([[]|lists:reverse([ADBW|W#write.records])]),
 	VarHeader = actordb_sqlprocutil:create_var_header(P),
 	CF = [batch,undefined|lists:reverse([undefined|From])],
-	?DBG("schema = ~p, SQL=~p, Recs=~p, cf=~p",[P#dp.schemavers,ComplSql, Records, CF]),
-	% print_sqls(1,ComplSql,Records),
-	Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader),
+	case P#dp.db of
+		queue ->
+			Res = make_ref(),
+			NS = actordb_queue:cb_write_exec(P#dp.cbstate,lists:reverse(Sql),P#dp.current_term, EvNum);
+		_ ->
+			NS = P#dp.cbstate,
+			ComplSql = list_to_tuple([<<"#s00;">>|lists:reverse([<<"#s02;#s01;">>|Sql])]),
+			ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
+			Records = list_to_tuple([[]|lists:reverse([ADBW|W#write.records])]),
+			?DBG("schema = ~p, SQL=~p, Recs=~p, cf=~p",[P#dp.schemavers,ComplSql, Records, CF]),
+			% print_sqls(1,ComplSql,Records),
+			Res = actordb_sqlite:exec_async(P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader)
+	end,
 	A = P#dp.wasync,
 	NWB = A#ai{wait = Res, info = W, newvers = NewVers,
 		callfrom = CF, evnum = EvNum, evterm = P#dp.current_term,
 		moved = A#ai.buffer_moved, fsync = A#ai.buffer_fsync,
 		buffer_moved = undefined, buffer_nv = undefined, buffer_fsync = false,
 		buffer = [], buffer_cf = [], buffer_recs = []},
-	P#dp{wasync = NWB, activity = actordb_local:actor_activity(P#dp.activity)};
+	write_call2(P#dp{wasync = NWB, activity = actordb_local:actor_activity(P#dp.activity), cbstate = NS});
 write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId} = W,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",[TransactionId,P#dp.transactionid,Sql1]),
@@ -1144,7 +1156,7 @@ handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference
 		% 	{noreply,P#dp{rasync = NewBD}}
 	end;
 % async write result
-handle_info({Ref,Res1}, #dp{callat = {_,_}, wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
+handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
 	?DBG("Write result ~p",[Res1]),
 	% ?DBG("Buffer=~p",[BD#ai.buffer]),
 	% ?DBG("CQ=~p",[P#dp.callqueue]),
@@ -1731,9 +1743,9 @@ init([_|_] = Opts) ->
 			case ok of
 				_ when P#dp.mors == slave ->
 					{ok,actordb_sqlprocutil:init_opendb(P#dp{current_term = VotedCurrentTerm,
-					voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm,
-					election = actordb_sqlprocutil:election_timer(Now,undefined),
-					last_checkpoint = LastCheck})};
+						voted_for = VotedFor, evnum = VoteEvnum,evterm = VoteEvTerm,
+						election = actordb_sqlprocutil:election_timer(Now,undefined),
+						last_checkpoint = LastCheck})};
 				_ when MovedToNode == undefined; RightCluster ->
 					NP = P#dp{current_term = VotedCurrentTerm,voted_for = VotedFor, evnum = VoteEvnum,
 							evterm = VoteEvTerm, last_checkpoint = LastCheck},

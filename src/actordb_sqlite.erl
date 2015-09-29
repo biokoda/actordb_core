@@ -33,11 +33,15 @@ init(Path,JournalMode,Thread) ->
 
 wal_rewind(P,Evnum) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:wal_rewind(P#dp.db,Evnum);
+wal_rewind(#dp{cbpath = queue} = P,Evnum) ->
+	actordb_queue:cb_wal_rewind(P#dp.cbstate,Evnum);
 wal_rewind(Db,Evnum) when element(1,Db) == actordb_driver ->
 	actordb_driver:wal_rewind(Db,Evnum).
 
 term_store(P,CurrentTerm,VotedFor) when element(1,P#dp.db) == actordb_driver ->
 	ok = actordb_driver:term_store(P#dp.db, CurrentTerm, VotedFor);
+actor_info(#dp{dbpath = queue} = P) ->
+	actordb_queue:cb_term_store(P#dp.cbstate, CurrentTerm, VotedFor);
 term_store(Db,CurrentTerm,VotedFor) when element(1,Db) == actordb_driver ->
 	ok = actordb_driver:term_store(Db, CurrentTerm, VotedFor);
 term_store(P, CurrentTerm, VotedFor) when is_list(P#dp.dbpath) ->
@@ -45,6 +49,8 @@ term_store(P, CurrentTerm, VotedFor) when is_list(P#dp.dbpath) ->
 
 actor_info(P) when is_list(P#dp.dbpath) ->
 	actordb_driver:actor_info(P#dp.dbpath,actordb_util:hash(P#dp.dbpath));
+actor_info(#dp{dbpath = queue} = P) ->
+	actordb_queue:cb_actor_info(P#dp.cbstate);
 actor_info(Pth) when is_list(Pth) ->
 	actordb_driver:actor_info(Pth,actordb_util:hash(Pth)).
 
@@ -55,16 +61,22 @@ lz4_decompress(Bin,Size) ->
 
 replicate_opts(P,Bin,Type) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:replicate_opts(P#dp.db,Bin,Type);
+replicate_opts(#dp{dbpath = queue} = P, Bin, Type) ->
+	actordb_queue:cb_replicate_opts(P#dp.cbstate, Bin, Type);
 replicate_opts(Db,Bin,Type) when element(1,Db) == actordb_driver ->
 	actordb_driver:replicate_opts(Db,Bin,Type).
 
 replicate_opts(P,Bin) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:replicate_opts(P#dp.db,Bin);
+replicate_opts(#dp{dbpath = queue} = P, Bin) ->
+	actordb_queue:cb_replicate_opts(P#dp.cbstate, Bin);
 replicate_opts(Db,Bin) when element(1,Db) == actordb_driver ->
 	actordb_driver:replicate_opts(Db,Bin).
 
 replication_done(P) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:replication_done(P#dp.db);
+replication_done(#dp{dbpath = queue} = P) ->
+	actordb_queue:cb_replication_done(P#dp.cbstate);
 replication_done(Db) when element(1,Db) == actordb_driver ->
 	actordb_driver:replication_done(Db).
 
@@ -121,11 +133,15 @@ iterate_close(I) when element(1,I) == iter ->
 
 inject_page(P,Bin,Header) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:inject_page(P#dp.db,Bin,Header);
+inject_page(#dp{dbpath = queue} = P, Bin, Header) ->
+	actordb_queue:cb_inject_page(P#dp.cbstate,Bin,Header);
 inject_page(Db,Bin,Header) when element(1,Db) == actordb_driver ->
 	actordb_driver:inject_page(Db,Bin,Header).
 
 fsync(P) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:fsync(P#dp.db);
+fsync(#dp{dbpath = queue} = P) ->
+	actordb_queue:cb_fsync(P#dp.cbstate);
 fsync(Db) when element(1,Db) == actordb_driver ->
 	actordb_driver:fsync(Db).
 

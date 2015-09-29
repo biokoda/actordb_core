@@ -61,6 +61,12 @@ init([]) ->
 			 permanent,
 			 100,
 			 worker,
-			[actordb_catchup]}
+			[actordb_catchup]},
+		{actordb_queue_srv,
+			{actordb_queue_srv, start, []},
+			 permanent,
+			 100,
+			 worker,
+			[actordb_queue_srv]}
 			]
 	}}.

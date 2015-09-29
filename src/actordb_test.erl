@@ -180,11 +180,10 @@ wal_test(Writers) ->
 
 writer(E) ->
 	{ok,F} = file:open("logfile",[raw,binary,write,read]),
-	Bytes = iolist_to_binary([butil:iolist_join(lists:duplicate(10,iolist_to_binary(pid_to_list(self()))),"|"),"\n"]),
+	Bytes = iolist_to_binary([butil:iolist_join(lists:duplicate(100,iolist_to_binary(pid_to_list(self()))),"|"),"\n"]),
 	writer(E,Bytes,F).
 writer(E,B,F) ->
 	Offset = ets:update_counter(E,offset,{2,byte_size(B)}),
-	% {ok,_} = file:position(F,Offset-byte_size(B)),
 	prim_file:pwrite(F,Offset-byte_size(B),B),
 	ets:update_counter(E,writes,{2,1}),
 	writer(E,B,F).

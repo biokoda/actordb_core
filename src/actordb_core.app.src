@@ -7,7 +7,9 @@
   {vsn, "0.10.3"},
   {modules, [
             ]},
-  {registered, [actordb_sup,actordb_shardmngr,actordb_shardmvr,actordb_local,actordb_catchup,actordb_backpressure,actordb_events]},
+  {registered, [actordb_sup,actordb_shardmngr,actordb_shardmvr,actordb_local,
+    actordb_catchup,actordb_backpressure,actordb_events, actordb_queue_srv,actordb_dummy,actordb_latency,
+    actordb_idgen]},
   {mod, {actordb_core, []}},
   {applications, [kernel,stdlib,lager,folsom,sasl,os_mon,yamerl,thrift]},
   {start_phases,[]}

@@ -26,7 +26,6 @@ latency() ->
 set_run_queue(Q) ->
 	butil:ds_add(run_queue,Q,latency).
 
-
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
 

@@ -106,7 +106,8 @@ delval(undefined,_) ->
 %  more than 32MB of queries is waiting to be processed
 %  turn on bp.
 is_enabled() ->
-	is_enabled(butil:ds_val(global_size,bpcounters),butil:ds_val(global_count,bpcounters)).
+	L = ets:tab2list(bpcounters),
+	is_enabled(butil:ds_val(global_size,L),butil:ds_val(global_count,L)).
 is_enabled(GSize,GCount) ->
 	GSize > 1024*1024*32 orelse GCount > 2000.
 
@@ -115,19 +116,19 @@ sleep_caller(_P) ->
 		undefined ->
 			% Spawn backpressure_proc and wait for it to die
 			{Pid,_} = spawn_monitor(fun() ->
-								case catch register(backpressure_proc,self()) of
-									true ->
-										?AINF("Backpressure applied."),
-										backpressure_proc();
-									_ ->
-										% Proc lost the race. Simply link to the real proc so that they die together.
-										link(whereis(backpressure_proc)),
-										receive
-											ok ->
-												ok
-										end
-								end
-								end);
+				case catch register(backpressure_proc,self()) of
+					true ->
+						?AINF("Backpressure applied."),
+						backpressure_proc();
+					_ ->
+						% Proc lost the race. Simply link to the real proc so that they die together.
+						link(whereis(backpressure_proc)),
+						receive
+							ok ->
+								ok
+						end
+				end
+				end);
 		Pid ->
 			erlang:monitor(process,Pid)
 	end,

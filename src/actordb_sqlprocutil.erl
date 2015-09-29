@@ -320,8 +320,8 @@ read_db_state(P) when element(1,P#dp.db) == actordb_driver ->
 	{ok,[{columns,_},{rows,[_|_] = Rows}]} = actordb_sqlite:exec(P#dp.db,
 			<<"sELECT * FROM __adb;">>,read),
 	read_db_state(P,Rows);
-read_db_state(P) ->
-	{Term,Evnum} = apply(P#dp.cbmod,cb_term_info,[P#dp.cbstate]),
+read_db_state(#dp{db = queue} = P) ->
+	{Term,Evnum} = actordb_queue:cb_actor_info(P#dp.cbstate),
 	read_db_state(P,[[{?SCHEMA_VERS,1},{?EVTERMI,Term},{?EVNUMI,Evnum}]]).
 read_db_state(P,Rows) ->
 	?DBG("Adb rows ~p",[Rows]),
