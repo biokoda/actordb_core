@@ -321,7 +321,8 @@ read_db_state(P) when element(1,P#dp.db) == actordb_driver ->
 			<<"sELECT * FROM __adb;">>,read),
 	read_db_state(P,Rows);
 read_db_state(#dp{db = queue} = P) ->
-	{Term,Evnum} = actordb_queue:cb_actor_info(P#dp.cbstate),
+	{_,_,_InProg,_MxPage,_AllPages,Term,Evnum}
+		= actordb_queue:cb_actor_info(P#dp.cbstate),
 	read_db_state(P,[[{?SCHEMA_VERS,1},{?EVTERMI,Term},{?EVNUMI,Evnum}]]).
 read_db_state(P,Rows) ->
 	?DBG("Adb rows ~p",[Rows]),
@@ -536,14 +537,17 @@ rewind_wal(P) ->
 	% end.
 
 save_term(P) ->
-	store_term(P,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm),
-	P.
+	store_term(P,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm).
 store_term(P, undefined, CurrentTerm, _EN, _ET) ->
 	store_term(P, <<>>, CurrentTerm, _EN, _ET);
+store_term(#dp{dbpath = queue} = P, VotedFor, CurrentTerm, _EN,_ET) ->
+	{ok,NS} = actordb_queue:cb_term_store(P#dp.cbstate, CurrentTerm, VotedFor),
+	P#dp{cbstate = NS};
 store_term(#dp{db = undefined} = P, VotedFor, CurrentTerm, _EN, _ET) ->
-	ok = actordb_sqlite:term_store(P, CurrentTerm, VotedFor);
-store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->
-	ok = actordb_sqlite:term_store(P, CurrentTerm, VotedFor).
+	actordb_sqlite:term_store(P, CurrentTerm, VotedFor),
+	P.
+% store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->
+% 	actordb_sqlite:term_store(P, CurrentTerm, VotedFor).
 
 statequeue(P) ->
 	case queue:is_empty(P#dp.statequeue) of

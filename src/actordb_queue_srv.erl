@@ -5,7 +5,7 @@
 -behaviour(gen_server).
 -export([print_info/0, start/0, stop/0, init/1, handle_call/3, 
 		 handle_cast/2, handle_info/2, terminate/2, code_change/3]).
--export([list_files/0]).
+-export([list_files/0, get_chunk/1]).
 -include_lib("actordb_core/include/actordb.hrl").
 % -compile(export_all).
 -define(GSTATE,queueets).
@@ -22,13 +22,18 @@ list_files() ->
 		end
 	end,L)).
 
+get_chunk(Size) ->
+	L = ets:tab2list(?GSTATE),
+	Offset = ets:update_counter(?GSTATE,offset,{2,Size}),
+	{butil:ds_val(index,L),Offset - Size}.
+
+
 start() ->
 	gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 stop() ->
 	gen_server:call(?MODULE, stop).
 print_info() ->
 	gen_server:call(?MODULE, print_info).
-
 
 
 -record(dp,{}).

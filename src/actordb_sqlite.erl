@@ -40,8 +40,6 @@ wal_rewind(Db,Evnum) when element(1,Db) == actordb_driver ->
 
 term_store(P,CurrentTerm,VotedFor) when element(1,P#dp.db) == actordb_driver ->
 	ok = actordb_driver:term_store(P#dp.db, CurrentTerm, VotedFor);
-actor_info(#dp{dbpath = queue} = P) ->
-	actordb_queue:cb_term_store(P#dp.cbstate, CurrentTerm, VotedFor);
 term_store(Db,CurrentTerm,VotedFor) when element(1,Db) == actordb_driver ->
 	ok = actordb_driver:term_store(Db, CurrentTerm, VotedFor);
 term_store(P, CurrentTerm, VotedFor) when is_list(P#dp.dbpath) ->

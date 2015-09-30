@@ -954,7 +954,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	case P#dp.db of
 		queue ->
 			Res = make_ref(),
-			NS = actordb_queue:cb_write_exec(P#dp.cbstate,lists:reverse(Sql),P#dp.current_term, EvNum);
+			{ok,NS} = actordb_queue:cb_write_exec(P#dp.cbstate,lists:reverse(Sql),P#dp.current_term, EvNum);
 		_ ->
 			NS = P#dp.cbstate,
 			ComplSql = list_to_tuple([<<"#s00;">>|lists:reverse([<<"#s02;#s01;">>|Sql])]),
