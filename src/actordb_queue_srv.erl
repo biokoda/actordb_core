@@ -43,7 +43,7 @@ print_info() ->
 
 
 % Queues: [{QueueIndex,FileIndex}]
--record(dp,{init_from = 0, queues = []}).
+-record(dp,{init_from = -1, queues = []}).
 
 handle_call({init_from,Q},_,P) ->
 	case lists:keyfind(Q,1,P#dp.queues) of
@@ -92,7 +92,7 @@ init([]) ->
 					butil:ds_add({index,Latest},?GSTATE)
 			end;
 		_ ->
-			InitFrom = 0
+			InitFrom = -1
 	end,
 	{ok, #dp{init_from = InitFrom}}.
 
