@@ -178,7 +178,7 @@ qwriter(E,N) ->
 	Bytes = iolist_to_binary([butil:iolist_join(lists:duplicate(100,iolist_to_binary(pid_to_list(self()))),"|"),"\n"]),
 	qwriter(E,N,Bytes).
 qwriter(E,N,Bytes) ->
-	actordb_queue:write(1,#{actor => N, flags => [], statements => Bytes}),
+	actordb_queue:write(N,#{actor => N, flags => [], statements => Bytes}),
 	ets:update_counter(E,writes,{2,1}),
 	qwriter(E,N,Bytes).
 

@@ -102,6 +102,7 @@ cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S,Items,Term,Evnum) ->
 		(S#st.cursize+byte_size(EvHeader)):32/unsigned-little>>,
 	EncSize = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+4*2):32/unsigned-little>>,
 	Header = [<<(erlang:crc32([HeadWithoutCrc,EvHeader,Items,EncSize])):32/unsigned-little>>,HeadWithoutCrc],
+
 	% 
 	% TODO: send to followers
 	% 
@@ -254,6 +255,8 @@ find_event1(S,F,Position) ->
 						MapSize:24/unsigned-little>>} = file:pread(F,Position-Size+?HEAD_SIZE, ?EV_HEAD_SIZE),
 					{ok, MapBin} = file:pread(F,Position-Size+?HEAD_SIZE+?EV_HEAD_SIZE, MapSize),
 					#{vi := {VotedForTerm,VotedFor}} = binary_to_term(MapBin),
+					?ADBG("ev=~p, qindex=~p, pf=~p, poff=~p, term=~p, evnum=~p, time=~p",
+						[event,QIndex,PrevFile,PrevOffset,Term,Evnum,_Time]),
 					S#st{prev_event = {Position,0}, voted_for = VotedFor, 
 						voted_for_term = VotedForTerm, curterm = Term, evnum = Evnum};
 				true when EvType == ?TYPE_STATE ->
@@ -262,6 +265,7 @@ find_event1(S,F,Position) ->
 					S#st{prev_event = {Position,0}, voted_for = VotedFor, voted_for_term = VotedForTerm,
 						curterm = CurTerm, evnum = Evnum};
 				false ->
+					?ADBG("Wrong index, me=~p, it=~p, position=~p",[S#st.name, QIndex,Position]),
 					find_event1(S,F,Position-Size)
 			end;
 		_ ->
@@ -292,15 +296,3 @@ print(F) ->
 			io:format("~p~n",[_R]),
 			file:close(F)
 	end.
-
-
-% HEAD = <<crc:32, 
-%          type:8,
-%          queue_actor_id:16, 
-%          prev_file:64,        % file of previous event, either current index or prev
-%          prev_file_offset:32, % file offset of previous event
-%          size:32>>
-
-% snaphost    -> [HEAD, term_to_binary({VotedForTerm,VotedFor, CurTerm, CurEvnum}),TAIL] 
-% replevent   -> [HEAD, term:64, evnum:64, time:64, map_size:24, event_map, [ev1data,ev2data], TAIL]
-%                event_map = [Size:32,term_to_binary(#{actorname => [{pos1,size1},{pos2,size2}]})]

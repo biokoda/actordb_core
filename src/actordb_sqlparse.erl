@@ -977,6 +977,8 @@ is_write(Bin) ->
 		% If you write sql like a moron then you get to these slow parts.
 		<<C,R,E,A,T,E," ",_/binary>> when ?C(C) andalso ?R(R) andalso ?E(E) andalso ?A(A) andalso ?T(T) ->
 			true;
+		<<S,E,L,E1,C,T," ",_/binary>> when ?S(S) andalso ?E(E) andalso ?L(L) andalso ?E(E1) andalso ?C(C) andalso ?T(T) ->
+			true;
 		<<I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
 			true;
 		<<"_",I,N,S,E,R,T," ",_/binary>> when ?I(I) andalso  ?N(N) andalso ?S(S) andalso ?E(E) andalso ?R(R) andalso ?T(T) ->
