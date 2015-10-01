@@ -100,15 +100,15 @@ cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S,Items,Term,Evnum) ->
 		(byte_size(Map)):24/unsigned-little, Map/binary>>,
 	HeadWithoutCrc = <<?TYPE_EVENT,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
 		(S#st.cursize+byte_size(EvHeader)):32/unsigned-little>>,
-	EncSize = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+4*2):32/unsigned-little>>,
-	Header = [<<(erlang:crc32([HeadWithoutCrc,EvHeader,Items,EncSize])):32/unsigned-little>>,HeadWithoutCrc],
+	TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+4*2):32/unsigned-little>>,
+	Header = [<<(erlang:crc32([HeadWithoutCrc,EvHeader,Items,TAIL])):32/unsigned-little>>,HeadWithoutCrc],
 
 	% 
 	% TODO: send to followers
 	% 
 	write_to_log(S#st{curterm = Term, evnum = Evnum, cursize = 0, wmap = #{}}, 
-		S#st.cursize+byte_size(EvHeader)+iolist_size(Header)+byte_size(EncSize), 
-		[Header, EvHeader,Items,EncSize]).
+		S#st.cursize+byte_size(EvHeader)+iolist_size(Header)+byte_size(TAIL), 
+		[Header, EvHeader,Items,TAIL]).
 % Write replicated
 cb_write_done(S,_Evnum) ->
 	{ok,S}.
@@ -199,6 +199,15 @@ cb_init_engine(S) ->
 % Storage engine callbacks
 % 
 
+cb_inject_page(#st{prev_event = {PrevFile,PrevOffset}} = S,Bin,Header) ->
+	<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> = Header,
+
+	HeadWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
+		% -4 because Bin also contains TAIL
+		(byte_size(Bin-4)):32/unsigned-little>>,
+	Header = [<<(erlang:crc32([HeadWithoutCrc,Bin])):32/unsigned-little>>,HeadWithoutCrc],
+	write_to_log(S#st{curterm = Evterm, evnum = Evnum},byte_size(Bin)+iolist_size(Header),[Header,Bin]).
+
 % Called on open queue. Regardless if leader/follower (before that is established).
 cb_actor_info(#st{evnum = undefined} = S) ->
 	undefined;
@@ -209,9 +218,9 @@ cb_term_store(#st{prev_event = {PrevFile,PrevOffset}} = S, CurrentTerm, VotedFor
 	Bin = term_to_binary({CurrentTerm,VotedFor,S#st.curterm,S#st.evnum}),
 	HeaderWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
 		(byte_size(Bin)):32/unsigned-little>>,
-	EncSize = <<(byte_size(HeaderWithoutCrc)+byte_size(Bin)+4*2):32/unsigned-little>>,
+	TAIL = <<(byte_size(HeaderWithoutCrc)+byte_size(Bin)+4*2):32/unsigned-little>>,
 
-	ToWrite = [<<(erlang:crc32([HeaderWithoutCrc,Bin,EncSize])):32/unsigned-little>>,HeaderWithoutCrc,Bin,EncSize],
+	ToWrite = [<<(erlang:crc32([HeaderWithoutCrc,Bin,TAIL])):32/unsigned-little>>,HeaderWithoutCrc,Bin,TAIL],
 	write_to_log(S#st{voted_for_term = CurrentTerm, voted_for = VotedFor}, iolist_size(ToWrite), ToWrite).
 
 cb_wal_rewind(S,Evnum) ->
@@ -227,9 +236,6 @@ cb_replication_done(S) ->
 	ok.
 
 cb_fsync(_S) ->
-	ok.
-
-cb_inject_page(S,Bin,Header) ->
 	ok.
 
 % Make sure we are not bootstrapping from log files generated this session. This queue actor
@@ -273,7 +279,7 @@ find_event1(S,F,Position) ->
 					S#st{prev_event = {Position,0}, voted_for = VotedFor, voted_for_term = VotedForTerm,
 						curterm = CurTerm, evnum = Evnum};
 				false ->
-					?ADBG("Wrong index, me=~p, it=~p, position=~p",[S#st.name, QIndex,Position]),
+					?ADBG("Skipping index, me=~p, it=~p, position=~p",[S#st.name, QIndex,Position]),
 					find_event1(S,F,Position-Size)
 			end;
 		_ ->

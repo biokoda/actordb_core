@@ -59,6 +59,8 @@ ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 	bkdcore_rpc:cast(LeaderNode,{actordb_sqlproc,call,[{P#dp.actorname,P#dp.actortype},[nostart],
 		{state_rw,Resp},P#dp.cbmod]}).
 
+append_wal(#dp{db = queue} = P,Header,Bin) ->
+	actordb_queue:cb_inject_page(P#dp.cbstate,Header,Bin);
 append_wal(P,Header,Bin) ->
 	actordb_sqlite:inject_page(P,Bin,Header).
 
