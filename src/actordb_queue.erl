@@ -147,7 +147,7 @@ cb_slave_pid(Name,Type,Opts) ->
 	end.
 
 cb_candie(_Mors,_Name,queue,_S) ->
-	false.
+	never.
 cb_checkmoved(_Name,queue) ->
 	undefined.
 
