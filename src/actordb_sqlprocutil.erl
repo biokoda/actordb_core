@@ -32,6 +32,9 @@ static_sqls() ->
 
 reply(undefined,_Msg) ->
 	ok;
+reply([batch|From],ok) ->
+	[reply(F,ok) || F <- From];
+	% reply_tuple(From,1,Msg);
 reply([batch|From],{ok,Msg}) ->
 	reply_tuple(From,1,Msg);
 reply([batch|From],{error,Msg}) ->
@@ -296,7 +299,7 @@ init_opendb(P) ->
 			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
 			NP = P#dp{db = Db};
 		undefined ->
-			SchemaTables = [1],
+			SchemaTables = [ok || actordb_queue:cb_actor_info(P#dp.cbstate) /= undefined],
 			NP = P#dp{db = queue};
 		_ when element(1,P#dp.db) == actordb_driver ->
 			Sql = <<"select name, sql from sqlite_master where type='table';">>,
@@ -304,7 +307,7 @@ init_opendb(P) ->
 			NP = P;
 		_ ->
 			% If not driver, it is queue. No schema there.
-			SchemaTables = [1],
+			SchemaTables = [ok || actordb_queue:cb_actor_info(P#dp.cbstate) /= undefined],
 			NP = P
 	end,
 	case SchemaTables of
@@ -543,7 +546,7 @@ store_term(P, undefined, CurrentTerm, _EN, _ET) ->
 store_term(#dp{dbpath = queue} = P, VotedFor, CurrentTerm, _EN,_ET) ->
 	{ok,NS} = actordb_queue:cb_term_store(P#dp.cbstate, CurrentTerm, VotedFor),
 	P#dp{cbstate = NS};
-store_term(#dp{db = undefined} = P, VotedFor, CurrentTerm, _EN, _ET) ->
+store_term(P, VotedFor, CurrentTerm, _EN, _ET) ->
 	actordb_sqlite:term_store(P, CurrentTerm, VotedFor),
 	P.
 % store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->

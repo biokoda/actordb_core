@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1]).
+-export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
@@ -156,6 +156,31 @@ loop1(N) ->
 	% term_to_binary({self(),{appendentries_response,12084,<<"asdlhf">>,aasdf,1,2,3,5}},[compressed,{minor_version,1}]),
 	loop1(N-1).
 
+q_test(Writers) ->
+	E = ets:new(walets,[set,public,{write_concurrency,true}]),
+	ets:insert(E,{writes,0}),
+	% Faster if workers are bound to schedulers.
+	SchOnline = erlang:system_info(schedulers_online),
+	Pids = [spawn_opt(fun() -> qwriter(E,N) end, [{scheduler, N rem SchOnline}]) || N <- lists:seq(1,Writers)],
+	% Pids = [spawn(fun() -> writer(E) end) || _ <- lists:seq(1,Writers)],
+	receive
+		{'DOWN',_Monitor,_,_PID,Reason} ->
+			exit(Reason)
+	after 10000 ->
+		ok
+	end,
+	[exit(P,stop) || P <- Pids],
+	io:format("writes=~p~n",[butil:ds_val(writes,E)]),
+	ok.
+
+
+qwriter(E,N) ->
+	Bytes = iolist_to_binary([butil:iolist_join(lists:duplicate(100,iolist_to_binary(pid_to_list(self()))),"|"),"\n"]),
+	qwriter(E,N,Bytes).
+qwriter(E,N,Bytes) ->
+	actordb_queue:write(1,#{actor => N, flags => [], statements => Bytes}),
+	ets:update_counter(E,writes,{2,1}),
+	qwriter(E,N,Bytes).
 
 % many writers to a single log file.
 wal_test(Writers) ->

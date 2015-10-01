@@ -33,7 +33,7 @@ init(Path,JournalMode,Thread) ->
 
 wal_rewind(P,Evnum) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:wal_rewind(P#dp.db,Evnum);
-wal_rewind(#dp{cbpath = queue} = P,Evnum) ->
+wal_rewind(#dp{dbpath = queue} = P,Evnum) ->
 	actordb_queue:cb_wal_rewind(P#dp.cbstate,Evnum);
 wal_rewind(Db,Evnum) when element(1,Db) == actordb_driver ->
 	actordb_driver:wal_rewind(Db,Evnum).

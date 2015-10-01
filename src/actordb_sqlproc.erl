@@ -950,13 +950,14 @@ write_call1(_W,From,_CF,#dp{mors = slave} = P) ->
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	VarHeader = actordb_sqlprocutil:create_var_header(P),
-	CF = [batch,undefined|lists:reverse([undefined|From])],
 	case P#dp.db of
 		queue ->
 			Res = make_ref(),
+			CF = [batch,lists:reverse(From)],
 			{ok,NS} = actordb_queue:cb_write_exec(P#dp.cbstate,lists:reverse(Sql),P#dp.current_term, EvNum);
 		_ ->
 			NS = P#dp.cbstate,
+			CF = [batch,undefined|lists:reverse([undefined|From])],
 			ComplSql = list_to_tuple([<<"#s00;">>|lists:reverse([<<"#s02;#s01;">>|Sql])]),
 			ADBW = [[[?EVNUMI,butil:tobin(EvNum)],[?EVTERMI,butil:tobin(P#dp.current_term)]]],
 			Records = list_to_tuple([[]|lists:reverse([ADBW|W#write.records])]),
@@ -1164,6 +1165,7 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 	From = BD#ai.callfrom,
 	EvNum = BD#ai.evnum,
 	EvTerm = BD#ai.evterm,
+	% ?DBG("Res1=~p, Callfrom=~p",[Res,From]),
 	case BD#ai.newvers of
 		undefined ->
 			NewVers = P#dp.schemavers;
