@@ -120,6 +120,7 @@ write_to_log(S,Size,Data) ->
 			Fd = S#st.fd;
 		_ ->
 			file:close(S#st.fd),
+			actordb_queue_srv:moved_to(S#st.name,FileIndex),
 			{ok,Fd} = file:open(actordb_conf:db_path()++"/q."++butil:tolist(FileIndex),[write,read,binary,raw])
 	end,
 	ok = prim_file:pwrite(Fd,Offset,Data),
@@ -190,7 +191,8 @@ cb_actor_info(#st{evnum = undefined} = S) ->
 		[] ->
 			undefined;
 		L1 ->
-			case find_event(S,lists:reverse(L1)) of
+			InitFrom = actordb_queue_srv:init_from(S#st.name),
+			case find_event(S,InitFrom,lists:reverse(L1)) of
 				false ->
 					undefined;
 				{ok,NS} ->
@@ -227,8 +229,9 @@ cb_fsync(_S) ->
 cb_inject_page(S,Bin,Header) ->
 	ok.
 
-
-find_event(S,[{Index,Nm}|T]) ->
+% Make sure we are not bootstrapping from log files generated this session. This queue actor
+% can not be in there.
+find_event(S,InitFrom,[{Index,Nm}|T]) when Index =< InitFrom ->
 	{ok,F} = file:open(Nm,[read,raw,binary]),
 	{ok,FSize} = file:position(F,eof),
 	R = find_event1(S,F,FSize),
@@ -237,9 +240,11 @@ find_event(S,[{Index,Nm}|T]) ->
 		{ok,#st{prev_event = {Position,_}} = NS} ->
 			{ok,NS#st{prev_event = {Position, Index}}};
 		_ ->
-			find_event(S,T)
+			find_event(S,InitFrom,T)
 	end;
-find_event(S,[]) ->
+find_event(S,InitFrom,[_|T]) ->
+	find_event(S,InitFrom,T);
+find_event(S,_,[]) ->
 	false.
 
 % Move from eof to begin, find first event for this queue index.
