@@ -824,3 +824,5 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	set_global_state(actordb_conf:node_name(),State),
 	{ok,S#st{evnum = Evnum, waiting = false}}.
 
+cb_init_engine(S) ->
+	S.

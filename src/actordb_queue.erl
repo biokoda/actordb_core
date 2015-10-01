@@ -179,6 +179,21 @@ cb_info(_Msg,_S) ->
 cb_init(_S,_EvNum) ->
 	ok.
 
+%  Always called on actor start before leader/follower established.
+cb_init_engine(S) ->
+	case actordb_queue_srv:list_files() of
+		[] ->
+			S;
+		L1 ->
+			InitFrom = actordb_queue_srv:init_from(S#st.name),
+			case find_event(S,InitFrom,lists:reverse(L1)) of
+				false ->
+					S;
+				{ok,NS} ->
+					NS
+			end
+	end.
+
 
 % 
 % Storage engine callbacks
@@ -186,19 +201,7 @@ cb_init(_S,_EvNum) ->
 
 % Called on open queue. Regardless if leader/follower (before that is established).
 cb_actor_info(#st{evnum = undefined} = S) ->
-	% Establish state.
-	case actordb_queue_srv:list_files() of
-		[] ->
-			undefined;
-		L1 ->
-			InitFrom = actordb_queue_srv:init_from(S#st.name),
-			case find_event(S,InitFrom,lists:reverse(L1)) of
-				false ->
-					undefined;
-				{ok,NS} ->
-					cb_actor_info(NS)
-			end
-	end;
+	undefined;
 cb_actor_info(S) ->
 	{{0,0},{S#st.curterm,S#st.evnum},{0,0},0,0,S#st.voted_for_term,S#st.voted_for}.
 

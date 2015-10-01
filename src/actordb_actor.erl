@@ -170,3 +170,6 @@ cb_init(S,EvNum) ->
 		_ ->
 			ok
 	end.
+
+cb_init_engine(S) ->
+	S.

@@ -1428,7 +1428,8 @@ parse_opts(P,[]) ->
 				DbPath ->
 					ok
 			end,
-			P#dp{dbpath = DbPath,activity = actor_start(P), netchanges = actordb_local:net_changes()};
+			P#dp{dbpath = DbPath, activity = actor_start(P), 
+				netchanges = actordb_local:net_changes(), cbstate = apply(P#dp.cbmod,cb_init_engine,[P#dp.cbstate])};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.
