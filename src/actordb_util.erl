@@ -49,13 +49,17 @@ wait_for_startup(Type,Who,N) ->
 tunnel_bin(Pid,<<>>) ->
 	Pid;
 tunnel_bin(Pid,<<LenBin:16/unsigned,Bin:LenBin/binary>>) ->
+	131 = binary:first(Bin),
 	{Mod,Param} = binary_to_term(Bin),
 	apply(Mod,tunnel_callback,Param),
+	Pid;
+tunnel_bin(Pid,<<LenBin:24/unsigned,Bin:LenBin/binary>>) ->
+	Pid ! {continue,Bin},
 	Pid;
 tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 		LenVarPrefix:16/unsigned,VarPrefix:LenVarPrefix/binary,
 		LenHeader,Header:LenHeader/binary,
-		LenPage:16,Page:LenPage/binary>>) ->
+		LenPage:16/unsigned,Rem/binary>>) ->
 	{Cb,Actor,Type} = binary_to_term(FixedPrefix),
 	case VarPrefix of
 		<<>> ->
@@ -95,16 +99,31 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 			end,
 			PidOut ! {start,Cb,Actor,Type,VarPrefix}
 	end,
-	PidOut ! {call_slave,Cb,Actor,Type,Header,Page},
+	case Rem of
+		<<Page:LenPage/binary>> ->
+			PidOut ! {call_slave,Cb,Actor,Type,Header,Page};
+		<<Len,PagePart/binary>> ->
+			EntireLen = (LenPage bsl 8) + Len,
+			case EntireLen > byte_size(PagePart) of
+				true ->
+					PidOut ! {call_slave,Cb,Actor,Type,Header,EntireLen,PagePart};
+				false ->
+					PidOut ! {call_slave,Cb,Actor,Type,Header,PagePart}
+			end
+	end,
 	PidOut;
 tunnel_bin(Pid,Bin) ->
 	?AERR("Tunnel invalid data ~p",[Bin]),
 	Pid.
 
+-record(astr,{apid, count, actor, type, entire_len = 0, received = 0, buffer = [], header, cb}).
+
 actor_ae_stream(ActorPid,Count,AD,TD) ->
+	actor_ae_stream(#astr{apid = ActorPid, count = Count, actor = AD, type = TD}).
+actor_ae_stream(P) ->
 	receive
 		{start,Cb,Actor,Type,VarPrefix} ->
-			check_actor(AD,TD,Actor,Type),
+			check_actor(P#astr.actor,P#astr.type,Actor,Type),
 			?ADBG("AE stream proc start ~p.~p",[Actor,Type]),
 			case binary_to_term(VarPrefix) of
 				{Term,Leader,PrevEvnum,PrevTerm,CallCount} ->
@@ -135,7 +154,7 @@ actor_ae_stream(ActorPid,Count,AD,TD) ->
 							ok
 					end,
 					?ADBG("AE stream proc ok! ~p.~p",[Actor,Type]),
-					actor_ae_stream(ActorPid,Count1,AD,TD);
+					actor_ae_stream(P#astr{count = Count1});
 				_ ->
 					?ADBG("AE die"),
 					% Die off if we should not continue
@@ -143,16 +162,27 @@ actor_ae_stream(ActorPid,Count,AD,TD) ->
 					%  on next ae start.
 					ok
 			end;
-		{'DOWN',_,_,ActorPid,_} ->
+		{'DOWN',_,_,ActorPid,_} when P#astr.apid == ActorPid ->
 			ok;
+		{call_slave,Cb,Actor,Type,Header, EntireLen, PagePart} when EntireLen > PagePart ->
+			check_actor(P#astr.actor,P#astr.type,Actor,Type),
+			actor_ae_stream(P#astr{cb = Cb, entire_len = EntireLen, received = byte_size(PagePart), buffer = [PagePart], header = Header});
+		{continue,Bin} ->
+			case byte_size(Bin) + P#astr.received >= P#astr.entire_len of
+				true ->
+					self() ! {call_slave, P#astr.cb, P#astr.actor, P#astr.type, P#astr.header, iolist_to_binary(lists:reverse([Bin|P#astr.buffer]))},
+					actor_ae_stream(P#astr{entire_len = 0, received = 0, buffer = [], header = <<>>});
+				false ->
+					actor_ae_stream(P#astr{received = P#astr.received + byte_size(Bin), buffer = [Bin|P#astr.buffer]})
+			end;
 		{call_slave,Cb,Actor,Type,Header,Page} ->
-			check_actor(AD,TD,Actor,Type),
+			check_actor(P#astr.actor,P#astr.type,Actor,Type),
 			?ADBG("Calling slave ~p",[Actor]),
-			case actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Header,Page,head,Count}},[nostart]) of
+			case actordb_sqlproc:call_slave(Cb,Actor,Type,{state_rw,{appendentries_wal,Header,Page,head,P#astr.count}},[nostart]) of
 				ok ->
-					actor_ae_stream(ActorPid,Count,AD,TD);
+					actor_ae_stream(P);
 				done ->
-					actor_ae_stream(ActorPid,Count,AD,TD);
+					actor_ae_stream(P);
 				_Err ->
 					% Same as start ae. Die off.
 					ok
@@ -163,6 +193,8 @@ actor_ae_stream(ActorPid,Count,AD,TD) ->
 		distreg:unreg(self()),
 		erlang:send_after(3000,self(),stop)
 	end.
+
+% Safety precation. A pid must only belong to a specific actor.
 check_actor(Actor,Type,Actor,Type) ->
 	ok;
 check_actor(AD,TD,Actor,Type) ->

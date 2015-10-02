@@ -963,8 +963,9 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	case P#dp.db of
 		queue ->
 			Res = make_ref(),
+			% We must reverse because when writes were being batched, we remembered offset of every data item
 			CF = [batch,lists:reverse(From)],
-			{ok,NS} = actordb_queue:cb_write_exec(P#dp.cbstate,lists:reverse(Sql),P#dp.current_term, EvNum);
+			{ok,NS} = actordb_queue:cb_write_exec(P#dp.cbstate, lists:reverse(Sql), P#dp.current_term, EvNum, VarHeader);
 		_ ->
 			NS = P#dp.cbstate,
 			CF = [batch,undefined|lists:reverse([undefined|From])],
@@ -1468,11 +1469,13 @@ down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLA
 	{stop,nocreate,P};
 down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 	actordb_local:actor_mors(master,actordb_conf:node_name()),
+	ReplType = apply(P1#dp.cbmod,cb_replicate_type,[P1#dp.cbstate]),
 	P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election = undefined,
 		masternode = actordb_conf:node_name(),
 		without_master_since = undefined,
 		masternodedist = bkdcore:dist_name(actordb_conf:node_name()),
 		flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
+		cbstate = actordb_sqlite:replicate_opts(P1,term_to_binary({P1#dp.cbmod,P1#dp.actorname,P1#dp.actortype}),ReplType),
 		locked = lists:delete(ae,P1#dp.locked)}),
 	case P#dp.movedtonode of
 		deleted ->
@@ -1483,10 +1486,7 @@ down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 			Moved = P#dp.movedtonode,
 			SchemaVers = P#dp.schemavers
 	end,
-	ReplType = apply(P#dp.cbmod,cb_replicate_type,[P#dp.cbstate]),
 	?DBG("Elected leader term=~p, nodes_synced=~p, moved=~p",[P1#dp.current_term,AllSynced,P#dp.movedtonode]),
-	ReplBin = term_to_binary({P#dp.cbmod,P#dp.actorname,P#dp.actortype}),
-	ok = actordb_sqlite:replicate_opts(P,ReplBin,ReplType),
 
 	case P#dp.schemavers of
 		undefined ->

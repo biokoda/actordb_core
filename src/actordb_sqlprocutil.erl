@@ -242,20 +242,10 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 
 % We are sending prevevnum and prevevterm, #dp.evterm is less than #dp.current_term only
 %  when election is won and this is first write after it.
+% create_var_header(#dp{db = queue} = P) ->
+% 	{P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,follower_call_counts(P)};
 create_var_header(P) ->
 	term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,follower_call_counts(P)}).
-create_var_header_with_db(P) ->
-	% case filelib:file_size(P#dp.fullpath) of
-	% 	?PAGESIZE ->
-	% 		{ok,Dbfile} = prim_file:read_file(P#dp.fullpath),
-	% 		{Compressed,CompressedSize} = actordb_sqlite:lz4_compress(Dbfile),
-	% 		<<DbCompressed:CompressedSize/binary,_/binary>> = Compressed,
-	% 		term_to_binary({P#dp.current_term,actordb_conf:node_name(),
-	% 								P#dp.evnum,P#dp.evterm,follower_call_counts(P),DbCompressed});
-	% 	Size ->
-			% ?ERR("DB not pagesize, can not replicate the base db ~p",[Size]),
-			create_var_header(P).
-	% end.
 
 follower_call_counts(P) ->
 	[{F#flw.node,{F#flw.match_index,F#flw.match_term}} || F <- P#dp.follower_indexes].
@@ -286,6 +276,8 @@ reopen_db(#dp{mors = master} = P) ->
 	end;
 reopen_db(P) ->
 	case ok of
+		_ when P#dp.db == queue ->
+			init_opendb(P#dp{cbstate = actordb_queue:cb_replicate_opts(P,<<>>)});
 		_ when P#dp.db == undefined; P#dp.db == queue  ->
 			NP = init_opendb(P),
 			actordb_sqlite:replicate_opts(NP,<<>>),

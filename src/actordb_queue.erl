@@ -38,7 +38,7 @@
 % wmap is a map of event data for every actor in replication event: #{ActorName => [{DataSectionOffset,DataSize}]}
 % It also has last valid election info: #{vi => {S#st.voted_for_term,S#st.voted_for}}
 -record(st,{name, fd, fd_index, wmap = #{}, cursize = 0, 
-	curterm, evnum, prev_event = {0,0}, voted_for = <<>>, voted_for_term}).
+	curterm, evnum, prev_event = {0,0}, voted_for = <<>>, voted_for_term, replbin = <<>>}).
 
 start({Name,queue}) ->
 	start(Name,queue);
@@ -93,8 +93,14 @@ cb_write(#st{wmap = Map} = S,A,Data) ->
 	Size = iolist_size(Data),
 	{Data,S#st{wmap = Map#{A => [{S#st.cursize,Size}|Positions]}, cursize = S#st.cursize + Size}}.
 % Write to disk
-cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S,Items,Term,Evnum) ->
+cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, VarHeader) ->
 	% io:format("~p ~p~n",[length(Items),erlang:process_info(self(),message_queue_len)]),
+	{CtSend,Me,CtEvnum,CtEvterm,Followers} = VarHeader,
+
+	% StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+	% 	{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
+	% 		F#flw.match_index,F#flw.match_term,recover,{F#flw.match_index,F#flw.match_term}}}]}),
+
 	Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
 	EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
 		(erlang:system_time(micro_seconds)):64/unsigned-little, 
@@ -227,13 +233,14 @@ cb_term_store(#st{prev_event = {PrevFile,PrevOffset}} = S, CurrentTerm, VotedFor
 cb_wal_rewind(S,Evnum) ->
 	ok.
 
-cb_replicate_opts(S, Bin, Type) ->
-	ok.
+cb_replicate_opts(S, Bin, _Type) ->
+	S#st{replbin = Bin}.
 
 cb_replicate_opts(S, Bin) ->
-	ok.
+	S#st{replbin = Bin}.
 
-cb_replication_done(S) ->
+% Write successfully replicated to all nodes.
+cb_replication_done(_S) ->
 	ok.
 
 cb_fsync(_S) ->
@@ -254,7 +261,7 @@ find_event(S,InitFrom,[{Index,Nm}|T]) when Index =< InitFrom ->
 	end;
 find_event(S,InitFrom,[_|T]) ->
 	find_event(S,InitFrom,T);
-find_event(S,_,[]) ->
+find_event(_S,_,[]) ->
 	false.
 
 % Move from eof to begin, find first event for this queue index.

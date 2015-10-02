@@ -58,18 +58,15 @@ lz4_decompress(Bin,Size) ->
 	actordb_driver:lz4_decompress(Bin,Size).
 
 replicate_opts(P,Bin,Type) when element(1,P#dp.db) == actordb_driver ->
-	actordb_driver:replicate_opts(P#dp.db,Bin,Type);
+	actordb_driver:replicate_opts(P#dp.db,Bin,Type),
+	P#dp.cbstate;
 replicate_opts(#dp{dbpath = queue} = P, Bin, Type) ->
-	actordb_queue:cb_replicate_opts(P#dp.cbstate, Bin, Type);
-replicate_opts(Db,Bin,Type) when element(1,Db) == actordb_driver ->
-	actordb_driver:replicate_opts(Db,Bin,Type).
+	actordb_queue:cb_replicate_opts(P#dp.cbstate, Bin, Type).
 
 replicate_opts(P,Bin) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:replicate_opts(P#dp.db,Bin);
 replicate_opts(#dp{dbpath = queue} = P, Bin) ->
-	actordb_queue:cb_replicate_opts(P#dp.cbstate, Bin);
-replicate_opts(Db,Bin) when element(1,Db) == actordb_driver ->
-	actordb_driver:replicate_opts(Db,Bin).
+	actordb_queue:cb_replicate_opts(P#dp.cbstate, Bin).
 
 replication_done(P) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:replication_done(P#dp.db);
