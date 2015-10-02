@@ -747,14 +747,16 @@ append_wal(P,From,CallCount,[Header|HT],[Body|BT],AEType) ->
 append_wal(P,From,CallCount,Header,Body,AEType) ->
 	AWR = actordb_sqlprocutil:append_wal(P,Header,Body),
 	append_wal1(P,From,CallCount,Header,AEType,AWR).
+append_wal1(P,From,CallCount,Header,AEType,{ok,NS}) ->
+	append_wal1(P#dp{cbstate = NS},From,CallCount,Header,AEType,ok);
 append_wal1(P,From,CallCount,Header,AEType,AWR) ->
 	case AWR of
-		{ok,NS} ->
+		ok ->
 			case Header of
 				% dbsize == 0, not last page
 				<<_:20/binary,0:32>> ->
 					?DBG("AE append ~p",[AEType]),
-					{reply,ok,P#dp{locked = [ae], cbstate = NS}};
+					{reply,ok,P#dp{locked = [ae]}};
 				% last page
 				<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,Pgno:32,Commit:32>> ->
 					?DBG("AE WAL done evnum=~p,evterm=~p,aetype=~p,qempty=~p,master=~p,pgno=~p,commit=~p",
@@ -766,13 +768,13 @@ append_wal1(P,From,CallCount,Header,AEType,AWR) ->
 						false ->
 							RecoveryAge = P#dp.recovery_age
 					end,
-					NP = P#dp{evnum = Evnum, evterm = Evterm,locked = [], recovery_age = RecoveryAge, cbstate = NS},
+					NP = P#dp{evnum = Evnum, evterm = Evterm,locked = [], recovery_age = RecoveryAge},
 					reply(From,done),
 					actordb_sqlprocutil:ae_respond(NP,NP#dp.masternode,true,P#dp.evnum,AEType,CallCount),
 					{noreply,NP}
 			end;
-		_ ->
-			?ERR("Append failed"),
+		_X ->
+			?ERR("Append failed ~p",[_X]),
 			reply(From,false),
 			actordb_sqlprocutil:ae_respond(P,P#dp.masternode,false,P#dp.evnum,AEType,CallCount),
 			{noreply,P}
