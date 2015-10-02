@@ -382,11 +382,17 @@ handle_call(Msg,From,P) ->
 			% ?DBG("Queing msg ~p, callres ~p, locked ~p, transactionid ~p",
 			% 	[Msg,P#dp.callres,P#dp.locked,P#dp.transactionid]),
 			% Continue in doqueue
-			self() ! timeout,
-			{noreply,P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue),
-				activity = actordb_local:actor_activity(P#dp.activity)}}
+			{noreply,timeout(P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue),
+				activity = actordb_local:actor_activity(P#dp.activity)})}
 	end.
 
+timeout(P) ->
+	timeout(P,0).
+timeout(P,_Resend) when P#dp.flags band ?TIMEOUT_PENDING > 0 ->
+	P;
+timeout(P,Resend) ->
+	self() ! {timeout,Resend+1},
+	P#dp{flags = P#dp.flags bor ?TIMEOUT_PENDING}.
 
 commit_call(Doit,Id,From,P) ->
 	?DBG("Commit doit=~p, id=~p, from=~p, trans=~p",[Doit,Id,From,P#dp.transactionid]),
@@ -774,8 +780,9 @@ append_wal1(P,From,CallCount,Header,AEType,AWR) ->
 
 read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
+read_call(Msg,From,#dp{flags = F} = P) when (F band ?TIMEOUT_PENDING) == 0 ->
+	read_call(Msg,From,timeout(P));
 read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
-	self() ! timeout,
 	case Msg#read.sql of
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
@@ -866,12 +873,13 @@ read_call1(Sql,Recs,From,P) ->
 	% NRB = A#ai{wait = Res, info = Sql, callfrom = From, buffer = [], buffer_cf = [], buffer_recs = []},
 	% P#dp{rasync = NRB}.
 
+write_call(Msg,From,#dp{flags = F} = P) when F band ?TIMEOUT_PENDING == 0 ->
+	write_call(Msg,From,timeout(P));
 write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 	A = P#dp.wasync,
 	ForceSync = lists:member(fsync,Msg#write.flags),
 	?DBG("writecall evnum_prewrite=~p,term=~p writeinfo=~p",[P#dp.evnum,P#dp.current_term,{MFA,Sql}]),
 	% Drain message queue.
-	self () ! timeout,
 	case Sql of
 		delete ->
 			A1 = A#ai{buffer = [<<"#s02;">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
@@ -1144,8 +1152,13 @@ read_reply(P,[H|T],Pos,Res) ->
 read_reply(P,[],_,_) ->
 	P.
 
-handle_info(timeout,P) ->
-	{noreply,actordb_sqlprocutil:doqueue(P)};
+handle_info({timeout,Resend},P) ->
+	case erlang:process_info(self(),message_queue_len) of
+		{message_queue_len,N} when N > 1, Resend < 10 ->
+			{noreply,timeout(P#dp{flags = P#dp.flags band (bnot ?TIMEOUT_PENDING)}, Resend)};
+		_ ->
+			{noreply,actordb_sqlprocutil:doqueue(P#dp{flags = P#dp.flags band (bnot ?TIMEOUT_PENDING)})}
+	end;
 % Async read result. Unlike writes we can reply directly. We don't use async reads atm.
 handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference(Ref) ->
 	NewBD = BD#ai{callfrom = undefined, info = undefined, wait = undefined},

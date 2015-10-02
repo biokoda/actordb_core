@@ -75,7 +75,7 @@ read(_Shard, #{actor := _Actor, flags := _Flags, statements := _Sql} = _Call) ->
 
 write(_Shard, #{actor := Actor, flags := Flags, statements := Sql} = _Call) ->
 	% TODO: determine wactor based on actual actor. There should be a shard tree.
-	WActor = _Shard,
+	WActor = _Shard rem 10,
 	actordb_sqlproc:write({WActor,queue},[create|Flags],{{?MODULE,cb_write,[Actor,Sql]},undefined,undefined},?MODULE).
 
 %
@@ -94,6 +94,7 @@ cb_write(#st{wmap = Map} = S,A,Data) ->
 	{Data,S#st{wmap = Map#{A => [{S#st.cursize,Size}|Positions]}, cursize = S#st.cursize + Size}}.
 % Write to disk
 cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S,Items,Term,Evnum) ->
+	% io:format("~p ~p~n",[length(Items),erlang:process_info(self(),message_queue_len)]),
 	Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
 	EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
 		(erlang:system_time(micro_seconds)):64/unsigned-little, 
