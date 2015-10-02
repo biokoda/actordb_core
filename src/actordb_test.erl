@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1]).
+-export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1, client/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
@@ -98,6 +98,12 @@ idtest1(Max,Run) ->
 			exit(normal)
 	end.
 
+% Tests for actordb_client.
+client() ->
+	ok = actordb_client:test("myuser","mypass"),
+	Param = [[butil:flatnow(),"asdf",3],[butil:flatnow(),"asdf1",4]],
+	{ok,{changes,_,_}} = actordb_client:exec_single_param("ax","type1","insert into tab values (?1,?2,?3);",[create],Param).
+
 
 ins() ->
 	{ok,B} = file:read_file("inserts.sql"),
@@ -116,7 +122,7 @@ ins([<<>>]) ->
 ins([]) ->
 	ok.
 
-
+% Used to parse time file data from actordb_driver.
 read_timebin() ->
 	{ok,<<Numer:64/unsigned-little,Delim:64/unsigned-little,Times/binary>>} = file:read_file("time.bin"),
 	read_timebin(Numer,Delim,Times,[]).
@@ -145,6 +151,9 @@ print_times([{Id,Int}|T],First,Prev) ->
 print_times([],_,_) ->
 	ok.
 
+
+
+% For quick benchmarks.
 loop(N) ->
 	S = os:timestamp(),
 	loop1(N),
@@ -156,6 +165,8 @@ loop1(N) ->
 	% term_to_binary({self(),{appendentries_response,12084,<<"asdlhf">>,aasdf,1,2,3,5}},[compressed,{minor_version,1}]),
 	loop1(N-1).
 
+
+% How fast can we insert data to queue.
 q_test(Writers) ->
 	E = ets:new(walets,[set,public,{write_concurrency,true}]),
 	ets:insert(E,{writes,0}),
@@ -182,7 +193,8 @@ qwriter(E,N,Bytes) ->
 	ets:update_counter(E,writes,{2,1}),
 	qwriter(E,N,Bytes).
 
-% many writers to a single log file.
+
+% How fast can multiple writers write to a log file.
 wal_test(Writers) ->
 	E = ets:new(walets,[set,public,{write_concurrency,true}]),
 	ets:insert(E,{offset,0}),
