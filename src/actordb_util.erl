@@ -102,8 +102,8 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 	case Rem of
 		<<Page:LenPage/binary>> ->
 			PidOut ! {call_slave,Cb,Actor,Type,Header,Page};
-		<<Len,PagePart/binary>> ->
-			EntireLen = (LenPage bsl 8) + Len,
+		<<Len:16/unsigned,PagePart/binary>> ->
+			EntireLen = (LenPage bsl 16) + Len,
 			case EntireLen > byte_size(PagePart) of
 				true ->
 					PidOut ! {call_slave,Cb,Actor,Type,Header,EntireLen,PagePart};
@@ -167,7 +167,7 @@ actor_ae_stream(P) ->
 		{call_slave,Cb,Actor,Type,Header, EntireLen, PagePart} when EntireLen > PagePart ->
 			check_actor(P#astr.actor,P#astr.type,Actor,Type),
 			actor_ae_stream(P#astr{cb = Cb, entire_len = EntireLen, received = byte_size(PagePart), buffer = [PagePart], header = Header});
-		{continue,Bin} ->
+		{continue,Bin} when P#astr.received > 0 ->
 			case byte_size(Bin) + P#astr.received >= P#astr.entire_len of
 				true ->
 					self() ! {call_slave, P#astr.cb, P#astr.actor, P#astr.type, P#astr.header, iolist_to_binary(lists:reverse([Bin|P#astr.buffer]))},
@@ -175,6 +175,9 @@ actor_ae_stream(P) ->
 				false ->
 					actor_ae_stream(P#astr{received = P#astr.received + byte_size(Bin), buffer = [Bin|P#astr.buffer]})
 			end;
+		{continue,_} ->
+			?AERR("Received continue without initial packet!"),
+			ok;
 		{call_slave,Cb,Actor,Type,Header,Page} ->
 			check_actor(P#astr.actor,P#astr.type,Actor,Type),
 			?ADBG("Calling slave ~p",[Actor]),
