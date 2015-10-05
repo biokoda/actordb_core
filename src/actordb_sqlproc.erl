@@ -1214,20 +1214,17 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 				netchanges = actordb_local:net_changes(),force_sync = ForceSync,
 				evterm = EvTerm, evnum = EvNum,schemavers = NewVers,movedtonode = Moved,
 				wasync = NewAsync}))};
-		{sql_error,ErrMsg,_} ->
+		{sql_error,{ErrPos,_,_ErrAtom,ErrStr},_} ->
 			actordb_sqlite:rollback(P#dp.db),
-
-			% we don't count #s00
-			ErrPos = element(1,ErrMsg)-1,
 			[batch,undefined|CF1] = From,
 			% Remove cf for last part (#s02, #s01)
 			CF = lists:reverse(tl(lists:reverse(CF1))),
-			?DBG("Error pos ~p, cf=~p",[ErrPos,CF]),
-			{Before,[Problem|After]} = lists:split(ErrPos,CF),
-			reply(Problem, Res),
+			?DBG("Error pos ~p, cf=~p",[ErrPos-1,CF]),
+			{Before,[Problem|After]} = lists:split(ErrPos-1,CF),
+			reply(Problem, {error,ErrStr}),
 
-			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos,lists:reverse(W#write.sql)),
-			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos,lists:reverse(W#write.records)),
+			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos-1,lists:reverse(W#write.sql)),
+			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos-1,lists:reverse(W#write.records)),
 
 			case BD#ai.newvers of
 				undefined ->

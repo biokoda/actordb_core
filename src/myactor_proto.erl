@@ -580,6 +580,8 @@ execute_query_result(Cst,BpState,Query,Protocol,{Rs,Result}) ->
 				_ ->
 					send_ok(Cst0)
 			end;
+		{error,Str} ->
+			send_err(Cst0,<<(butil:tobin(Str))/binary>>);
 		{sql_error,SqlErr} ->
 			?ERR_DESC(Cst0,SqlErr), % = ErrDesc
 			send_err(Cst0,<<ErrDesc/binary>>);
