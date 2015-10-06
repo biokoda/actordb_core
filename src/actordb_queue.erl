@@ -94,13 +94,6 @@ cb_write(#st{wmap = Map} = S,A,Data) ->
 	{Data,S#st{wmap = Map#{A => [{S#st.cursize,Size}|Positions]}, cursize = S#st.cursize + Size}}.
 % Write to disk
 cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, VarHeader) ->
-	% io:format("~p ~p~n",[length(Items),erlang:process_info(self(),message_queue_len)]),
-	{CtSend,Me,CtEvnum,CtEvterm,Followers} = VarHeader,
-
-	% StartRes = bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-	% 	{state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
-	% 		F#flw.match_index,F#flw.match_term,recover,{F#flw.match_index,F#flw.match_term}}}]}),
-
 	Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
 	EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
 		(erlang:system_time(micro_seconds)):64/unsigned-little, 
@@ -110,9 +103,11 @@ cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, V
 	TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+4*2):32/unsigned-little>>,
 	Header = [<<(erlang:crc32([HeadWithoutCrc,EvHeader,Items,TAIL])):32/unsigned-little>>,HeadWithoutCrc],
 
-	% 
-	% TODO: send to followers
-	% 
+	RHdr = [<<(iolist_size(S#st.replbin)):16/unsigned>>, S#st.replbin, 
+		<<(iolist_size(VarHeader)):16/unsigned>>, VarHeader,
+		24,<<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>],
+	actordb_driver:all_tunnel_call(RHdr,[EvHeader,Items,TAIL]),
+	
 	write_to_log(S#st{curterm = Term, evnum = Evnum, cursize = 0, wmap = #{}}, 
 		S#st.cursize+byte_size(EvHeader)+iolist_size(Header)+byte_size(TAIL), 
 		[Header, EvHeader,Items,TAIL]).
@@ -170,7 +165,7 @@ cb_nodelist(S,_HasSchema) ->
 cb_replicate_type(_S) ->
 	1.
 
-cb_redirected_call(_S,_MovedTo,_Call,queue) ->
+cb_redirected_call(_S,_MovedTo,_Call,_RedType) ->
 	ok.
 
 cb_unverified_call(_S,_Msg)  ->
@@ -205,18 +200,19 @@ cb_init_engine(S) ->
 % 
 % Storage engine callbacks
 % 
-
-cb_inject_page(#st{prev_event = {PrevFile,PrevOffset}} = S,Bin,Header) ->
-	<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> = Header,
-
+cb_inject_page(#st{prev_event = {PrevFile,PrevOffset}} = S,<<OriginalSize:32/unsigned,Bin1/binary>>,ReplHeader) ->
+	<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> = ReplHeader,
+	
+	Bin = actordb_driver:lz4_decompress(Bin1,OriginalSize),
+	
 	HeadWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
 		% -4 because Bin also contains TAIL
-		(byte_size(Bin-4)):32/unsigned-little>>,
+		(byte_size(Bin)-4):32/unsigned-little>>,
 	Header = [<<(erlang:crc32([HeadWithoutCrc,Bin])):32/unsigned-little>>,HeadWithoutCrc],
 	write_to_log(S#st{curterm = Evterm, evnum = Evnum},byte_size(Bin)+iolist_size(Header),[Header,Bin]).
 
 % Called on open queue. Regardless if leader/follower (before that is established).
-cb_actor_info(#st{evnum = undefined} = S) ->
+cb_actor_info(#st{evnum = undefined} = _S) ->
 	undefined;
 cb_actor_info(S) ->
 	{{0,0},{S#st.curterm,S#st.evnum},{0,0},0,0,S#st.voted_for_term,S#st.voted_for}.

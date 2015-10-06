@@ -40,7 +40,7 @@ reply([batch|From],{ok,Msg}) ->
 reply([batch|From],{error,Msg}) ->
 	reply(From,{error,Msg});
 reply([_|_] = From,Msg) ->
-	[gen_server:reply(F,Msg) || F <- From, F /= undefined];
+	[gen_server:reply(F,Msg) || F <- From, is_atom(F) == false];
 reply(From,Msg) ->
 	gen_server:reply(From,Msg).
 
@@ -60,7 +60,7 @@ ae_respond(P,LeaderNode,Success,PrevEvnum,AEType,CallCount) ->
 		{state_rw,Resp},P#dp.cbmod]}).
 
 append_wal(#dp{db = queue} = P,Header,Bin) ->
-	actordb_queue:cb_inject_page(P#dp.cbstate,Header,Bin);
+	actordb_queue:cb_inject_page(P#dp.cbstate,Bin,Header);
 append_wal(P,Header,Bin) ->
 	actordb_sqlite:inject_page(P,Bin,Header).
 
@@ -277,7 +277,7 @@ reopen_db(#dp{mors = master} = P) ->
 reopen_db(P) ->
 	case ok of
 		_ when P#dp.db == queue ->
-			init_opendb(P#dp{cbstate = actordb_queue:cb_replicate_opts(P,<<>>)});
+			init_opendb(P#dp{cbstate = actordb_queue:cb_replicate_opts(P#dp.cbstate,<<>>)});
 		_ when P#dp.db == undefined; P#dp.db == queue  ->
 			NP = init_opendb(P),
 			actordb_sqlite:replicate_opts(NP,<<>>),
@@ -320,7 +320,7 @@ read_db_state(P) when element(1,P#dp.db) == actordb_driver ->
 read_db_state(#dp{db = queue} = P) ->
 	{_,_,_InProg,_MxPage,_AllPages,Term,Evnum}
 		= actordb_queue:cb_actor_info(P#dp.cbstate),
-	read_db_state(P,[[{?SCHEMA_VERS,1},{?EVTERMI,Term},{?EVNUMI,Evnum}]]).
+	read_db_state(P,[{?SCHEMA_VERS,1},{?EVTERMI,Term},{?EVNUMI,Evnum}]).
 read_db_state(P,Rows) ->
 	?DBG("Adb rows ~p",[Rows]),
 	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),

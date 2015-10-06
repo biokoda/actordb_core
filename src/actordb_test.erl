@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1, client/0]).
+-export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1, q_test/2, client/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
@@ -168,6 +168,8 @@ loop1(N) ->
 
 % How fast can we insert data to queue.
 q_test(Writers) ->
+	q_test(Writers,10000).
+q_test(Writers,Timeout) ->
 	E = ets:new(walets,[set,public,{write_concurrency,true}]),
 	ets:insert(E,{writes,0}),
 	% Faster if workers are bound to schedulers.
@@ -177,7 +179,7 @@ q_test(Writers) ->
 	receive
 		{'DOWN',_Monitor,_,_PID,Reason} ->
 			exit(Reason)
-	after 10000 ->
+	after Timeout ->
 		ok
 	end,
 	[exit(P,stop) || P <- Pids],

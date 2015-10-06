@@ -966,7 +966,7 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 		queue ->
 			Res = make_ref(),
 			% We must reverse because when writes were being batched, we remembered offset of every data item
-			CF = [batch,lists:reverse(From)],
+			CF = [batch|lists:reverse(From)],
 			{ok,NS} = actordb_queue:cb_write_exec(P#dp.cbstate, lists:reverse(Sql), P#dp.current_term, EvNum, VarHeader);
 		_ ->
 			NS = P#dp.cbstate,
