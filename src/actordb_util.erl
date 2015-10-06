@@ -104,7 +104,6 @@ tunnel_bin(Pid,<<LenPrefix:16/unsigned,FixedPrefix:LenPrefix/binary,
 			PidOut ! {call_slave,Cb,Actor,Type,Header,Page};
 		<<Len:16/unsigned,PagePart/binary>> ->
 			EntireLen = (LenPage bsl 16) + Len,
-			?ADBG("Entire len ~p, ~p",[EntireLen,byte_size(PagePart)]),
 			case EntireLen > byte_size(PagePart) of
 				true ->
 					PidOut ! {call_slave,Cb,Actor,Type,Header,EntireLen,PagePart};
