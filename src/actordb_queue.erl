@@ -102,16 +102,19 @@ cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, V
 	HeadWithoutCrc = [<<?TYPE_EVENT,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
 		(S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8):32/unsigned-little>>],
 	TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8+4*2):32/unsigned-little>>,
-	Header = [<<(erlang:crc32([HeadWithoutCrc,EvHeader,Map,Items,TAIL])):32/unsigned-little>>,HeadWithoutCrc],
+	
+	% Combine to single binary since its going to be done in driver anyway.
+	Event = iolist_to_binary([EvHeader,Map,Items,TAIL]),
+	Header = [<<(erlang:crc32([HeadWithoutCrc,Event])):32/unsigned-little>>,HeadWithoutCrc],
 
 	RHdr = [<<(iolist_size(S#st.replbin)):16/unsigned>>, S#st.replbin, 
 		<<(iolist_size(VarHeader)):16/unsigned>>, VarHeader,
 		24,<<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>],
-	actordb_driver:all_tunnel_call(RHdr,[EvHeader,Map,Items,TAIL]),
+	actordb_driver:all_tunnel_call(RHdr,Event),
 	
 	write_to_log(S#st{curterm = Term, evnum = Evnum, cursize = 0, mapsize = 0, wmap = []}, 
-		S#st.cursize+byte_size(EvHeader)+iolist_size(Header)+byte_size(TAIL)+S#st.mapsize*8, 
-		[Header, EvHeader,Map,Items,TAIL]).
+		iolist_size(Header)+byte_size(Event), 
+		[Header, Event]).
 % Write replicated
 cb_write_done(S,_Evnum) ->
 	{ok,S}.
