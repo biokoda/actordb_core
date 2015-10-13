@@ -31,13 +31,14 @@
 % types:
 % snaphost    -> [HEAD, term_to_binary({VotedForTerm,VotedFor, CurTerm, CurEvnum}),TAIL] 
 % replevent   -> [HEAD, term:64, evnum:64, time:64, map_size:24, event_map, [ev1data,ev2data], TAIL]
-%                event_map = [Size:32,term_to_binary(#{actorname => [{pos1,size1},{pos2,size2}]})]
+%                event_map = [Nitems:32,<<ActorHash:32/big,Offset:32/big,..>>]
+%                event: <<SizeName,Name:SizeName/binary,Size:32,Data:Size/binary>>
 
 
 
 % wmap is a map of event data for every actor in replication event: #{ActorName => [{DataSectionOffset,DataSize}]}
 % It also has last valid election info: #{vi => {S#st.voted_for_term,S#st.voted_for}}
--record(st,{name, fd, fd_index, wmap = #{}, cursize = 0, 
+-record(st,{name, fd, fd_index, wmap = [], mapsize = 0, cursize = 0, 
 	curterm, evnum, prev_event = {0,0}, voted_for = <<>>, voted_for_term, replbin = <<>>}).
 
 start({Name,queue}) ->
@@ -83,34 +84,34 @@ write(_Shard, #{actor := Actor, flags := Flags, statements := Sql} = _Call) ->
 %
 
 % Buffer write
-cb_write(#st{wmap = Map} = S,A,Data) ->
-	case Map of
-		#{A := Positions} ->
-			ok;
-		_ ->
-			Positions = []
-	end,
+cb_write(S,A,Data) ->
 	Size = iolist_size(Data),
-	{Data,S#st{wmap = Map#{A => [{S#st.cursize,Size}|Positions]}, cursize = S#st.cursize + Size}}.
+	ASize = iolist_size(A),
+	Hash = actordb_util:hash(A),
+	{[ASize,A,<<Size:32/unsigned-little>>,Data],
+		S#st{wmap = [<<Hash:32/unsigned,(S#st.cursize):32/unsigned>>|S#st.wmap], 
+		cursize = S#st.cursize + (Size+1+4+ASize), mapsize = S#st.mapsize+1}}.
 % Write to disk
 cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, VarHeader) ->
-	Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
+	% Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
+	Map = lists:sort(S#st.wmap),
 	EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
 		(erlang:system_time(micro_seconds)):64/unsigned-little, 
-		(byte_size(Map)):24/unsigned-little, Map/binary>>,
-	HeadWithoutCrc = <<?TYPE_EVENT,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
-		(S#st.cursize+byte_size(EvHeader)):32/unsigned-little>>,
-	TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+4*2):32/unsigned-little>>,
-	Header = [<<(erlang:crc32([HeadWithoutCrc,EvHeader,Items,TAIL])):32/unsigned-little>>,HeadWithoutCrc],
+		0,(byte_size(S#st.mapsize)):24/unsigned-little>>,
+	
+	HeadWithoutCrc = [<<?TYPE_EVENT,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
+		(S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8):32/unsigned-little>>],
+	TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8+4*2):32/unsigned-little>>,
+	Header = [<<(erlang:crc32([HeadWithoutCrc,EvHeader,Map,Items,TAIL])):32/unsigned-little>>,HeadWithoutCrc],
 
 	RHdr = [<<(iolist_size(S#st.replbin)):16/unsigned>>, S#st.replbin, 
 		<<(iolist_size(VarHeader)):16/unsigned>>, VarHeader,
 		24,<<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>],
-	actordb_driver:all_tunnel_call(RHdr,[EvHeader,Items,TAIL]),
+	actordb_driver:all_tunnel_call(RHdr,[EvHeader,Map,Items,TAIL]),
 	
-	write_to_log(S#st{curterm = Term, evnum = Evnum, cursize = 0, wmap = #{}}, 
-		S#st.cursize+byte_size(EvHeader)+iolist_size(Header)+byte_size(TAIL), 
-		[Header, EvHeader,Items,TAIL]).
+	write_to_log(S#st{curterm = Term, evnum = Evnum, cursize = 0, mapsize = 0, wmap = []}, 
+		S#st.cursize+byte_size(EvHeader)+iolist_size(Header)+byte_size(TAIL)+S#st.mapsize*8, 
+		[Header, EvHeader,Map,Items,TAIL]).
 % Write replicated
 cb_write_done(S,_Evnum) ->
 	{ok,S}.
