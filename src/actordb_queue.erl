@@ -10,6 +10,11 @@
 
 -define(HEAD_SIZE,23).
 -define(EV_HEAD_SIZE,27).
+
+-define(DATA_BINARY,  0).
+-define(DATA_MSGPACK, 1).
+-define(DATA_TEXT,    2).
+-define(DATA_JSON,    3).
 %
 % Implements a queue on top of actordb_sqlproc. Instead of using the sql engine, it uses
 % and append only log file, which is replicated exactly the same as sqlproc. 
@@ -32,7 +37,8 @@
 % snaphost    -> [HEAD, term_to_binary({VotedForTerm,VotedFor, CurTerm, CurEvnum}),TAIL] 
 % replevent   -> [HEAD, term:64, evnum:64, time:64, map_size:24, event_map, [ev1data,ev2data], TAIL]
 %                event_map = [Nitems:32,<<ActorHash:32/big,Offset:32/big,..>>]
-%                event: <<SizeName,Name:SizeName/binary,Size:32,Data:Size/binary>>
+%                event: <<SizeName,Name:SizeName/binary,DataType,Size:32,Data:Size/binary>>
+%                DataType - 0 (binary), 1 (msgpack), 2 (text), 3 (json)
 
 
 
@@ -88,7 +94,19 @@ cb_write(S,A,Data) ->
 	Size = iolist_size(Data),
 	ASize = iolist_size(A),
 	Hash = actordb_util:hash(A),
-	{[ASize,A,<<Size:32/unsigned-little>>,Data],
+	case Data of
+		{txt,Data} ->
+			Type = ?DATA_TEXT;
+		{bin,Data} ->
+			Type = ?DATA_BINARY;
+		{json,Data} ->
+			Type = ?DATA_JSON;
+		{msgpack,Data} ->
+			Type = ?DATA_MSGPACK;
+		_ ->
+			Type = ?DATA_BINARY
+	end,
+	{[ASize,A,Type,<<Size:32/unsigned-little>>,Data],
 		S#st{wmap = [<<Hash:32/unsigned,(S#st.cursize):32/unsigned>>|S#st.wmap], 
 		cursize = S#st.cursize + (Size+1+4+ASize), mapsize = S#st.mapsize+1}}.
 % Write to disk

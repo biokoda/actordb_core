@@ -151,19 +151,17 @@ print_times([{Id,Int}|T],First,Prev) ->
 print_times([],_,_) ->
 	ok.
 
-
-
 % For quick benchmarks.
 loop(N) ->
+	L = [<<(random:uniform(1000000000)):32,1:32>> || _ <- lists:seq(1,1000)],
 	S = os:timestamp(),
-	loop1(N),
+	loop1(N,L),
 	timer:now_diff(os:timestamp(),S).
 
-loop1(0) ->
+loop1(0,_) ->
 	ok;
-loop1(N) ->
-	% term_to_binary({self(),{appendentries_response,12084,<<"asdlhf">>,aasdf,1,2,3,5}},[compressed,{minor_version,1}]),
-	loop1(N-1).
+loop1(N,L) ->
+	loop1(N-1,L).
 
 
 % How fast can we insert data to queue.
