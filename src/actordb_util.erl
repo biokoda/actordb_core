@@ -11,6 +11,53 @@ hash(V) ->
 	% erlang:phash2([V,{1234982,32402942}]).
 	emurmur3:hash_x86_32(V,1283346540).
 
+varint_enc(X) when X =< 240 ->
+	<<X>>;
+varint_enc(X) when X =< 2287 ->
+	Y = X - 240,
+	<<((Y div 256) + 241),(Y rem 256)>>;
+varint_enc(X) when X =< 67823 ->
+	Y = X - 2288,
+	<<249,(Y div 256),(Y rem 256)>>;
+varint_enc(X) ->
+	% <<W:32/unsigned>> = <<(X bsr 32):32/unsigned>>,
+	% <<Y:32/unsigned>> = <<(X):32/unsigned>>,
+	<<W:32/unsigned,Y:32/unsigned>> = <<X:64/unsigned>>,
+	case W of
+		0 when Y =< 16777215 ->
+			<<250, Y:24/unsigned>>;
+		0 ->
+			<<251,Y:32/unsigned>>;
+		_ when W =< 255 ->
+			<<252,W,Y:32/unsigned>>;
+		_ when W =< 65535 ->
+			<<253, W:16/unsigned, Y:32/unsigned>>;
+		_ when W =< 16777215 ->
+			<<254, W:24/unsigned, Y:32/unsigned>>;
+		_ ->
+			<<255, X:64/unsigned>>
+	end.
+
+varint_dec(<<X,_/binary>>) when X =< 240 ->
+	{X,1};
+varint_dec(<<A,B,_/binary>>) when A =< 248 ->
+	{(A-241)*256+B+240, 2};
+varint_dec(<<249,A,B,_/binary>>) ->
+	{2288+256*A+B, 3};
+varint_dec(<<250,A,B,C,_/binary>>) ->
+	{(A bsl 16)+(B bsl 8)+C, 4};
+varint_dec(<<251,X:32/unsigned,_/binary>>) ->
+	{X, 5};
+varint_dec(<<252,X:32/unsigned,A,_/binary>>) ->
+	{(X bsl 8) + A, 6};
+varint_dec(<<253,X:32/unsigned,A:16/unsigned,_/binary>>) ->
+	{(X bsl 16)+A, 7};
+varint_dec(<<254,X:32/unsigned,A:24/unsigned,_/binary>>) ->
+	{(X bsl 24)+A, 8};
+varint_dec(<<255,X:64/unsigned,_/binary>>) ->
+	{X,9}.
+
+
 actor_types() ->
 	actordb_schema:types().
 

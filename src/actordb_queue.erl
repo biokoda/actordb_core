@@ -34,13 +34,18 @@
 % TAIL = entire_ev_size:32  % size includes 4 bytes of TAIL
 % 
 % types:
-% snaphost    -> [HEAD, term_to_binary({VotedForTerm,VotedFor, CurTerm, CurEvnum}),TAIL] 
-% replevent   -> [HEAD, term:64, evnum:64, time:64, map_size:24, event_map, [ev1data,ev2data], TAIL]
-%                event_map = [Nitems:32,<<ActorHash:32/big,Offset:32/big,..>>]
-%                event: <<SizeName,Name:SizeName/binary,DataType,Size:32,Data:Size/binary>>
+% replevent   -> [HEAD, term:64, evnum:64, time:64, map_size:24, event_map, [event1,event2,..],CompressedData, TAIL]
+%                event_map = [Nitems:32,<<ActorHash:32/big,EventOffset:32/big,..>>]
+%                event: <<SizeName,Name:SizeName/binary,DataType>>
+%                CompressedData: <<ComprSize(varint),UncomprSize(varint),First:ComprSize/binary,
+%                                  NextCS(varint),NextUCS:NextCS/binary,...>>    -> lz4 stream compression!
 %                DataType - 0 (binary), 1 (msgpack), 2 (text), 3 (json)
 
-
+% Consumer protocol:
+% <<0, Evnum:64>> - event number marker
+% <<1, SizeName, Name:SizeName/binary, DataType, Size:32,DataBlockOffset:32>> - event
+% <<2, Size:32, LZ4CompressedBlock:Size/binary>>
+% <<3>> - event done
 
 % wmap is a map of event data for every actor in replication event: #{ActorName => [{DataSectionOffset,DataSize}]}
 % It also has last valid election info: #{vi => {S#st.voted_for_term,S#st.voted_for}}

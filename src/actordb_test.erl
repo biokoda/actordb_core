@@ -1,10 +1,49 @@
 -module(actordb_test).
--export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1, q_test/2, client/0]).
+-export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 % -include_lib("actordb.hrl").
 % misc internal tests
 % general tests are in actordb/test/dist_test.erl and run with detest
+
+varint() ->
+	varint(10).
+varint(N) when is_integer(N) ->
+	case catch actordb_util:varint_dec(actordb_util:varint_enc(N)) of
+		{N,_} ->
+			varint(vtinc(N));
+		_ ->
+			throw({fail,N})
+	end;
+varint(_) ->
+	ok.
+
+vtinc(N) when N < 240 ->
+	242;
+vtinc(242) ->
+	1000;
+vtinc(1000) ->
+	1500;
+vtinc(1500) ->
+	2000;
+vtinc(2000) ->
+	4000;
+vtinc(4000) ->
+	8000;
+vtinc(N) when N < 16#ffff ->
+	N+16#ffff;
+vtinc(N) when N < 16#ffffff ->
+	N+16#ffffff;
+vtinc(N) when N < 16#ffffffff ->
+	N+16#ffffffff;
+vtinc(N) when N < 16#ffffffffff ->
+	N+16#ffffffffff;
+vtinc(N) when N < 16#ffffffffffff ->
+	N+16#ffffffffffff;
+vtinc(N) when N < 16#ffffffffffffff ->
+	N+16#ffffffffffffff;
+vtinc(_) ->
+	ok.
 
 
 batch() ->
@@ -161,6 +200,7 @@ loop(N) ->
 loop1(0,_) ->
 	ok;
 loop1(N,L) ->
+	actordb_util:varint_enc(1000000000),
 	loop1(N-1,L).
 
 
