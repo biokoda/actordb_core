@@ -23,29 +23,29 @@
 % 
 % File format (integers are unsigned-little)
 % 
-% 
-% HEAD = <<crc:32, 
-%          type:8,
-%          queue_actor_id:16, 
-%          prev_file:64,        % file of previous event, either current index or prev
-%          prev_file_offset:32, % file offset of previous event
-%          size:32>>
-% 
-% TAIL = entire_ev_size:32  % size includes 4 bytes of TAIL
-% 
-% types:
-% replevent   -> [HEAD, term:64, evnum:64, time:64, map_size:24, event_map, [event1,event2,..],CompressedData, TAIL]
-%                event_map = [Nitems:32,<<ActorHash:32/big,EventOffset:32/big,..>>]
-%                event: <<SizeName,Name:SizeName/binary,DataType>>
-%                CompressedData: <<ComprSize(varint),UncomprSize(varint),First:ComprSize/binary,
-%                                  NextCS(varint),NextUCS:NextCS/binary,...>>    -> lz4 stream compression!
-%                DataType - 0 (binary), 1 (msgpack), 2 (text), 3 (json)
+
+% Page format:
+%   <<PageHeader,Item1,Item2,..,>>
+% PageHeader: 
+%   <<Crc:32/unsigned, QActor, Version(1), PageSpan:32>>
+% - PageSpan is how many pages this header applies to. >1 only when
+%   data items max compression size is larger than 4k.
+% Items:
+% - Types: EndOfPage(0), ReplicationData(1), EventData(2)
+% - EventData:
+%   <<2, SizeName, Name:SizeName/binary, DataType,
+%     ComprSize(varint), UncomprSize(varint), ComprData:ComprSize/binary>>
+% - ReplicationData:
+%   <<1, term:64, evnum:64, time:64,HowManyPagesBackToBeginning(varint), NEvents(varint), NPages(varint)>>
+% - EndOfPage:
+%   <<0>>
 
 % Consumer protocol:
 % <<0, Evnum:64>> - event number marker
 % <<1, SizeName, Name:SizeName/binary, DataType, Size:32,DataBlockOffset:32>> - event
 % <<2, Size:32, LZ4CompressedBlock:Size/binary>>
 % <<3>> - event done
+
 
 % wmap is a map of event data for every actor in replication event: #{ActorName => [{DataSectionOffset,DataSize}]}
 % It also has last valid election info: #{vi => {S#st.voted_for_term,S#st.voted_for}}
@@ -122,7 +122,7 @@ cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, V
 		(erlang:system_time(micro_seconds)):64/unsigned-little, 
 		0,(byte_size(S#st.mapsize)):24/unsigned-little>>,
 	
-	HeadWithoutCrc = [<<?TYPE_EVENT,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
+	HeadWithoutCrc = [<<?TYPE_EVENT,(S#st.name),PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
 		(S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8):32/unsigned-little>>],
 	TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8+4*2):32/unsigned-little>>,
 	

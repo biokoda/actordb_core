@@ -20,8 +20,6 @@ varint_enc(X) when X =< 67823 ->
 	Y = X - 2288,
 	<<249,(Y div 256),(Y rem 256)>>;
 varint_enc(X) ->
-	% <<W:32/unsigned>> = <<(X bsr 32):32/unsigned>>,
-	% <<Y:32/unsigned>> = <<(X):32/unsigned>>,
 	<<W:32/unsigned,Y:32/unsigned>> = <<X:64/unsigned>>,
 	case W of
 		0 when Y =< 16777215 ->

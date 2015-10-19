@@ -200,7 +200,7 @@ loop(N) ->
 loop1(0,_) ->
 	ok;
 loop1(N,L) ->
-	actordb_util:varint_enc(1000000000),
+	actordb_util:varint_enc(1000),
 	loop1(N-1,L).
 
 
