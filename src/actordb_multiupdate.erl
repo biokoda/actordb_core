@@ -567,8 +567,7 @@ sum_changes([]) ->
 
 store_vars(IsMulti,{Shard,_},L1,L2) ->
 	store_vars(IsMulti,butil:tobin(Shard),L1,L2);
-store_vars(IsMulti,Actor,[Varname|T],[Resh|ResRem]) ->
-	[{columns,Cols},{rows,Rows}] = Resh,
+store_vars(IsMulti,Actor,[Varname|T],[[{columns,Cols},{rows,Rows}]|ResRem]) ->
 	case IsMulti of
 		true ->
 			case get({Varname,cols}) of
@@ -623,6 +622,8 @@ store_vars(IsMulti,Actor,[{A1,C1,A2,C2}|T],[]) ->
 			put(RowKey,setelement(Index,Row,Val))
 	end,
 	store_vars(IsMulti,Actor,T,[]);
+store_vars(IsMulti,Actor,[_|T],[_|T1]) ->
+	store_vars(IsMulti,Actor,T,T1);
 store_vars(_,_,[],_) ->
 	ok.
 

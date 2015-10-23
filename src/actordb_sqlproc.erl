@@ -1000,7 +1000,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					case Sql1 of
 						delete ->
 							ComplSql = <<"delete">>,
-							Res = ok;
+							Res = {ok,{changes,1,1}};
 						_ ->
 							ComplSql = Sql1,
 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
@@ -1009,8 +1009,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					EvNum = P#dp.evnum+1,
 					case Sql1 of
 						delete ->
-							Res = ok,
-							ComplSql = <<"delete">>;
+							Res = {ok,{changes,1,1}};
 						_ ->
 							ComplSql =
 								[<<"#s00;">>,

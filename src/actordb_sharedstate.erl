@@ -72,12 +72,16 @@ read_global_users(Username,Host) ->
 			end, OtherUsers)
 	end.
 
+read_global() ->
+	ets:tab2list(?GLOBALETS).
 read_global(Key) ->
+	read_global(Key,undefined).
+read_global(Key,Def) ->
 	case ets:info(?GLOBALETS,size) of
 		undefined ->
 			nostate;
 		_ ->
-			butil:ds_val(Key,?GLOBALETS)
+			butil:ds_val(Key,?GLOBALETS,Def)
 	end.
 read_cluster(Key) ->
 	read(?STATE_NM_LOCAL,Key).

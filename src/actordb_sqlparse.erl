@@ -860,8 +860,8 @@ find_comma_or_char(<<_,Rem/binary>>) ->
 
 is_write([<<_/binary>> = Bin|_]) ->
 	is_write(Bin);
-is_write({Bin,_}) ->
-	is_write(Bin);
+is_write({A,B}) ->
+	is_write(A) orelse is_write(B);
 is_write(<<$$,Bin/binary>>) ->
 	is_write(Bin);
 is_write(Bin) ->
@@ -1011,7 +1011,7 @@ is_write(Bin) ->
 		<<S,A,V,E,P,O,I,N,T,_/binary>> when ?S(S) andalso ?A(A) andalso ?V(V) andalso ?E(E) andalso ?P(P) andalso
 			?O(O) andalso ?I(I) andalso ?N(N) andalso ?T(T) ->
 			skip;
-		_ ->
+		_X ->
 			false
 	end.
 

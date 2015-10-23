@@ -228,6 +228,9 @@ do_reads([S|_]) ->
 	Nodes = actordb_sharedstate:read_global(nodes),
 	Groups = actordb_sharedstate:read_global(groups),
 	case Table of
+		<<"state">> ->
+			Out = select(S#select.conditions,actordb_sharedstate:read_global(usrstate,[])),
+			{ok,[{columns,{<<"id">>,<<"val">>}},{rows,Out}]};
 		<<"nodes">> ->
 			% For every node, get group list, create a list of [{NodeName,GroupName}]
 			NL = lists:flatten([[{butil:tobin(Nd),butil:tobin(Grp)} || 
@@ -242,6 +245,53 @@ do_reads([S|_]) ->
 			KL = [<<"id">>,<<"username">>,<<"host">>],
 			{ok,[{columns,list_to_tuple(KL)},{rows,map_rows(butil:maplistsort(<<"id">>,ML),KL)}]}
 	end.
+
+select(undefined,L) ->
+	L;
+select(#condition{nexo = Op, op1 = #key{name = Key1}, op2 = #value{value = Val}}, L) ->
+	select_match(Op,butil:tobin(Key1),Val,L);
+select(#condition{nexo = nexo_or, op1 = C1, op2 = C2}, L) ->
+	S1 = sets:from_list(select(C1,L)),
+	S2 = sets:from_list(select(C2,L)),
+	sets:to_list(sets:union(S1,S2));
+select(#condition{nexo = nexo_and, op1 = C1, op2 = C2}, L) ->
+	S1 = sets:from_list(select(C1,L)),
+	S2 = sets:from_list(select(C2,L)),
+	sets:to_list(sets:intersection(S1,S2)).
+
+select_match(Op,K,Val,L) when is_list(Val) ->
+	select_match(Op,K,butil:tobin(Val),L);
+select_match(Op,<<"id">>,Val,L) ->
+	select_match(Op,1,Val,L);
+select_match(Op,<<"val">>,Val,L) ->
+	select_match(Op,2,Val,L);
+select_match(Op,Index,Val,L) when is_integer(Index) ->
+	[Tuple || Tuple <- L, select_op(Op,element(Index,Tuple),Val)].
+
+select_op(eq,V,V) ->
+	true;
+select_op(eq,_,_) ->
+	false;
+select_op(neq,V,V) ->
+	false;
+select_op(neq,_,_) ->
+	true;
+select_op(gt,V1,V2) when V1 > V2 ->
+	true;
+select_op(gt,_,_) ->
+	false;
+select_op(lt,V1,V2) when V1 < V2 ->
+	true;
+select_op(lt,_,_) ->
+	false;
+select_op(gte,V1,V2) when V1 >= V2 ->
+	true;
+select_op(gte,_,_) ->
+	false;
+select_op(lte,V1,V2) when V1 =< V2 ->
+	true;
+select_op(lte,_,_) ->
+	false.
 
 map_rows([Map|MT],KL) ->
 	[list_to_tuple([maps:get(K,Map) || K <- KL, K /= <<"sha">>])|map_rows(MT,KL)];
@@ -272,16 +322,20 @@ interpret_writes(Cmds) ->
 	ExistingShards = actordb_sharedstate:read_global(shards),
 	interpret_writes(Cmds,ExistingNodes,ExistingGroups,ExistingShards).
 interpret_writes(Cmds,ExistingNodes,ExistingGroups,ExistingShards) ->
+	ExistingState = actordb_sharedstate:read_global(usrstate,[]),
 	Users = update_users({users,actordb_sharedstate:read_global_users()}, 
 		[I || I <- Cmds, element(1,I) == management]),
 	% {InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
 	% ?AINF("cmds=~p",[Cmds]),
 	DelNodes = lists:flatten([I || I <- Cmds, I#delete.table == <<"nodes">>]),
+	DelState = lists:flatten([I || I <- Cmds, I#delete.table == <<"state">>]),
 	NewNodes = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"nodes">>]),
 	NewGroups = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"groups">>]),
+	InsertState = lists:flatten([simple_values(I#insert.values,[]) || I <- Cmds, I#insert.table == <<"state">>]),
 	InsertGroups = [{butil:toatom(GName),[],butil:toatom(GType),[]} || {GName,GType} <- NewGroups],
 	InsertNodes = [node_name(Nd) || {Nd,_} <- NewNodes],
 	NodeUpdates = [U || U <- Cmds, U#update.table == <<"nodes">>],
+	StateUpdates = [U || U <- Cmds, U#update.table == <<"state">>],
 	case InsertNodes -- ExistingNodes of
 		InsertNodes ->
 			ok;
@@ -324,12 +378,46 @@ interpret_writes(Cmds,ExistingNodes,ExistingGroups,ExistingShards) ->
 					end
 			end
 	end,
-	interpret_writes1(lists:flatten([{nodes,NodeFinal},{groups,GroupsFinal},Users,Shards]),[]).
-interpret_writes1([{_,[]}|T],L) ->
-	interpret_writes1(T,L);
+	StateVals = state_updates(InsertState,StateUpdates,DelState, ExistingState),
+	interpret_writes1(lists:flatten([{nodes,NodeFinal},{groups,GroupsFinal},Users,Shards,{usrstate,StateVals}]),[]).
+% interpret_writes1([{_,[]}|T],L) ->
+% 	interpret_writes1(T,L);
 interpret_writes1([{K,V}|T],L) ->
 	interpret_writes1(T,[{K,V}|L]);
 interpret_writes1([],L) ->
+	L.
+
+state_updates([{K1,V}|T],U,D,L) ->
+	K = butil:tobin(K1),
+	state_updates(T,U,D,lists:keystore(K,1,L,{K,V}));
+state_updates([],[U|T],D,L) ->
+	#condition{nexo = Op, op1 = FromKey, op2 = FromVal} = U#update.conditions,
+	case U#update.set of
+		[{set,<<"val">>,To}] when FromKey#key.name == <<"id">> ->
+			ok;
+		_ ->
+			To = undefined,	
+			throw({error,only_val_updatable})
+	end,
+	case select_match(Op,FromKey#key.name,FromVal#value.value,L) of
+		[] ->
+			state_updates([],T,D,L);
+		[{Key,_OldVal}] ->
+			state_updates([],T,D,[{Key,To}|lists:keydelete(Key,1,L)])
+	end;
+state_updates([],[],[D|T],L) ->
+	case D#delete.conditions of
+		undefined ->
+			[];
+		#condition{nexo = Op, op1 = FromKey, op2 = FromVal} ->
+			case select_match(Op,FromKey#key.name,FromVal#value.value,L) of
+				[] ->
+					state_updates([],[],T,L);
+				[{Key,_OldVal}] ->
+					state_updates([],[],T,lists:keydelete(Key,1,L))
+			end
+	end;
+state_updates([],[],[],L) ->
 	L.
 
 fix_shards([{From,To,Nd}|T],Nodes,Pos) ->
