@@ -114,7 +114,7 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				%  other nodes in cluster changed db to failed transaction.
 				% Once commited is set to 1 or -1 it is final.
 				ok = actordb_sqlite:okornot(actordb_actor:write(#{ actor => sqlname(P), flags => [create], statements => abandon_sql(Num)})),
-				exit(abandoned)
+				exit({error,abandoned})
 		end
 	end),
 	{noreply,P#dp{execproc = Pid, curnum = Num, curfrom = From}};
@@ -143,7 +143,7 @@ handle_info({'DOWN',_Monitor,_Ref,PID,Result}, #dp{execproc = PID} = P) ->
 			ok;
 		{ok,_} ->
 			ok;
-		abandoned ->
+		{error,abandoned} ->
 			ok;
 		_ ->
 			ok = actordb_sqlite:okornot(actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => abandon_sql(P#dp.curnum)}))

@@ -884,7 +884,7 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 	% Drain message queue.
 	case Sql of
 		delete ->
-			A1 = A#ai{buffer = [<<"#s02;">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
+			A1 = A#ai{buffer = [<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (?1,?2);">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
 				buffer_recs = [[[[?MOVEDTOI,<<"$deleted$">>]]]|A#ai.buffer_recs],
 				buffer_moved = deleted, buffer_fsync = A#ai.buffer_fsync or ForceSync},
 			{noreply,P#dp{wasync = A1}};
@@ -1000,7 +1000,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					case Sql1 of
 						delete ->
 							ComplSql = <<"delete">>,
-							Res = {ok,{changes,1,1}};
+							Res = {ok,{changes,0,1}};
 						_ ->
 							ComplSql = Sql1,
 							Res = actordb_sqlite:exec(P#dp.db,ComplSql,write)
@@ -1009,7 +1009,8 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					EvNum = P#dp.evnum+1,
 					case Sql1 of
 						delete ->
-							Res = {ok,{changes,1,1}};
+							Res = {ok,{changes,0,1}},
+							ComplSql = <<"delete">>;
 						_ ->
 							ComplSql =
 								[<<"#s00;">>,
