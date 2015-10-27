@@ -229,8 +229,20 @@ do_reads([S|_]) ->
 	Groups = actordb_sharedstate:read_global(groups),
 	case Table of
 		<<"state">> ->
-			Out = select(S#select.conditions,actordb_sharedstate:read_global(usrstate,[])),
-			{ok,[{columns,{<<"id">>,<<"val">>}},{rows,Out}]};
+				Keys = [Name || {key,_,Name,_} <- S#select.params],
+				case Keys of
+					[<<"id">>] ->
+						CR = {<<"id">>},
+						Cols = 1;
+					[<<"val">>] ->
+						CR = {<<"val">>},
+						Cols = 2;
+					_ ->
+						CR = {<<"id">>,<<"val">>},
+						Cols = all
+				end,
+			Out = select(Cols,S#select.conditions,actordb_sharedstate:read_global(usrstate,[])),
+			{ok,[{columns,CR},{rows,Out}]};
 		<<"nodes">> ->
 			% For every node, get group list, create a list of [{NodeName,GroupName}]
 			NL = lists:flatten([[{butil:tobin(Nd),butil:tobin(Grp)} || 
@@ -246,27 +258,32 @@ do_reads([S|_]) ->
 			{ok,[{columns,list_to_tuple(KL)},{rows,map_rows(butil:maplistsort(<<"id">>,ML),KL)}]}
 	end.
 
-select(undefined,L) ->
+select(_Cols,undefined,L) ->
 	L;
-select(#condition{nexo = Op, op1 = #key{name = Key1}, op2 = #value{value = Val}}, L) ->
-	select_match(Op,butil:tobin(Key1),Val,L);
-select(#condition{nexo = nexo_or, op1 = C1, op2 = C2}, L) ->
-	S1 = sets:from_list(select(C1,L)),
-	S2 = sets:from_list(select(C2,L)),
+select(Cols,#condition{nexo = Op, op1 = #key{name = Key1}, op2 = #value{value = Val}}, L) ->
+	select_match(Cols,Op,butil:tobin(Key1),Val,L);
+select(Cols,#condition{nexo = nexo_or, op1 = C1, op2 = C2}, L) ->
+	S1 = sets:from_list(select(Cols,C1,L)),
+	S2 = sets:from_list(select(Cols,C2,L)),
 	sets:to_list(sets:union(S1,S2));
-select(#condition{nexo = nexo_and, op1 = C1, op2 = C2}, L) ->
-	S1 = sets:from_list(select(C1,L)),
-	S2 = sets:from_list(select(C2,L)),
+select(Cols,#condition{nexo = nexo_and, op1 = C1, op2 = C2}, L) ->
+	S1 = sets:from_list(select(Cols,C1,L)),
+	S2 = sets:from_list(select(Cols,C2,L)),
 	sets:to_list(sets:intersection(S1,S2)).
 
-select_match(Op,K,Val,L) when is_list(Val) ->
-	select_match(Op,K,butil:tobin(Val),L);
-select_match(Op,<<"id">>,Val,L) ->
-	select_match(Op,1,Val,L);
-select_match(Op,<<"val">>,Val,L) ->
-	select_match(Op,2,Val,L);
-select_match(Op,Index,Val,L) when is_integer(Index) ->
-	[Tuple || Tuple <- L, select_op(Op,element(Index,Tuple),Val)].
+select_match(Cols,Op,K,Val,L) when is_list(Val) ->
+	select_match(Cols,Op,K,butil:tobin(Val),L);
+select_match(Cols,Op,<<"id">>,Val,L) ->
+	select_match(Cols,Op,1,Val,L);
+select_match(Cols,Op,<<"val">>,Val,L) ->
+	select_match(Cols,Op,2,Val,L);
+select_match(Cols,Op,Index,Val,L) when is_integer(Index) ->
+	[select_res(Cols,Tuple) || Tuple <- L, select_op(Op,element(Index,Tuple),Val)].
+
+select_res(all,Tuple) ->
+	Tuple;
+select_res(N,Tuple) ->
+	{element(N,Tuple)}.
 
 select_op(eq,V,V) ->
 	true;
@@ -399,7 +416,7 @@ state_updates([],[U|T],D,L) ->
 			To = undefined,	
 			throw({error,only_val_updatable})
 	end,
-	case select_match(Op,FromKey#key.name,FromVal#value.value,L) of
+	case select_match(all,Op,FromKey#key.name,FromVal#value.value,L) of
 		[] ->
 			state_updates([],T,D,L);
 		[{Key,_OldVal}] ->
@@ -410,7 +427,7 @@ state_updates([],[],[D|T],L) ->
 		undefined ->
 			[];
 		#condition{nexo = Op, op1 = FromKey, op2 = FromVal} ->
-			case select_match(Op,FromKey#key.name,FromVal#value.value,L) of
+			case select_match(all,Op,FromKey#key.name,FromVal#value.value,L) of
 				[] ->
 					state_updates([],[],T,L);
 				[{Key,_OldVal}] ->
