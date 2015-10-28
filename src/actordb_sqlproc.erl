@@ -881,7 +881,6 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 	A = P#dp.wasync,
 	ForceSync = lists:member(fsync,Msg#write.flags),
 	?DBG("writecall evnum_prewrite=~p,term=~p writeinfo=~p",[P#dp.evnum,P#dp.current_term,{MFA,Sql}]),
-	% Drain message queue.
 	case Sql of
 		delete ->
 			A1 = A#ai{buffer = [<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (?1,?2);">>|A#ai.buffer],
