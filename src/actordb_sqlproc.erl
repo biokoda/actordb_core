@@ -1452,20 +1452,18 @@ election_timer(doelection2,P) ->
 			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
 	end.
 
-down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0, 
-		P#dp.schemavers == undefined ->
-	?INF("Stopping with nocreate ",[]),
+down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0 andalso 
+		(P#dp.schemavers == undefined orelse P#dp.movedtonode == deleted) ->
+	?DBG("Stopping with nocreate",[]),
 	Nodes = actordb_sqlprocutil:follower_nodes(P#dp.follower_indexes),
 	spawn(fun() -> bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
 		[P#dp.cbmod,P#dp.actorname,P#dp.actortype,stop]}) end),
-	{stop,nocreate,P};
-down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0, 
-		P#dp.movedtonode == deleted ->
-	?INF("Stopping with nocreate ",[]),
-	Nodes = actordb_sqlprocutil:follower_nodes(P#dp.follower_indexes),
-	spawn(fun() -> bkdcore_rpc:multicall(Nodes,{actordb_sqlproc,call_slave,
-		[P#dp.cbmod,P#dp.actorname,P#dp.actortype,stop]}) end),
-	{stop,nocreate,P};
+	Me = self(),
+	spawn(fun() -> timer:sleep(10), stop(Me) end),
+	actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,nocreate}),
+	A1 = (P#dp.wasync)#ai{buffer = [], buffer_recs = [], buffer_cf = [],
+				buffer_nv = undefined, buffer_moved = undefined},
+	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(), wasync = A1}};
 down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 	actordb_local:actor_mors(master,actordb_conf:node_name()),
 	ReplType = apply(P1#dp.cbmod,cb_replicate_type,[P1#dp.cbstate]),

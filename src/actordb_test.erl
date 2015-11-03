@@ -1,5 +1,5 @@
 -module(actordb_test).
--export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0,udp/0]).
+-export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 -define(SOL_SOCKET, 16#ffff).
@@ -48,28 +48,28 @@ vtinc(N) when N < 16#ffffffffffffff ->
 vtinc(_) ->
 	ok.
 
-udp() ->
-	[spawn(fun() -> udpsrv(N) end) || N <- lists:seq(1,10)],
-	timer:sleep(100),
-	[begin spawn(fun() -> udpclient(N) end) end || N <- lists:seq(1,1000)],
-	ok.
+% udp() ->
+% 	[spawn(fun() -> udpsrv(N) end) || N <- lists:seq(1,10)],
+% 	timer:sleep(100),
+% 	[begin spawn(fun() -> udpclient(N) end) end || N <- lists:seq(1,1000)],
+% 	ok.
 
-udpsrv(N) ->
-	Opts = [{raw, ?SOL_SOCKET, ?SO_REUSEPORT, <<1:32/native>>},
-		{active,true},  inet, binary],
-	{ok,S} = gen_udp:open(23232,Opts),
-	?AINF("Opened ~p",[N]),
-	udpsrv(N,S).
-udpsrv(N,S) ->
-	receive
-		{udp, S, _IP, Port, Msg} ->
-			?AINF("Received msg=~p, on=~p, port=~p",[Msg, N, Port]),
-			udpsrv(N,S)
-	end.
+% udpsrv(N) ->
+% 	Opts = [{raw, ?SOL_SOCKET, ?SO_REUSEPORT, <<1:32/native>>},
+% 		{active,true},  inet, binary],
+% 	{ok,S} = gen_udp:open(23232,Opts),
+% 	?AINF("Opened ~p",[N]),
+% 	udpsrv(N,S).
+% udpsrv(N,S) ->
+% 	receive
+% 		{udp, S, _IP, Port, Msg} ->
+% 			?AINF("Received msg=~p, on=~p, port=~p",[Msg, N, Port]),
+% 			udpsrv(N,S)
+% 	end.
 
-udpclient(N) ->
-	{ok,S} = gen_udp:open(0),
-	gen_udp:send(S,{127,0,0,1},23232,["sending from ",butil:tolist(N)]).
+% udpclient(N) ->
+% 	{ok,S} = gen_udp:open(0),
+% 	gen_udp:send(S,{127,0,0,1},23232,["sending from ",butil:tolist(N)]).
 
 batch() ->
 	Actor = butil:tobin(butil:epochsec()),
@@ -225,7 +225,8 @@ loop(N) ->
 loop1(0,_) ->
 	ok;
 loop1(N,L) ->
-	actordb_util:varint_enc(1000),
+	% actordb_util:varint_enc(1000),
+	actordb:exec("actor type1("++integer_to_list(N)++"); select * from tab;"),
 	loop1(N-1,L).
 
 
