@@ -49,6 +49,7 @@ exec_schema(BP,Sql) ->
 				{ok,_} ->
 					case actordb_sharedstate:write_global([{'schema.yaml',Merged}]) of
 						ok ->
+							timer:sleep(500),
 							{ok,{changes,1,1}};
 						Err ->
 							Err

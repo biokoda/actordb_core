@@ -330,7 +330,8 @@ check_sql(Type,SizeCur,SqlNew,IsKv) ->
 
 compare_tables(Type,NewDb) ->
 	{ok,Db,_,_} = actordb_sqlite:init(":memory:"),
-	ok = actordb_sqlite:exec(Db,tuple_to_list(apply(actordb_schema,Type,[])),read),
+	% io:format("Running: ~s~n",[tuple_to_list(apply(actordb_schema,Type,[]))]),
+	ok = actordb_sqlite:exec(Db,tuple_to_list(apply(actordb_schema,Type,[])),write),
 	compare_tables1(Type,actordb:tables(Type),Db,NewDb).
 compare_tables1(Type,[Table|T],Db,NewDb) ->
 	OldColumns = actordb_sqlite:exec(Db,["pragma table_info(",Table,");"],read),
