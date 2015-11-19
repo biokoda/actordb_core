@@ -575,26 +575,28 @@ exec_writes(P) ->
 
 % We must have successfully replicated at least one write before executing reads.
 exec_reads(#dp{verified = true, rasync = R, wasync = #ai{nreplies = NR}} = P) when R#ai.buffer /= [], NR > 0 ->
-	actordb_sqlproc:read_call1(R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P);
+	case has_schema_updated(P,[]) of
+		ok ->
+			exec_writes(actordb_sqlproc:read_call1(R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P));
+		SUR ->
+			% Skip read for now because we must execute schema change first
+			exec_writes(schema_change(P, SUR))
+	end;
 exec_reads(P) ->
-	P.
+	exec_writes(schema_change(P)).
 
-% schema_change(#dp{schemavers = undefined} = P) ->
-% 	% first write sets schema and vers variable
-% 	P;
 schema_change(#dp{mors = slave} = P) ->
 	P;
 schema_change(P) ->
-	case has_schema_updated(P,[]) of
-		ok ->
-			P;
-		{NewVers,Sql,Recs} ->
-			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers, records = Recs}, undefined,P),
-			NP;
-		{NewVers,Sql} ->
-			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers}, undefined,P),
-			NP
-	end.
+	schema_change(P,has_schema_updated(P,[])).
+schema_change(P,ok) ->
+	P;
+schema_change(P,{NewVers,Sql,Recs}) ->
+	{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers, records = Recs}, undefined,P),
+	NP;
+schema_change(P,{NewVers,Sql}) ->
+	{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers}, undefined,P),
+	NP.
 
 net_changes(#dp{wasync = W} = P) ->
 	case P#dp.netchanges == actordb_local:net_changes() of
@@ -618,9 +620,9 @@ doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactio
 		true ->
 			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
 				{ok,NS} ->
-					exec_writes(exec_reads(schema_change(net_changes(appendqueue(P#dp{cbstate = NS},Skipped)))));
+					exec_reads(net_changes(appendqueue(P#dp{cbstate = NS},Skipped)));
 				_ ->
-					exec_writes(exec_reads(schema_change(net_changes(appendqueue(P,Skipped)))))
+					exec_reads(net_changes(appendqueue(P,Skipped)))
 			end;
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
