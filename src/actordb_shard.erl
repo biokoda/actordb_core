@@ -11,7 +11,7 @@
 -export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/2,cb_nodelist/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 cb_redirected_call/4,cb_write_done/2,cb_unverified_call/2,cb_replicate_type/1,
-		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2, cb_init_engine/1]). %split_other_done/3,
+		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2, cb_init_engine/1]).
 -include_lib("actordb_core/include/actordb.hrl").
 -define(META_NEXT_SHARD,$1).
 -define(META_NEXT_SHARD_NODE,$2).
@@ -29,10 +29,7 @@
 %
 % Shard DB table:
 % ActorNameHash: actors are hashed across cluster, saving hash to DB enables queries like list of actors that should run
-% 								on a specific server
-% BlockedFlag: do not alow DB process to start.
-% MovingAwayFlag: actor is in the process of being moved to another cluster
-% [ActorName, ActorNameHash, BlockedFlag, MovingAwayFlag]
+%                on a specific server.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 -record(state,{idtype,name,type,to,
 	splitcopyfrom,splitcopynode,
@@ -45,11 +42,19 @@
 	% Splitting is not done in a single operation but in chunks (~1000 keys at a time).
 	cleanup_proc, cleanup_pre, cleanup_after}).
 
-% Replicate half of shard by moving upper edge of shard actor-by-actor down.
-% 1. Start actor with highest hash value. Tell him to replicate to another node (same method as inter-cluster replication)
-% 2. Once moved, lower shard upper limit towards next highest hash value actor. Limit is stored in some public ETS.
-% 	 Every time actordb_shardtree is accessed, check this public ETS table if shard is lowering upper limit.
-% 	 actordb_shardtree is only changed once entire upper half of shard is moved over to another node.
+% - Re-balancing (resharding) normal actor types
+%   Replicate half of shard by moving upper edge of shard actor-by-actor down.
+%   1. Start actor with highest hash value. Tell him to replicate to another node (same method as inter-cluster replication)
+%   2. Once moved, lower shard upper limit towards next highest hash value actor. Limit is stored in some public ETS.
+%      Every time actordb_shardtree is accessed, check this public ETS table if shard is lowering upper limit.
+%      actordb_shardtree is only changed once entire upper half of shard is moved over to another node.
+% - Re-balancing kv type
+%   1. Pick a shard
+%   2. Start copying entire shard to new cluster.
+%   2. Once copy completes, delete on both sides. Original keeps lower half, new copy keeps upper half.
+%      Original has space between points P1 and P2.
+%      Original keeps data between hashes P1 and (P1 + (P2-P1)/2)
+%      New copy keeps data between hashes (P1 + 1 + (P2-P1)/2) and P2
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
@@ -79,8 +84,7 @@ start(Name,Type1,Slave,Opt) ->
 	% #state will be provided with every callback from sqlproc.
 	Idtype = actordb:actor_id_type(Type),
 	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{slave,Slave},{mod,?MODULE},create,nohibernate,
-										{state,#state{idtype = Idtype,name = Name,
-														type = Type,to = To}}|Opt]),
+		{state,#state{idtype = Idtype,name = Name,type = Type,to = To}}|Opt]),
 	{ok,Pid}.
 
 
@@ -99,9 +103,9 @@ start_steal(Nd,FromName,To,NewName,Type1) ->
 			case actordb_schema:iskv(Type) of
 				true ->
 					{ok,_Pid} = start(NewName,Type,false,[nohibernate,
-								{state,#state{idtype = Idtype, name = NewName,type = Type, to = To}},
-								{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
-								{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}]);
+						{state,#state{idtype = Idtype, name = NewName,type = Type, to = To}},
+						{copyfrom,{split,{?MODULE,origin_steal_done,[bkdcore:node_name(),NewName]},Nd,FromName,NewName}},
+						{copyreset,{?MODULE,newshard_steal_done,[Nd,FromName]}}]);
 				false ->
 					{ok,Pid} = actordb_sqlproc:start([{actor,NewName},{type,Type},{slave,false},{mod,?MODULE},create,nohibernate,
 						 {state,#state{idtype = Idtype, name = NewName, stealingfromshard = FromName,
@@ -126,10 +130,10 @@ origin_steal_done(P,split,NextShardNode,NextShard) ->
 						cleanup_pre = P#state.name, cleanup_after = NextShard
 						}),
 	{ok,[%"$DELETE FROM actors WHERE hash >= ",butil:tobin(NextShard),";"
-		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',base64:encode(term_to_binary(NextShardNode)),$', ");",
-		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");",
-		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_CLEANUP_PRE,$,,$',butil:tolist(P#state.name),$', ");",
-		 "$INSERT OR REPLACE INTO __meta VALUES (",?META_CLEANUP_AFTER,$,,$',butil:tolist(NextShard),$', ");"],
+		"$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',base64:encode(term_to_binary(NextShardNode)),$', ");",
+		"$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");",
+		"$INSERT OR REPLACE INTO __meta VALUES (",?META_CLEANUP_PRE,$,,$',butil:tolist(P#state.name),$', ");",
+		"$INSERT OR REPLACE INTO __meta VALUES (",?META_CLEANUP_AFTER,$,,$',butil:tolist(NextShard),$', ");"],
 	 NP};
 origin_steal_done(P,check,NewShardNode,NewShard) ->
 	case P#state.nextshard == NewShard andalso  NewShardNode == P#state.nextshardnode of
@@ -320,12 +324,12 @@ actor_stolen(NewShard,ShardName,Type,Actor,ThiefNode) ->
 delete_actor_steal(ShardName,NewShard,Type1,Actor,ThiefNode,Limit) ->
 	Type = butil:toatom(Type1),
 	actordb_sqlproc:write({ShardName,Type},[create],{{?MODULE,cb_del_move_actor,[NewShard,Actor,ThiefNode,Limit]},
-												  undefined,undefined},?MODULE).
+		undefined,undefined},?MODULE).
 
 delete_next(Name,Type1) ->
 	Type = butil:toatom(Type1),
 	actordb_sqlproc:write({Name,Type},[create],
-							<<"DELETE FROM __meta WHERE id in(",?META_NEXT_SHARD,$,,?META_NEXT_SHARD_NODE,");">>,?MODULE).
+		<<"DELETE FROM __meta WHERE id in(",?META_NEXT_SHARD,$,,?META_NEXT_SHARD_NODE,");">>,?MODULE).
 
 try_whereis(N,Type1) ->
 	Type = butil:toatom(Type1),
@@ -446,9 +450,9 @@ cb_del_actor(P,ActorName) ->
 
 cb_del_move_actor(P,_NewShard,Actor,NextShardNode,NextShard) ->
 	Sql = [ "DELETE FROM actors WHERE id=",at(P#state.idtype,Actor),";",
-		  "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',
-		  			base64:encode(term_to_binary(NextShardNode)),$', ");",
-		  "$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");"
+		"$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD_NODE,$,,$',
+		base64:encode(term_to_binary(NextShardNode)),$', ");",
+		"$INSERT OR REPLACE INTO __meta VALUES (",?META_NEXT_SHARD,$,,$',butil:tolist(NextShard),$', ");"
 	],
 	{Sql,P#state{nextshardnode = NextShardNode, nextshard = NextShard}}.
 
@@ -489,8 +493,8 @@ cb_call({move_to_next,ActorName},Client,P) ->
 	?ADBG("Shard move_to_next ~p",[ActorName]),
 	% Actor has been copied over. Call other node to forget actor. Then call to send a new one.
 	ok = actordb:rpc(P#state.stealingfrom,P#state.stealingfromshard,
-						{?MODULE,actor_stolen,[P#state.name,P#state.stealingfromshard,P#state.type,
-													ActorName,bkdcore:node_name()]}),
+		{?MODULE,actor_stolen,[P#state.name,P#state.stealingfromshard,P#state.type,
+		ActorName,bkdcore:node_name()]}),
 	cb_call(do_steal,Client,P);
 % Steal a single actor from node indicated in #state.stealingfrom
 % There must be a shard with the same name and type as this one running there.
