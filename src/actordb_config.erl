@@ -192,7 +192,6 @@ exec1(false,Cmds) ->
 	Users = [{U,P,[{'*',read},{'*',write},{{config},read},{{config},write}]} || {U,P,_H} <- Usrs2],
 
 	{Nodes1,Grp3} = insert_to_grpnd(Cmds),
-	
 	check_el(Grp3,missing_group_insert),
 	check_el(Nodes1,missing_nodes_insert),
 	check_el(Usrs2,missing_root_user),

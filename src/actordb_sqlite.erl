@@ -8,7 +8,7 @@ stop/1,close/1,checkpoint/2,rollback/1,
 lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2,
 all_tunnel_call/1,tcp_reconnect/0,exec_res/2,exec_res/1,
 tcp_connect_async/5,store_prepared_table/2, wal_rewind/2, term_store/3, actor_info/1,replication_done/1,
-iterate_close/1, inject_page/3,fsync/1, iterate_db/2, iterate_db/3, checkpoint_lock/2]).
+iterate_close/1, inject_page/3,fsync/1, iterate_db/2, iterate_db/3, checkpoint_lock/2, wal_rewind/3]).
 % -include_lib("actordb_core/include/actordb.hrl").
 -include_lib("actordb_sqlproc.hrl").
 
@@ -37,6 +37,13 @@ wal_rewind(#dp{dbpath = queue} = P,Evnum) ->
 	actordb_queue:cb_wal_rewind(P#dp.cbstate,Evnum);
 wal_rewind(Db,Evnum) when element(1,Db) == actordb_driver ->
 	actordb_driver:wal_rewind(Db,Evnum).
+
+wal_rewind(P,Evnum,Sql) when element(1,P#dp.db) == actordb_driver ->
+	actordb_driver:wal_rewind(P#dp.db,Evnum,Sql);
+wal_rewind(#dp{dbpath = queue} = P,Evnum,Sql) ->
+	actordb_queue:cb_wal_rewind(P#dp.cbstate,Evnum,Sql);
+wal_rewind(Db,Evnum,Sql) when element(1,Db) == actordb_driver ->
+	actordb_driver:wal_rewind(Db,Evnum,Sql).
 
 term_store(P,CurrentTerm,VotedFor) when element(1,P#dp.db) == actordb_driver ->
 	ok = actordb_driver:term_store(P#dp.db, CurrentTerm, VotedFor);

@@ -216,10 +216,17 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 			BD = P#dp.wasync,
 			case P#dp.movedtonode of
 				deleted ->
+					Moved = deleted,
+					Me = self(),
+					actordb_sqlprocutil:delete_actor(P),
+					spawn(fun() -> actordb_sqlproc:stop(Me) end);
+				{moved,Nd} ->
+					Moved = Nd,
 					Me = self(),
 					actordb_sqlprocutil:delete_actor(P),
 					spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
+					Moved = P#dp.movedtonode,
 					case actordb_conf:sync() == true orelse P#dp.force_sync of
 						true ->
 							% Some time goes by between write and replication.
@@ -232,7 +239,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 			end,
 			reply(P#dp.callfrom,P#dp.callres),
 			actordb_sqlite:replication_done(P),
-			doqueue(checkpoint(do_cb(P#dp{callfrom = undefined, callres = undefined,
+			doqueue(checkpoint(do_cb(P#dp{movedtonode = Moved, callfrom = undefined, callres = undefined,
 				force_sync = false, wasync = BD#ai{nreplies = BD#ai.nreplies + 1}})));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
@@ -323,8 +330,10 @@ read_db_state(#dp{db = queue} = P) ->
 	read_db_state(P,[{?SCHEMA_VERS,1},{?EVTERMI,Term},{?EVNUMI,Evnum}]).
 read_db_state(P,Rows) ->
 	?DBG("Adb rows ~p",[Rows]),
+	% Every read parameter should have default val.
+	% This may be read on an actor that just has redirect marker.
 	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
-	Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows)),
+	Vers = butil:toint(butil:ds_val(?SCHEMA_VERSI,Rows, 0)),
 	MovedToNode1 = butil:ds_val(?MOVEDTOI,Rows),
 	case MovedToNode1 of
 		<<"$deleted$">> ->
@@ -689,6 +698,9 @@ doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactio
 					SkippedNew = Skipped,
 					?DBG("Received stop call"),
 					{stop, stopped, P};
+				noop ->
+					SkippedNew = Skipped,
+					{reply, noop, P#dp{callqueue = CQ}};
 				Msg ->
 					SkippedNew = Skipped,
 					% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
@@ -1239,6 +1251,13 @@ checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 checkpoint(P) ->
 	P.
 
+moved_replace(P,Node) ->
+	?INF("Replacing actor with redirect marker to node=~p",[Node]),
+	Sql = ["CREATE TABLE IF NOT EXISTS __adb (id INTEGER PRIMARY KEY, val TEXT);",
+		<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (">>,?MOVEDTO,",'",Node,"');"],
+	actordb_sqlite:wal_rewind(P#dp.db,0,Sql),
+	ok.
+
 delete_actor(P) ->
 	?DBG("deleting actor ~p ~p ~p",[P#dp.actorname,P#dp.dbcopy_to,P#dp.dbcopyref]),
 	case ((P#dp.flags band ?FLAG_TEST == 0) andalso
@@ -1259,14 +1278,19 @@ delete_actor(P) ->
 			ok
 	end,
 	% ?DBG("Deleted from shard ~p",[P#dp.follower_indexes]),
-	ok = actordb_sqlite:wal_rewind(P,0),
+	case P#dp.movedtonode of
+		{moved,Moved} ->
+			moved_replace(P,Moved);
+		_ ->
+			ok = actordb_sqlite:wal_rewind(P#dp.db,0)
+	end,
 	case P#dp.follower_indexes of
 		[] ->
 			ok;
 		_ ->
 			spawn(fun() ->
 			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
-				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,deleted}}]})
+				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}}]})
 			end)
 	% 		{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,stop,
 	% 						[{P#dp.actorname,P#dp.actortype}]})
@@ -1619,7 +1643,7 @@ dbcopy_start(P,Home,ActorTo) ->
 	end),
 	dbcopy(P#dp{evnum = 0, evterm = 0},Home,ActorTo,undefined,[],[],0).
 
-dbcopy_done(P,<<>>,Home,ActorTo) ->
+dbcopy_done(P,<<>>,_Home,_ActorTo) ->
 	% This should only happen from imports from pre-lmdb versions of actordb
 	Param = [{bin,{<<>>,<<>>}},{status,done},{origin,original},{curterm,P#dp.current_term}],
 	exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));

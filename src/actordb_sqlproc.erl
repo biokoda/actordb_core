@@ -727,8 +727,12 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
 			{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(Now,P#dp.election)}}
 	end;
-state_rw_call({delete,_MovedToNode},From,P) ->
+state_rw_call({delete,deleted},From,P) ->
 	ok = actordb_sqlite:wal_rewind(P,0),
+	reply(From,ok),
+	{stop,normal,P};
+state_rw_call({delete,{moved,Moved}},From,P) ->
+	actordb_sqlprocutil:moved_replace(P,Node),
 	reply(From,ok),
 	{stop,normal,P};
 state_rw_call(checkpoint,_From,P) ->
