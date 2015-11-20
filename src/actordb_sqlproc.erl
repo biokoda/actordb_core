@@ -732,7 +732,7 @@ state_rw_call({delete,deleted},From,P) ->
 	reply(From,ok),
 	{stop,normal,P};
 state_rw_call({delete,{moved,Moved}},From,P) ->
-	actordb_sqlprocutil:moved_replace(P,Node),
+	actordb_sqlprocutil:moved_replace(P,Moved),
 	reply(From,ok),
 	{stop,normal,P};
 state_rw_call(checkpoint,_From,P) ->

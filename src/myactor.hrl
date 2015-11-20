@@ -10,9 +10,9 @@
 -define(MYACTOR_VER,<<"5.5.0-myactor-proto">>).
 
 %% Error description macro. After this macro is used ErrDesc variable can be used alongiside of myactor_proto:send_err/2 function.
--define(ERR_DESC(Cst,Err), 	_ErrId = butil:tolist(butil:uuid(list_to_binary(io_lib:format("~p",[Err])))), 
-							lager:error("myactor exception (errid=~p) (state=~p) (query=~p) : ~p",[_ErrId, Cst, Query, Err]), 
-							ErrDesc = list_to_binary(io_lib:format("Error-Id: ~p~nException: ~p ",[_ErrId, Err])) ).
+-define(ERR_DESC(Cst,Err), _ErrId = butil:tolist(butil:uuid(list_to_binary(io_lib:format("~p",[Err])))), 
+lager:error("myactor exception (errid=~p) (state=~p) (query=~p) : ~p",[_ErrId, Cst, Query, Err]), 
+ErrDesc = list_to_binary(io_lib:format("Error-Id: ~p~nException: ~p ",[_ErrId, Err])) ).
 
 %% Capability flag definitions
 -define(CAPABILITY_LONG_PASSWORD, 1).
@@ -39,27 +39,27 @@
 -define(CAPABILITY_PLUGIN_AUTH_LENENC_CLIENT_DATA, 16#200000).
 
 -define(CAPABILITY_MAP,[
-        {?CAPABILITY_LONG_PASSWORD,long_password},
-        {?CAPABILITY_FOUND_ROWS,found_rows},
-        {?CAPABILITY_LONG_FLAG, long_flag},
-        {?CAPABILITY_CONNECT_WITH_DB, connect_with_db},
-        {?CAPABILITY_NO_SCHEMA, no_schema},
-        {?CAPABILITY_COMPRESS, compress},
-        {?CAPABILITY_ODBC, odbc},
-        {?CAPABILITY_LOCAL_FILES, local_files},
-        {?CAPABILITY_IGNORE_SPACE, ignore_space},
-        {?CAPABILITY_PROTOCOL_41, protocol_41},
-        {?CAPABILITY_INTERACTIVE, interactive},
-        {?CAPABILITY_SSL, ssl},
-        {?CAPABILITY_IGNORE_SIGPIPE, ignore_sigpipe},
-        {?CAPABILITY_TRANSACTIONS, transactions},
-        {?CAPABILITY_SECURE_CONNECTION, secure_connection},
-        {?CAPABILITY_MULTI_STATEMENTS, multi_statements},
-        {?CAPABILITY_MULTI_RESULTS, multi_results},
-        {?CAPABILITY_PS_MULTI_RESULTS, ps_multi_results},
-        {?CAPABILITY_PLUGIN_AUTH, plugin_auth},
-        {?CAPABILITY_CONNECT_ATTRS, connect_attrs},
-        {?CAPABILITY_PLUGIN_AUTH_LENENC_CLIENT_DATA, auth_lenenc_client_data} ]).
+{?CAPABILITY_LONG_PASSWORD,long_password},
+{?CAPABILITY_FOUND_ROWS,found_rows},
+{?CAPABILITY_LONG_FLAG, long_flag},
+{?CAPABILITY_CONNECT_WITH_DB, connect_with_db},
+{?CAPABILITY_NO_SCHEMA, no_schema},
+{?CAPABILITY_COMPRESS, compress},
+{?CAPABILITY_ODBC, odbc},
+{?CAPABILITY_LOCAL_FILES, local_files},
+{?CAPABILITY_IGNORE_SPACE, ignore_space},
+{?CAPABILITY_PROTOCOL_41, protocol_41},
+{?CAPABILITY_INTERACTIVE, interactive},
+{?CAPABILITY_SSL, ssl},
+{?CAPABILITY_IGNORE_SIGPIPE, ignore_sigpipe},
+{?CAPABILITY_TRANSACTIONS, transactions},
+{?CAPABILITY_SECURE_CONNECTION, secure_connection},
+{?CAPABILITY_MULTI_STATEMENTS, multi_statements},
+{?CAPABILITY_MULTI_RESULTS, multi_results},
+{?CAPABILITY_PS_MULTI_RESULTS, ps_multi_results},
+{?CAPABILITY_PLUGIN_AUTH, plugin_auth},
+{?CAPABILITY_CONNECT_ATTRS, connect_attrs},
+{?CAPABILITY_PLUGIN_AUTH_LENENC_CLIENT_DATA, auth_lenenc_client_data} ]).
 
 %% Header response codes 
 -define(OK_HEADER,16#00).
