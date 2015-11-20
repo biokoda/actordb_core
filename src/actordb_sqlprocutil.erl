@@ -1619,6 +1619,10 @@ dbcopy_start(P,Home,ActorTo) ->
 	end),
 	dbcopy(P#dp{evnum = 0, evterm = 0},Home,ActorTo,undefined,[],[],0).
 
+dbcopy_done(P,<<>>,Home,ActorTo) ->
+	% This should only happen from imports from pre-lmdb versions of actordb
+	Param = [{bin,{<<>>,<<>>}},{status,done},{origin,original},{curterm,P#dp.current_term}],
+	exit(rpc(P#dp.dbcopy_to,{?MODULE,dbcopy_send,[P#dp.dbcopyref,Param]}));
 dbcopy_done(P,Head,Home,ActorTo) ->
 	{Evterm,Evnum} = read_header(Head),
 	?DBG("DBCOPY DONE! term=~p, num=~p",[Evterm,Evnum]),
@@ -1658,7 +1662,9 @@ dbcopy(P,Home,ActorTo,_F, BufHead,BufBin,SizeBuf) ->
 			dbcopy(P,Home,ActorTo,Iter, [Head|BufHead], [Bin|BufBin],SizeBuf+byte_size(Bin));
 		{ok,_Iter,Bin,Head,Done} when Done > 0 ->
 			dbcopy_do(P,{Bin,Head}),
-			dbcopy_done(P,Head,Home,ActorTo)
+			dbcopy_done(P,Head,Home,ActorTo);
+		done when BufHead == [], BufBin == [] ->
+			dbcopy_done(P,<<>>,Home,ActorTo)
 	end.
 
 % Executed on node that is receiving db.
@@ -1752,7 +1758,12 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 	receive
 		{Ref,Source,Param} when Ref == P#dp.dbcopyref ->
 			[{Bin,Header},Status,Origin] = butil:ds_vals([bin,status,origin],Param),
-			{Evterm,Evnum} = read_header(Header),
+			case Header of
+				<<>> ->
+					Evterm = Evnum = done;
+				_ ->
+					{Evterm,Evnum} = read_header(Header)
+			end,
 			% ?DBG("copy_receive size=~p, origin=~p, status=~p",[byte_size(Bin),Origin,Status]),
 			case Origin of
 				original ->
