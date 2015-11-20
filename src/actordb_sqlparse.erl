@@ -177,7 +177,7 @@ parse_statements(BP,[],L,Prepared,Use,S,IsWrite,GIsWrite) ->
 meta_call(["show schema;"|T],Out) ->
 	All = [begin
 		Tuple = apply(actordb_schema,Type,[]),
-		[{butil:tobin(Type),iolist_to_binary(Line)} || Line <- tuple_to_list(Tuple)]
+		lists:reverse([{butil:tobin(Type),iolist_to_binary(Line)} || Line <- tuple_to_list(Tuple)])
 	 end || Type <- actordb_schema:types()],
 	meta_call(T,[[{columns,{<<"type">>,<<"sql">>}},{rows,lists:flatten(All)}]|Out]);
 meta_call([_|T],O) ->
