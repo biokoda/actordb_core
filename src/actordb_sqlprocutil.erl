@@ -577,6 +577,43 @@ statequeue(P) ->
 			end
 	end.
 
+has_schema_updated(P,Sql) ->
+	case catch actordb_schema:num() of
+		Schema ->
+			ok
+	end,
+	case is_integer(P#dp.schemanum) andalso
+			(P#dp.schemanum == Schema orelse
+			P#dp.transactionid /= undefined orelse
+			Sql == delete) of
+		true when P#dp.schemavers /= undefined ->
+			ok;
+		_ ->
+			case P#dp.schemavers of
+				undefined ->
+					Vers = 0;
+				Vers ->
+					ok
+			end,
+			case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
+				{_,[]} when is_integer(P#dp.schemanum) == false ->
+					{ok,Schema};
+				{_,[]} ->
+					ok;
+				{NewVers,SchemaUpdate} ->
+					case Vers of
+						0 ->
+							{BS,Records1} = base_schema(NewVers,P#dp.actortype),
+							{NewVers,[BS,SchemaUpdate],Records1};
+						_ ->
+							?DBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
+							{NewVers,iolist_to_binary([SchemaUpdate,
+							<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,
+							"' WHERE id=",?SCHEMA_VERS/binary,";">>])}
+					end
+			end
+	end.
+
 exec_writes(#dp{verified = true, wasync = W} = P) when W#ai.buffer /= [] ->
 	actordb_sqlproc:write_call1(#write{sql = W#ai.buffer, records = W#ai.buffer_recs},W#ai.buffer_cf,W#ai.buffer_nv,P);
 exec_writes(P) ->
@@ -587,6 +624,8 @@ exec_reads(#dp{verified = true, rasync = R, wasync = #ai{nreplies = NR}} = P) wh
 	case has_schema_updated(P,[]) of
 		ok ->
 			exec_writes(actordb_sqlproc:read_call1(R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P));
+		{ok,SchemaNum} ->
+			exec_writes(actordb_sqlproc:read_call1(R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P#dp{schemanum = SchemaNum}));
 		SUR ->
 			% Skip read for now because we must execute schema change first
 			exec_writes(schema_change(P, SUR))
@@ -600,12 +639,14 @@ schema_change(P) ->
 	schema_change(P,has_schema_updated(P,[])).
 schema_change(P,ok) ->
 	P;
+schema_change(P,{ok,SN}) ->
+	P#dp{schemanum = SN};
 schema_change(P,{NewVers,Sql,Recs}) ->
 	{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers, records = Recs}, undefined,P),
-	NP;
+	NP#dp{schemanum = actordb_schema:num()};
 schema_change(P,{NewVers,Sql}) ->
 	{noreply,NP} = actordb_sqlproc:write_call(#write{sql = Sql, newvers = NewVers}, undefined,P),
-	NP.
+	NP#dp{schemanum = actordb_schema:num()}.
 
 net_changes(#dp{wasync = W} = P) ->
 	case P#dp.netchanges == actordb_local:net_changes() of
@@ -1332,40 +1373,6 @@ semicolon([H|T]) ->
 	[H|semicolon(T)];
 semicolon([]) ->
 	[].
-
-has_schema_updated(P,Sql) ->
-	case catch actordb_schema:num() of
-		Schema ->
-			ok
-	end,
-
-	case P#dp.schemanum == Schema orelse P#dp.transactionid /= undefined orelse Sql == delete of
-		true when P#dp.schemavers /= undefined ->
-			ok;
-		_ ->
-			case P#dp.schemavers of
-				undefined ->
-					Vers = 0;
-				Vers ->
-					ok
-			end,
-			case apply(P#dp.cbmod,cb_schema,[P#dp.cbstate,P#dp.actortype,Vers]) of
-				{_,[]} ->
-					ok;
-				{NewVers,SchemaUpdate} ->
-					case Vers of
-						0 ->
-							{BS,Records1} = base_schema(NewVers,P#dp.actortype),
-							{NewVers,[BS,SchemaUpdate],Records1};
-						_ ->
-							?DBG("updating schema ~p ~p",[?R2P(P),SchemaUpdate]),
-							{NewVers,iolist_to_binary([SchemaUpdate,
-							<<"UPDATE __adb SET val='",(butil:tobin(NewVers))/binary,
-							"' WHERE id=",?SCHEMA_VERS/binary,";">>])}
-					end
-			end
-	end.
-
 
 % If called on slave, first check if master nodes is even alive.
 % If not stop this process. It will cause actor to get started again and likely master node will
