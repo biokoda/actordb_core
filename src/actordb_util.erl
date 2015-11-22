@@ -64,12 +64,12 @@ typeatom(<<_/binary>> = Type) ->
 		TypeAtom when is_atom(TypeAtom) ->
 			case actordb:actor_id_type(TypeAtom) of
 				undefined ->
-					throw({unknown_actor_type,Type});
+					throw({error,"unknown_actor_type "++butil:tolist(Type)});
 				_ ->
 					TypeAtom
 			end;
 		_ ->
-			throw({unknown_actor_type,Type})
+			throw({error,"unknown_actor_type: "++butil:tolist(Type)})
 	end;
 typeatom(T) when is_atom(T) ->
 	T.

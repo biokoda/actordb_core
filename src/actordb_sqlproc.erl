@@ -848,12 +848,12 @@ read_call1(Sql,Recs,From,P) ->
 		{ok,ResTuples} ->
 			?DBG("Read resp=~p",[Res]),
 			read_reply(P#dp{rasync = #ai{}, activity = actordb_local:actor_activity(P#dp.activity)}, From, 1, ResTuples);
-		{sql_error,ErrMsg,_} = Err ->
-			?ERR("Read call error: ~p",[Err]),
-			ErrPos = element(1,ErrMsg),
+		% {sql_error,ErrMsg,_} = Err ->
+		{sql_error,{ErrPos,_,_ErrAtom,ErrStr},_} ->
+			?ERR("Read call error: ~p",[Res]),
 
 			{Before,[Problem|After]} = lists:split(ErrPos,From),
-			reply(Problem, Res),
+			reply(Problem, {error,ErrStr}),
 
 			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos,Sql),
 			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos,Recs),
