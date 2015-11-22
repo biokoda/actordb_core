@@ -853,7 +853,7 @@ read_call1(Sql,Recs,From,P) ->
 			?ERR("Read call error: ~p",[Res]),
 
 			{Before,[Problem|After]} = lists:split(ErrPos,From),
-			reply(Problem, {error,ErrStr}),
+			reply(Problem, {sql_error,ErrStr}),
 
 			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos,Sql),
 			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos,Recs),
@@ -1225,7 +1225,7 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 			CF = lists:reverse(tl(lists:reverse(CF1))),
 			?DBG("Error pos ~p, cf=~p",[ErrPos-1,CF]),
 			{Before,[Problem|After]} = lists:split(ErrPos-1,CF),
-			reply(Problem, {error,ErrStr}),
+			reply(Problem, {sql_error,ErrStr}),
 
 			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos-1,lists:reverse(W#write.sql)),
 			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos-1,lists:reverse(W#write.records)),
