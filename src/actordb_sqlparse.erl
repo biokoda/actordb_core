@@ -104,6 +104,18 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 							S = actordb_local:status(),
 							S1 = [{butil:tobin(K),butil:tobin(V)} || {K,V} <- S],
 							[[{columns,{<<"key">>,<<"val">>}},{rows,S1}]];
+						shards ->
+							case actordb:types() of
+								schema_not_loaded ->
+									throw({error,not_initialized});
+								_ ->
+									S = actordb_shardmngr:status(),
+									F = fun(undefined) -> undefined; (V) -> butil:tobin(V) end,
+									% S is list of property lists. Convert to columns and rows.
+									Keys = list_to_tuple([butil:tobin(K) || {K,_} <- hd(S)]),
+									Rows = [list_to_tuple([F(V) || {_,V} <- Shard]) || Shard <- S],
+									[[{columns, Keys},{rows,lists:reverse(Rows)}]]
+							end;
 						_ ->
 							parse_statements(BP,T,L,PreparedRows,CurUse,[H|CurStatements],IsWrite,GIsWrite)
 					end;
@@ -366,12 +378,20 @@ parse_show(Bin) ->
 			status;
 		<<"STATUS",_/binary>> ->
 			status;
+		<<"shards",_/binary>> ->
+			shards;
+		<<"Shards",_/binary>> ->
+			shards;
+		<<"SHARDS",_/binary>> ->
+			shards;
 		<<_/binary>> = Str ->
 			case string:to_lower(butil:tolist(Str)) of
 				"tables"++_ ->
 					tables;
 				"status" ->
 					status;
+				"shards" ->
+					shards;
 				_ ->
 					ok
 			end;

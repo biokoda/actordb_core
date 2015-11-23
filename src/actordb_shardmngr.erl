@@ -8,7 +8,8 @@
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/0,reload/0,deser_prop/1]).
 -export([find_local_shard/2,find_local_shard/3,is_local_shard/1,is_local_shard/2,find_global_shard/1,find_global_shard/2,steal_shard/3,
-			set_shard_border/5,shard_moved/3,shard_started/3,shard_has_split/2,get_local_shards/0,schema_changed/0]).
+	set_shard_border/5,shard_moved/3,shard_started/3,shard_has_split/2,get_local_shards/0,schema_changed/0,
+	get_shard_borders/0, status/0]).
 % for testing
 -export([create_shards/1]).
 -include_lib("actordb_core/include/actordb.hrl").
@@ -26,6 +27,26 @@ start() ->
 
 schema_changed() ->
 	gen_server:cast(?MODULE,schema_changed).
+
+status() ->
+	% [{id, Shard},{type,Type},{size,N},{moving_to,N},{moved_percent,N}]
+	% Borders = [[{id, Shard}, {type, Type}, {}] || {{Shard,Type},{Limit,NewNode,NewShard}} <- get_shard_borders()],
+	Borders = actordb_shardmngr:get_shard_borders(),
+	Shards = flatten_shards(actordb_shardtree:local()),
+	TypedShards = lists:flatten([[{T,From,To,Node} || T <- actordb:types()] || {From,To,Node} <- Shards]),
+	[begin
+		case lists:keyfind({From,Type}, 1, Borders) of
+			false ->
+				[{id, From}, {type, Type}, {size, To-From}, {moving_to, undefined}, {moved_percent,undefined}];
+			{_,{Limit,NewNode,NewShard}} ->
+				[{id, From}, {type, Type}, {size, To-From}, {moving_to, NewNode}, {moved_percent,((To-Limit) / ((To-From) div 2))*100}]
+		end
+	end || {Type,From,To,_Nd} <- TypedShards].
+
+flatten_shards({From, To, Node, Left, Right}) ->
+	flatten_shards(Left)++[{From,To,Node}]++flatten_shards(Right);
+flatten_shards(undefined) ->
+	[].
 
 % Return shard id for actor. It should be local, but might not be if shard is in the process of moving to another node.
 % In this case {redirect,ActualNode} is returned.
@@ -102,6 +123,9 @@ find_global_shard(_Actor,Hash) ->
 % Its upper border gets lowered for every actor moved over to new node.
 set_shard_border(Shard,NewShard,Type,Limit,NewNode) ->
 	butil:ds_add({Shard,Type},{Limit,NewNode,NewShard},?BORDERETS).
+
+get_shard_borders() ->
+	ets:tab2list(?BORDERETS).
 
 % When shard has been completely moved over to a new node, this gets called.
 % Once all types for shard have been moved over to another node, it will tell shardmngr on global master node
