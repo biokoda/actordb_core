@@ -68,8 +68,9 @@ parse(Input) when is_binary(Input) ->
 
 -spec 'show_query'(input(), index()) -> parse_result().
 'show_query'(Input, Index) ->
-  p(Input, Index, 'show_query', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), p_regexp(<<"(?i)show">>), p_optional(fun 'space'/2), p_zero_or_more(p_anything())]))(I,D) end, fun(_Node, _Idx) ->
-    show
+  p(Input, Index, 'show_query', fun(I,D) -> (p_seq([p_optional(fun 'space'/2), p_regexp(<<"(?i)show">>), p_optional(fun 'space'/2), p_zero_or_more(p_anything())]))(I,D) end, fun(Node, _Idx) ->
+    [_, _Show, _, What] = Node,
+    {show,iolist_to_binary(What)}
  end).
 
 -spec 'set_query'(input(), index()) -> parse_result().

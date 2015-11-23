@@ -603,6 +603,8 @@ cmd(P,Bin,Tuple) ->
 	case Tuple of
 		{fail,_} ->
 			{error,bad_query};
+		{show,_} ->
+			[show|P];
 		show ->
 			[show|P];
 		% #show{} = R ->

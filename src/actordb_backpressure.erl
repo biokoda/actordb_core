@@ -5,7 +5,7 @@
 -behaviour(gen_server).
 -export([start/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 -export([start_caller/0,start_caller/2,start_caller/3,stop_caller/1,sleep_caller/1, is_enabled/0,is_enabled/2,
-			inc_callcount/0,inc_callcount/1,dec_callcount/0,dec_callcount/1,call_count/0,call_size/0,
+			inc_callcount/0,inc_callcount/1,dec_callcount/0,dec_callcount/1,call_count/0,call_size/0, nclients/0,
 			inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2,
 			save/3,getval/2,delval/2,has_authentication/3]).
 -define(LAGERDBG,true).
@@ -23,6 +23,7 @@ start_caller(Username, Password) ->
 	start_caller(Username, Password, <<>>).
 start_caller(Username, Password, Salt1) ->
 	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
+	ets:update_counter(bpcounters,clients,1),
 	Users = actordb_sharedstate:read_global_users(),
 	case Users of
 		nostate ->
@@ -40,6 +41,7 @@ stop_caller(P) ->
 	dec_callcount(Count),
 	dec_callsize(Size),
 	ets:delete(Tid),
+	ets:update_counter(bpcounters,clients,-1),
 	ok.
 
 handle_login(E)->
@@ -182,7 +184,8 @@ call_count() ->
 	butil:ds_val(global_count,bpcounters).
 call_size() ->
 	butil:ds_val(global_size,bpcounters).
-
+nclients() ->
+	butil:ds_val(clients,bpcounters).
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -235,7 +238,8 @@ init(_) ->
 		undefined ->
 			ets:new(bpcounters, [{write_concurrency,true},named_table,public,set,{heir,whereis(actordb_sup),<<>>}]),
 			butil:ds_add(global_count,0,bpcounters),
-			butil:ds_add(global_size,0,bpcounters);
+			butil:ds_add(global_size,0,bpcounters),
+			butil:ds_add(clients,0,bpcounters);
 		_ ->
 			ok
 	end,

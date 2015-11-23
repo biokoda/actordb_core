@@ -100,6 +100,10 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 						tables when CurUse /= undefined ->
 							ST = <<"select name from sqlite_master where type='table';">>,
 							parse_statements(BP,T,L,PreparedRows,CurUse,[ST|CurStatements],true, true);
+						status ->
+							S = actordb_local:status(),
+							S1 = [{butil:tobin(K),butil:tobin(V)} || {K,V} <- S],
+							[[{columns,{<<"key">>,<<"val">>}},{rows,S1}]];
 						_ ->
 							parse_statements(BP,T,L,PreparedRows,CurUse,[H|CurStatements],IsWrite,GIsWrite)
 					end;
@@ -356,10 +360,18 @@ parse_show(Bin) ->
 			tables;
 		<<"Tables",_/binary>> ->
 			tables;
+		<<"Status",_/binary>> ->
+			status;
+		<<"status",_/binary>> ->
+			status;
+		<<"STATUS",_/binary>> ->
+			status;
 		<<_/binary>> = Str ->
 			case string:to_lower(butil:tolist(Str)) of
 				"tables"++_ ->
 					tables;
+				"status" ->
+					status;
 				_ ->
 					ok
 			end;

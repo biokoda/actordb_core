@@ -1,16 +1,15 @@
 % This Source Code Form is subject to the terms of the Mozilla Public
 % License, v. 2.0. If a copy of the MPL was not distributed with this
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
-
 -module(actordb_local).
 -behaviour(gen_server).
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2,
-		terminate/2, code_change/3,print_info/0,killactors/0,ulimit/0]).
+		terminate/2, code_change/3,print_info/0,killactors/0,ulimit/0, status/0]).
 % Multiupdaters
 -export([pick_mupdate/0,mupdate_busy/2,get_mupdaters_state/0,reg_mupdater/2,local_mupdaters/0]).
 % Actor activity
 -export([actor_started/0,actor_mors/2,actor_activity/1]).
--export([subscribe_stat/0,report_write/0, report_read/0,get_nreads/0,get_nwrites/0,get_nactors/0]).
+-export([subscribe_stat/0,report_write/0, report_read/0,get_nreads/0,get_nwrites/0,get_nactors/0, get_nactive/0]).
 % Ref age
 -export([net_changes/0,mod_netchanges/0, elapsed_time/0, timer/1]).
 -define(LAGERDBG,true).
@@ -47,6 +46,19 @@ mod_netchanges() ->
 elapsed_time() ->
 	[{_,N}] = ets:lookup(?TIMETABLE,elapsed_time),
 	N.
+
+status() ->
+	Alive = get_nactors()-1,
+	Active = get_nactive(),
+	[{uptime,elapsed_time() div 1000},
+	{actors_active,Active},
+	{actors_inactive,ets:info(?HIBERNATE,size)},
+	{actors_alive,Alive},
+	{reads,get_nreads()},
+	{writes,get_nwrites()},
+	{client_connections,actordb_backpressure:nclients()},
+	{queries_running,actordb_backpressure:call_count()},
+	{queries_running_size,actordb_backpressure:call_size()}].
 
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
 %
@@ -86,7 +98,17 @@ get_nactors() ->
 		Size ->
 			Size
 	end.
-
+get_nactive() ->
+	GI = ets:tab2list(?GLOBAL_INFO),
+	[Cur,Prev] = butil:ds_vals([?CUR_ACTIVE, ?PREV_ACTIVE],GI),
+	case catch ets:info(Prev,size) of
+		PrevN when is_integer(PrevN) ->
+			CurN = ets:info(Cur,size),
+			PrevN+CurN;
+		_ ->
+			erlang:yield(),
+			get_nactive()
+	end.
 
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
 %
@@ -223,15 +245,6 @@ handle_cast(killactors,P) ->
 handle_cast(_, P) ->
 	{noreply, P}.
 
-% killactors(_,'$end_of_table') ->
-% 	ok;
-% killactors(N,_) when N =< 0 ->
-% 	ok;
-% killactors(N,Key) ->
-% 	[{_Now,Pid}] = ets:lookup(actoractivity,Key),
-% 	actordb_sqlproc:diepls(Pid,overlimit),
-% 	killactors(N-1,ets:prev(actoractivity,Key)).
-
 
 handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 	start_timer(P),
@@ -248,7 +261,7 @@ handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 			% ?AINF("pid=~p, died=~p",[PID,_Reason]),
 			butil:ds_rem(PID,actorsalive),
 			case ets:member(?HIBERNATE,PID) of
-				true ->
+			true ->
 					butil:ds_rem(PID,?HIBERNATE);
 				false ->
 					Prev = butil:ds_val(?PREV_ACTIVE,?GLOBAL_INFO),
@@ -541,10 +554,12 @@ init(_) ->
 			Proclimit = 30,
 			Memlimit = ?GB;
 		_ when Memlimit1 =< ?GB*4 ->
-			Proclimit = 100,
+			Proclimit = 400,
 			Memlimit = 2*?GB;
 		_ ->
-			Proclimit = round(Memlimit1 / (8*?MB*2)),
+			% 100 is page cache size per sqlite instance
+			% 4096 is page size
+			Proclimit = round(Memlimit1 / (8*100*4096)),
 			Memlimit = round(Memlimit1*0.5)
 	end,
 	P = #dp{memlimit = Memlimit, ulimit = Ulimit, proclimit = Proclimit},

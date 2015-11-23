@@ -42,7 +42,8 @@ desc_query <- space? describe space table space? `
 % --------------- SHOW
 
 show_query <- space? #(?i)show# space? .* `
-    show
+    [_, _Show, _, What] = Node,
+    {show,iolist_to_binary(What)}
 `;
 
 %show_query <- show_status / show_create_table / show_tables_from / show_tables_like / show_tables / show_databases / show_fields ~;
