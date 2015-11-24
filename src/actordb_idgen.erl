@@ -68,6 +68,7 @@ handle_call(getstorerange,_MFrom,P) ->
 				{From,To} when is_integer(From), is_integer(To) ->
 					% Master gives a big range, split into smaller chunks of 100 ids.
 					Ranges = P#dp.ranges ++ [{Num-?CHUNKSIZE,Num} || Num <- lists:seq(From+?CHUNKSIZE,To,?CHUNKSIZE)],
+					?ADBG("Storing ranges ~p, rec=~p",[Ranges,{From,To}]),
 					NextChunk = progression(P#dp.chunk_size),
 					{ok,{[]}} = actordb_driver:exec_script({1},{term_to_binary({actordb_conf:node_name(),NextChunk,Ranges})},P#dp.storage),
 					case P#dp.curfrom of

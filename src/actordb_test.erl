@@ -121,7 +121,7 @@ idtest() ->
 	N = 100,
 	{ok,From} = actordb_idgen:getid(),
 	ets:new(idtest,[named_table,public,set,{write_concurrency,true}]),
-	Pids = [element(1,spawn_monitor(fun() -> idtest1(From+500000,0) end)) || _ <- lists:seq(1,N)],
+	Pids = [element(1,spawn_monitor(fun() -> idtest1(From+15000,0) end)) || _ <- lists:seq(1,N)],
 	Res = idtest_wait(Pids),
 	% io:format("list: ~p~n",[ets:tab2list(idtest)]),
 	ets:delete(idtest),

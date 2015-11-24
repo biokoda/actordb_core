@@ -7,6 +7,7 @@
 -include("actordb_sqlproc.hrl").
 -define(GLOBALETS,globalets).
 -define(MASTER_GROUP_SIZE,7).
+-define(IDMAX_START,1000).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
 % 							API
@@ -104,8 +105,8 @@ get_id_chunk(Size) ->
 			ok;
 		ok ->
 			ok;
-		Err ->
-			Err
+		Res ->
+			Res
 	end.
 
 write_global_on(Node,K,V) ->
@@ -461,7 +462,7 @@ cb_delete_prepared(S,Result,TypeIndex,SqlIndex) ->
 					{Name,Sqls1} = element(TypeIndex,AllPreps),
 					Sqls = setelement(SqlIndex,Sqls1,P#ps{sql = undefined, version = P#ps.version+1}),
 					NewPreps = setelement(TypeIndex,AllPreps,{Name,Sqls}),
-					{reply_write,ok,write_sql(prepstatements,NewPreps),S#st{current_write = [{prepstatements,NewPreps}]}};
+					{reply_write,ok,write_sql(prepstatements,NewPreps),S#st{current_write = append_cw([{prepstatements,NewPreps}],S#st.current_write)}};
 				_ ->
 					{reply,ok}
 			end
@@ -494,7 +495,10 @@ prepared_name(ActorTypeIndex,PS,N) ->
 			<<"#r",Index/binary,";">>
 	end.
 prepared_reply(S,PS,N,ActorTypeIndex,PrepOut) ->
-	{reply_write,prepared_name(ActorTypeIndex,PS,N),write_sql(prepstatements,PrepOut),S#st{current_write = [{prepstatements,PrepOut}]}}.
+	{reply_write,
+		prepared_name(ActorTypeIndex,PS,N),
+		write_sql(prepstatements,PrepOut),
+		S#st{current_write = append_cw([{prepstatements,PrepOut}],S#st.current_write)}}.
 
 find_prep_actor(Actor,N,Prep) when N =< tuple_size(Prep) ->
 	case element(N,Prep) of
@@ -531,14 +535,22 @@ cb_force_write(#st{name = ?STATE_NM_GLOBAL} = S,L) ->
 	{Sql,NS} = cb_write(S,L),
 	{isolate,Sql,NS}.
 
+append_cw({K,V},CW) ->
+	append_cw([{K,V}],CW);
+append_cw([{K,V}|T],CW) ->
+	append_cw(T,lists:keystore(K,1,CW,{K,V}));
+append_cw([],CW) ->
+	CW.
+
+
 cb_idchunk(S,Chunk) ->
-	case butil:ds_val(idmax,?GLOBALETS) of
-		undefined ->
-			From = 1000;
-		From ->
-			ok
+	case lists:keyfind(idmax,1,S#st.current_write) of
+		{idmax,From} ->
+			ok;
+		false ->
+			From = butil:ds_val(idmax,?GLOBALETS)
 	end,
-	{reply,{From+1,From+Chunk},write_sql(idmax,From+Chunk),S#st{current_write = [{idmax,From+Chunk}]}}.
+	{reply,{From+1,From+Chunk},write_sql(idmax,From+Chunk),S#st{current_write = append_cw({idmax,From+Chunk},S#st.current_write)}}.
 
 cb_write(#st{name = ?STATE_NM_GLOBAL} = S,Master,L) ->
 	Me = actordb_conf:node_name(),
@@ -553,7 +565,7 @@ cb_write(#st{name = ?STATE_NM_LOCAL} = _S,L) ->
 	?ADBG("Write local ~p",[L]),
 	[write_sql(Key,Val) || {Key,Val} <- L];
 cb_write(#st{name = ?STATE_NM_GLOBAL} = S, L) ->
-	{[write_sql(Key,Val) || {Key,Val} <- L],S#st{current_write = L}}.
+	{[write_sql(Key,Val) || {Key,Val} <- L],S#st{current_write = append_cw(L,S#st.current_write)}}.
 
 % Type = actor type (atom)
 % Version = what is current version (0 for no version)
@@ -662,6 +674,24 @@ cb_redirected_call(S,MovedTo,{master_ping,MasterNode,Evnum,State},_MovedOrSlave)
 cb_redirected_call(_,_,_,_) ->
 	ok.
 
+check_bckp() ->
+	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init("globalbckp",wal),
+	case SchemaTables of
+		[] ->
+			Res = ?IDMAX_START;
+		_ ->
+			case actordb_sqlite:exec(Db,"select * from state where id='idmax';") of
+				{ok,[{columns,_},{rows,[{_,Val}]}]} ->
+					Res = binary_to_term(base64:decode(Val));
+				_INBCKP ->
+					Res = ?IDMAX_START
+			end,
+			actordb_sqlite:wal_rewind(Db,0),
+			?AINF("Used idmax from backup=~p",[Res])
+	end,
+	Res.
+
+
 % Initialize state on slaves (either inactive or part of master group).
 cb_unverified_call(#st{waiting = true, name = ?STATE_NM_GLOBAL} = S,{master_ping,MasterNode,Evnum,State})  ->
 	?ADBG("unverified call ping for global sharedstate",[]),
@@ -683,12 +713,14 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Misc,Configs}) ->
 			[bkdcore_rpc:cast(Nd,{?MODULE,set_init_state_if_none,[Nodes,Groups,Configs]}) ||
 				Nd <- bkdcore:nodelist(), Nd /= actordb_conf:node_name()],
 			timer:sleep(100),
+			IdMax = check_bckp(),
 			Sql = [$$,write_sql(nodes,Nodes),
 				   $$,write_sql(groups,Groups),
+				   $$,write_sql(idmax,IdMax),
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Misc],
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Configs]],
 			?ADBG("Writing init state ~p",[Sql]),
-			{reinit,Sql,S#st{current_write = [{nodes,Nodes},{groups,Groups}|Misc++Configs]}}
+			{reinit,Sql,S#st{current_write = [{idmax,IdMax},{nodes,Nodes},{groups,Groups}|Misc++Configs]}}
 	end;
 cb_unverified_call(S,#write{mfa = {?MODULE,cb_force_write,[L]}}) ->
 	cb_force_write(S,L);
@@ -740,7 +772,7 @@ cb_nodelist(S,true,{ok,[{columns,_},{rows,Rows}]} = ReadResult) ->
 return_mg(S,Nodes) ->
 	case lists:member(actordb_conf:node_name(),Nodes) of
 		true ->
-			{ok,S#st{current_write = lists:keystore(master_group,1,S#st.current_write,{master_group,Nodes}),
+			{ok,S#st{current_write = append_cw({master_group,Nodes},S#st.current_write),
 					master_group = Nodes},
 				Nodes -- [actordb_conf:node_name()]};
 		false ->
