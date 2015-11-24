@@ -80,6 +80,12 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 										{Type,Global,Col,Var,Flags} ->
 											NewUse = {Type,Global,Col,Var,butil:lists_add(exists,Flags)}
 									end,
+									case actordb_schema:iskv(actordb_util:typeatom(Type)) of
+										true ->
+											throw({error,"can_not_run_on_kv"});
+										_ ->
+											ok
+									end,
 									parse_statements(BP,T,L,PreparedRows,NewUse,[exists],IsWrite, GIsWrite);
 								{copy,Name} ->
 									{Type,[Actor],Flags} = split_actor(?GV(BP,canempty),CurUse),

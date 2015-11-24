@@ -786,6 +786,8 @@ append_wal1(P,From,CallCount,Header,AEType,AWR) ->
 
 read_call(#read{sql = [exists]},_From,#dp{mors = master} = P) ->
 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
+% read_call(#read{sql = {[exists],_}},_From,#dp{mors = master} = P) ->
+% 	{reply,{ok,[{columns,{<<"exists">>}},{rows,[{<<"true">>}]}]},P};
 read_call(Msg,From,#dp{flags = F} = P) when (F band ?TIMEOUT_PENDING) == 0 ->
 	read_call(Msg,From,timeout(P));
 read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
