@@ -425,6 +425,8 @@ recv_command(#cst{bp_action = #bp_action{state = BpState}} = Cst,<<?COM_QUERY,Qu
 					end,
 					ActorQ = iolist_to_binary(["actor ",Cst#cst.current_actor,Flags,";"]),
 					Stmts0 = actordb_sqlparse:parse_statements(<<ActorQ/binary,Query/binary>>);
+				false when Stmts == ["select @@max_allowed_packet"] ->
+					Stmts0 = [[{columns,{<<"max_allowed_packet">>}},{rows,[{1024*1024*16}]}]];
 				false ->
 					Stmts0 = {error,no_actor_defined}
 			end,
@@ -432,6 +434,9 @@ recv_command(#cst{bp_action = #bp_action{state = BpState}} = Cst,<<?COM_QUERY,Qu
 				{error,no_actor_defined} ->
 					?ERR_DESC(Cst,{error,no_actor_defined}), % = ErrDesc
 					send_err(Cst,<<ErrDesc/binary>>);
+				[[{columns,_}|_] = Stmts|_] ->
+					BpState = (Cst#cst.bp_action)#bp_action.state,
+					execute_query_result(Cst,BpState,Query,text,{ok,{ok,Stmts}});
 				_ ->
 					?PROTO_DBG("stmts0 query = ~p",[Stmts0]),
 					execute_query(Cst,Stmts0,Query,[],text)
@@ -504,6 +509,8 @@ recv_command(#cst{bp_action = #bp_action{state = Bp}} = Cst,
 				<<_Bitmap:BitmapSize/binary,_NewParamBound,Types:TypesSize/binary,Values/binary>> ->
 					Vals = myactor_util:exec_vals(Types,Values),
 					execute_query(Cst,Parsed,Sql,[[Vals]],binary);
+				<<>> ->
+					execute_query(Cst,Parsed,Sql,[],binary);
 				_ ->
 					Query = <<>>,
 					?ERR_DESC(Cst,{error,parse_error}),
