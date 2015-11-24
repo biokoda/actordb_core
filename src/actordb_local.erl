@@ -99,15 +99,20 @@ get_nactors() ->
 			Size
 	end.
 get_nactive() ->
-	GI = ets:tab2list(?GLOBAL_INFO),
-	[Cur,Prev] = butil:ds_vals([?CUR_ACTIVE, ?PREV_ACTIVE],GI),
-	case catch ets:info(Prev,size) of
-		PrevN when is_integer(PrevN) ->
-			CurN = ets:info(Cur,size),
-			PrevN+CurN;
+	case actordb:is_ready() of
+		true ->
+			GI = ets:tab2list(?GLOBAL_INFO),
+			[Cur,Prev] = butil:ds_vals([?CUR_ACTIVE, ?PREV_ACTIVE],GI),
+			case catch ets:info(Prev,size) of
+				PrevN when is_integer(PrevN) ->
+					CurN = ets:info(Cur,size),
+					PrevN+CurN;
+				_ ->
+					erlang:yield(),
+					get_nactive()
+			end;
 		_ ->
-			erlang:yield(),
-			get_nactive()
+			0
 	end.
 
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
