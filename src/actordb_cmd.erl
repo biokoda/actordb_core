@@ -1,288 +1,44 @@
 % This Source Code Form is subject to the terms of the Mozilla Public
 % License, v. 2.0. If a copy of the MPL was not distributed with this
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
-
 -module(actordb_cmd).
--compile(export_all).
--define(DELIMITER,"~n-------------------------~n~p~n-------------------------~n").
--include_lib("actordb_core/include/actordb.hrl").
+-export([compare_schema/2]).
+% -include_lib("actordb_core/include/actordb.hrl").
 -define(ERR(F,P),lists:flatten(io_lib:fwrite(F,P))).
-
-getschema(Etc) ->
-	case application:get_env(actordb,schema) of
-		undefined ->
-			case yamerl_constr:file(Etc++"/schema.yaml") of
-				[Schema] ->
-					Schema;
-				[] ->
-					[]
-			end;
-		{ok,Mod} ->
-			apply(Mod,schema,[])
-	end.
-
-cmd(init,parse,Etc) ->
-	try case readnodes(Etc++"/nodes.yaml") of
-		{Nodes,Groups} ->
-			Schema = getschema(Etc),
-			NewCfg = parse_schema(Schema),
-			case catch compare_schema([],NewCfg) of
-				{ok,L} ->
-					ok;
-				{error,Err} ->
-					{error,Err};
-				Err ->
-					{error,?ERR("~p",[Err])}
-			end
-	end of
-		ok ->
-			{ok,"Start new cluster?"};
-		{error,E} ->
-			{error,?ERR("~p",[E])}
-	catch
-		throw:Str when is_list(Str) ->
-			{error,?ERR("~s~n",[Str])};
-		throw:S ->
-			{error,?ERR("~p~n",[S])};
-		_:{badmatch,{error,enoent}} ->
-			{error,?ERR("File(s) missing: ~n~p~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml",Etc++"/schema.yaml"])};
-		_:Err1 ->
-			{error,?ERR("Error parsing nodes.yaml or schema.yaml ~p~n",[Err1])}
-	end;
-cmd(init,commit,Etc) ->
-	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
-		Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
-		Schema = getschema(Etc),
-		init_state(Nodes,Groups,Schema)
-	catch
-		_:{badmatch,{error,enoent}} ->
-			?ERR("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/schema.yaml"]);
-		_:Err ->
-			?ERR("Parsing configs ~p~n",[Err])
-	end;
-cmd(updatenodes,parse,Etc) ->
-	try case readnodes(Etc++"/nodes.yaml") of
-		{Nodes,Groups1} ->
-			Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
-			compare_groups(nodes_to_names(Nodes),Groups,compare_nodes(Nodes,[]));
-		X ->
-			throw(?ERR("Error parsing nodes.yaml ~p",[X]))
-	end of
-		[_|_] = Out ->
-			{ok,Out};
-		[] ->
-			{ok,nochange}
-	catch
-		throw:Str ->
-			{error,?ERR("~s~n",[Str])};
-		_:{badmatch,{error,enoent}} ->
-			{error,?ERR("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml"])};
-		_:Err ->
-			{error,?ERR("~p~n",[Err])}
-	end;
-cmd(updatenodes,commit,Etc) ->
-	try {Nodes,Groups1} = readnodes(Etc++"/nodes.yaml"),
-		Groups = bkdcore_changecheck:parse_yaml_groups(Groups1),
-		[_|_] = compare_groups(nodes_to_names(Nodes),Groups,compare_nodes(Nodes,[])),
-		actordb_sharedstate:write_global([{nodes,Nodes},{groups,Groups}]) of
-		ok ->
-			"done";
-		Err ->
-			?ERR("~p~n",[Err])
-	catch
-		_:{badmatch,{error,enoent}} ->
-			?ERR("File(s) missing: ~n~p~n~p~n",[Etc++"/nodes.yaml",Etc++"/groups.yaml"]);
-		_:Err ->
-			?ERR("Error ~p~n",[Err])
-	end;
-cmd(updateschema,parse,Etc) ->
-	case catch actordb_schema:types() of
-		Types when is_list(Types) ->
-			try getschema(Etc) of
-				Schema ->
-					NewCfg = parse_schema(Schema),
-					case catch compare_schema(Types,NewCfg) of
-						{ok,L} ->
-							{ok,L};
-						{error,Err} ->
-							{error,Err};
-						Err ->
-							{error,?ERR("~p",[Err])}
-					end
-			catch
-				_:{badmatch,{error,enoent}} ->
-					{error,?ERR("File missing ~p~n",[Etc++"/schema.yaml"])};
-				_:Err ->
-					{error,?ERR("Unable to parse schema:~n~p.",[Err])}
-			end;
-		_ ->
-			{error,?ERR("No existing schema, run init?",[])}
-	end;
-cmd(updateschema,commit,Etc) ->
-	try Schema = getschema(Etc),
-		actordb_sharedstate:write_global([{'schema.yaml',Schema}]) of
-		ok ->
-			"done";
-		Err ->
-			?ERR("~p~n",[Err])
-	catch
-		_:{badmatch,{error,enoent}} ->
-			?ERR("File missing ~p~n",[Etc++"/schema.yaml"]);
-		_:Err ->
-			?ERR("~p~n",[Err])
-	end;
-cmd(dummy,_,Etc) ->
-	Etc;
-cmd(stats,describe,ok) ->
-	{ok,{"allreads", "readsnow", "allwrites", "writesnow", "nactors", "nactive","tmngrs"}};
-cmd(stats,stats,{Node,Pid,Ref}) ->
-	spawn(fun() -> actordb_local:subscribe_stat(),
-					send_stats(Node,Pid,Ref) end),
-	ok;
-cmd(_,_,_) ->
-	{error,?ERR("uncrecognized command.~nSupported commands: ~p, ~p, ~p~n",[init,updateschema,updatenodes])}.
-
-%Account Management
-cmd(Statement)->
-	actordb:exec_mngmnt(Statement).
-
-send_stats(Node,Pid,Ref) ->
-	case lists:member(Node,nodes(connected)) of
-		true ->
-			receive
-				{doread,Reads,Writes,PrevReads,PrevWrites,NActive} ->
-					Mngrs = actordb_local:get_mupdaters_state(),
-					Busy = [ok || {_,true} <- actordb_local:get_mupdaters_state()],
-					Pid ! {Ref,{Reads,PrevReads,Writes,PrevWrites,actordb_local:get_nactors(),NActive,butil:tolist(length(Busy))++"/"++butil:tolist(length(Mngrs))}},
-					send_stats(Node,Pid,Ref)
-				after 5000 ->
-					ok
-			end;
-		false ->
-			ok
-	end.
-
-readnodes(Pth) ->
-	{ok,_} = file:read_file_info(Pth),
-	case catch yamerl_constr:file(Pth) of
-		[[A1,A2]] ->
-			case A1 of
-				{"nodes",Nodes} ->
-					{"groups",Groups} = A2,
-					{Nodes,Groups};
-				{"groups",Groups} ->
-					{"nodes",Nodes} = A2,
-					{Nodes,Groups};
-				_ ->
-					throw("Invalid nodes.yaml. First object is neither nodes nor groups")
-			end;
-		Err ->
-			throw(?ERR("Invalid ~s:~p~n",[Pth,Err]))
-	end.
-
-nodes_to_names(Nodes) ->
-	[butil:tolist(element(1,bkdcore_changecheck:read_node(Nd))) || Nd <- Nodes].
-
-compare_groups(Nodes,[GroupInfo|T],Out) ->
-	case GroupInfo of
-		{Name1,Nodes1} ->
-			Type = undefined,
-			GP = [];
-		{Name1,Nodes1,Type} ->
-			GP = [];
-		{Name1,Nodes1,Type,GP} ->
-			ok
-	end,
-	GNodes = lists:sort([butil:tobin(N) || N <- Nodes1]),
-	Name = butil:toatom(Name1),
-	case [GNode || GNode <- Nodes1, lists:member(GNode,Nodes) == false] of
-		[] ->
-			case bkdcore:nodelist(Name) of
-				[] ->
-					compare_groups(Nodes,T,?ERR("New group:"++?DELIMITER,[GroupInfo])++Out);
-				ExistingNodes ->
-					case lists:subtract(ExistingNodes,GNodes) == [] andalso
-								GP == bkdcore:group_param(Name) andalso
-								Type == bkdcore:group_type(Name) of
-						true ->
-							compare_groups(Nodes,T,Out);
-						false ->
-							compare_groups(Nodes,T,?ERR("Changed group:"++?DELIMITER,[GroupInfo])++Out)
-					end
-			end;
-		Unknown ->
-			throw(?ERR("Nodes ~p in group ~p not listed in nodes.yaml",[Unknown,Name]))
-	end;
-compare_groups(_,[],Out) ->
-	Out.
-
-compare_nodes([NewInfo|T],Out) ->
-	{Name,_AddrReal,_Port,_Pub,_Dist} = All = bkdcore_changecheck:read_node(NewInfo),
-	case bkdcore:node_address(Name) of
-		undefined ->
-			compare_nodes(T,?ERR("New node:"++?DELIMITER,[NewInfo])++Out);
-		{IPCur,PortCur} ->
-			case All == {Name,IPCur,PortCur,bkdcore:public_address(Name),bkdcore:dist_name(Name)} of
-				true ->
-					compare_nodes(T,Out);
-				false ->
-					compare_nodes(T,?ERR("Changed node:"++?DELIMITER,[NewInfo])++Out)
-			end
-	end;
-compare_nodes([],Out) ->
-	Out.
-
-parse_schema(Schema) ->
-	actordb_util:parse_cfg_schema(Schema).
-	% [Tuple || Tuple <- L1, tuple_size(Tuple) == 2].
 
 compare_schema(Types,New) ->
 	N1 = [Data || Data <- New, (tuple_size(Data) == 2 orelse element(1,Data) == iskv)],
-	compare_schema(Types,N1,[]).
+	compare_schema1(Types,N1).
 % Move over existing tyes of actors.
 % For every type check if it exists in new schema and if any sql statements added.
-compare_schema([Type|T],New,Out) when Type == ids; Type == types; Type == iskv; Type == num ->
-	compare_schema(T,New,Out);
-compare_schema([Type|T],New,Out) ->
+compare_schema1([Type|T],New) when Type == ids; Type == types; Type == iskv; Type == num ->
+	compare_schema1(T,New);
+compare_schema1([Type|T],New) ->
 	case lists:keyfind(Type,1,New) of
 		false ->
 			{error,?ERR("Missing type ~p in new config. Config invalid.~n",[Type])};
 		{_,_,_} ->
-			compare_schema(T,New,Out);
+			compare_schema1(T,New);
 		{_,SqlNew} ->
 			case apply(actordb_schema,Type,[]) of
 				SqlNew ->
-					compare_schema(T,lists:keydelete(Type,1,New),Out);
+					compare_schema1(T,lists:keydelete(Type,1,New));
 				SqlCur ->
 					SizeCur = tuple_size(SqlCur),
-					SizeNew = tuple_size(SqlNew),
 					check_sql(Type,SizeCur,SqlNew,actordb_schema:iskv(Type)),
-					case ok of
-						_ when SizeCur < SizeNew ->
-							Lines = [binary_to_list(iolist_to_binary(element(N,SqlNew))) || N <- lists:seq(SizeCur+1,SizeNew)],
-							Out1 = Out ++ ?ERR("Update type ~p:"++?DELIMITER,[Type,Lines]);
-						_ ->
-							Out1 = Out
-					end,
-					compare_schema(T,lists:keydelete(Type,1,New),Out1)
+					compare_schema1(T,lists:keydelete(Type,1,New))
 			end
 	end;
-compare_schema([],New,O) ->
+compare_schema1([],New) ->
 	NewTypes = lists:keydelete(ids,1,lists:keydelete(types,1,lists:keydelete(iskv,1,lists:keydelete(num,1,New)))),
 	case NewTypes of
 		[] ->
-			{ok,O};
+			ok;
 		_ ->
 			{iskv,multihead,MultiheadList1} = lists:keyfind(iskv,1,New),
 			MultiheadList = [Name || {Name,true} <- lists:keydelete(any,1,MultiheadList1)],
 			[check_sql(Type,0,SqlNew,lists:member(Type,MultiheadList)) || {Type,SqlNew} <- NewTypes],
-
-			case [Tuple || Tuple <- NewTypes, tuple_size(Tuple) == 2] of
-				[] ->
-					{ok,O};
-				NewTypes1 ->
-					{ok,O ++ ?ERR("New actors:"++?DELIMITER,[NewTypes1])}
-			end
+			ok
 	end.
 
 check_sql(Type,SizeCur,SqlNew,IsKv) ->
@@ -373,12 +129,4 @@ check_actor_table(Db,Type) ->
 					throw({error,?ERR("KV data type ~p \"hash\" column should be INTEGER, but is ~p.",
 							[Type,butil:tolist(ColType)])})
 			end
-	end.
-
-init_state(Nodes, Groups, Schema0) ->
-	case actordb_sharedstate:init_state(Nodes,Groups,[],[{'schema.yaml',Schema0}]) of
-		ok ->
-			"ok";
-		Err ->
-			throw(Err)
 	end.

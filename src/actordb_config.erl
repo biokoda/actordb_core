@@ -46,7 +46,7 @@ exec_schema(BP,Sql) ->
 			Parsed = actordb_util:parse_cfg_schema(Merged),
 
 			case catch actordb_cmd:compare_schema(Types,Parsed) of
-				{ok,_} ->
+				ok ->
 					case actordb_sharedstate:write_global([{'schema.yaml',Merged}]) of
 						ok ->
 							timer:sleep(500),
