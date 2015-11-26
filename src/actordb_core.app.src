@@ -4,7 +4,7 @@
 
 {application, actordb_core,
  [{description, "actordb distributed sql database"},
-  {vsn, "0.10.10"},
+  {vsn, "0.10.11"},
   {modules, [
             ]},
   {registered, [actordb_sup,actordb_shardmngr,actordb_shardmvr,actordb_local,
