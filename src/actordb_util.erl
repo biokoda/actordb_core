@@ -11,6 +11,7 @@ hash(V) ->
 	% erlang:phash2([V,{1234982,32402942}]).
 	emurmur3:hash_x86_32(V,1283346540).
 
+% Variable length encoded integer. Ported from sqlite4 source.
 varint_enc(X) when X =< 240 ->
 	<<X>>;
 varint_enc(X) when X =< 2287 ->

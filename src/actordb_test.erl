@@ -1,10 +1,10 @@
 -module(actordb_test).
--export([batch/0, idtest/0, ins/0, read_timebin/0, loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0]).
+-export([batch/0, idtest/0, ins/0, read_timebin/0, 
+	loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 -define(SOL_SOCKET, 16#ffff).
 -define(SO_REUSEPORT, 16#0200).
-% -include_lib("actordb.hrl").
 % misc internal tests
 % general tests are in actordb/test/dist_test.erl and run with detest
 
@@ -167,9 +167,11 @@ client() ->
 	ok = actordb_client:test("myuser","mypass"),
 	Param = [[butil:flatnow(),"asdf",3],[butil:flatnow(),"asdf1",4]],
 	{ok,{changes,_,_}} = actordb_client:exec_single_param("ax","type1","insert into tab values (?1,?2,?3);",[create],Param),
-	IN = actordb_client:exec_single_param("ax","type2","insert into asdf (txt) values (?1);",[create],[[{blob,<<1,2,3>>}]]),
-	?AINF("Blob insert: ~p",[IN]),
-	actordb_client:exec_single("ax","type2","select * from asdf;",[]).
+	 {ok,{changes,_,_}} = actordb_client:exec_single_param("ax","type2","insert into asdf (txt) values (?1);",[create],[[{blob,<<1,2,3>>}]]),
+	{ok,{false,[Doc|_]}} = actordb_client:exec_single("ax","type2","select * from asdf;",[]),
+	#{id := _, txt := <<1,2,3>>} = Doc,
+	{ok,{false,[#{exists := <<"true">>}]}} = actordb_client:exec_single_param("ax","type2","pragma exists;",[],[]).
+
 
 
 ins() ->
@@ -229,7 +231,8 @@ loop1(0,_) ->
 	ok;
 loop1(N,L) ->
 	% actordb_util:varint_enc(1000),
-	actordb:exec("actor type1("++integer_to_list(N)++"); select * from tab;"),
+	% actordb:exec("actor type1("++integer_to_list(N)++"); select * from tab;"),
+	crypto:rand_bytes(2),
 	loop1(N-1,L).
 
 
