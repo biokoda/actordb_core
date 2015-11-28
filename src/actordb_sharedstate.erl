@@ -678,19 +678,22 @@ check_bckp() ->
 	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init("globalbckp",wal),
 	case SchemaTables of
 		[] ->
-			Res = ?IDMAX_START;
+			Users = Schema = [],
+			Idmax = ?IDMAX_START;
 		_ ->
-			case actordb_sqlite:exec(Db,"select * from state where id='idmax';") of
-				{ok,[{columns,_},{rows,[{_,Val}]}]} ->
-					Res = binary_to_term(base64:decode(Val));
+			case actordb_sqlite:exec(Db,"select * from state where id in ('idmax','schema.yaml','users');") of
+				{ok,[{columns,_},{rows,[_|_] = PL}]} ->
+					Users = binary_to_term(base64:decode(butil:ds_val(<<"users">>,PL,[]))),
+					Schema = binary_to_term(base64:decode(butil:ds_val(<<"schema.yaml">>,PL,[]))),
+					Idmax = binary_to_term(base64:decode(butil:ds_val(<<"idmax">>,PL,?IDMAX_START)));
 				_INBCKP ->
-					Res = ?IDMAX_START
+					Users = Schema = [],
+					Idmax = ?IDMAX_START
 			end,
 			actordb_sqlite:wal_rewind(Db,0),
-			?AINF("Used idmax from backup=~p",[Res])
+			?AINF("Used idmax from backup, schema=~p, idmax=~p, users=~p",[Schema,Idmax,Users])
 	end,
-	Res.
-
+	{Schema,Users,Idmax}.
 
 % Initialize state on slaves (either inactive or part of master group).
 cb_unverified_call(#st{waiting = true, name = ?STATE_NM_GLOBAL} = S,{master_ping,MasterNode,Evnum,State})  ->
@@ -704,19 +707,34 @@ cb_unverified_call(#st{waiting = true, name = ?STATE_NM_GLOBAL} = S,{master_ping
 			{reinit_master,slave}
 	end;
 % Initialize state on first master.
-cb_unverified_call(S,{init_state,Nodes,Groups,Misc,Configs}) ->
+cb_unverified_call(S,{init_state,Nodes,Groups,Misc1,Configs1}) ->
 	case S#st.waiting of
 		false ->
 			{reply,{error,already_started}};
 		true ->
+			% If there is backup, read some data that we should move over
+			{Schema,Users,IdMax} = check_bckp(),
+			% If config is being saved again, ignore old data.
+			case butil:ds_val('schema.yaml',Configs1) of
+				NoneSch when NoneSch == []; NoneSch == undefined ->
+					Configs = append_cw({'schema.yaml',Schema},Configs1);
+				_ ->
+					Configs = Configs1
+			end,
+			% If users are being saved, ignore old ones
+			case butil:ds_val(users,Misc1) of
+				None when None == []; None == undefined ->
+					Misc = append_cw({users,Users},Misc1);
+				_ ->
+					Misc = Misc1
+			end,
 			set_init_state(Nodes,Groups,Configs),
 			[bkdcore_rpc:cast(Nd,{?MODULE,set_init_state_if_none,[Nodes,Groups,Configs]}) ||
 				Nd <- bkdcore:nodelist(), Nd /= actordb_conf:node_name()],
 			timer:sleep(100),
-			IdMax = check_bckp(),
 			Sql = [$$,write_sql(nodes,Nodes),
 				   $$,write_sql(groups,Groups),
-				   $$,write_sql(idmax,IdMax),
+				   $$,write_sql(idmax,IdMax),  % Default idmax or from backup
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Misc],
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Configs]],
 			?ADBG("Writing init state ~p",[Sql]),

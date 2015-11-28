@@ -194,7 +194,12 @@ exec1(false,Cmds) ->
 	{Nodes1,Grp3} = insert_to_grpnd(Cmds),
 	check_el(Grp3,missing_group_insert),
 	check_el(Nodes1,missing_nodes_insert),
-	check_el(Usrs2,missing_root_user),
+	case actordb_sqlite:init("globalbckp",wal) of
+		{ok,_,[],_} ->
+			check_el(Usrs2,missing_root_user);
+		_ ->
+			ok
+	end,
 
 	Me = element(1,bkdcore_changecheck:read_node(butil:tolist(node()))),
 	case lists:member(Me,[element(1,bkdcore_changecheck:read_node(Nd)) || Nd <- Nodes1]) of
@@ -204,13 +209,19 @@ exec1(false,Cmds) ->
 			ok
 	end,
 
-	case actordb_sharedstate:init_state(Nodes1,Grp3,[{users,Users}],[{'schema.yaml',[]}]) of
+	case actordb_sharedstate:init_state(Nodes1,Grp3,[{users,Users}],[]) of
 		ok ->
 			case get(adbt) of
 				true ->
 					timer:sleep(1000),
 					% After initialization we need a session for further requests.
-					{Username,Password,_} = hd(Usrs2),
+					case Usrs2 of
+						[] ->
+							FinalUsers = actordb_sharedstate:read_global_users(),
+							[{Username,Password}] = [{U,P} || {U,P,O} <- FinalUsers, lists:member({{config},write},O)];
+						_ ->
+							{Username,Password,_} = hd(Usrs2)
+					end,
 					put(bp,actordb_backpressure:start_caller(Username, Password));
 				_ ->
 					ok
