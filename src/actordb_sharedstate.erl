@@ -683,9 +683,14 @@ check_bckp() ->
 		_ ->
 			case actordb_sqlite:exec(Db,"select * from state where id in ('idmax','schema.yaml','users');") of
 				{ok,[{columns,_},{rows,[_|_] = PL}]} ->
-					Users = binary_to_term(base64:decode(butil:ds_val(<<"users">>,PL,[]))),
-					Schema = binary_to_term(base64:decode(butil:ds_val(<<"schema.yaml">>,PL,[]))),
-					Idmax = binary_to_term(base64:decode(butil:ds_val(<<"idmax">>,PL,?IDMAX_START)));
+					case butil:ds_val(<<"users">>,PL) of
+						undefined ->
+							Users = [];
+						UsersBin ->
+							Users = binary_to_term(base64:decode(UsersBin))
+					end,
+					Schema = binary_to_term(base64:decode(butil:ds_val(<<"schema.yaml">>,PL))),
+					Idmax = binary_to_term(base64:decode(butil:ds_val(<<"idmax">>,PL)));
 				_INBCKP ->
 					Users = Schema = [],
 					Idmax = ?IDMAX_START

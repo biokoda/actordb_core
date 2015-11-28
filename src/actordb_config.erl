@@ -218,7 +218,12 @@ exec1(false,Cmds) ->
 					case Usrs2 of
 						[] ->
 							FinalUsers = actordb_sharedstate:read_global_users(),
-							[{Username,Password}] = [{U,P} || {U,P,O} <- FinalUsers, lists:member({{config},write},O)];
+							case [{U,P} || {U,P,O} <- FinalUsers, lists:member({{config},write},O)] of
+								[{Username,Password}] ->
+									ok;
+								[] ->
+									Username = Password = <<>>
+							end;
 						_ ->
 							{Username,Password,_} = hd(Usrs2)
 					end,
