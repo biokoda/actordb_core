@@ -24,6 +24,9 @@ exec_vals(<<?T_NULL,0,Types/binary>>,Vals) ->
 exec_vals(<<?T_VAR_STRING,0,Types/binary>>,Vals) ->
 	{Val,Rem} = myactor_util:read_lenenc_string(Vals),
 	[Val|exec_vals(Types,Rem)];
+exec_vals(<<?T_STRING,0,Types/binary>>,Vals) ->
+	{Val,Rem} = myactor_util:read_lenenc_string(Vals),
+	[Val|exec_vals(Types,Rem)];
 exec_vals(<<?T_TINY,16#80,Types/binary>>,<<V,Vals/binary>>) ->
 	[V|exec_vals(Types,Vals)];
 exec_vals(<<?T_TINY,0,Types/binary>>,<<V:8/signed,Vals/binary>>) ->
