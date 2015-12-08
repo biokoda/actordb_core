@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 -module(actordb_sqlparse).
 % -compile(export_all).
--export([parse_statements/1,parse_statements/2,parse_statements/3,split_statements/1, check_flags/2]).
+-export([parse_statements/1,parse_statements/2,parse_statements/3]).
 -export([split_actor/1,split_actor/2]).
 -include_lib("actordb_core/include/actordb.hrl").
 -define(LIST_LIMIT,30000).
@@ -55,7 +55,7 @@ parse_statements(Bin) ->
 parse_statements(BP,Bin) ->
 	parse_statements(BP,Bin,undefined).
 parse_statements(BP,Bin,Actors) ->
-	L = split_statements(rem_spaces(Bin)),
+	L = split_statements(#{},rem_spaces(Bin)),
 	parse_statements(BP,L,[],[],Actors,[],false,false).
 
 
@@ -473,9 +473,9 @@ parse_pragma_list(_,L,O) ->
 	{L,O}.
 
 
-split_statements(<<>>) ->
+split_statements(_,<<>>) ->
 	[];
-split_statements(Bin1) ->
+split_statements(S,Bin1) ->
 	case Bin1 of
 		<<"{{",WithGlobal/binary>> ->
 			Len = count_param(WithGlobal,0),
@@ -504,8 +504,8 @@ split_statements(Bin1) ->
 	end,
 	case HaveNext of
 		undefined ->
-			case find_ending(rem_spaces(StatementBin),0,[],true) of
-				BytesToEnd when is_integer(BytesToEnd) ->
+			case find_ending(S,rem_spaces(StatementBin),0,[],true) of
+				{S1,BytesToEnd} when is_integer(BytesToEnd) ->
 					case rem_spaces(StatementBin) of
 						% prepared statements must not have spaces between # and ; (like "#wXXXX;")
 						<<"#",ReadWrite,A1,A2,A3,A4,";",Next/binary>> when ReadWrite == $w; ReadWrite == $r ->
@@ -521,86 +521,91 @@ split_statements(Bin1) ->
 						<<Statement:BytesToEnd/binary,Next/binary>> ->
 							ok
 					end;
-				{<<_/binary>> = Statement,Next} ->
+				{S1,<<_/binary>> = Statement,Next} ->
 					ok;
-				{Statement1,Next} ->
+				{S1,Statement1,Next} ->
 					Statement = lists:reverse(Statement1)
 			end;
 		Next ->
+			S1 = S,
 			Statement = StatementBin
 	end,
 	case GlobalVar of
 		undefined ->
-			[Statement|split_statements(rem_spaces(Next))];
+			[Statement|split_statements(S1,rem_spaces(Next))];
 		_ ->
-			[{GlobalVar,Statement}|split_statements(rem_spaces(Next))]
+			[{GlobalVar,Statement}|split_statements(S1,rem_spaces(Next))]
 	end.
 
 parse_helper(Bin,Offset1) ->
 	actordb_driver:parse_helper(Bin,Offset1).
 
-find_ending(Bin,Offset1,Prev,IsIolist) ->
+find_ending(S,Bin,Offset1,Prev,IsIolist) ->
 	case parse_helper(Bin,Offset1) of
 		ok ->
 			case Prev of
 				[] ->
-					byte_size(Bin);
+					{S,byte_size(Bin)};
 				_ when IsIolist ->
-					{iolist_to_binary(lists:reverse([Bin|Prev])),<<>>};
+					{S,iolist_to_binary(lists:reverse([Bin|Prev])),<<>>};
 				_ ->
-					{[Bin|Prev],<<>>}
+					{S,[Bin|Prev],<<>>}
 			end;
 		Offset ->
 			case Bin of
 				<<SkippingBin:Offset/binary,";",Rem/binary>> ->
 					case Prev of
 						[] ->
-							Offset+1;
+							{S,Offset+1};
 						_ when IsIolist ->
-							{iolist_to_binary(lists:reverse([$;,SkippingBin|Prev])),Rem};
+							{S,iolist_to_binary(lists:reverse([$;,SkippingBin|Prev])),Rem};
 						_ ->
-							{[$;,SkippingBin|Prev],Rem}
+							{S,[$;,SkippingBin|Prev],Rem}
 					end;
 				<<SkippingBin:Offset/binary,"{{hash(",Rem/binary>> ->
 					case count_hash(Rem,0) of
 						undefined ->
-							find_ending(Bin,Offset+7,Prev,IsIolist);
+							find_ending(S,Bin,Offset+7,Prev,IsIolist);
 						Paramlen ->
 							<<Hashid1:Paramlen/binary,"}}",After/binary>> = Rem,
 							HSize = byte_size(Hashid1)-1,
 							<<Hashid:HSize/binary,")">> = Hashid1,
-							find_ending(After,0,[butil:tobin(actordb_util:hash(Hashid)),SkippingBin|Prev],false)
+							find_ending(S,After,0,[butil:tobin(actordb_util:hash(Hashid)),SkippingBin|Prev],false)
 					end;
 				<<SkippingBin:Offset/binary,"{{",Rem/binary>> ->
 					case count_param(Rem,0) of
 						undefined ->
-							find_ending(Bin,Offset+2,Prev,IsIolist);
+							find_ending(S,Bin,Offset+2,Prev,IsIolist);
 						Paramlen ->
 							<<Param:Paramlen/binary,"}}",After/binary>> = Rem,
 							case Param of
 								<<"curactor">> ->
-									find_ending(After,0,[curactor,SkippingBin|Prev],false);
+									find_ending(S,After,0,[curactor,SkippingBin|Prev],false);
 								<<"uniqid">> ->
-									find_ending(After,0,[uniqid,SkippingBin|Prev],false);
+									{ok,Idi} = actordb_idgen:getid(),
+									find_ending(S,After,0,[butil:tobin(Idi),SkippingBin|Prev],false);
 								<<"uniqueid">> ->
-									find_ending(After,0,[uniqid,SkippingBin|Prev],false);
+									{ok,Idi} = actordb_idgen:getid(),
+									find_ending(S,After,0,[butil:tobin(Idi),SkippingBin|Prev],false);
 								_ ->
 									case split_param(Param,<<>>,[]) of
 										[<<"uniqueid">>,Column] ->
-											find_ending(After,0,[{uniqid,Column},SkippingBin|Prev],false);
+											{Id,S1} = getid(S,Column),
+											find_ending(S1,After,0,[Id,SkippingBin|Prev],false);
 										[<<"uniqid">>,Column] ->
-											find_ending(After,0,[{uniqid,Column},SkippingBin|Prev],false);
+											{Id,S1} = getid(S,Column),
+											find_ending(S1,After,0,[Id,SkippingBin|Prev],false);
 										[Actor,Column] ->
-											find_ending(After,0,[{Actor,Column},SkippingBin|Prev],false);
+											find_ending(S,After,0,[{Actor,Column},SkippingBin|Prev],false);
 										{A1,C1,A2,C2} ->
-											find_ending(After,0,[{A1,C1,A2,C2},SkippingBin|Prev],false);
+											find_ending(S,After,0,[{A1,C1,A2,C2},SkippingBin|Prev],false);
 										_X ->
-											find_ending(Bin,Offset+2,Prev,IsIolist)
+											find_ending(S,Bin,Offset+2,Prev,IsIolist)
 									end
 							end
 					end;
 				<<SkippingBin:Offset/binary,"/*",Rem/binary>> ->
-					find_ending(remove_comment(Rem),0,[SkippingBin|Prev],IsIolist)
+					find_ending(S,remove_comment(Rem),0,[SkippingBin|Prev],IsIolist)
 			end
 	end.
 remove_comment(<<"*/",Rem/binary>>) ->
@@ -608,6 +613,16 @@ remove_comment(<<"*/",Rem/binary>>) ->
 remove_comment(<<_,Rem/binary>>) ->
 	remove_comment(Rem).
 
+getid(S,Column) ->
+	case maps:find({uniqid,Column},S) of
+		error ->
+			{ok,Idi} = actordb_idgen:getid(),
+			Id = butil:tobin(Idi),
+			K = {uniqid,Column},
+			{Id,S#{K => Id}};
+		{ok,Id} ->
+			{Id,S}
+	end.
 
 % {{X.column=A.column}}
 split_param(<<"=",Rem/binary>>,Column,Words) ->
