@@ -49,22 +49,26 @@ vtinc(_) ->
 	ok.
 
 % udp() ->
-% 	[spawn(fun() -> udpsrv(N) end) || N <- lists:seq(1,10)],
+% 	Srvrs = [spawn(fun() -> udpsrv(N) end) || N <- lists:seq(1,10)],
 % 	timer:sleep(100),
 % 	[begin spawn(fun() -> udpclient(N) end) end || N <- lists:seq(1,1000)],
+% 	timer:sleep(1000),
+% 	[S ! die || S <- Srvrs],
 % 	ok.
 
 % udpsrv(N) ->
 % 	Opts = [{raw, ?SOL_SOCKET, ?SO_REUSEPORT, <<1:32/native>>},
-% 		{active,true},  inet, binary],
+% 		{active,true},  inet, binary, {recbuf,1024*1024}],
 % 	{ok,S} = gen_udp:open(23232,Opts),
-% 	?AINF("Opened ~p",[N]),
+% 	io:format("Opened server ~p~n",[N]),
 % 	udpsrv(N,S).
 % udpsrv(N,S) ->
 % 	receive
 % 		{udp, S, _IP, Port, Msg} ->
-% 			?AINF("Received msg=~p, on=~p, port=~p",[Msg, N, Port]),
-% 			udpsrv(N,S)
+% 			io:format("Received msg=~p, srvid=~p, client_port=~p~n",[Msg, N, Port]),
+% 			udpsrv(N,S);
+% 		die ->
+% 			ok
 % 	end.
 
 % udpclient(N) ->
