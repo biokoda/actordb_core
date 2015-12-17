@@ -236,7 +236,7 @@ loop1(0,_) ->
 loop1(N,L) ->
 	% actordb_util:varint_enc(1000),
 	% actordb:exec("actor type1("++integer_to_list(N)++"); select * from tab;"),
-	crypto:rand_bytes(2),
+	actordb:exec(<<"show schema;">>),
 	loop1(N-1,L).
 
 
