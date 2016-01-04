@@ -151,7 +151,8 @@ bp_action = undefined :: #bp_action{} ,
 queueing = false :: boolean(), 
 query_queue = <<>> :: binary(),
 username = <<>> :: binary(),
-password = <<>> :: binary() }).
+password = <<>> :: binary(),
+recv_timeout = infinity :: atom() | integer()}).
 
 
 -record(coltypes,{defined = false :: boolean(),cols = undefined :: term()}).

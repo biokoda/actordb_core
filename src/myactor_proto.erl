@@ -68,14 +68,20 @@ init(Ref, Socket, Transport, _Opts = []) ->
 	ok = ranch:accept_ack(Ref),
 	Transport:setopts(Socket,[{keepalive,true}]),
 	Hash = myactor_util:genhash(),
-	Cst = #cst{hash = Hash, phase = handshake, transport = Transport, socket = Socket},
+	case application:get_env(actordb_core,client_inactivity_timeout) of
+		{ok,RTimeout} when RTimeout > 0 ->
+			ok;
+		_ ->
+			RTimeout = infinity
+	end,
+	Cst = #cst{recv_timeout = RTimeout, hash = Hash, phase = handshake, transport = Transport, socket = Socket},
 	send_handshake(Cst,Hash), % after client connects to the server we send handshake response #
 	loop(Socket, Transport, Cst).
 
 %% @spec loop(port(),module(),#cst{}) -> loop()
 %% @doc  Accepts data from client until socket closes and calls functions depending on hte #cst.phase
 loop(Socket, Transport, State0) ->
-	case Transport:recv(Socket, 0, infinity) of
+	case Transport:recv(Socket, 0, State0#cst.recv_timeout) of
 		{ok, Data} ->
 			Buff0 = State0#cst.buf,
 			State1 = State0#cst{buf = <<Buff0/binary, Data/binary>>},  % append to buffer until complete packet is combined
