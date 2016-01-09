@@ -214,31 +214,35 @@ prestart1(Files) ->
 			RdThreads = 1
 	end,
 
-	A = list_to_tuple(actordb_conf:paths()),
-	B = actordb_sqlprocutil:static_sqls(),
-	ok = try_load_driver(A,B,RdThreads,parse_size(MaxDbSize)),
-
+	DrvInfo = #{paths => list_to_tuple(actordb_conf:paths()),
+	staticsqls => actordb_sqlprocutil:static_sqls(),
+	dbsize => parse_size(MaxDbSize),
+	wthreads => 1,
+	rthreads => RdThreads,
+	lmdbsync => 0,
+	nbatch => 0},
+	ok = try_load_driver(DrvInfo),
 	emurmur3:init().
 
 % LMDB needs max size. We try with configured size, if fail, try lowering value.
 % Lowest tried value is 1GB.
-try_load_driver(A,B,C,Size) ->
-	case (catch actordb_driver:init({A,B, Size,C})) of
+try_load_driver(#{dbsize := Size} = Info) ->
+	case (catch actordb_driver:init(Info)) of
 		ok ->
 			ok;
 		Err ->
 			Mem = butil:ds_val(total_memory,memsup:get_system_memory_data()),
 			case ok of
 				_ when Size > Mem*10 ->
-					try_load_driver(A,B,C,Mem*10);
+					try_load_driver(Info#{dbsize => Mem*10});
 				_ when Size > Mem ->
-					try_load_driver(A,B,C,Mem);
+					try_load_driver(Info#{dbsize => Mem});
 				_ when Size > (Mem div 2) ->
-					try_load_driver(A,B,C,Mem div 2);
+					try_load_driver(Info#{dbsize => Mem div 2});
 				_ when Size > 1024*1024*1024*2 ->
-					try_load_driver(A,B,C,1024*1024*1024*2);
+					try_load_driver(Info#{dbsize => 1024*1024*1024*2});
 				_ when Size > 1024*1024*1024 ->
-					try_load_driver(A,B,C,1024*1024*1024);
+					try_load_driver(Info#{dbsize => 1024*1024*1024});
 				_ ->
 					Err
 			end
