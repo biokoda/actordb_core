@@ -227,7 +227,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					spawn(fun() -> actordb_sqlproc:stop(Me) end);
 				_ ->
 					Moved = P#dp.movedtonode,
-					case actordb_conf:sync() == true orelse P#dp.force_sync of
+					case actordb_conf:sync() /= true andalso P#dp.force_sync of
 						true ->
 							% Some time goes by between write and replication.
 							% We are syncing when replication is done.

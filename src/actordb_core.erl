@@ -214,13 +214,22 @@ prestart1(Files) ->
 			RdThreads = 1
 	end,
 
+	case Sync of
+		true ->
+			% If every transaction is synced, batch concurrent writes together.
+			LMBatch = 500,
+			LMSync = 1;
+		_ ->
+			LMBatch = LMSync = 0
+	end,
+
 	DrvInfo = #{paths => list_to_tuple(actordb_conf:paths()),
 	staticsqls => actordb_sqlprocutil:static_sqls(),
 	dbsize => parse_size(MaxDbSize),
-	wthreads => 1,
+	wthreads => 1, % we have not found any performance improvements using multiple write threads
 	rthreads => RdThreads,
-	lmdbsync => 0,
-	nbatch => 0},
+	lmdbsync => LMSync,
+	nbatch => LMBatch},
 	ok = try_load_driver(DrvInfo),
 	emurmur3:init().
 
