@@ -27,10 +27,10 @@ read(Name,Flags,[{copy,CopyFrom}],Start) ->
 			R = #read{sql = <<"select * from __adb limit 1;">>, flags = Flags},
 			case call(Name,Flags,R,Start) of
 				{ok,_} ->
-					{ok,[{columns,{<<"status">>}},{row,{<<"ok">>}}]};
+					{ok,[{columns,{<<"status">>}},{rows,[{<<"ok">>}]}]};
 				_E ->
 					?AERR("Unable to copy actor ~p to ~p",[CopyFrom,Name]),
-					{ok,[{columns,{<<"status">>}},{row,{<<"failed">>}}]}
+					{ok,[{columns,{<<"status">>}},{rows,[{<<"failed">>}]}]}
 			end;
 		Pid ->
 			diepls(Pid,overwrite),

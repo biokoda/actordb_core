@@ -593,7 +593,12 @@ simple_values([],L) ->
 
 % We can insert with localnode() function. 
 node_name({<<"localnode">>,[]}) ->
-	butil:tolist(node());
+	case application:get_env(bkdcore,rpcport) of
+		{ok,Port} ->
+			butil:tolist(node())++":"++butil:tolist(Port);
+		_ ->
+			butil:tolist(node())
+	end;
 node_name(V) ->
 	butil:tolist(V).
 
