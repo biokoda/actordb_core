@@ -220,7 +220,8 @@ prestart1(Files) ->
 			LMBatch = 500,
 			LMSync = 1;
 		_ ->
-			LMBatch = LMSync = 0
+			LMBatch = 30,
+			LMSync = 0
 	end,
 
 	DrvInfo = #{paths => list_to_tuple(actordb_conf:paths()),
