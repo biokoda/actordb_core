@@ -234,10 +234,11 @@ prestart1(Files) ->
 
 	case Sync of
 		true ->
-			% If every transaction is synced, batch concurrent writes together.
+			% If every transaction is synced, batch more concurrent writes together.
 			LMBatch = 500,
 			LMSync = 1;
 		_ ->
+			% If we're not syncing every transaction to disk, smaller batches perform better
 			LMBatch = 30,
 			LMSync = 0
 	end,
