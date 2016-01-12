@@ -204,14 +204,32 @@ prestart1(Files) ->
 	Sch = erlang:system_info(schedulers),
 	SchOnline = erlang:system_info(schedulers_online),
 	case ok of
-		_ when Sch == SchOnline, Sch > 6 ->
+		_ when SchOnline > 8 ->
 			% Limit number of erlang schedulers to leave space for engine threads
 			erlang:system_flag(schedulers_online,6),
-			WThrds = length(actordb_conf:paths()),
+			Paths = length(actordb_conf:paths()),
+			WThreads = 2,
 			% For every write thread, max 4 read threads, if enough CPU cores avail
-			RdThreads = min(round((Sch-WThrds-6) / WThrds), 4);
+			case min(round(abs(Sch-Paths-6) / Paths), 3) of
+				0 ->
+					RdThreads = 2;
+				RdThreads ->
+					ok
+			end;
+		_ when SchOnline == 8 ->
+			erlang:system_flag(schedulers_online,4),
+			WThreads = 2,
+			RdThreads = 2;
+		_ when SchOnline == 6 ->
+			erlang:system_flag(schedulers_online,3),
+			WThreads = 1,
+			RdThreads = 2;
+		_ when SchOnline == 4 ->
+			erlang:system_flag(schedulers_online,2),
+			WThreads = 1,
+			RdThreads = 1;
 		_ ->
-			RdThreads = 1
+			WThreads = RdThreads = 1
 	end,
 
 	case Sync of
@@ -227,7 +245,7 @@ prestart1(Files) ->
 	DrvInfo = #{paths => list_to_tuple(actordb_conf:paths()),
 	staticsqls => actordb_sqlprocutil:static_sqls(),
 	dbsize => parse_size(MaxDbSize),
-	wthreads => 1, % we have not found any performance improvements using multiple write threads
+	wthreads => WThreads,
 	rthreads => RdThreads,
 	lmdbsync => LMSync,
 	nbatch => LMBatch},
