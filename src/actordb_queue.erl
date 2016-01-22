@@ -24,27 +24,17 @@
 % File format (integers are unsigned-little)
 % 
 
-% Page format:
-%   <<PageHeader,Item1,Item2,..,>>
-% PageHeader: 
-%   <<Crc:32/unsigned, QActor, Version(1), PageSpan:32>>
-% - PageSpan is how many pages this header applies to. >1 only when
-%   data items max compression size is larger than 4k.
+% Page size: 4096 bytes
+% Every replication event is page aligned. First byte of every page determines the data on that page.
 % Items:
-% - Types: EndOfPage(0), ReplicationData(1), EventData(2)
-% - EventData:
-%   <<2, SizeName, Name:SizeName/binary, DataType,
-%     ComprSize(varint), UncomprSize(varint), ComprData:ComprSize/binary>>
-% - ReplicationData:
-%   <<1, term:64, evnum:64, time:64,HowManyPagesBackToBeginning(varint), NEvents(varint), NPages(varint)>>
-% - EndOfPage:
-%   <<0>>
+% - Replication event:
+%   <<1, QActor, PgnoPrevEvent:32, NEvents:32, NTablePages:32, NDataPages:32, term:Varint, evnum:Varint, time:Varint,
+%     Table:NTablePages*4096/binary, Data:NDataPages*4096/binary>>
+%   TableEntry:
+%   <<DataCrc:32, SizeName, Name:SizeName/binary, DataType, DataSize(varint)>>
+% - Data page: 
+%   <<2>> 
 
-% Consumer protocol:
-% <<0, Evnum:64>> - event number marker
-% <<1, SizeName, Name:SizeName/binary, DataType, Size:32,DataBlockOffset:32>> - event
-% <<2, Size:32, LZ4CompressedBlock:Size/binary>>
-% <<3>> - event done
 
 
 % wmap is a map of event data for every actor in replication event: #{ActorName => [{DataSectionOffset,DataSize}]}

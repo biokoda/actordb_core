@@ -347,6 +347,8 @@ parse_cfg_schema(G1) ->
 
 check_str(S) ->
 	case S of
+		[] ->
+			throw("can not have empty schema");
 		[[_|_]|_] ->
 			S;
 		[X|_] when is_integer(X) ->
