@@ -27,13 +27,15 @@
 % Page size: 4096 bytes
 % Every replication event is page aligned. First byte of every page determines the data on that page.
 % Items:
-% - Replication event:
+% - Replication event start:
 %   <<1, QActor, PgnoPrevEvent:32, NEvents:32, NTablePages:32, NDataPages:32, term:Varint, evnum:Varint, time:Varint,
-%     Table:NTablePages*4096/binary, Data:NDataPages*4096/binary>>
+%     Table:NTablePages*4096/binary, CrcBlock:NDataPages*4/binary, Data:NDataPages*4096/binary>>
 %   TableEntry:
-%   <<DataCrc:32, SizeName, Name:SizeName/binary, DataType, DataSize(varint)>>
-% - Data page: 
-%   <<2>> 
+%   <<SizeName, Name:SizeName/binary, DataType, DataSize(varint)>>
+%   CrcBlock:
+%   <<CrcPage0:32/unsigned,CrcPage1:32/unsigned,...>>
+% - Body page: 
+%   <<2,_:4095/binary>> 
 
 
 
