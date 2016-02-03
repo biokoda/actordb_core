@@ -65,11 +65,11 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 					W = #write{mfa = MFA,sql = delete, transaction = TransactionId, flags = Flags},
 					call(Name,Flags,W,Start);
 				{Sql0, PreparedStatements} ->
-					W = #write{mfa = MFA,sql = iolist_to_binary(Sql0), records = PreparedStatements,
+					W = #write{mfa = MFA,sql = Sql0, records = PreparedStatements,
 						transaction = TransactionId, flags = Flags},
 					call(Name,Flags,W,Start);
 				_ ->
-					W = #write{mfa = MFA,sql = iolist_to_binary(Sql),
+					W = #write{mfa = MFA,sql = Sql,
 						transaction = TransactionId, flags = Flags},
 					call(Name,Flags,W,Start)
 			end;
@@ -77,19 +77,19 @@ write(Name,Flags,{MFA,TransactionId,Sql},Start) ->
 			call(Name,Flags,#write{mfa = MFA, flags = Flags},Start);
 		_ when tuple_size(Sql) == 2 ->
 			{Sql0,Rec} = Sql,
-			W = #write{mfa = MFA, sql = iolist_to_binary(Sql0), records = Rec, flags = Flags},
+			W = #write{mfa = MFA, sql = Sql0, records = Rec, flags = Flags},
 			call(Name,[wait_election|Flags],W,Start);
 		_ ->
-			W = #write{mfa = MFA, sql = iolist_to_binary(Sql), flags = Flags},
+			W = #write{mfa = MFA, sql = Sql, flags = Flags},
 			call(Name,[wait_election|Flags],W,Start)
 	end;
 write(Name,Flags,[delete],Start) ->
 	call(Name,Flags,#write{sql = delete, flags = Flags},Start);
 write(Name,Flags,{Sql,Records},Start) ->
-	W = #write{sql = iolist_to_binary(Sql), records = Records, flags = Flags},
+	W = #write{sql = Sql, records = Records, flags = Flags},
 	call(Name,[wait_election|Flags],W,Start);
 write(Name,Flags,Sql,Start) ->
-	W = #write{sql = iolist_to_binary(Sql), flags = Flags},
+	W = #write{sql = Sql, flags = Flags},
 	call(Name,[wait_election|Flags],W,Start).
 
 

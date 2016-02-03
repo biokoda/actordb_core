@@ -21,7 +21,7 @@
 %
 
 % 
-% File format (integers are unsigned-little)
+% File format
 % 
 
 % Page size: 4096 bytes
@@ -37,9 +37,7 @@
 
 
 
-% wmap is a map of event data for every actor in replication event: #{ActorName => [{DataSectionOffset,DataSize}]}
-% It also has last valid election info: #{vi => {S#st.voted_for_term,S#st.voted_for}}
--record(st,{name, fd, fd_index, wmap = [], mapsize = 0, cursize = 0, 
+-record(st,{db, name, cursize = 0, 
 	curterm, evnum, prev_event = {0,0}, voted_for = <<>>, voted_for_term, replbin = <<>>}).
 
 start({Name,queue}) ->
@@ -61,7 +59,7 @@ start(Name,Type1,Opt) ->
 	case distreg:whereis({Name,Type}) of
 		undefined ->
 			actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},
-				{state,#st{name = Name}}|Opt]);
+				{state,#st{name = Name, db = aqdrv:open(Name)}}|Opt]);
 		Pid ->
 			{ok,Pid}
 	end.
@@ -78,72 +76,58 @@ read(_Shard, #{actor := _Actor, flags := _Flags, statements := _Sql} = _Call) ->
 write(_Shard, #{actor := Actor, flags := Flags, statements := Sql} = _Call) ->
 	% TODO: determine wactor based on actual actor. There should be a shard tree.
 	WActor = _Shard rem 10,
-	actordb_sqlproc:write({WActor,queue},[create|Flags],{{?MODULE,cb_write,[Actor,Sql]},undefined,undefined},?MODULE).
+	Type = ?DATA_TEXT,
+	actordb_sqlproc:write({WActor,queue},[create|Flags],{{?MODULE,cb_write,[Actor,Sql,Type]},undefined,undefined},?MODULE).
 
 %
 % Callbacks from actordb_sqlproc
 %
 
 % Buffer write
-cb_write(S,A,Data) ->
-	Size = iolist_size(Data),
-	ASize = iolist_size(A),
-	Hash = actordb_util:hash(A),
-	case Data of
-		{txt,Data} ->
-			Type = ?DATA_TEXT;
-		{bin,Data} ->
-			Type = ?DATA_BINARY;
-		{json,Data} ->
-			Type = ?DATA_JSON;
-		{msgpack,Data} ->
-			Type = ?DATA_MSGPACK;
-		_ ->
-			Type = ?DATA_BINARY
-	end,
-	{[ASize,A,Type,<<Size:32/unsigned-little>>,Data],
-		S#st{wmap = [<<Hash:32/unsigned,(S#st.cursize):32/unsigned>>|S#st.wmap], 
-		cursize = S#st.cursize + (Size+1+4+ASize), mapsize = S#st.mapsize+1}}.
+cb_write(S,A,Data,Type) ->
+	Sz = aqdrv:stage_write(S#st.db, Data),
+	{[],S#st{cursize = S#st.cursize + Sz}}.
 % Write to disk
 cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, VarHeader) ->
+	{ok, S}.
 	% Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
-	Map = lists:sort(S#st.wmap),
-	EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
-		(erlang:system_time(micro_seconds)):64/unsigned-little, 
-		0,(byte_size(S#st.mapsize)):24/unsigned-little>>,
+	% Map = lists:sort(S#st.wmap),
+	% EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
+	% 	(erlang:system_time(micro_seconds)):64/unsigned-little, 
+	% 	0,(byte_size(S#st.mapsize)):24/unsigned-little>>,
 	
-	HeadWithoutCrc = [<<?TYPE_EVENT,(S#st.name),PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
-		(S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8):32/unsigned-little>>],
-	TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8+4*2):32/unsigned-little>>,
+	% HeadWithoutCrc = [<<?TYPE_EVENT,(S#st.name),PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
+	% 	(S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8):32/unsigned-little>>],
+	% TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8+4*2):32/unsigned-little>>,
 	
-	% Combine to single binary since its going to be done in driver anyway.
-	Event = iolist_to_binary([EvHeader,Map,Items,TAIL]),
-	Header = [<<(erlang:crc32([HeadWithoutCrc,Event])):32/unsigned-little>>,HeadWithoutCrc],
+	% % Combine to single binary since its going to be done in driver anyway.
+	% Event = iolist_to_binary([EvHeader,Map,Items,TAIL]),
+	% Header = [<<(erlang:crc32([HeadWithoutCrc,Event])):32/unsigned-little>>,HeadWithoutCrc],
 
-	RHdr = [<<(iolist_size(S#st.replbin)):16/unsigned>>, S#st.replbin, 
-		<<(iolist_size(VarHeader)):16/unsigned>>, VarHeader,
-		24,<<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>],
-	actordb_driver:all_tunnel_call(RHdr,Event),
+	% RHdr = [<<(iolist_size(S#st.replbin)):16/unsigned>>, S#st.replbin, 
+	% 	<<(iolist_size(VarHeader)):16/unsigned>>, VarHeader,
+	% 	24,<<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>],
+	% actordb_driver:all_tunnel_call(RHdr,Event),
 	
-	write_to_log(S#st{curterm = Term, evnum = Evnum, cursize = 0, mapsize = 0, wmap = []}, 
-		iolist_size(Header)+byte_size(Event), 
-		[Header, Event]).
+	% write_to_log(S#st{curterm = Term, evnum = Evnum, cursize = 0, mapsize = 0, wmap = []}, 
+	% 	iolist_size(Header)+byte_size(Event), 
+	% 	[Header, Event]).
 % Write replicated
 cb_write_done(S,_Evnum) ->
 	{ok,S}.
 
-write_to_log(S,Size,Data) ->
-	{FileIndex,Offset} = actordb_queue_srv:get_chunk(Size),
-	case S#st.fd_index of
-		FileIndex ->
-			Fd = S#st.fd;
-		_ ->
-			file:close(S#st.fd),
-			actordb_queue_srv:moved_to(S#st.name,FileIndex),
-			{ok,Fd} = file:open(actordb_conf:db_path()++"/q."++butil:tolist(FileIndex),[write,read,binary,raw])
-	end,
-	ok = prim_file:pwrite(Fd,Offset,Data),
-	{ok,S#st{fd = Fd, fd_index = FileIndex, prev_event = {FileIndex,Offset}}}.
+% write_to_log(S,Size,Data) ->
+% 	{FileIndex,Offset} = actordb_queue_srv:get_chunk(Size),
+% 	case S#st.fd_index of
+% 		FileIndex ->
+% 			Fd = S#st.fd;
+% 		_ ->
+% 			file:close(S#st.fd),
+% 			actordb_queue_srv:moved_to(S#st.name,FileIndex),
+% 			{ok,Fd} = file:open(actordb_conf:db_path()++"/q."++butil:tolist(FileIndex),[write,read,binary,raw])
+% 	end,
+% 	ok = prim_file:pwrite(Fd,Offset,Data),
+% 	{ok,S#st{fd = Fd, fd_index = FileIndex, prev_event = {FileIndex,Offset}}}.
 
 
 cb_schema(_,queue,_) ->
@@ -218,15 +202,16 @@ cb_init_engine(S) ->
 % Storage engine callbacks
 % 
 cb_inject_page(#st{prev_event = {PrevFile,PrevOffset}} = S,<<OriginalSize:32/unsigned,Bin1/binary>>,ReplHeader) ->
-	<<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> = ReplHeader,
+	{ok,S}.
+	% <<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> = ReplHeader,
 	
-	Bin = actordb_driver:lz4_decompress(Bin1,OriginalSize),
+	% Bin = actordb_driver:lz4_decompress(Bin1,OriginalSize),
 	
-	HeadWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
-		% -4 because Bin also contains TAIL
-		(byte_size(Bin)-4):32/unsigned-little>>,
-	Header = [<<(erlang:crc32([HeadWithoutCrc,Bin])):32/unsigned-little>>,HeadWithoutCrc],
-	write_to_log(S#st{curterm = Evterm, evnum = Evnum},byte_size(Bin)+iolist_size(Header),[Header,Bin]).
+	% HeadWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
+	% 	% -4 because Bin also contains TAIL
+	% 	(byte_size(Bin)-4):32/unsigned-little>>,
+	% Header = [<<(erlang:crc32([HeadWithoutCrc,Bin])):32/unsigned-little>>,HeadWithoutCrc],
+	% write_to_log(S#st{curterm = Evterm, evnum = Evnum},byte_size(Bin)+iolist_size(Header),[Header,Bin]).
 
 % Called on open queue. Regardless if leader/follower (before that is established).
 cb_actor_info(#st{evnum = undefined} = _S) ->
@@ -235,13 +220,14 @@ cb_actor_info(S) ->
 	{{0,0},{S#st.curterm,S#st.evnum},{0,0},0,0,S#st.voted_for_term,S#st.voted_for}.
 
 cb_term_store(#st{prev_event = {PrevFile,PrevOffset}} = S, CurrentTerm, VotedFor) ->
-	Bin = term_to_binary({CurrentTerm,VotedFor,S#st.curterm,S#st.evnum}),
-	HeaderWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
-		(byte_size(Bin)):32/unsigned-little>>,
-	TAIL = <<(byte_size(HeaderWithoutCrc)+byte_size(Bin)+4*2):32/unsigned-little>>,
+	{ok,S}.
+	% Bin = term_to_binary({CurrentTerm,VotedFor,S#st.curterm,S#st.evnum}),
+	% HeaderWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
+	% 	(byte_size(Bin)):32/unsigned-little>>,
+	% TAIL = <<(byte_size(HeaderWithoutCrc)+byte_size(Bin)+4*2):32/unsigned-little>>,
 
-	ToWrite = [<<(erlang:crc32([HeaderWithoutCrc,Bin,TAIL])):32/unsigned-little>>,HeaderWithoutCrc,Bin,TAIL],
-	write_to_log(S#st{voted_for_term = CurrentTerm, voted_for = VotedFor}, iolist_size(ToWrite), ToWrite).
+	% ToWrite = [<<(erlang:crc32([HeaderWithoutCrc,Bin,TAIL])):32/unsigned-little>>,HeaderWithoutCrc,Bin,TAIL],
+	% write_to_log(S#st{voted_for_term = CurrentTerm, voted_for = VotedFor}, iolist_size(ToWrite), ToWrite).
 
 cb_wal_rewind(S,Evnum) ->
 	ok.
