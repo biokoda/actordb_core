@@ -188,7 +188,8 @@ init_state(Nodes,Groups,Misc,Configs) ->
 	case actordb_sqlproc:call({?STATE_NM_GLOBAL,?STATE_TYPE},[],{init_state,Nodes,Groups,Misc,Configs},?MODULE) of
 		ok ->
 			ok;
-		_ ->
+		_Err ->
+			?AERR("Init state error: ~p",[_Err]),
 			error
 	end.
 
@@ -235,9 +236,9 @@ set_init_state(Nodes,Groups,Configs) ->
 	MG = add_master_group([]),
 	case lists:member(actordb_conf:node_name(),MG) of
 		true ->
-			butil:safesend(actordb_local, {raft_connections,lists:delete(actordb_conf:node_name(), MG)});
+			butil:safesend(actordb_tunnel, {raft_connections,lists:delete(actordb_conf:node_name(), MG)});
 		false ->
-			butil:safesend(actordb_local, {raft_connections,bkdcore:cluster_nodes()})
+			butil:safesend(actordb_tunnel, {raft_connections,bkdcore:cluster_nodes()})
 	end.
 
 
@@ -799,6 +800,7 @@ return_mg(S,Nodes) ->
 					master_group = Nodes},
 				Nodes -- [actordb_conf:node_name()]};
 		false ->
+			?AERR("Not member of mg ~p ~p",[actordb_conf:node_name(), Nodes]),
 			exit(normal)
 	end.
 

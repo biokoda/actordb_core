@@ -277,11 +277,10 @@ type_schema(Type,Version) ->
 			{Version,[]}
 	end.
 
-createcfg(Main,Extra,Sync,QueryTimeout,Repl) ->
-	createcfg(Main,Extra,Sync,QueryTimeout,Repl,bkdcore:node_name()).
-createcfg(Main,Extra,Sync,QueryTimeout,Repl,Name) ->
+createcfg(Main,Extra,Sync,QueryTimeout,Repl,WThreads, RThreads,Name) ->
 	bkdcore:mkmodule(actordb_conf,[{db_path,Main},{paths,[Main|Extra]},{cfgtime,os:timestamp()},
-		{replication_space,Repl},{sync,Sync},{query_timeout,QueryTimeout},{node_name,Name}]).
+		{replication_space,Repl},{sync,Sync},{query_timeout,QueryTimeout},{node_name,Name},
+		{wthreads, WThreads}, {rthreads, RThreads}]).
 
 % Out of schema.cfg create module with functions:
 % types() -> [actortype1,actortype2,...]

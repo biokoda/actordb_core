@@ -58,6 +58,7 @@ handle_login(E, Username, Password, Salt1, Users)->
 			Pw = undefined,
 			Rights = [{'*',read},{'*',write},{{config},read},{{config},write}];
 		false = Rights ->
+			?AERR("User not found ~p",[Username]),
 			Pw = undefined,
 			throw(invalid_login);
 		{_,Pw,Rights} ->
@@ -71,6 +72,7 @@ handle_login(E, Username, Password, Salt1, Users)->
 				Password ->
 					ok;
 				_ ->
+					% ?AERR("Login hash comparison failed"),
 					throw(invalid_login)
 			end;
 		_ when Pw == Password ->
@@ -78,6 +80,7 @@ handle_login(E, Username, Password, Salt1, Users)->
 		_ when Pw == undefined ->
 			ok;
 		_ ->
+			% ?AERR("Received salt is invalid ~p",[Salt1]),
 			throw(invalid_login)
 	end,
 	butil:ds_add(curcount,0,E),

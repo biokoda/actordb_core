@@ -216,10 +216,7 @@ print_info() ->
 -record(dp,{mupdaters = [], mpids = [], updaters_saved = true,
 % Ulimit and memlimit are checked on startup and will influence how many actors to keep in memory
 ulimit = 1024*100, memlimit = 1024*1024*1024, proclimit, lastcull = {0,0,0},
-stat_readers = [],prev_reads = 0, prev_writes = 0,
-% slots for 8 raft cluster connections
-% Set element is: NodeName
-raft_connections = {undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined}}).
+stat_readers = [],prev_reads = 0, prev_writes = 0}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
@@ -276,16 +273,6 @@ handle_info({'DOWN',_Monitor,_Ref,PID,_Reason}, P) ->
 			end,
 			{noreply,P}
 	end;
-handle_info(reconnect_raft,P) ->
-	start_timer(P),
-	erlang:send_after(500,self(),reconnect_raft),
-	case nodes() of
-		[] ->
-			ok;
-		_ ->
-			actordb_sqlite:tcp_reconnect()
-	end,
-	{noreply,P};
 handle_info(switch_cur_active,P) ->
 	erlang:send_after(20000,self(),switch_cur_active),
 
@@ -350,18 +337,7 @@ handle_info(switch_cur_active,P) ->
 	% 	end
 	%  end),
 	% {noreply,P};
-handle_info({raft_connections,L},P) ->
-	{noreply, P#dp{raft_connections = store_raft_connection(L,P#dp.raft_connections)}};
-handle_info({actordb,sharedstate_change},P1) ->
-	MG1 = actordb_sharedstate:read_global(master_group),
-	case lists:member(actordb_conf:node_name(),MG1) of
-		true ->
-			MG = MG1 -- [actordb_conf:node_name()];
-		false ->
-			MG = bkdcore:cluster_nodes()
-	end,
-	?AINF("Storing raft connections ~p ~p",[MG, bkdcore:cluster_nodes()]),
-	P = P1#dp{raft_connections = store_raft_connection(MG,P1#dp.raft_connections)},
+handle_info({actordb,sharedstate_change},P) ->
 	case P#dp.mupdaters of
 		[] ->
 			case actordb_sharedstate:read_cluster(["mupdaters,",bkdcore:node_name()]) of
@@ -426,50 +402,6 @@ handle_info(_, P) ->
 	{noreply, P}.
 
 
-getempty(T,N) ->
-	case element(N,T) of
-		undefined ->
-			N;
-		_ ->
-			getempty(T,N+1)
-	end.
-
-getpos(T,N,Nd) when tuple_size(T) >= N ->
-	case element(N,T) of
-		Nd when is_binary(Nd) ->
-			N;
-		_ ->
-			getpos(T,N+1,Nd)
-	end;
-getpos(_,_,_) ->
-	undefined.
-
-
-store_raft_connection([Nd|T],Tuple) ->
-	case getpos(Tuple,1,Nd) of
-		undefined ->
-			Pos = getempty(Tuple,1),
-			{IP,Port} = bkdcore:node_address(Nd),
-			case lists:member(Nd,bkdcore:cluster_nodes()) of
-				true ->
-					Type = 1;
-				false ->
-					Type = 2
-			end,
-			?AINF("Starting raft connection to ~p",[{Nd,IP,Port}]),
-			case actordb_sqlite:tcp_connect_async(IP,Port,[bkdcore:rpccookie(Nd),"tunnel,",actordb_conf:node_name(),",actordb_util"],Pos-1,Type) of
-				Ref when is_reference(Ref) ->
-					store_raft_connection(T,setelement(Pos,Tuple,Nd));
-				_ ->
-					?AERR("Unable to establish replication connection to ~p",[Nd]),
-					store_raft_connection(T,Tuple)
-			end;
-		_ ->
-			store_raft_connection(T,Tuple)
-	end;
-store_raft_connection([],T) ->
-	T.
-
 terminate(_, _) ->
 	ok.
 code_change(_, P, _) ->
@@ -479,7 +411,6 @@ init(_) ->
 	% erlang:send_after(200,self(),{timeout,0}),
 	% erlang:send_after(10000,self(),check_mem),
 	% erlang:send_after(1000,self(),read_ref),
-	erlang:send_after(500,self(),reconnect_raft),
 	erlang:send_after(20000,self(),switch_cur_active),
 	actordb_sharedstate:subscribe_changes(?MODULE),
 	case ets:info(multiupdaters,size) of

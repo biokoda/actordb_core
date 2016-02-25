@@ -198,8 +198,6 @@ prestart1(Files) ->
 		_ ->
 			application:set_env(bkdcore,statepath,Statep)
 	end,
-	actordb_util:createcfg(Main,Extra,Sync,QueryTimeout,Repl,Name),
-	ensure_folders(actordb_conf:paths()),
 
 	Sch = erlang:system_info(schedulers),
 	SchOnline = erlang:system_info(schedulers_online),
@@ -231,6 +229,9 @@ prestart1(Files) ->
 		_ ->
 			WThreads = RdThreads = 1
 	end,
+
+	actordb_util:createcfg(Main,Extra,Sync,QueryTimeout,Repl,WThreads, RdThreads,Name),
+	ensure_folders(actordb_conf:paths()),
 
 	case Sync of
 		true ->
