@@ -300,43 +300,6 @@ handle_info(switch_cur_active,P) ->
 
 
 	{noreply,P};
-% handle_info(read_ref,P) ->
-% 	erlang:send_after(1000,self(),read_ref),
-% 	Ref = make_ref(),
-% 	AllReads = get_nreads(),
-% 	AllWrites = get_nwrites(),
-	% case P#dp.stat_readers of
-	% 	[] ->
-	% 		SR = [];
-	% 	_ ->
-	% 		% Count = ets:select_count(actoractivity,[{{'$1','_'},[{'>','$1',P#dp.prev_sec_to},{'<','$1',Ref}], [true]}]),
-	% 		% butil:ds_add(nactive,Count,?STATS),
-	% 		SR = [begin Pid ! {doread,AllReads,AllWrites,AllReads - P#dp.prev_reads,AllWrites - P#dp.prev_writes,Count},
-	% 				Pid
-	% 	  		  end || Pid <- P#dp.stat_readers, erlang:is_process_alive(Pid)]
-	% end,
-	% {noreply,P#dp{prev_sec_to = Ref, prev_sec_from = P#dp.prev_sec_to,
-	% 				stat_readers = SR, prev_reads = AllReads, prev_writes = AllWrites}};
-% handle_info(check_mem,P) ->
-% 	erlang:send_after(5000,self(),check_mem),
-	% spawn(fun() ->
-	% 	L = memsup:get_system_memory_data(),
-	% 	[Free,Total,Cached] = butil:ds_vals([free_memory,system_total_memory,cached_memory],L),
-	% 	NProc = ets:info(actoractivity,size),
-	% 	case is_integer(Total) andalso
-	% 		 is_integer(Free) andalso
-	% 		 is_integer(Cached) andalso
-	% 		 Total > 0 andalso
-	% 		 ((Free+Cached) / Total) < 0.2 andalso
-	% 		 NProc > 100 of
-	% 		true ->
-	% 			?AINF("Killing actors, memratio=~p, actors=~p",[Free/Total, NProc]),
-	% 			killactors(NProc*0.2,ets:last(actoractivity));
-	% 		false ->
-	% 			ok
-	% 	end
-	%  end),
-	% {noreply,P};
 handle_info({actordb,sharedstate_change},P) ->
 	case P#dp.mupdaters of
 		[] ->
@@ -378,11 +341,6 @@ handle_info({nodedown, Nd},P) ->
 			{noreply,P};
 		_Nm ->
 			ets:update_counter(?GLOBAL_INFO,netchanges,1),
-			% Some node has gone down, kill all slaves on this node.
-			% spawn(fun() ->
-			% 	L = ets:match(actorsalive, #actor{masternode=Nm, pid = '$1', _='_'}),
-			% 	[actordb_sqlproc:diepls(Pid,nomaster) || [Pid] <- L]
-			% end),
 			{noreply,P}
 	end;
 handle_info({nodeup,Nd},P)  ->

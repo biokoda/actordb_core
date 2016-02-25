@@ -30,11 +30,11 @@ print_info() ->
 
 -record(dp,{
 	% Sockets for every write thread
-	% #{{ThreadIndex, Node, ConnectionSlot} => {Type, Socket}}
+	% #{{ThreadIndex, ConnectionSlot} => {Type, Socket}}
 	sockets = #{},
 	% slots for 8 raft cluster connections
 	% Set element is: NodeName
-	raft_connections = {undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined}}).
+	slots = {undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined}}).
 
 handle_call(print_info,_,P) ->
 	?AINF("~p",[P]),
@@ -45,17 +45,28 @@ handle_call(stop, _, P) ->
 handle_cast(_, P) ->
 	{noreply, P}.
 
-handle_info({tcpfail,Pos}, P) ->
-	{noreply, P};
+handle_info({tcpfail,Thread,Pos}, P) ->
+	case maps:get({Thread,Pos}, P#dp.sockets, undefined) of
+		undefined ->
+			?AERR("Connection {~p,~p} not found in map=~p",[Thread,Pos,P#dp.sockets]),
+			{noreply, P};
+		{Type,Sock} when is_port(Sock) ->
+			gen_tcp:close(Sock),
+			Socks = P#dp.sockets,
+			{noreply, P#dp{sockets = Socks#{{Thread,Pos} => {Type, undefined}}}};
+		{_Type, undefined} ->
+			{noreply, P}
+	end;
 handle_info(reconnect_raft,P) ->
 	erlang:send_after(500,self(),reconnect_raft),
-	case nodes() of
-		[] ->
-			ok;
-		_ ->
-			actordb_sqlite:tcp_reconnect()
-	end,
-	{noreply,P#dp{sockets = check_reconnect(maps:to_list(P#dp.sockets), P#dp.sockets)}};
+	% case nodes() of
+	% 	[] ->
+	% 		ok;
+	% 	_ ->
+	% 		ok
+	% 		% actordb_sqlite:tcp_reconnect()
+	% end,
+	{noreply,P#dp{sockets = check_reconnect(P#dp.slots,maps:to_list(P#dp.sockets), P#dp.sockets)}};
 handle_info({actordb,sharedstate_change},P) ->
 	MG1 = actordb_sharedstate:read_global(master_group),
 	case lists:member(actordb_conf:node_name(),MG1) of
@@ -65,11 +76,11 @@ handle_info({actordb,sharedstate_change},P) ->
 			MG = bkdcore:cluster_nodes()
 	end,
 	?AINF("Storing raft connections ~p ~p",[MG, bkdcore:cluster_nodes()]),
-	{RC, ToConnect} = store_raft_connection(MG,P#dp.raft_connections,[]),
-	{noreply, P#dp{raft_connections = RC, sockets = connect(ToConnect,P#dp.sockets)}};
+	{Slots, ToConnect} = store_raft_connection(MG,P#dp.slots,[]),
+	{noreply, P#dp{slots = Slots, sockets = connect(Slots, ToConnect,P#dp.sockets)}};
 handle_info({raft_connections,L},P) ->
-	{RC,ToConnect} = store_raft_connection(L,P#dp.raft_connections,[]),
-	{noreply, P#dp{raft_connections = RC, sockets = connect(ToConnect,P#dp.sockets)}};
+	{Slots,ToConnect} = store_raft_connection(L,P#dp.slots,[]),
+	{noreply, P#dp{slots = Slots, sockets = connect(Slots, ToConnect,P#dp.sockets)}};
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
@@ -87,40 +98,48 @@ init(_) ->
 	actordb_sqlite:set_tunnel_connector(),
 	{ok,#dp{}}.
 
-check_reconnect([{{_Thread, Nd, _Pos} = K,{Type,undefined}}|T], Sockets) ->
+check_reconnect(Slots,[{{Thread, Pos} = K,{Type,undefined}}|T], Sockets) ->
+	Nd = element(Pos+1,Slots),
 	{IP,Port} = bkdcore:node_address(Nd),
 	case doconnect(IP, Port, Nd) of
-		{ok, S} ->
-			check_reconnect(T, Sockets#{K => {Type, S}});
+		{ok, Sock} ->
+			{ok,Fd} = prim_inet:getfd(Sock),
+			ok = actordb_sqlite:set_thread_fd(Thread,Fd,Pos,Type),
+			check_reconnect(Slots,T, Sockets#{K => {Type, Sock}});
 		false ->
-			check_reconnect(T, Sockets)
+			check_reconnect(Slots,T, Sockets)
 	end;
-check_reconnect([_|T], S) ->
-	check_reconnect(T, S);
-check_reconnect([], S) ->
+check_reconnect(Slots,[_|T], S) ->
+	check_reconnect(Slots,T, S);
+check_reconnect(_,[], S) ->
 	S.
 
-connect([H|TC], Sockets) ->
+connect(Slots,[H|TC], Sockets) ->
 	NWThreads = length(actordb_conf:paths()) * actordb_conf:wthreads(),
-	connect(TC, connect_threads(lists:seq(0,NWThreads-1), H,Sockets));
-connect([],S) ->
+	connect(Slots,TC, connect_threads(Slots,lists:seq(0,NWThreads-1), H,Sockets));
+connect(_,[],S) ->
 	S.
 
-connect_threads([Thread|T], {Nd, Pos, Type} = Info, Sockets) ->
+connect_threads(Slots,[Thread|T], {Nd,Pos, Type} = Info, Sockets) ->
 	{IP,Port} = bkdcore:node_address(Nd),
-	K = {Thread, Nd, Pos},
+	Nd = element(Pos+1,Slots),
+	K = {Thread, Pos},
 	case doconnect(IP, Port, Nd) of
-		{ok, S} ->
-			connect_threads(T, Info, Sockets#{K => {Type, S}});
+		{ok, Sock} ->
+			{ok,Fd} = prim_inet:getfd(Sock),
+			ok = actordb_sqlite:set_thread_fd(Thread,Fd,Pos,Type),
+			connect_threads(Slots,T, Info, Sockets#{K => {Type, Sock}});
 		false ->
-			connect_threads(T, Info, Sockets#{K => {Type, undefined}})
+			connect_threads(Slots,T, Info, Sockets#{K => {Type, undefined}})
 	end;
-connect_threads([],_Info,S) ->
+connect_threads(_Slots,[],_Info,S) ->
 	S.
 
 doconnect(IP, Port, Nd) ->
-	case gen_tcp:connect(IP,Port,[{active, false},{packet,4},{keepalive,true},{send_timeout,10000},{nodelay,true}]) of
+	case gen_tcp:connect(IP,Port,[{active, false},{packet,4},
+			{keepalive,true},{send_timeout,10000}], 500) of
 		{ok,S} ->
+			inet:setopts(S,[{nodelay, true}]),
 			case gen_tcp:send(S,conhdr(Nd)) of
 				ok ->
 					ok = prim_inet:ignorefd(S,true),

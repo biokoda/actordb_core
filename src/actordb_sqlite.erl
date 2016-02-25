@@ -9,7 +9,7 @@ lz4_compress/1,lz4_decompress/2,replicate_opts/3,replicate_opts/2,parse_helper/2
 all_tunnel_call/1,tcp_reconnect/0,exec_res/2,exec_res/1,
 tcp_connect_async/5,store_prepared_table/2, wal_rewind/2, term_store/3, actor_info/1,replication_done/1,
 iterate_close/1, inject_page/3,fsync/1, iterate_db/2, iterate_db/3, checkpoint_lock/2, wal_rewind/3,
-set_tunnel_connector/0]).
+set_tunnel_connector/0, set_thread_fd/4]).
 % -include_lib("actordb_core/include/actordb.hrl").
 -include_lib("actordb_sqlproc.hrl").
 
@@ -34,6 +34,8 @@ init(Path,JournalMode,Thread) ->
 
 set_tunnel_connector() ->
 	actordb_driver:set_tunnel_connector().
+set_thread_fd(Thread,Fd,Pos,Type) ->
+	actordb_driver:set_thread_fd(Thread,Fd,Pos,Type).
 
 wal_rewind(P,Evnum) when element(1,P#dp.db) == actordb_driver ->
 	actordb_driver:wal_rewind(P#dp.db,Evnum);
