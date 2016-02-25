@@ -59,13 +59,6 @@ handle_info({tcpfail,Thread,Pos}, P) ->
 	end;
 handle_info(reconnect_raft,P) ->
 	erlang:send_after(500,self(),reconnect_raft),
-	% case nodes() of
-	% 	[] ->
-	% 		ok;
-	% 	_ ->
-	% 		ok
-	% 		% actordb_sqlite:tcp_reconnect()
-	% end,
 	{noreply,P#dp{sockets = check_reconnect(P#dp.slots,maps:to_list(P#dp.sockets), P#dp.sockets)}};
 handle_info({actordb,sharedstate_change},P) ->
 	MG1 = actordb_sharedstate:read_global(master_group),
