@@ -46,6 +46,7 @@ handle_cast(_, P) ->
 	{noreply, P}.
 
 handle_info({tcpfail,Thread,Pos}, P) ->
+	?AERR("Lost connection to=~p on thread=~p",[element(Pos+1,P#dp.slots), Thread]),
 	case maps:get({Thread,Pos}, P#dp.sockets, undefined) of
 		undefined ->
 			?AERR("Connection {~p,~p} not found in map=~p",[Thread,Pos,P#dp.sockets]),
@@ -68,7 +69,7 @@ handle_info({actordb,sharedstate_change},P) ->
 		false ->
 			MG = bkdcore:cluster_nodes()
 	end,
-	?AINF("Storing raft connections ~p ~p",[MG, bkdcore:cluster_nodes()]),
+	% ?AINF("Storing raft connections ~p ~p",[MG, bkdcore:cluster_nodes()]),
 	{Slots, ToConnect} = store_raft_connection(MG,P#dp.slots,[]),
 	{noreply, P#dp{slots = Slots, sockets = connect(Slots, ToConnect,P#dp.sockets)}};
 handle_info({raft_connections,L},P) ->
@@ -97,6 +98,7 @@ check_reconnect(Slots,[{{Thread, Pos} = K,{Type,undefined}}|T], Sockets) ->
 	case doconnect(IP, Port, Nd) of
 		{ok, Sock} ->
 			{ok,Fd} = prim_inet:getfd(Sock),
+			?AINF("Reconnected to ~p",[Nd]),
 			ok = actordb_sqlite:set_thread_fd(Thread,Fd,Pos,Type),
 			check_reconnect(Slots,T, Sockets#{K => {Type, Sock}});
 		false ->
@@ -121,6 +123,7 @@ connect_threads(Slots,[Thread|T], {Nd,Pos, Type} = Info, Sockets) ->
 		{ok, Sock} ->
 			{ok,Fd} = prim_inet:getfd(Sock),
 			ok = actordb_sqlite:set_thread_fd(Thread,Fd,Pos,Type),
+			?AINF("Connected to ~p",[Nd]),
 			connect_threads(Slots,T, Info, Sockets#{K => {Type, Sock}});
 		false ->
 			connect_threads(Slots,T, Info, Sockets#{K => {Type, undefined}})
