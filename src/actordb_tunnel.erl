@@ -29,8 +29,8 @@ print_info() ->
 
 
 -record(dp,{
-	% Sockets for every write thread
-	% #{{ThreadIndex, ConnectionSlot} => {Type, Socket}}
+	% Sockets for every write thread for every driver.
+	% #{{ThreadIndex, DriverName, ConnectionSlot} => {Type, Socket}}
 	sockets = #{},
 	% slots for 8 raft cluster connections
 	% Set element is: NodeName
@@ -45,16 +45,16 @@ handle_call(stop, _, P) ->
 handle_cast(_, P) ->
 	{noreply, P}.
 
-handle_info({tcpfail,Thread,Pos}, P) ->
+handle_info({tcpfail,Driver,Thread,Pos}, P) ->
 	?AERR("Lost connection to=~p on thread=~p",[element(Pos+1,P#dp.slots), Thread]),
-	case maps:get({Thread,Pos}, P#dp.sockets, undefined) of
+	case maps:get({Thread,Driver,Pos}, P#dp.sockets, undefined) of
 		undefined ->
 			?AERR("Connection {~p,~p} not found in map=~p",[Thread,Pos,P#dp.sockets]),
 			{noreply, P};
 		{Type,Sock} when is_port(Sock) ->
 			gen_tcp:close(Sock),
 			Socks = P#dp.sockets,
-			{noreply, P#dp{sockets = Socks#{{Thread,Pos} => {Type, undefined}}}};
+			{noreply, P#dp{sockets = Socks#{{Thread, Driver, Pos} => {Type, undefined}}}};
 		{_Type, undefined} ->
 			{noreply, P}
 	end;
@@ -89,18 +89,19 @@ code_change(_, P, _) ->
 init(_) ->
 	erlang:send_after(500,self(),reconnect_raft),
 	actordb_sharedstate:subscribe_changes(?MODULE),
-	actordb_sqlite:set_tunnel_connector(),
+	actordb_driver:set_tunnel_connector(),
+	aqdrv:set_tunnel_connector(),
 	{ok,#dp{}}.
 
-check_reconnect(Slots,[{{Thread, Pos} = K,{Type,undefined}}|T], Sockets) ->
+check_reconnect(Slots,[{{Thread, Driver, Pos} = K, {Type,undefined}}|T], Sockets) ->
 	Nd = element(Pos+1,Slots),
 	{IP,Port} = bkdcore:node_address(Nd),
 	case doconnect(IP, Port, Nd) of
 		{ok, Sock} ->
 			{ok,Fd} = prim_inet:getfd(Sock),
 			?AINF("Reconnected to ~p",[Nd]),
-			ok = actordb_sqlite:set_thread_fd(Thread,Fd,Pos,Type),
-			check_reconnect(Slots,T, Sockets#{K => {Type, Sock}});
+			ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
+			check_reconnect(Slots,T, Sockets#{K => {Type, Driver, Sock}});
 		false ->
 			check_reconnect(Slots,T, Sockets)
 	end;
@@ -111,24 +112,25 @@ check_reconnect(_,[], S) ->
 
 connect(Slots,[H|TC], Sockets) ->
 	NWThreads = length(actordb_conf:paths()) * actordb_conf:wthreads(),
-	connect(Slots,TC, connect_threads(Slots,lists:seq(0,NWThreads-1), H,Sockets));
+	ThrL = lists:seq(0,NWThreads-1),
+	connect(Slots,TC, connect_threads(Slots,actordb_driver,ThrL, H,Sockets));
 connect(_,[],S) ->
 	S.
 
-connect_threads(Slots,[Thread|T], {Nd,Pos, Type} = Info, Sockets) ->
+connect_threads(Slots, Driver, [Thread|T], {Nd, Pos, Type} = Info, Sockets) ->
 	{IP,Port} = bkdcore:node_address(Nd),
 	Nd = element(Pos+1,Slots),
-	K = {Thread, Pos},
+	K = {Thread, Driver, Pos},
 	case doconnect(IP, Port, Nd) of
 		{ok, Sock} ->
 			{ok,Fd} = prim_inet:getfd(Sock),
-			ok = actordb_sqlite:set_thread_fd(Thread,Fd,Pos,Type),
+			ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
 			?AINF("Connected to ~p",[Nd]),
-			connect_threads(Slots,T, Info, Sockets#{K => {Type, Sock}});
+			connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, Driver, Sock}});
 		false ->
-			connect_threads(Slots,T, Info, Sockets#{K => {Type, undefined}})
+			connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, Driver, undefined}})
 	end;
-connect_threads(_Slots,[],_Info,S) ->
+connect_threads(_Slots, _Driver,[],_Info,S) ->
 	S.
 
 doconnect(IP, Port, Nd) ->
