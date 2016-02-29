@@ -200,9 +200,9 @@ call_slave(Cb,Actor,Type,Msg,Flags) ->
 			ok
 	end,
 	case catch gen_server:call(Pid,Msg,infinity) of
-		{'EXIT',{noproc,_}} ->
+		{'EXIT',{noproc,_}} when Msg /= stop ->
 			call_slave(Cb,Actor,Type,Msg);
-		{'EXIT',{normal,_}} ->
+		{'EXIT',{normal,_}} when Msg /= stop ->
 			call_slave(Cb,Actor,Type,Msg);
 		Res ->
 			Res
@@ -1711,6 +1711,7 @@ init(#dp{} = P,_Why) ->
 % started actor is blocking waiting for init to finish.
 init([_|_] = Opts) ->
 	% put(opt,Opts),
+	?ADBG("Start opts ~p",[Opts]),
 	% Random needs to be unique per-node, not per-actor.
 	random:seed(actordb_conf:cfgtime()),
 	Now = actordb_local:elapsed_time(),
