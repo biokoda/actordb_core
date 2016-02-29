@@ -50,6 +50,60 @@ reply_tuple([H|T],Pos,Msg) ->
 reply_tuple([],_,_) ->
 	ok.
 
+% shards/kv can have reads that turn into writes, or have extra data to return along with read.
+read_reply(P,undefined,_,_) ->
+	P;
+read_reply(P,[H|T],Pos,Res) ->
+	?DBG("read_reply"),
+	case H of
+		{tuple,What,From} ->
+			reply(From,{What,actordb_sqlite:exec_res({ok, element(Pos,Res)})}),
+			read_reply(P,T,Pos+1,Res);
+		{mod,{Mod,Func,Args},From} ->
+			case apply(Mod,Func,[P#dp.cbstate,actordb_sqlite:exec_res({ok, element(Pos,Res)})|Args]) of
+				{write,Write} ->
+					case Write of
+						_ when is_binary(Write); is_list(Write) ->
+							{noreply,NP} = actordb_sqlproc:write_call(#write{sql = iolist_to_binary(Write)},From,P);
+						{_,_,_} ->
+							{noreply,NP} = actordb_sqlproc:write_call(#write{mfa = Write},From,P)
+					end,
+					read_reply(NP,T,Pos+1,Res);
+				{write,Write,NS} ->
+					case Write of
+						_ when is_binary(Write); is_list(Write) ->
+							{noreply,NP} = actordb_sqlproc:write_call(#write{sql = iolist_to_binary(Write)},
+									From,P#dp{cbstate = NS});
+						{_,_,_} ->
+							{noreply,NP} = 
+								actordb_sqlproc:write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
+					end,
+					read_reply(NP,T,Pos+1,Res);
+				{reply_write,Reply,Write,NS} ->
+					reply(From,Reply),
+					case Write of
+						_ when is_binary(Write); is_list(Write) ->
+							{noreply,NP} = actordb_sqlproc:write_call(
+								#write{sql = iolist_to_binary(Write)},undefined,P#dp{cbstate = NS});
+						{_,_,_} ->
+							{noreply,NP} = actordb_sqlproc:write_call(
+								#write{mfa = Write},undefined,P#dp{cbstate = NS})
+					end,
+					read_reply(NP,T,Pos+1,Res);
+				{reply,What,NS} ->
+					reply(From,What),
+					read_reply(P#dp{cbstate = NS},T,Pos+1,Res);
+				{reply,What} ->
+					reply(From,What),
+					read_reply(P,T,Pos+1,Res)
+			end;
+		From ->
+			reply(From,actordb_sqlite:exec_res({ok, element(Pos,Res)})),
+			read_reply(P,T,Pos+1,Res)
+	end;
+read_reply(P,[],_,_) ->
+	P.
+
 ae_respond(P,undefined,_Success,_PrevEvnum,_AEType,_CallCount) ->
 	?ERR("Unable to respond for AE because leader is gone"),
 	ok;
@@ -183,6 +237,8 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					end
 			end,
 			reply(From,Res),
+			RR = P#dp.rasync,
+			read_reply(P, RR#ai.callfrom, 1, RR#ai.wait),
 			case P#dp.transactioninfo of
 				undefined ->
 					actordb_sqlite:replication_done(P);
@@ -190,7 +246,9 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					ok
 			end,
 			BD = P#dp.wasync,
-			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, wasync = BD#ai{nreplies = BD#ai.nreplies + 1},
+			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, 
+				rasync = RR#ai{wait = undefined, callfrom = undefined},
+				wasync = BD#ai{nreplies = BD#ai.nreplies + 1},
 				schemavers = NewVers})),
 			case Msg of
 				undefined ->
@@ -214,6 +272,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 		true ->
 			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
 			BD = P#dp.wasync,
+			RR = P#dp.rasync,
 			case P#dp.movedtonode of
 				deleted ->
 					Moved = deleted,
@@ -238,9 +297,12 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					end
 			end,
 			reply(P#dp.callfrom,P#dp.callres),
+			read_reply(P, RR#ai.callfrom, 1, RR#ai.wait),
 			actordb_sqlite:replication_done(P),
 			doqueue(checkpoint(do_cb(P#dp{movedtonode = Moved, callfrom = undefined, callres = undefined,
-				force_sync = false, wasync = BD#ai{nreplies = BD#ai.nreplies + 1}})));
+				force_sync = false, 
+				rasync = RR#ai{wait = undefined, callfrom = undefined},
+				wasync = BD#ai{nreplies = BD#ai.nreplies + 1}})));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
 				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
@@ -623,9 +685,9 @@ exec_writes(P) ->
 exec_reads(#dp{verified = true, rasync = R, wasync = #ai{nreplies = NR}} = P) when R#ai.buffer /= [], NR > 0 ->
 	case has_schema_updated(P,[]) of
 		ok ->
-			exec_writes(actordb_sqlproc:read_call1(R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P));
+			exec_writes(actordb_sqlproc:read_call1(R#ai.safe_read, R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P));
 		{ok,SchemaNum} ->
-			exec_writes(actordb_sqlproc:read_call1(R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P#dp{schemanum = SchemaNum}));
+			exec_writes(actordb_sqlproc:read_call1(R#ai.safe_read, R#ai.buffer,R#ai.buffer_recs,R#ai.buffer_cf,P#dp{schemanum = SchemaNum}));
 		SUR ->
 			% Skip read for now because we must execute schema change first
 			exec_writes(schema_change(P, SUR))
@@ -652,7 +714,7 @@ net_changes(#dp{wasync = W} = P) ->
 	case P#dp.netchanges == actordb_local:net_changes() of
 		true ->
 			P;
-		false when W#ai.buffer == [], P#dp.mors == master ->
+		false when W#ai.buffer == [], P#dp.mors == master, P#dp.movedtonode == undefined ->
 			% start_verify(P#dp{netchanges = actordb_local:net_changes()},false)
 			{noreply,NP} = actordb_sqlproc:write_call(#write{sql = []},undefined, P),
 			NP#dp{netchanges = actordb_local:net_changes()};
@@ -1009,7 +1071,8 @@ follower_check(P,[F|T],Synced,Waiting,Delayed,Dead) ->
 	Latency = actordb_latency:latency(),
 	case ok of
 		_ when Addr == undefined ->
-			follower_check(P#dp{follower_indexes = lists:keydelete(F#flw.node,#flw.node,P#dp.follower_indexes)}, T, Synced,Waiting,Delayed,Dead);
+			follower_check(P#dp{follower_indexes = 
+				lists:keydelete(F#flw.node,#flw.node,P#dp.follower_indexes)}, T, Synced,Waiting,Delayed,Dead);
 		_ when IsAlive == false ->
 			follower_check(P,T,Synced,Waiting,Delayed,[F|Dead]);
 		_ when Wait > (1000+Latency) ->
@@ -1046,7 +1109,13 @@ follower_check_handle(P,_Synced,_Waiting,_Delayed,[]) ->
 	% {noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
 	% {noreply,actordb_sqlproc:write_call(#write{sql = []},undefined,P)};
 	self() ! doqueue,
-	{noreply,P#dp{election = election_timer(undefined)}};
+	Now = actordb_local:elapsed_time(),
+	case Now - P#dp.last_write_at of
+		Diff when Diff > 1000 ->
+			actordb_sqlproc:write_call(#write{sql = []},undefined,P);
+		_ ->
+			{noreply,P#dp{election = election_timer(undefined)}}
+	end;
 follower_check_handle(P,Synced,Waiting,Delayed,Dead) ->
 	% Some node is not reponding. Report to catchup.
 	actordb_catchup:report(P#dp.actorname,P#dp.actortype),
@@ -1084,7 +1153,6 @@ start_verify(P,JustStarted) ->
 				followers = P#dp.follower_indexes, cbmod = P#dp.cbmod},
 			case actordb_election:whois_leader(E) of
 				Result when is_pid(Result); Result == Me ->
-					store_term(P,actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm),
 					NP = set_followers(P#dp.schemavers /= undefined,
 						reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me,
 							mors = master, verified = false})),
@@ -1097,6 +1165,7 @@ start_verify(P,JustStarted) ->
 							Verifypid = self(),
 							self() ! {'DOWN',make_ref(),process,self(),{leader,P#dp.follower_indexes,false}}
 					end,
+					store_term(P,actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm),
 					NP#dp{election = Verifypid, verified = false};
 				LeaderNode when is_binary(LeaderNode) ->
 					?DBG("Received leader ~p",[LeaderNode]),
@@ -1338,15 +1407,21 @@ delete_actor(P) ->
 	end,
 	actordb_sqlite:stop(P).
 	% delactorfile(P).
-empty_queue(A,Q,ReplyMsg) ->
+empty_queue(A,R,Q,ReplyMsg) ->
 	case queue:is_empty(Q) of
 		true ->
-			[reply(F,ReplyMsg) || F <- A#ai.buffer_cf];
+			[reply(F,ReplyMsg) || F <- A#ai.buffer_cf],
+			case R#ai.callfrom of
+				[_|_] ->
+					[reply(F,ReplyMsg) || F <- R#ai.callfrom];
+				_ ->
+					ok
+			end;
 		false ->
 			{{value,Call},CQ} = queue:out_r(Q),
 			{From,_Msg} = Call,
 			reply(From,ReplyMsg),
-			empty_queue(A,CQ,ReplyMsg)
+			empty_queue(A,R,CQ,ReplyMsg)
 	end.
 
 semicolon(<<>>) ->

@@ -89,8 +89,8 @@ code_change(_, P, _) ->
 init(_) ->
 	erlang:send_after(500,self(),reconnect_raft),
 	actordb_sharedstate:subscribe_changes(?MODULE),
-	actordb_driver:set_tunnel_connector(),
-	aqdrv:set_tunnel_connector(),
+	ok = actordb_driver:set_tunnel_connector(),
+	% ok = aqdrv:set_tunnel_connector(),
 	{ok,#dp{}}.
 
 check_reconnect(Slots,[{{Thread, Driver, Pos} = K, {Type,undefined}}|T], Sockets) ->
@@ -101,7 +101,7 @@ check_reconnect(Slots,[{{Thread, Driver, Pos} = K, {Type,undefined}}|T], Sockets
 			{ok,Fd} = prim_inet:getfd(Sock),
 			?AINF("Reconnected to ~p",[Nd]),
 			ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
-			check_reconnect(Slots,T, Sockets#{K => {Type, Driver, Sock}});
+			check_reconnect(Slots,T, Sockets#{K => {Type, Sock}});
 		false ->
 			check_reconnect(Slots,T, Sockets)
 	end;
@@ -126,9 +126,9 @@ connect_threads(Slots, Driver, [Thread|T], {Nd, Pos, Type} = Info, Sockets) ->
 			{ok,Fd} = prim_inet:getfd(Sock),
 			ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
 			?AINF("Connected to ~p",[Nd]),
-			connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, Driver, Sock}});
+			connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, Sock}});
 		false ->
-			connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, Driver, undefined}})
+			connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, undefined}})
 	end;
 connect_threads(_Slots, _Driver,[],_Info,S) ->
 	S.

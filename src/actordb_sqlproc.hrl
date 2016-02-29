@@ -67,6 +67,7 @@ buffer_cf = [],
 buffer_nv,
 buffer_moved,
 buffer_fsync = false,
+safe_read = false,
 % for writes, we count every time a write was successful. This is necessary
 % so we don't start processing reads too soon.
 nreplies = 0,
@@ -104,6 +105,7 @@ evnum, evterm, newvers, moved, fsync}).
 	% Writes/reads are processed asynchronously, this stores info while call is executing
 	% If any writes come in during exec, they are batched together into a larger read or write
 	wasync = #ai{}, rasync = #ai{},
+	last_write_at = 0,
 	% While write executing, state calls must be queued. After it is done, they can be processed.
 	statequeue,
 	% (short for masterorslave): slave/master

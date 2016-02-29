@@ -24,7 +24,7 @@ report(Actor,Type) ->
 	end.
 synced(A,T) ->
 	% We don't actually know which node wanted us to report when synced. So call on all.
-	[rpc:cast(Nd,?MODULE,synced_local,[A,T]) || Nd <- [bkdcore:cluster_nodes()|node()]],
+	[rpc:cast(Nd,?MODULE,synced_local,[A,T]) || Nd <- [node()|bkdcore:cluster_nodes()]],
 	ok.
 
 synced_local(A,T) ->

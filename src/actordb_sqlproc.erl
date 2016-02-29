@@ -8,7 +8,7 @@
 -export([print_info/1]).
 -export([read/4,write/4,call/4,call/5,diepls/2,try_actornum/3]).
 -export([call_slave/4,call_slave/5,start_copylock/2]). %call_master/4,call_master/5
--export([write_call/3, write_call1/4, read_call/3, read_call1/4]).
+-export([write_call/3, write_call1/4, read_call/3, read_call1/5]).
 -include_lib("actordb_sqlproc.hrl").
 
 % Read actor number without creating actor.
@@ -516,9 +516,17 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			% If we have any pending replies, this must result in a rewind for this node
 			% and a new write to master.
 			reply(P#dp.callfrom,{redirect,LeaderNode}),
+			RR = P#dp.rasync,
+			case RR#ai.callfrom of
+				[_|_] ->
+					[reply(F,{redirect,P#dp.masternode}) || F <- RR#ai.callfrom];
+				_ ->
+					ok
+			end,
 			actordb_local:actor_mors(slave,LeaderNode),
 			NP = P#dp{masternode = LeaderNode,without_master_since = undefined,
 			masternodedist = bkdcore:dist_name(LeaderNode),
+			rasync = RR#ai{callfrom = undefined, wait = undefined},
 			callfrom = undefined, callres = undefined,verified = true},
 			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP)));
 		% This node is candidate or leader but someone with newer term is sending us log
@@ -526,9 +534,17 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			?ERR("AE start, stepping down as leader ~p ~p",
 					[AEType,{Term,P#dp.current_term}]),
 			reply(P#dp.callfrom,{redirect,LeaderNode}),
+			RR = P#dp.rasync,
+			case RR#ai.callfrom of
+				[_|_] ->
+					[reply(F,{redirect,P#dp.masternode}) || F <- RR#ai.callfrom];
+				_ ->
+					ok
+			end,
 			actordb_local:actor_mors(slave,LeaderNode),
 			NP = P#dp{mors = slave, verified = true, election = undefined,
 				voted_for = undefined,callfrom = undefined, callres = undefined,
+				rasync = RR#ai{callfrom = undefined, wait = undefined},
 				masternode = LeaderNode,without_master_since = undefined,
 				masternodedist = bkdcore:dist_name(LeaderNode),
 				current_term = Term},
@@ -791,12 +807,13 @@ read_call(#read{sql = {[exists],_}},_From,#dp{mors = master} = P) ->
 read_call(Msg,From,#dp{flags = F} = P) when (F band ?TIMEOUT_PENDING) == 0 ->
 	read_call(Msg,From,timeout(P));
 read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
+	Safe = AR#ai.safe_read or lists:member(safe,Msg#read.flags),
 	case Msg#read.sql of
 		{Mod,Func,Args} ->
 			case apply(Mod,Func,[P#dp.cbstate|Args]) of
 				{reply,What,Sql,NS} ->
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [{tuple,What,From}|AR#ai.buffer_cf],
-					buffer_recs = [[]|AR#ai.buffer_recs]},
+					buffer_recs = [[]|AR#ai.buffer_recs], safe_read = Safe},
 					{noreply,P#dp{cbstate = NS, rasync = AR1}};
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS}};
@@ -804,28 +821,28 @@ read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
 					{reply,What,P};
 				{Sql,Recs} when is_list(Recs) ->
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
-						buffer_recs = [Recs|AR#ai.buffer_recs]},
+						buffer_recs = [Recs|AR#ai.buffer_recs], safe_read = Safe},
 					{noreply,P#dp{rasync = AR1}};
 				{Sql,State} ->
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
-						buffer_recs = [[]|AR#ai.buffer_recs]},
+						buffer_recs = [[]|AR#ai.buffer_recs], safe_read = Safe},
 					{noreply,P#dp{cbstate = State, rasync = AR1}};
 				Sql ->
 					AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
-						buffer_recs = [[]|AR#ai.buffer_recs]},
+						buffer_recs = [[]|AR#ai.buffer_recs], safe_read = Safe},
 					{noreply,P#dp{rasync = AR1}}
 			end;
 		{Sql,{Mod,Func,Args}} ->
 			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [{mod,{Mod,Func,Args},From}|AR#ai.buffer_cf],
-				buffer_recs = [[]|AR#ai.buffer_recs]},
+				buffer_recs = [[]|AR#ai.buffer_recs], safe_read = Safe},
 			{noreply,P#dp{rasync = AR1}};
 		{Sql,Recs} ->
 			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
-				buffer_recs = [Recs|AR#ai.buffer_recs]},
+				buffer_recs = [Recs|AR#ai.buffer_recs], safe_read = Safe},
 			{noreply,P#dp{rasync = AR1}};
 		Sql ->
 			AR1 = AR#ai{buffer = [Sql|AR#ai.buffer], buffer_cf = [From|AR#ai.buffer_cf],
-				buffer_recs = [[]|AR#ai.buffer_recs]},
+				buffer_recs = [[]|AR#ai.buffer_recs], safe_read = Safe},
 			{noreply,P#dp{rasync = AR1}}
 	end;
 read_call(_Msg,_From,P) ->
@@ -833,12 +850,15 @@ read_call(_Msg,_From,P) ->
 	actordb_sqlprocutil:redirect_master(P).
 
 % Execute buffered read sqls
-read_call1(_,_,[],P) ->
+read_call1(_,_,_,[],P) ->
 	P#dp{activity = actordb_local:actor_activity(P#dp.activity)};
-read_call1(_,_,From,#dp{mors = slave} = P) ->
+read_call1(_,_,_,From,#dp{mors = slave} = P) ->
 	[reply(F,{redirect,P#dp.masternode}) || F <- From],
 	P#dp{rasync = #ai{}};
-read_call1(Sql,Recs,From,P) ->
+% if no followers safe read is meaningless.
+read_call1(true,Sql,Recs,From,#dp{follower_indexes = []} = P) ->
+	read_call1(false, Sql, Recs, From, P);
+read_call1(SafeRead,Sql,Recs,From,P) ->
 	ComplSql = list_to_tuple(Sql),
 	Records = list_to_tuple(Recs),
 	?DBG("READ SQL=~p, Recs=~p, from=~p",[ComplSql, Records,From]),
@@ -847,9 +867,29 @@ read_call1(Sql,Recs,From,P) ->
 	%
 	Res = actordb_sqlite:exec(P#dp.db,ComplSql,Records,read),
 	case Res of
-		{ok,ResTuples} ->
+		{ok,ResTuples} when SafeRead == false ->
 			?DBG("Read resp=~p",[Res]),
-			read_reply(P#dp{rasync = #ai{}, activity = actordb_local:actor_activity(P#dp.activity)}, From, 1, ResTuples);
+			actordb_sqlprocutil:read_reply(
+				P#dp{rasync = #ai{}, activity = actordb_local:actor_activity(P#dp.activity)}, From, 1, ResTuples);
+		{ok,ResTuples} ->
+			% We have result, but now we must verify if we are still leader.
+			A = P#dp.rasync,
+			W = P#dp.wasync,
+			NRB = A#ai{wait = ResTuples, callfrom = From, buffer = [], buffer_cf = [], buffer_recs = []},
+			% If we have some writes to do, execute them and once writes are replicated, send read response
+			% If not, use send_empty_ae. 
+			% Either way we must end up in reply_maybe.
+			case W#ai.buffer of
+				[] ->
+					?DBG("Sending empty ae to verify read"),
+					% no writes pending
+					NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- P#dp.follower_indexes],
+					ae_timer(P#dp{callres = ok,follower_indexes = NewFollowers1, rasync = NRB});
+				_ ->
+					?DBG("Read response will be sent after write"),
+					% exec_writes gets executed after this.
+					P#dp{rasync = NRB}
+			end;
 		% {sql_error,ErrMsg,_} = Err ->
 		{sql_error,{ErrPos,_,_ErrAtom,ErrStr},_} ->
 			?ERR("Read call error: ~p",[Res]),
@@ -860,7 +900,7 @@ read_call1(Sql,Recs,From,P) ->
 			{BeforeSql,[_ProblemSql|AfterSql]} = lists:split(ErrPos,Sql),
 			{BeforeRecs,[_ProblemRecs|AfterRecs]} = lists:split(ErrPos,Recs),
 
-			read_call1(BeforeSql++AfterSql, BeforeRecs++AfterRecs, Before++After,P#dp{rasync = #ai{}})
+			read_call1(SafeRead,BeforeSql++AfterSql, BeforeRecs++AfterRecs, Before++After,P#dp{rasync = #ai{}})
 	end.
 
 	%
@@ -885,29 +925,29 @@ write_call(Msg,From,#dp{flags = F} = P) when F band ?TIMEOUT_PENDING == 0 ->
 	write_call(Msg,From,timeout(P));
 write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 	A = P#dp.wasync,
-	ForceSync = lists:member(fsync,Msg#write.flags),
+	ForceSync =  A#ai.buffer_fsync or lists:member(fsync,Msg#write.flags),
 	?DBG("writecall evnum_prewrite=~p,term=~p writeinfo=~p",[P#dp.evnum,P#dp.current_term,{MFA,Sql}]),
 	case Sql of
 		delete ->
 			A1 = A#ai{buffer = [<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (?1,?2);">>|A#ai.buffer],
 				buffer_cf = [From|A#ai.buffer_cf],
 				buffer_recs = [[[[?MOVEDTOI,<<"$deleted$">>]]]|A#ai.buffer_recs],
-				buffer_moved = deleted, buffer_fsync = A#ai.buffer_fsync or ForceSync},
+				buffer_moved = deleted, buffer_fsync = ForceSync},
 			{noreply,P#dp{wasync = A1}};
 		{moved,MovedTo} ->
 			A1 = A#ai{buffer = [<<"#s02;">>|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
 				buffer_recs = [[[[?MOVEDTOI,MovedTo]]]|A#ai.buffer_recs],
-				buffer_moved = {moved,MovedTo}, buffer_fsync = A#ai.buffer_fsync or ForceSync},
+				buffer_moved = {moved,MovedTo}, buffer_fsync = ForceSync},
 			{noreply,P#dp{wasync = A1}};
 		% If new schema version write, add sql to first place of list of writes.
 		_ when Msg#write.newvers /= undefined, MFA == undefined ->
 			A1 = A#ai{buffer = A#ai.buffer++[Sql], buffer_recs = A#ai.buffer_recs++[Msg#write.records],
 				buffer_cf = A#ai.buffer_cf++[From], buffer_nv = Msg#write.newvers,
-				buffer_fsync = A#ai.buffer_fsync or ForceSync},
+				buffer_fsync = ForceSync},
 			{noreply,P#dp{wasync = A1}};
 		_ when MFA == undefined ->
 			A1 = A#ai{buffer = [Sql|A#ai.buffer], buffer_cf = [From|A#ai.buffer_cf],
-				buffer_recs = [Msg#write.records|A#ai.buffer_recs], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+				buffer_recs = [Msg#write.records|A#ai.buffer_recs], buffer_fsync = ForceSync},
 			{noreply,P#dp{wasync = A1}};
 		_ ->
 			{Mod,Func,Args} = MFA,
@@ -915,7 +955,7 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 				{reply,What,OutSql,NS} ->
 					reply(From,What),
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
-						buffer_cf = [undefined|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+						buffer_cf = [undefined|A#ai.buffer_cf], buffer_fsync = ForceSync},
 					{noreply,P#dp{wasync = A1, cbstate = NS}};
 				{reply,What,NS} ->
 					{reply,What,P#dp{cbstate = NS}};
@@ -923,28 +963,28 @@ write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 					{reply,What,P};
 				{exec,OutSql,Recs} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = ForceSync},
 					{noreply,P#dp{wasync = A1}};
 				% For when a node wants to take its marbles and go play by itself.
 				{isolate,OutSql,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = ForceSync},
 					{noreply,P#dp{wasync = A1, cbstate = State, verified = true, mors = master, follower_indexes = []}};
 				{OutSql,Recs} when is_list(Recs) ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = ForceSync},
 					{noreply,P#dp{wasync = A1}};
 				{OutSql,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = ForceSync},
 					{noreply,P#dp{wasync = A1, cbstate = State}};
 				{OutSql,Recs,State} ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [Recs|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = ForceSync},
 					{noreply,P#dp{wasync = A1, cbstate = State}};
 				OutSql ->
 					A1 = A#ai{buffer = [OutSql|A#ai.buffer], buffer_recs = [[]|A#ai.buffer_recs],
-						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync = A#ai.buffer_fsync or ForceSync},
+						buffer_cf = [From|A#ai.buffer_cf], buffer_fsync =  ForceSync},
 					{noreply,P#dp{wasync = A1}}
 			end
 	end.
@@ -960,11 +1000,18 @@ write_call2(#dp{db = queue, wasync = #ai{wait = Ref}} = P) ->
 write_call2(P) ->
 	P.
 
-% Not a multiactor transaction write
 write_call1(_W,From,_CF,#dp{mors = slave} = P) ->
+	RR = P#dp.rasync,
 	?ADBG("Redirecting write ~p from=~p, w=~p",[P#dp.masternode,From,_W]),
 	[reply(F,{redirect,P#dp.masternode}) || F <- From],
-	P#dp{wasync = #ai{}};
+	case RR#ai.callfrom of
+		[_|_] ->
+			[reply(F,{redirect,P#dp.masternode}) || F <- RR#ai.callfrom];
+		_ ->
+			ok
+	end,
+	P#dp{wasync = #ai{}, rasync = RR#ai{callfrom = undefined, wait = undefined}};
+% Not a multiactor transaction write
 write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 	EvNum = P#dp.evnum+1,
 	VarHeader = actordb_sqlprocutil:create_var_header(P),
@@ -990,7 +1037,8 @@ write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) ->
 		moved = A#ai.buffer_moved, fsync = A#ai.buffer_fsync,
 		buffer_moved = undefined, buffer_nv = undefined, buffer_fsync = false,
 		buffer = [], buffer_cf = [], buffer_recs = []},
-	write_call2(P#dp{wasync = NWB, activity = actordb_local:actor_activity(P#dp.activity), cbstate = NS});
+	write_call2(P#dp{wasync = NWB, last_write_at = actordb_local:elapsed_time(),
+		activity = actordb_local:actor_activity(P#dp.activity), cbstate = NS});
 write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionId} = W,From,NewVers,P) ->
 	{_CheckPid,CheckRef} = actordb_sqlprocutil:start_transaction_checker(Tid,Updaterid,Node),
 	?DBG("Starting transaction write id ~p, curtr ~p, sql ~p",[TransactionId,P#dp.transactionid,Sql1]),
@@ -1034,6 +1082,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					?DBG("Transaction ok"),
 					{noreply, actordb_sqlprocutil:reply_maybe(P#dp{transactionid = TransactionId,
 						evterm = P#dp.current_term,
+						last_write_at = actordb_local:elapsed_time(),
 						transactioncheckref = CheckRef,force_sync = ForceSync,
 						transactioninfo = {ComplSql,EvNum,NewVers},
 						activity = actordb_local:actor_activity(P#dp.activity),
@@ -1042,7 +1091,9 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					ok = actordb_sqlite:rollback(P#dp.db),
 					erlang:demonitor(CheckRef),
 					?DBG("Transaction not ok ~p",[_Err]),
-					{reply,Res,P#dp{transactionid = undefined, activity = actordb_local:actor_activity(P#dp.activity),
+					{reply,Res,P#dp{transactionid = undefined, 
+						last_write_at = actordb_local:elapsed_time(),
+						activity = actordb_local:actor_activity(P#dp.activity),
 						evterm = P#dp.current_term}}
 			end;
 		_ ->
@@ -1071,6 +1122,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 			ok = actordb_sqlite:okornot(actordb_sqlite:exec(
 				P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader)),
 			{noreply,ae_timer(P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
+				last_write_at = actordb_local:elapsed_time(),
 				transactioninfo = {Sql,EvNum+1,NewVers}, 
 				transactioncheckref = CheckRef,force_sync = ForceSync,
 				transactionid = TransactionId})}
@@ -1113,53 +1165,6 @@ handle_cast(_Msg,P) ->
 	?INF("sqlproc ~p unhandled cast ~p~n",[P#dp.cbmod,_Msg]),
 	{noreply,P}.
 
-% shards/kv can have reads that turn into writes, or have extra data to return along with read.
-read_reply(P,[H|T],Pos,Res) ->
-	case H of
-		{tuple,What,From} ->
-			reply(From,{What,actordb_sqlite:exec_res({ok, element(Pos,Res)})}),
-			read_reply(P,T,Pos+1,Res);
-		{mod,{Mod,Func,Args},From} ->
-			case apply(Mod,Func,[P#dp.cbstate,actordb_sqlite:exec_res({ok, element(Pos,Res)})|Args]) of
-				{write,Write} ->
-					case Write of
-						_ when is_binary(Write); is_list(Write) ->
-							{noreply,NP} = write_call(#write{sql = iolist_to_binary(Write)},From,P);
-						{_,_,_} ->
-							{noreply,NP} = write_call(#write{mfa = Write},From,P)
-					end,
-					read_reply(NP,T,Pos+1,Res);
-				{write,Write,NS} ->
-					case Write of
-						_ when is_binary(Write); is_list(Write) ->
-							{noreply,NP} = write_call(#write{sql = iolist_to_binary(Write)},
-									   From,P#dp{cbstate = NS});
-						{_,_,_} ->
-							{noreply,NP} = write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
-					end,
-					read_reply(NP,T,Pos+1,Res);
-				{reply_write,Reply,Write,NS} ->
-					reply(From,Reply),
-					case Write of
-						_ when is_binary(Write); is_list(Write) ->
-							{noreply,NP} = write_call(#write{sql = iolist_to_binary(Write)},undefined,P#dp{cbstate = NS});
-						{_,_,_} ->
-							{noreply,NP} = write_call(#write{mfa = Write},undefined,P#dp{cbstate = NS})
-					end,
-					read_reply(NP,T,Pos+1,Res);
-				{reply,What,NS} ->
-					reply(From,What),
-					read_reply(P#dp{cbstate = NS},T,Pos+1,Res);
-				{reply,What} ->
-					reply(From,What),
-					read_reply(P,T,Pos+1,Res)
-			end;
-		From ->
-			reply(From,actordb_sqlite:exec_res({ok, element(Pos,Res)})),
-			read_reply(P,T,Pos+1,Res)
-	end;
-read_reply(P,[],_,_) ->
-	P.
 
 handle_info({timeout,Resend},P) ->
 	case erlang:process_info(self(),message_queue_len) of
@@ -1174,7 +1179,7 @@ handle_info({Ref,Res}, #dp{rasync = #ai{wait = Ref} = BD} = P) when is_reference
 	case Res of
 		{ok,ResTuples} ->
 			?DBG("Read resp=~p",[Res]),
-			{noreply,read_reply(P#dp{rasync = NewBD}, BD#ai.callfrom, 1, ResTuples)}
+			{noreply,actordb_sqlprocutil:read_reply(P#dp{rasync = NewBD}, BD#ai.callfrom, 1, ResTuples)}
 		% Err ->
 		%   TODO: if async reads ever get used...
 		% 	?ERR("Read call error: ~p",[Err]),
@@ -1387,9 +1392,17 @@ election_timer(doelection1,P) ->
 				true when Noops == 2 ->
 					?ERR("Write abandon with consensus_timeout"),
 					reply(P#dp.callfrom,{error,consensus_timeout}),
+					RR = P#dp.rasync,
+					case RR#ai.callfrom of
+						[_|_] ->
+							[reply(F,{redirect,P#dp.masternode}) || F <- RR#ai.callfrom];
+						_ ->
+							ok
+					end,
 					% Step down as leader.
 					election_timer(doelection2,P#dp{callfrom = undefined, callres = undefined, 
 						masternode = undefined,masternodedist = undefined,
+						rasync = RR#ai{callfrom = undefined, wait = undefined},
 						verified = false, mors = slave, without_master_since = CallTime});
 				false ->
 					{noreply,P#dp{election = actordb_sqlprocutil:election_timer(undefined),
@@ -1442,7 +1455,7 @@ election_timer(doelection2,P) ->
 		_ when Now - P#dp.without_master_since >= 3000+LatencyNow, Empty == false ->
 			?ERR("Unable to establish leader, responding with error"),
 			% It took too long. Respond with error.
-			actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,consensus_impossible_atm}),
+			actordb_sqlprocutil:empty_queue(P#dp.wasync,P#dp.rasync, P#dp.callqueue,{error,consensus_impossible_atm}),
 			A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
 			% Give up for now. Do not run elections untill we get a hint from outside.
@@ -1466,7 +1479,7 @@ down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLA
 		[P#dp.cbmod,P#dp.actorname,P#dp.actortype,stop]}) end),
 	Me = self(),
 	spawn(fun() -> timer:sleep(10), stop(Me) end),
-	actordb_sqlprocutil:empty_queue(P#dp.wasync, P#dp.callqueue,{error,nocreate}),
+	actordb_sqlprocutil:empty_queue(P#dp.wasync,P#dp.rasync, P#dp.callqueue,{error,nocreate}),
 	A1 = (P#dp.wasync)#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
 	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(), wasync = A1}};

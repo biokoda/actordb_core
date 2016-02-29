@@ -365,6 +365,7 @@ terminate(_, _) ->
 code_change(_, P, _) ->
 	{ok, P}.
 init(_) ->
+	?AINF("Starting local"),
 	net_kernel:monitor_nodes(true),
 	% erlang:send_after(200,self(),{timeout,0}),
 	% erlang:send_after(10000,self(),check_mem),

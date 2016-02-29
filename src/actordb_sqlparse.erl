@@ -823,6 +823,12 @@ check_flags(<<"Kv",Rem/binary>>,L) ->
 	check_flags(Rem,[kv|L]);
 check_flags(<<"kV",Rem/binary>>,L) ->
 	check_flags(Rem,[kv|L]);
+check_flags(<<"safe",Rem/binary>>,L) ->
+	check_flags(Rem,[safe|L]);
+check_flags(<<"SAFE",Rem/binary>>,L) ->
+	check_flags(Rem,[safe|L]);
+check_flags(<<"Safe",Rem/binary>>,L) ->
+	check_flags(Rem,[safe|L]);
 check_flags(<<";">>,L) ->
 	L;
 check_flags(<<>>,L) ->
@@ -833,6 +839,8 @@ check_flags(<<F,S,Y,N,C,Rem/binary>>,L) when ?F(F) andalso ?S(S) andalso ?Y(Y) a
 	check_flags(Rem,[fsync|L]);
 check_flags(<<S,Y,N,C,Rem/binary>>,L) when ?S(S) andalso ?Y(Y) andalso ?N(N) andalso ?C(C) ->
 	check_flags(Rem,[fsync|L]);
+check_flags(<<S,A,F,E,Rem/binary>>,L) when ?S(S) andalso ?A(A) andalso ?F(F) andalso ?E(E) ->
+	check_flags(Rem,[safe|L]);
 check_flags(<<_,Rem/binary>>,L) ->
 	check_flags(Rem,L).
 
