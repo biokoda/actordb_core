@@ -1,6 +1,7 @@
 -module(actordb_test).
 -export([batch/0, idtest/0, ins/0, read_timebin/0, 
-	loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0]).
+	loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0,
+	debug_logging/0, info_logging/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 -define(SOL_SOCKET, 16#ffff).
@@ -8,6 +9,25 @@
 % misc internal tests
 % general tests are in actordb/test/dist_test.erl and run with detest
 
+debug_logging() ->
+	switch_backend(debug).
+info_logging() ->
+	switch_backend(info).
+switch_backend(What) ->
+	case get_backend() of
+		undefined ->
+			false;
+		Backend ->
+			lager:set_loglevel(Backend,What)
+	end.
+get_backend() ->
+	case [{lager_file_backend, Pth} || {lager_file_backend, Pth} <- gen_event:which_handlers(lager_event), 
+		string:str(Pth,"console.log") > 0] of
+		[Backend|_] ->
+			Backend;
+		_ ->
+			undefined
+	end.
 
 varint() ->
 	varint(10).

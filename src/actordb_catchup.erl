@@ -15,12 +15,17 @@
 % This is stored locally to lmdb and not replicated. 
 % Once network conditions change, actors will be notified to resync.
 report(Actor,Type) ->
-	K = key(Actor,Type),
-	case butil:ds_val(K,?ETS) of
-		undefined ->
-			gen_server:call(?MODULE,{report,K});
+	case bkdcore:cluster_nodes() of
+		[] ->
+			self() ! doelection2;
 		_ ->
-			ok
+			K = key(Actor,Type),
+			case butil:ds_val(K,?ETS) of
+				undefined ->
+					gen_server:call(?MODULE,{report,K});
+				_ ->
+					ok
+			end
 	end.
 synced(A,T) ->
 	% We don't actually know which node wanted us to report when synced. So call on all.
