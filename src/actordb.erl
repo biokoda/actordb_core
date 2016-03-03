@@ -90,7 +90,7 @@ tables(Type) ->
 	end.
 
 columns(Type,Table) when is_atom(Type) ->
-	case apply(actordb_schema,Type,[butil:tobin(Table)]) of
+	case catch apply(actordb_schema,Type,[butil:tobin(Table)]) of
 		L when is_list(L) ->
 			L;
 		_Err ->
