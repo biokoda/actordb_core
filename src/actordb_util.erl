@@ -95,6 +95,7 @@ wait_for_startup(Type,Who,N) ->
 tunnel_bin(Pid,<<>>) ->
 	Pid;
 tunnel_bin(Pid,<<LenBin:16/unsigned,Bin:LenBin/binary>>) ->
+	% term_to_binary produced bin always starts with 131
 	131 = binary:first(Bin),
 	{Mod,Param} = binary_to_term(Bin),
 	apply(Mod,tunnel_callback,Param),
@@ -216,7 +217,8 @@ actor_ae_stream(P) ->
 		{continue,Bin} when P#astr.received > 0 ->
 			case byte_size(Bin) + P#astr.received >= P#astr.entire_len of
 				true ->
-					self() ! {call_slave, P#astr.cb, P#astr.actor, P#astr.type, P#astr.header, iolist_to_binary(lists:reverse([Bin|P#astr.buffer]))},
+					BufBin = iolist_to_binary(lists:reverse([Bin|P#astr.buffer])),
+					self() ! {call_slave, P#astr.cb, P#astr.actor, P#astr.type, P#astr.header, BufBin},
 					actor_ae_stream(P#astr{entire_len = 0, received = 0, buffer = [], header = <<>>});
 				false ->
 					actor_ae_stream(P#astr{received = P#astr.received + byte_size(Bin), buffer = [Bin|P#astr.buffer]})
