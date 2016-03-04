@@ -344,7 +344,7 @@ start(_Type, _Args) ->
 			end
 	end,
 
-	Res = actordb_sup:start_link(),
+	{ok,SupPid} = actordb_sup:start_link(),
 
 	% ?AINF("Starting sharedstate type ~p",[StateStart]),
 	case StateStart of
@@ -365,7 +365,7 @@ start(_Type, _Args) ->
 		_ ->
 			ok
 	end,
-	Res.
+	{ok,SupPid}.
 
 stop(_State) ->
 	ok.

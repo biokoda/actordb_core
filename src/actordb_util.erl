@@ -62,6 +62,8 @@ actor_types() ->
 
 typeatom(<<_/binary>> = Type) ->
 	case catch binary_to_existing_atom(Type,utf8) of
+		?STATE_TYPE ->
+			?STATE_TYPE;
 		TypeAtom when is_atom(TypeAtom) ->
 			case actordb:actor_id_type(TypeAtom) of
 				undefined ->

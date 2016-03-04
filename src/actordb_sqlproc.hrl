@@ -67,6 +67,7 @@ buffer_cf = [],
 buffer_nv,
 buffer_moved,
 buffer_fsync = false,
+safe_read = false,
 % for writes, we count every time a write was successful. This is necessary
 % so we don't start processing reads too soon.
 nreplies = 0,
@@ -79,8 +80,11 @@ callfrom,
 % info used when performing writes. Once write is done, #dp values will be overwritten with these.
 evnum, evterm, newvers, moved, fsync}).
 
--record(dp,{db, actorname,actortype, evnum = 0,evterm = 0,
-			activity, schemanum,schemavers,flags = 0, netchanges = 0,
+-record(dp,{
+	% queue which holds misc gen_server:calls that can not be processed immediately.
+	callqueue,
+	db, actorname,actortype, evnum = 0,evterm = 0,
+	activity, schemanum,schemavers,flags = 0, netchanges = 0,
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]
 	current_term = 0,voted_for, follower_indexes = [],
@@ -99,11 +103,10 @@ evnum, evterm, newvers, moved, fsync}).
 	% callat time when call was executed and sent over to nodes but before any replies from nodes
 	%  {Time,NumberOfRetries}
 	callfrom,callres,callat = {0,0},
-	% queue which holds misc gen_server:calls that can not be processed immediately.
-	callqueue,
 	% Writes/reads are processed asynchronously, this stores info while call is executing
 	% If any writes come in during exec, they are batched together into a larger read or write
 	wasync = #ai{}, rasync = #ai{},
+	last_write_at = 0,
 	% While write executing, state calls must be queued. After it is done, they can be processed.
 	statequeue,
 	% (short for masterorslave): slave/master

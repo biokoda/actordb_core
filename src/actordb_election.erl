@@ -111,11 +111,13 @@ get_followers(E) ->
 	receive
 		{set_followers,L} ->
 			E#election{followers = L}
-	after 2000 ->
+	after 3000 ->
+		?AERR("Election timeout receiving follower info"),
 		exit(timeout)
 	end.
 
 doelection(E1) ->
+	?ADBG("Getfollowers for ~p",[E1#e.id]),
 	E = get_followers(E1#e.info),
 	ClusterSize = length(E#election.followers) + 1,
 	Me = E#election.candidate,
