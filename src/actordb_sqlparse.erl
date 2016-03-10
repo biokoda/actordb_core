@@ -115,7 +115,7 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 								[
 								{Sql}
 								|| Sql <- [butil:ds_val(sql,Ets) || {{client,Ets},_} <- ets:tab2list(bpcons)],
-								   Sql /= undefined
+								   Sql /= undefined, Sql /= <<"show queries;">>
 							],
 							[[{columns,{<<"sql">>}}, {rows,Sqls}]];
 						shards ->
