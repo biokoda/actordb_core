@@ -155,8 +155,11 @@ exec_bp(P,Sql) ->
 %prep statements
 exec_bp(P,Sql,BindingValues)->
 	Size = byte_size(Sql),
+	actordb_backpressure:save(P,sql,Sql),
 	Parsed = actordb_sqlparse:parse_statements(P,Sql),
-	exec_bp1(P,Size,Parsed,BindingValues).
+	R = exec_bp1(P,Size,Parsed,BindingValues),
+	actordb_backpressure:delval(P,sql),
+	R.
 
 exec_bp(_P,<<>>,_Type,_Flags,_Sql) ->
 	exec_bp(_P,<<>>,_Type,_Flags,_Sql,[]);
@@ -171,8 +174,11 @@ exec_bp(P,Actor,Type,Flags,Sql,BindingValues) when is_binary(Actor) ->
 	exec_bp(P,[Actor],Type,Flags,Sql,BindingValues);
 exec_bp(P,Actors,Type,Flags,Sql,BindingValues)->
 	Size = byte_size(Sql),
+	actordb_backpressure:save(P,sql,Sql),
 	Parsed = actordb_sqlparse:parse_statements(P,Sql,{Type,Actors,Flags}),
-	exec_bp1(P,Size,Parsed,BindingValues).
+	R = exec_bp1(P,Size,Parsed,BindingValues),
+	actordb_backpressure:delval(P,sql),
+	R.
 
 exec_bp1(_,Size,_) when Size > 1024*1024*16 ->
 	{error,sql_too_large};
@@ -188,11 +194,9 @@ exec_bp1(P,Size,Sql,BindingValues) ->
 	actordb_backpressure:inc_callcount(P),
 	actordb_backpressure:inc_callsize(Size),
 	actordb_backpressure:inc_callsize(P,Size),
-	actordb_backpressure:save(P,sql,Sql),
 	% error_logger:format("exec_bp1 sql=~p, vals=~p~n",[Sql, BindingValues]),
 	Res = exec1(P,Sql,BindingValues),
 	% error_logger:format("exec_bp1 result=~p~n",[Res]),
-	actordb_backpressure:delval(P,sql),
 	GCount = actordb_backpressure:dec_callcount(),
 	actordb_backpressure:dec_callcount(P),
 	GSize = actordb_backpressure:dec_callsize(Size),

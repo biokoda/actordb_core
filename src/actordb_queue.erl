@@ -23,20 +23,14 @@
 % 
 % File format
 % 
-
-% Page size: 4096 bytes
-% Every replication event is page aligned. First byte of every page determines the data on that page.
-% Items:
-% - Replication event start:
-%   <<1, QActor, PgnoPrevEvent:32, NEvents:32, NDataPages:32, term:Varint, evnum:Varint, time:Varint,
-%     Table:NTablePages*4096/binary, CrcBlock:NDataPages*4/binary, Data:NDataPages*4096/binary>>
-%   TableEntry:
-%   <<SizeName, Name:SizeName/binary, DataType, DataSize(varint)>>
+% <<0x184D2A50,Size:32/unsigned-little, 1, QActorNameSize, QActor/binary, 
+%   NEvents:32, BodySize:32, term:64, evnum:64, time:64>>
 
 
 
 -record(st,{db, name, cursize = 0, 
 	curterm, evnum, prev_event = {0,0}, staged_events = [], written_events = [],
+	nevents = 0,
 	voted_for = <<>>, voted_for_term, replbin = <<>>}).
 
 start({Name,queue}) ->
@@ -94,11 +88,25 @@ cb_write(S,A,{EvName, Data},Type) ->
 	% Sz = aqdrv:stage_write(S#st.db, Data),
 	ok = aqdrv:stage_map(S#st.db, EvName, Type, byte_size(Data)),
 	ok = aqdrv:stage_data(S#st.db, Data),
-	{[],S#st{staged_events = [EvName|S#st.staged_events]}}.
+	{[],S#st{staged_events = [EvName|S#st.staged_events], nevents = S#st.nevents + 1}}.
 % Write to disk
-cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, VarHeader) ->
-	{_,_} = aqdrv:stage_flush(S#st.db),
-	{ok, S#st{written_events = S#st.staged_events, staged_events = []}}.
+cb_write_exec(#st{prev_event = {_PrevFile,_PrevOffset}} = S, Items, Term, Evnum, VarHeader) ->
+	{MapSize,DataSize} = aqdrv:stage_flush(S#st.db),
+
+	ReplHdr = [<<(iolist_size(S#st.replbin)):16/unsigned>>, S#st.replbin, 
+		<<(iolist_size(VarHeader)):16/unsigned>>, VarHeader,
+		<<24>>,<<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>],
+
+	Header = [<<(?TYPE_EVENT),(byte_size(S#st.name))>>, 
+		S#st.name, 
+		<<(S#st.nevents):32/unsigned,
+		(MapSize+DataSize):32/unsigned,
+		Term:64/unsigned,
+		Evnum:64/unsigned,
+		(erlang:system_time(micro_seconds)):64/unsigned>>],
+
+	{WPos,Size,_Time} = aqdrv:write(S#st.db, ReplHdr, Header),
+	{ok, S#st{written_events = S#st.staged_events, staged_events = [], nevents = 0}}.
 	% Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
 	% Map = lists:sort(S#st.wmap),
 	% EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
