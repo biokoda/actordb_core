@@ -887,3 +887,5 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 
 cb_init_engine(S) ->
 	S.
+cb_spawnopts(_) ->
+	[].

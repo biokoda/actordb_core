@@ -28,19 +28,16 @@
 % Every replication event is page aligned. First byte of every page determines the data on that page.
 % Items:
 % - Replication event start:
-%   <<1, QActor, PgnoPrevEvent:32, NEvents:32, NTablePages:32, NDataPages:32, term:Varint, evnum:Varint, time:Varint,
+%   <<1, QActor, PgnoPrevEvent:32, NEvents:32, NDataPages:32, term:Varint, evnum:Varint, time:Varint,
 %     Table:NTablePages*4096/binary, CrcBlock:NDataPages*4/binary, Data:NDataPages*4096/binary>>
 %   TableEntry:
 %   <<SizeName, Name:SizeName/binary, DataType, DataSize(varint)>>
-%   CrcBlock:
-%   <<CrcPage0:32/unsigned,CrcPage1:32/unsigned,...>>
-% - Body page: 
-%   <<2,_:4095/binary>> 
 
 
 
 -record(st,{db, name, cursize = 0, 
-	curterm, evnum, prev_event = {0,0}, voted_for = <<>>, voted_for_term, replbin = <<>>}).
+	curterm, evnum, prev_event = {0,0}, staged_events = [], written_events = [],
+	voted_for = <<>>, voted_for_term, replbin = <<>>}).
 
 start({Name,queue}) ->
 	start(Name,queue);
@@ -61,7 +58,7 @@ start(Name,Type1,Opt) ->
 	case distreg:whereis({Name,Type}) of
 		undefined ->
 			actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},
-				{state,#st{name = Name, db = aqdrv:open(Name)}}|Opt]);
+				{state,#st{name = Name, db = aqdrv:open(Name,false)}}|Opt]);
 		Pid ->
 			{ok,Pid}
 	end.
@@ -85,13 +82,23 @@ write(_Shard, #{actor := Actor, flags := Flags, statements := Sql} = _Call) ->
 % Callbacks from actordb_sqlproc
 %
 
+% Every scheduler has it's own event index for current file. This is why every connection (queue process)
+% must be fixed to it. This way we can do lookups directly on a scheduler for as long as index exists.
+% Finished queue files have a read-only LMDB index and the scheduler bound one is not used.
+cb_spawnopts(Name) ->
+	Hash = actordb_util:hash(butil:tobin(Name)),
+	Sch = 1 + (Hash rem erlang:system_info(schedulers)),
+	[{spawn_opt,[{scheduler,Sch}]}].
 % Buffer write
-cb_write(S,A,Data,Type) ->
-	Sz = aqdrv:stage_write(S#st.db, Data),
-	{[],S#st{cursize = S#st.cursize + Sz}}.
+cb_write(S,A,{EvName, Data},Type) ->
+	% Sz = aqdrv:stage_write(S#st.db, Data),
+	ok = aqdrv:stage_map(S#st.db, EvName, Type, byte_size(Data)),
+	ok = aqdrv:stage_data(S#st.db, Data),
+	{[],S#st{staged_events = [EvName|S#st.staged_events]}}.
 % Write to disk
 cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, VarHeader) ->
-	{ok, S}.
+	{_,_} = aqdrv:stage_flush(S#st.db),
+	{ok, S#st{written_events = S#st.staged_events, staged_events = []}}.
 	% Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
 	% Map = lists:sort(S#st.wmap),
 	% EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
@@ -116,7 +123,8 @@ cb_write_exec(#st{prev_event = {PrevFile,PrevOffset}} = S, Items, Term, Evnum, V
 	% 	[Header, Event]).
 % Write replicated
 cb_write_done(S,_Evnum) ->
-	{ok,S}.
+	ok = aqdrv:index_events(S#st.db,[S#st.written_events]),
+	{ok,S#st{written_events = []}}.
 
 % write_to_log(S,Size,Data) ->
 % 	{FileIndex,Offset} = actordb_queue_srv:get_chunk(Size),

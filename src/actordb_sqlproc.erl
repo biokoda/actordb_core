@@ -230,9 +230,11 @@ start_copylock(Fullname,_,_) ->
 % [{actor,Name},{type,Type},{mod,CallbackModule},{state,CallbackState},
 %  {inactivity_timeout,SecondsOrInfinity},{slave,true/false},{copyfrom,NodeName},{copyreset,{Mod,Func,Args}}]
 start(Opts) ->
-	?ADBG("Starting ~p slave=~p",[butil:ds_vals([actor,type],Opts),butil:ds_val(slave,Opts)]),
+	% ?ADBG("Starting ~p slave=~p",[butil:ds_vals([actor,type],Opts),butil:ds_val(slave,Opts)]),
+	Mod = butil:ds_val(mod,Opts),
+	Name = butil:ds_val(name,Opts),
 	Ref = make_ref(),
-	case gen_server:start(?MODULE, [{start_from,{self(),Ref}}|Opts], []) of
+	case gen_server:start(?MODULE, [{start_from,{self(),Ref}}|Opts], [apply(Mod,cb_spawnopts,[Name])]) of
 		{ok,Pid} ->
 			{ok,Pid};
 		{error,normal} ->

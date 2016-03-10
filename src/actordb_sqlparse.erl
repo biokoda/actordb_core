@@ -110,6 +110,14 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 							S = actordb_local:status(),
 							S1 = [{butil:tobin(K),butil:tobin(V)} || {K,V} <- S],
 							[[{columns,{<<"key">>,<<"val">>}},{rows,S1}]];
+						queries ->
+							Sqls = 
+								[
+								{Sql}
+								|| Sql <- [butil:ds_val(sql,Ets) || {{client,Ets},_} <- ets:tab2list(bpcons)],
+								   Sql /= undefined
+							],
+							[[{columns,{<<"sql">>}}, {rows,Sqls}]];
 						shards ->
 							case actordb:types() of
 								schema_not_loaded ->
@@ -390,6 +398,12 @@ parse_show(Bin) ->
 			shards;
 		<<"SHARDS",_/binary>> ->
 			shards;
+		<<"queries",_/binary>> ->
+			queries;
+		<<"Queries",_/binary>> ->
+			queries;
+		<<"QUERIES",_/binary>> ->
+			queries;
 		<<_/binary>> = Str ->
 			case string:to_lower(butil:tolist(Str)) of
 				"tables"++_ ->
@@ -398,6 +412,8 @@ parse_show(Bin) ->
 					status;
 				"shards" ->
 					shards;
+				"queries" ->
+					queries;
 				_ ->
 					ok
 			end;

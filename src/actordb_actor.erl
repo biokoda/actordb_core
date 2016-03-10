@@ -36,7 +36,8 @@ start(Name,Type1,Opt) ->
 start_steal(Name,Type1,Node,ShardName) ->
 	Type = actordb_util:typeatom(Type1),
 	?ADBG("Start steal ~p ~p",[Name,Type]),
-	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},{state,#st{name = Name,type = Type,doreg = ShardName}},
+	{ok,Pid} = actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},
+		{state,#st{name = Name,type = Type,doreg = ShardName}},
 		{copyfrom,{move,ShardName,Node}},{startreason,{steal,Node}}]),
 	{ok,Pid}.
 
@@ -82,6 +83,8 @@ write(#{actor:= Actor, flags := Flags, statements := Sql} = Call) ->
 % {LatestVersion,IolistSqlStatements}
 cb_schema(_,Type,Vers) ->
 	actordb_util:type_schema(Type,Vers).
+cb_spawnopts(_) ->
+	[].
 
 cb_path(_,Name,_Type) ->
 	actordb_util:actorpath(Name).

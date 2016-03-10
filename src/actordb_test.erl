@@ -261,6 +261,37 @@ loop1(N,L) ->
 	loop1(N-1,L).
 
 
+% counters() ->
+% 	% folsom_metrics:new_counter(writes),
+% 	Pids = [element(1,spawn_monitor(fun() -> counter(0) end)) || _N <- lists:seq(1,1000)],
+% 	receive
+% 		{'DOWN',_Monitor,_,_PID,Reason} ->
+% 			exit(Reason)
+% 	after 20000 ->
+% 		ok
+% 	end,
+% 	[P ! stop || P <- Pids],
+% 	Ops = rec_counts(0),
+% 	io:format("ops=~p, val=~p~n",[Ops, actordb_driver:get_counter(9)]),
+% 	ok.
+% rec_counts(Ops) ->
+% 	receive
+% 		{'DOWN',_Monitor,_,_PID,N} ->
+% 			rec_counts(Ops+N)
+% 		after 2000 ->
+% 			Ops
+% 	end.
+% counter(N) ->
+% 	case erlang:process_info(self(),message_queue_len) of
+% 		{_,0} ->
+% 			actordb_driver:counter_inc(9,N),
+% 			actordb_driver:get_counter(9),
+% 			counter(N+1);
+% 		_ ->
+% 			exit(N)
+% 	end.
+
+
 % How fast can we insert data to queue.
 q_test(Writers) ->
 	q_test(Writers,10000).

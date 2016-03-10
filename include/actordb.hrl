@@ -15,6 +15,11 @@
 -define(STATE_NM_LOCAL,<<"local">>).
 -define(STATE_NM_GLOBAL,<<"global">>).
 
+-define(COUNTER_SQLSIZE,0).
+-define(COUNTER_REQSNOW,1).
+-define(COUNTER_READS,2).
+-define(COUNTER_WRITES,3).
+
 -define(ADBG(F),lager:debug(F)).
 -define(ADBG(F,A),lager:debug(F,A)).
 -define(AINF(F),lager:info(F)).

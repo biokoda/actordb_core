@@ -250,6 +250,7 @@ prestart1(Files) ->
 	wthreads => WThreads,
 	rthreads => RdThreads,
 	lmdbsync => LMSync,
+	counters => 10,
 	nbatch => LMBatch},
 	ok = try_load_driver(DrvInfo),
 	emurmur3:init().

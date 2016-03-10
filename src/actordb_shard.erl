@@ -11,7 +11,8 @@
 -export([cb_list_actors/3, cb_reg_actor/2,cb_del_move_actor/5,cb_schema/3,cb_path/3,cb_idle/1,cb_do_cleanup/2,cb_nodelist/2,
 		 cb_slave_pid/2,cb_slave_pid/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2,cb_init/3,cb_del_actor/2,cb_kvexec/3,
 		 cb_redirected_call/4,cb_write_done/2,cb_unverified_call/2,cb_replicate_type/1,
-		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2, cb_init_engine/1]).
+		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2, 
+		 cb_init_engine/1, cb_spawnopts/1]).
 -include_lib("actordb_core/include/actordb.hrl").
 -define(META_NEXT_SHARD,$1).
 -define(META_NEXT_SHARD_NODE,$2).
@@ -351,6 +352,8 @@ whereis(ShardName,Type1) ->
 %
 % custom write callbacks
 %
+cb_spawnopts(_) ->
+	[].
 cb_reg_actor(P,ActorName) ->
 	?ADBG("cb_reg_actor ~p ~p ~p ~p ~p",[P#state.name,P#state.type,ActorName,P#state.stealingnow,P#state.stealingfrom]),
 	Hash = actordb_util:hash(butil:tobin(ActorName)),
