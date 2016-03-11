@@ -4,7 +4,10 @@
 
 -module(actordb_util).
 -include_lib("actordb_core/include/actordb.hrl").
--compile(export_all).
+-export([hash/1, varint_enc/1, varint_dec/1, 
+	actor_types/0, typeatom/1, wait_for_startup/3, tunnel_bin/2, 
+	actor_path/1, shard_path/1, type_schema/2, createcfg/8, 
+	parse_cfg_schema/1, flatnow/0, split_point/2]).
 
 
 hash(V) ->
@@ -255,11 +258,8 @@ check_actor(AD,TD,Actor,Type) ->
 shard_path(_Name) ->
 	"shards/".
 
-actorpath(_Actor) ->
+actor_path(_Actor) ->
 	["actors/"].
-
-drive(_Actor) ->
-	[].
 
 split_point(From,To) ->
 	From + ((To-From) div 2).
@@ -345,6 +345,17 @@ parse_cfg_schema(G1) ->
 	 TypeSqls,
 
 	Out.
+
+% Time in microseconds.
+% erlang:system_time(micro_seconds) is much slower on osx.
+flatnow() ->
+	case os:type() of
+		{unix,darwin} ->
+			{MS, S, MiS} = os:timestamp(),
+			MS*1000000000000 + S*1000000 + MiS;
+		_ ->
+			erlang:system_time(micro_seconds)
+	end.
 
 check_str(S) ->
 	case S of

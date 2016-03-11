@@ -5,8 +5,8 @@
 -module(actordb_queue).
 -compile(export_all).
 -include_lib("actordb_core/include/actordb.hrl").
--define(TYPE_EVENT,0).
--define(TYPE_STATE,1).
+-define(TYPE_EVENT,1).
+-define(TYPE_STATE,2).
 
 -define(HEAD_SIZE,23).
 -define(EV_HEAD_SIZE,27).
@@ -23,13 +23,20 @@
 % 
 % File format
 % 
-% <<0x184D2A50,Size:32/unsigned-little, 1, QActorNameSize, QActor/binary, 
-%   NEvents:32, BodySize:32, term:64, evnum:64, time:64>>
 
+% Event Header:
+% <<0x184D2A50,Size:32/unsigned-little, 1, QActorNameSize, QActorName/binary, 
+%   NEvents:32, MapAndDataSize:32, term:64, evnum:64, time:64>>
+% Event table is compressed (lz4 format). Single event in the table is:
+% <<EntireLen, SizeName, Name:SizeName/binary, DataType, Size:32/unsigned,UncompressedOffset:32/unsigned>>
+% Event data section is <<Item1:SizeInTable/binary, Item2:SizeInTable:/binary>>.
 
+% Term store:
+% <<0x184D2A51, Size:32/unsigned-little, 2, QActorNameSize, QActorName/binary,
+%   VotedForNameSize, VotedForName/binary, EvTerm:64>>
 
--record(st,{db, name, cursize = 0, 
-	curterm, evnum, prev_event = {0,0}, staged_events = [], written_events = [],
+-record(st,{db, name, indexname, cursize = 0, 
+	curterm, evnum, staged_events = [], written_events = [],
 	nevents = 0,
 	voted_for = <<>>, voted_for_term, replbin = <<>>}).
 
@@ -52,7 +59,7 @@ start(Name,Type1,Opt) ->
 	case distreg:whereis({Name,Type}) of
 		undefined ->
 			actordb_sqlproc:start([{actor,Name},{type,Type},{mod,?MODULE},
-				{state,#st{name = Name, db = aqdrv:open(Name,false)}}|Opt]);
+				{state,#st{name = Name, indexname = <<0,Name/binary>>, db = aqdrv:open(Name,false)}}|Opt]);
 		Pid ->
 			{ok,Pid}
 	end.
@@ -85,12 +92,11 @@ cb_spawnopts(Name) ->
 	[{spawn_opt,[{scheduler,Sch}]}].
 % Buffer write
 cb_write(S,A,{EvName, Data},Type) ->
-	% Sz = aqdrv:stage_write(S#st.db, Data),
 	ok = aqdrv:stage_map(S#st.db, EvName, Type, byte_size(Data)),
 	ok = aqdrv:stage_data(S#st.db, Data),
 	{[],S#st{staged_events = [EvName|S#st.staged_events], nevents = S#st.nevents + 1}}.
 % Write to disk
-cb_write_exec(#st{prev_event = {_PrevFile,_PrevOffset}} = S, Items, Term, Evnum, VarHeader) ->
+cb_write_exec(S, Items, Term, Evnum, VarHeader) ->
 	{MapSize,DataSize} = aqdrv:stage_flush(S#st.db),
 
 	ReplHdr = [<<(iolist_size(S#st.replbin)):16/unsigned>>, S#st.replbin, 
@@ -102,51 +108,14 @@ cb_write_exec(#st{prev_event = {_PrevFile,_PrevOffset}} = S, Items, Term, Evnum,
 		<<(S#st.nevents):32/unsigned,
 		(MapSize+DataSize):32/unsigned,
 		Term:64/unsigned,
-		Evnum:64/unsigned,
-		(erlang:system_time(micro_seconds)):64/unsigned>>],
+		Evnum:64/unsigned>>],
 
 	{WPos,Size,_Time} = aqdrv:write(S#st.db, ReplHdr, Header),
 	{ok, S#st{written_events = S#st.staged_events, staged_events = [], nevents = 0}}.
-	% Map = term_to_binary((S#st.wmap)#{vi => {S#st.voted_for_term, S#st.voted_for}}),
-	% Map = lists:sort(S#st.wmap),
-	% EvHeader = <<Term:64/unsigned-little, Evnum:64/unsigned-little,
-	% 	(erlang:system_time(micro_seconds)):64/unsigned-little, 
-	% 	0,(byte_size(S#st.mapsize)):24/unsigned-little>>,
-	
-	% HeadWithoutCrc = [<<?TYPE_EVENT,(S#st.name),PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
-	% 	(S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8):32/unsigned-little>>],
-	% TAIL = <<(byte_size(HeadWithoutCrc)+S#st.cursize+byte_size(EvHeader)+S#st.mapsize*8+4*2):32/unsigned-little>>,
-	
-	% % Combine to single binary since its going to be done in driver anyway.
-	% Event = iolist_to_binary([EvHeader,Map,Items,TAIL]),
-	% Header = [<<(erlang:crc32([HeadWithoutCrc,Event])):32/unsigned-little>>,HeadWithoutCrc],
-
-	% RHdr = [<<(iolist_size(S#st.replbin)):16/unsigned>>, S#st.replbin, 
-	% 	<<(iolist_size(VarHeader)):16/unsigned>>, VarHeader,
-	% 	24,<<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>],
-	% actordb_driver:all_tunnel_call(RHdr,Event),
-	
-	% write_to_log(S#st{curterm = Term, evnum = Evnum, cursize = 0, mapsize = 0, wmap = []}, 
-	% 	iolist_size(Header)+byte_size(Event), 
-	% 	[Header, Event]).
 % Write replicated
 cb_write_done(S,_Evnum) ->
-	ok = aqdrv:index_events(S#st.db,[S#st.written_events]),
+	ok = aqdrv:index_events(S#st.db,S#st.written_events),
 	{ok,S#st{written_events = []}}.
-
-% write_to_log(S,Size,Data) ->
-% 	{FileIndex,Offset} = actordb_queue_srv:get_chunk(Size),
-% 	case S#st.fd_index of
-% 		FileIndex ->
-% 			Fd = S#st.fd;
-% 		_ ->
-% 			file:close(S#st.fd),
-% 			actordb_queue_srv:moved_to(S#st.name,FileIndex),
-% 			{ok,Fd} = file:open(actordb_conf:db_path()++"/q."++butil:tolist(FileIndex),[write,read,binary,raw])
-% 	end,
-% 	ok = prim_file:pwrite(Fd,Offset,Data),
-% 	{ok,S#st{fd = Fd, fd_index = FileIndex, prev_event = {FileIndex,Offset}}}.
-
 
 cb_schema(_,queue,_) ->
 	{1,[]}.
@@ -202,34 +171,17 @@ cb_init(_S,_EvNum) ->
 
 %  Always called on actor start before leader/follower established.
 cb_init_engine(S) ->
-	case actordb_queue_srv:list_files() of
-		[] ->
-			S;
-		L1 ->
-			InitFrom = actordb_queue_srv:init_from(S#st.name),
-			case find_event(S,InitFrom,lists:reverse(L1)) of
-				false ->
-					S;
-				{ok,NS} ->
-					NS
-			end
-	end.
-
+	S.
 
 % 
 % Storage engine callbacks
 % 
-cb_inject_page(#st{prev_event = {PrevFile,PrevOffset}} = S,<<OriginalSize:32/unsigned,Bin1/binary>>,ReplHeader) ->
-	{ok,S}.
-	% <<Evterm:64/unsigned-big,Evnum:64/unsigned-big,_/binary>> = ReplHeader,
-	
-	% Bin = actordb_driver:lz4_decompress(Bin1,OriginalSize),
-	
-	% HeadWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
-	% 	% -4 because Bin also contains TAIL
-	% 	(byte_size(Bin)-4):32/unsigned-little>>,
-	% Header = [<<(erlang:crc32([HeadWithoutCrc,Bin])):32/unsigned-little>>,HeadWithoutCrc],
-	% write_to_log(S#st{curterm = Evterm, evnum = Evnum},byte_size(Bin)+iolist_size(Header),[Header,Bin]).
+cb_inject_page(#st{written_events = []} = S,Bin,_ReplHeader) ->
+	{ok,WE} = aqdrv:inject(S#st.db, Bin),
+	{ok,S#st{written_events = WE}};
+cb_inject_page(S, Bin, _ReplHeader) ->
+	ok = aqdrv:index_events(S#st.db,S#st.written_events),
+	cb_inject_page(S#st{written_events = []}, Bin, _ReplHeader).
 
 % Called on open queue. Regardless if leader/follower (before that is established).
 cb_actor_info(#st{evnum = undefined} = _S) ->
@@ -237,18 +189,14 @@ cb_actor_info(#st{evnum = undefined} = _S) ->
 cb_actor_info(S) ->
 	{{0,0},{S#st.curterm,S#st.evnum},{0,0},0,0,S#st.voted_for_term,S#st.voted_for}.
 
-cb_term_store(#st{prev_event = {PrevFile,PrevOffset}} = S, CurrentTerm, VotedFor) ->
+cb_term_store(S, CurrentTerm, VotedFor) ->
 	{ok,S}.
-	% Bin = term_to_binary({CurrentTerm,VotedFor,S#st.curterm,S#st.evnum}),
-	% HeaderWithoutCrc = <<?TYPE_STATE,(S#st.name):16/unsigned-little,PrevFile:64/unsigned-little,PrevOffset:32/unsigned-little,
-	% 	(byte_size(Bin)):32/unsigned-little>>,
-	% TAIL = <<(byte_size(HeaderWithoutCrc)+byte_size(Bin)+4*2):32/unsigned-little>>,
 
-	% ToWrite = [<<(erlang:crc32([HeaderWithoutCrc,Bin,TAIL])):32/unsigned-little>>,HeaderWithoutCrc,Bin,TAIL],
-	% write_to_log(S#st{voted_for_term = CurrentTerm, voted_for = VotedFor}, iolist_size(ToWrite), ToWrite).
-
-cb_wal_rewind(S,Evnum) ->
-	ok.
+cb_wal_rewind(S,_Evnum) ->
+	ok = aqdrv:index_events(S#st.db,false),
+	{ok,S#st{written_events = []},todo,todo}.
+cb_wal_rewind(S,_Evnum,_ReplaceSql) ->
+	cb_wal_rewind(S, _Evnum).
 
 cb_replicate_opts(S, Bin, _Type) ->
 	S#st{replbin = Bin}.
@@ -263,75 +211,3 @@ cb_replication_done(_S) ->
 cb_fsync(_S) ->
 	ok.
 
-% Make sure we are not bootstrapping from log files generated this session. This queue actor
-% can not be in there.
-find_event(S,InitFrom,[{Index,Nm}|T]) when Index =< InitFrom ->
-	{ok,F} = file:open(Nm,[read,raw,binary]),
-	{ok,FSize} = file:position(F,eof),
-	R = find_event1(S,F,FSize),
-	file:close(F),
-	case R of
-		{ok,#st{prev_event = {Position,_}} = NS} ->
-			{ok,NS#st{prev_event = {Position, Index}}};
-		_ ->
-			find_event(S,InitFrom,T)
-	end;
-find_event(S,InitFrom,[_|T]) ->
-	find_event(S,InitFrom,T);
-find_event(_S,_,[]) ->
-	false.
-
-% Move from eof to begin, find first event for this queue index.
-% Any kind of event has sufficient data. 
-find_event1(S,F,Position) ->
-	case file:pread(F,Position-4,4) of
-		{ok,<<Size:32/unsigned-little>>} ->
-			{ok,<<_Crc:32/unsigned-little, EvType, QIndex:16/unsigned-little, PrevFile:64/unsigned-little,
-				PrevOffset:32/unsigned-little,BodySize:32/unsigned-little>>} = file:pread(F,Position-Size,?HEAD_SIZE),
-			case QIndex == S#st.name of
-				true when EvType == ?TYPE_EVENT  ->
-					{ok, <<Term:64/unsigned-little, Evnum:64/unsigned-little, _Time:64/unsigned-little,
-						MapSize:24/unsigned-little>>} = file:pread(F,Position-Size+?HEAD_SIZE, ?EV_HEAD_SIZE),
-					{ok, MapBin} = file:pread(F,Position-Size+?HEAD_SIZE+?EV_HEAD_SIZE, MapSize),
-					#{vi := {VotedForTerm,VotedFor}} = binary_to_term(MapBin),
-					?ADBG("ev=~p, qindex=~p, pf=~p, poff=~p, term=~p, evnum=~p, time=~p",
-						[event,QIndex,PrevFile,PrevOffset,Term,Evnum,_Time]),
-					S#st{prev_event = {Position,0}, voted_for = VotedFor, 
-						voted_for_term = VotedForTerm, curterm = Term, evnum = Evnum};
-				true when EvType == ?TYPE_STATE ->
-					{ok,MapBin} = file:pread(F,Position-Size+?HEAD_SIZE, BodySize),
-					{VotedForTerm,VotedFor,CurTerm,Evnum} = binary_to_term(MapBin),
-					S#st{prev_event = {Position,0}, voted_for = VotedFor, voted_for_term = VotedForTerm,
-						curterm = CurTerm, evnum = Evnum};
-				false ->
-					?ADBG("Skipping index, me=~p, it=~p, position=~p",[S#st.name, QIndex,Position]),
-					find_event1(S,F,Position-Size)
-			end;
-		_ ->
-			undefined
-	end.
-
-print([_|_] = File) ->
-	{ok,F} = file:open(File,[read,binary,raw]),
-	print(F);
-print(F) ->
-	case file:read(F,?HEAD_SIZE) of
-		{ok,<<_Crc:32/unsigned-little, 0, QIndex:16/unsigned-little, PrevFile:64/unsigned-little, PrevOffset:32/unsigned-little,
-			BodySize:32/unsigned-little>>} ->
-			{ok,<<Term:64/unsigned-little,Evnum:64/unsigned-little, Time:64/unsigned-little, MapSize:24/unsigned-little,Map:MapSize/binary,Body/binary>>}
-				= file:read(F,BodySize),
-			io:format(lager_format:format("ev=~p, qindex=~p, pf=~p, poff=~p, term=~p, evnum=~p, time=~p, map=~p, body=~p~n",
-			[event,QIndex,PrevFile,PrevOffset,Term,Evnum,Time,binary_to_term(Map),Body],4096)),
-			file:read(F,4),
-			print(F);
-		{ok,<<_Crc:32/unsigned-little, 1, QIndex:16/unsigned-little, PrevFile:64/unsigned-little, PrevOffset:32/unsigned-little,
-			BodySize:32/unsigned-little>>} ->
-			{ok,Map} = file:read(F,BodySize),
-			io:format(lager_format:format("ev=~p, qindex=~p, pf=~p, poff=~p, data=~p~n",
-				[state,QIndex,PrevFile,PrevOffset,binary_to_term(Map)],4096)),
-			file:read(F,4),
-			print(F);
-		_R ->
-			io:format("~p~n",[_R]),
-			file:close(F)
-	end.

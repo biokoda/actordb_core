@@ -87,7 +87,7 @@ cb_spawnopts(_) ->
 	[].
 
 cb_path(_,Name,_Type) ->
-	actordb_util:actorpath(Name).
+	actordb_util:actor_path(Name).
 
 % Start or get pid of slave process for actor (executed on slave nodes in cluster)
 cb_slave_pid(Name,Type) ->

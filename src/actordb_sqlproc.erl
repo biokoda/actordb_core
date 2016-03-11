@@ -1714,8 +1714,7 @@ init(#dp{} = P,_Why) ->
 init([_|_] = Opts) ->
 	% put(opt,Opts),
 	?ADBG("Start opts ~p",[Opts]),
-	% Random needs to be unique per-node, not per-actor.
-	random:seed(actordb_conf:cfgtime()),
+	rand:seed(exs64),
 	Now = actordb_local:elapsed_time(),
 	P1 = #dp{mors = master, callqueue = queue:new(),statequeue = queue:new(), without_master_since = Now},
 	case actordb_sqlprocutil:parse_opts(P1,Opts) of

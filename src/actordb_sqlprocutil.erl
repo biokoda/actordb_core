@@ -596,13 +596,8 @@ send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 
 % Go back one entry
 rewind_wal(P) ->
-	actordb_sqlite:wal_rewind(P,P#dp.evnum),
-	Sql = <<"SElECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
-	{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
-	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
-	EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-	P#dp{evnum = Evnum, evterm = EvTerm}.
-	% end.
+	{ok,NS,Evnum,Evterm} = actordb_sqlite:wal_rewind(P,P#dp.evnum),
+	P#dp{evnum = Evnum, evterm = EvTerm, cbstate = NS}.
 
 save_term(P) ->
 	store_term(P,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm).
@@ -1016,7 +1011,7 @@ election_timer(undefined,undefined) ->
 election_timer(Now,undefined) ->
 	Latency = actordb_latency:latency(),
 	Fixed = max(300,Latency),
-	T = Fixed+random:uniform(Fixed),
+	T = Fixed+rand:uniform(Fixed),
 	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
 	erlang:send_after(T,self(),{doelection,Latency,Now});
 election_timer(Now,T) ->
@@ -1531,7 +1526,8 @@ parse_opts(P,[]) ->
 					ok
 			end,
 			P#dp{dbpath = DbPath, activity = actor_start(P), 
-				netchanges = actordb_local:net_changes(), cbstate = apply(P#dp.cbmod,cb_init_engine,[P#dp.cbstate])};
+				netchanges = actordb_local:net_changes(), 
+				cbstate = apply(P#dp.cbmod,cb_init_engine,[P#dp.cbstate])};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.
