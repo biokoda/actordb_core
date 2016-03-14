@@ -44,7 +44,7 @@ wal_rewind(P,Evnum) when element(1,P#dp.db) == actordb_driver ->
 			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
 			Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
 			EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-			{ok,P#db.cbstate,Evnum,Evterm};
+			{ok,P#dp.cbstate,Evnum,EvTerm};
 		false ->
 			R
 	end;

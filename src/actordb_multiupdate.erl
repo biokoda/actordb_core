@@ -246,8 +246,9 @@ multiread(L) ->
 			erase(),
 			[put(K,V) || {K,V} <- ExistingPD],
 			{ok,[{columns,Cols},{rows,Rows}]};
-		Err ->
-			?AERR("Error multiread ~p",[Err])
+		{'EXIT',Err} ->
+			?AERR("Error multiread ~p",[Err]),
+			Err
 	end.
 
 read_mr_rows(N,L) when N < 0 ->

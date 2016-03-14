@@ -282,16 +282,17 @@ rec_counts(Ops) ->
 			Ops
 	end.
 counter(N, V) ->
-	case erlang:process_info(self(),message_queue_len) of
-		{_,0} ->
-			% actordb_driver:counter_inc(9,N),
-			% actordb_driver:get_counter(9),
-			% erlang:system_time(micro_seconds),
-			% {MS, S, MiS} = os:timestamp(),
-			% V + MS*1000000000000 + S*1000000 + MiS
-			counter(N+1, actordb_util:flatnow());
-		_ ->
+	receive
+		stop ->
 			exit(N)
+	after 0 ->
+		% erlang:process_flag(scheduler,(N rem 8) + 1),
+		% actordb_driver:counter_inc(9,N),
+		% actordb_driver:get_counter(9),
+		% erlang:system_time(micro_seconds),
+		% {MS, S, MiS} = os:timestamp(),
+		% V + MS*1000000000000 + S*1000000 + MiS
+		counter(N+1, V)
 	end.
 
 

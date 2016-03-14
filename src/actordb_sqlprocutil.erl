@@ -596,7 +596,7 @@ send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 
 % Go back one entry
 rewind_wal(P) ->
-	{ok,NS,Evnum,Evterm} = actordb_sqlite:wal_rewind(P,P#dp.evnum),
+	{ok,NS,Evnum,EvTerm} = actordb_sqlite:wal_rewind(P,P#dp.evnum),
 	P#dp{evnum = Evnum, evterm = EvTerm, cbstate = NS}.
 
 save_term(P) ->
