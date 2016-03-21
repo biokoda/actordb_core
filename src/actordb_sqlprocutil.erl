@@ -1787,13 +1787,13 @@ dbcopy_send(Ref,Param) ->
 	Pid ! {Ref,self(),Param},
 	receive
 		{'DOWN',MonRef,_,Pid,Reason} ->
-			erlang:demonitor(MonRef),
+			erlang:demonitor(MonRef,[flush]),
 			{error,Reason};
 		{Ref,Pid,Response} ->
-			erlang:demonitor(MonRef),
+			erlang:demonitor(MonRef,[flush]),
 			Response
 		after 10000 ->
-			erlang:demonitor(MonRef),
+			erlang:demonitor(MonRef,[flush]),
 			{error,timeout}
 	end.
 
