@@ -509,7 +509,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 				master ->
 					% {noreply, actordb_sqlprocutil:start_verify(P,false)};
 					?DBG("Executing empty write"),
-					{noreply,write_call(#write{sql = []},undefined,P)};
+					write_call(#write{sql = []},undefined,P);
 				_ ->
 					{noreply,P}
 			end;
@@ -1689,7 +1689,8 @@ down_info(PID,_Ref,Reason,P) ->
 
 
 terminate(Reason, P) ->
-	?DBG("Terminating ~p",[Reason]),
+	?ADBG("Terminating ~p, ~p",[Reason,P]),
+	% ?DBG("Terminating ~p, ~p",[Reason]),
 	actordb_sqlite:stop(P),
 	distreg:unreg(self()),
 	ok.

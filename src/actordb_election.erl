@@ -111,7 +111,7 @@ get_followers(E) ->
 	receive
 		{set_followers,L} ->
 			E#election{followers = L}
-	after 3000 ->
+	after 10000 ->
 		?AERR("Election timeout receiving follower info"),
 		exit(timeout)
 	end.
