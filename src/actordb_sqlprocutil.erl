@@ -999,7 +999,7 @@ do_cb(#dp{cbinit = false} = P) ->
 			do_cb(P#dp{cbinit = true})
 	end;
 do_cb(P) ->
-	case apply(P#dp.cbmod,cb_write_done,[P#dp.cbstate,P#dp.evnum]) of
+	case apply(P#dp.cbmod,cb_write_done,[P#dp.cbstate,P#dp.evterm,P#dp.evnum]) of
 		{ok,NS} ->
 			P#dp{cbstate = NS};
 		ok ->

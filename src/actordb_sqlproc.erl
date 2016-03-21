@@ -1281,6 +1281,8 @@ handle_info({doelection,_LatencyBefore,_TimerFrom} = Msg,P) ->
 	election_timer(Msg,P);
 handle_info(doelection1,P) ->
 	election_timer(doelection1,P);
+handle_info(doelection2,P) ->
+	election_timer(doelection2,P);
 handle_info({forget,Nd},P) ->
 	?INF("Forgetting node ~p",[Nd]),
 	{noreply,P#dp{follower_indexes = lists:keydelete(Nd,#flw.node,P#dp.follower_indexes)}};

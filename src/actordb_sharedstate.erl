@@ -620,10 +620,10 @@ cb_startstate(Name,Type) ->
 cb_idle(_S) ->
 	ok.
 
-cb_write_done(#st{name = ?STATE_NM_LOCAL} = S,Evnum) ->
+cb_write_done(#st{name = ?STATE_NM_LOCAL} = S,_Term,Evnum) ->
 	?ADBG("cb_write_done ~p",[S#st.name]),
 	{ok,check_timer(S#st{evnum = Evnum})};
-cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
+cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,_Term,Evnum) ->
 	?ADBG("cb_write_done ~p",[S#st.name]),
 	set_global_state(actordb_conf:node_name(), S#st.current_write),
 	NS = check_timer(S#st{current_write = [], evnum = Evnum, am_i_master = true}),

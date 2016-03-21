@@ -112,9 +112,10 @@ cb_write_exec(S, Items, Term, Evnum, VarHeader) ->
 
 	{WPos,Size,_Time} = aqdrv:write(S#st.db, ReplHdr, Header),
 	{ok, S#st{written_events = S#st.staged_events, staged_events = [], nevents = 0}}.
-% Write replicated
-cb_write_done(S,_Evnum) ->
-	ok = aqdrv:index_events(S#st.db,S#st.written_events),
+% Write replicated, same as cb_replication_done but meant for callback modules
+% instead of engine callback. 
+cb_write_done(S,Term,Evnum) ->
+	ok = aqdrv:index_events(S#st.db,S#st.written_events,S#st.indexname, Term,Evnum),
 	{ok,S#st{written_events = []}}.
 
 cb_schema(_,queue,_) ->
@@ -179,9 +180,9 @@ cb_init_engine(S) ->
 cb_inject_page(#st{written_events = []} = S,Bin,_ReplHeader) ->
 	{ok,WE} = aqdrv:inject(S#st.db, Bin),
 	{ok,S#st{written_events = WE}};
-cb_inject_page(S, Bin, _ReplHeader) ->
-	ok = aqdrv:index_events(S#st.db,S#st.written_events),
-	cb_inject_page(S#st{written_events = []}, Bin, _ReplHeader).
+cb_inject_page(S, Bin, <<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>) ->
+	ok = aqdrv:index_events(S#st.db,S#st.written_events, S#st.indexname, Term, Evnum),
+	cb_inject_page(S#st{written_events = []}, Bin, <<>>).
 
 % Called on open queue. Regardless if leader/follower (before that is established).
 cb_actor_info(#st{evnum = undefined} = _S) ->
@@ -192,8 +193,8 @@ cb_actor_info(S) ->
 cb_term_store(S, CurrentTerm, VotedFor) ->
 	{ok,S}.
 
-cb_wal_rewind(S,_Evnum) ->
-	ok = aqdrv:index_events(S#st.db,false),
+cb_wal_rewind(S,Evnum) ->
+	ok = aqdrv:index_events(S#st.db,false,S#st.indexname, 0, Evnum),
 	{ok,S#st{written_events = []},todo,todo}.
 cb_wal_rewind(S,_Evnum,_ReplaceSql) ->
 	cb_wal_rewind(S, _Evnum).
@@ -205,9 +206,10 @@ cb_replicate_opts(S, Bin) ->
 	S#st{replbin = Bin}.
 
 % Write successfully replicated to all nodes.
+% This is an engine callback. We don't need it in aqdrv.
 cb_replication_done(_S) ->
 	ok.
 
-cb_fsync(_S) ->
-	ok.
+cb_fsync(S) ->
+	aqdrv:fsync(S#st.db).
 

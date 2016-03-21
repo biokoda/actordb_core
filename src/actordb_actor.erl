@@ -140,7 +140,7 @@ cb_redirected_call(_S,_MovedTo,_Call,_Type) ->
 cb_unverified_call(_S,_Msg)  ->
 	queue.
 
-cb_write_done(_S,_Evnum) ->
+cb_write_done(_S,_Evterm,_Evnum) ->
 	ok.
 
 % These only get called on master

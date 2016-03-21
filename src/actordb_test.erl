@@ -247,9 +247,10 @@ print_times([],_,_) ->
 
 % For quick benchmarks.
 loop(N) ->
-	L = [<<(rand:uniform(1000000000)):32,1:32>> || _ <- lists:seq(1,1000)],
+	% L = [<<(rand:uniform(1000000000)):32,1:32>> || _ <- lists:seq(1,1000)],
+	Schs = erlang:system_info(schedulers_online),
 	S = os:timestamp(),
-	loop1(N,L),
+	loop1(N,Schs),
 	timer:now_diff(os:timestamp(),S).
 
 loop1(0,_) ->
@@ -257,7 +258,9 @@ loop1(0,_) ->
 loop1(N,L) ->
 	% actordb_util:varint_enc(1000),
 	% actordb:exec("actor type1("++integer_to_list(N)++"); select * from tab;"),
-	actordb:exec(<<"show schema;">>),
+	% actordb:exec(<<"show schema;">>),
+	% spawn_opt(fun() -> ok end,[{scheduler, ((N rem 1000) rem L) + 1}]),
+	% spawn(fun() -> ok end),
 	loop1(N-1,L).
 
 
