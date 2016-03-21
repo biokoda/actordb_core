@@ -4,7 +4,7 @@
 -module(actordb_local).
 -behaviour(gen_server).
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2,
-		terminate/2, code_change/3,print_info/0,killactors/0,ulimit/0, status/0]).
+		terminate/2, code_change/3,print_info/0,killactors/0,ulimit/0, status/0,connect_all/0]).
 % Multiupdaters
 -export([pick_mupdate/0,mupdate_busy/2,get_mupdaters_state/0,reg_mupdater/2,local_mupdaters/0]).
 % Actor activity
@@ -32,6 +32,10 @@
 
 killactors() ->
 	gen_server:cast(?MODULE,killactors).
+
+connect_all() ->
+	bkdcore_task:add_task(1000,connect_all,fun actordb_local:connect_all/0),
+	[spawn(fun() -> net_adm:ping(bkdcore:dist_name(Nd)) end) || Nd <- bkdcore:cluster_nodes()].
 
 net_changes() ->
 	butil:ds_val(netchanges,?GLOBAL_INFO).
