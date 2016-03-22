@@ -1228,7 +1228,7 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 				evterm = EvTerm, evnum = EvNum,schemavers = NewVers,movedtonode = Moved,
 				wasync = NewAsync}))};
 		{sql_error,{ErrPos,_,_ErrAtom,ErrStr},_} ->
-			actordb_sqlite:rollback(P#dp.db),
+			% actordb_sqlite:rollback(P#dp.db),
 			[batch,undefined|CF1] = From,
 			% Remove cf for last part (#s02, #s01)
 			CF = lists:reverse(tl(lists:reverse(CF1))),
