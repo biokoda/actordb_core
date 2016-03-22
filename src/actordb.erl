@@ -195,7 +195,7 @@ exec_bp1(P,Size,Sql,BindingValues) ->
 	actordb_backpressure:inc_callsize(Size),
 	actordb_backpressure:inc_callsize(P,Size),
 	% error_logger:format("exec_bp1 sql=~p, vals=~p~n",[Sql, BindingValues]),
-	Res = exec1(P,Sql,BindingValues),
+	Res = (catch exec1(P,Sql,BindingValues)),
 	% error_logger:format("exec_bp1 result=~p~n",[Res]),
 	GCount = actordb_backpressure:dec_callcount(),
 	actordb_backpressure:dec_callcount(P),
