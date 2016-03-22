@@ -56,7 +56,7 @@ start_election_done(E,X) when is_tuple(X) ->
 			receive
 				exit ->
 					exit(X)
-				after 300 ->
+				after 100 ->
 					?AERR("Wait election write waited too long."),
 					exit(X)
 			end;
