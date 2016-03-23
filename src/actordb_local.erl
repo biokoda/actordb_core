@@ -16,7 +16,6 @@
 -include_lib("actordb_core/include/actordb.hrl").
 -define(MB,1024*1024).
 -define(GB,1024*1024*1024).
--define(TIMETABLE,timetable).
 % Stores net changes, current and previous active table.
 -define(GLOBAL_INFO,globalinfo).
 
@@ -48,8 +47,7 @@ mod_netchanges() ->
 % Also if node is overloaded, that 100ms will actually be longer which is great. Under high load
 % all timings that node relies upon can go out the window.
 elapsed_time() ->
-	[{_,N}] = ets:lookup(?TIMETABLE,elapsed_time),
-	N.
+	actordb_driver:get_counter(?COUNTER_TIME).
 
 status() ->
 	Alive = get_nactors()-1,
@@ -386,13 +384,6 @@ init(_) ->
 		_ ->
 			ok
 	end,
-	case ets:info(?TIMETABLE,size) of
-		undefined ->
-			ets:new(?TIMETABLE, [named_table,public,set,{heir,whereis(actordb_sup),<<>>},{read_concurrency,true}]),
-			butil:ds_add(elapsed_time,0,?TIMETABLE);
-		_ ->
-			ok
-	end,
 	% case ets:info(actoractivity,size) of
 	% 	undefined ->
 	% 		ets:new(actoractivity, [named_table,public,ordered_set,{heir,whereis(actordb_sup),<<>>},{write_concurrency,true}]);
@@ -487,8 +478,8 @@ timer(#tmr{rqs = [A,B,C,D,E,F,G,H,I,J,_|_]} = P) ->
 timer(P) ->
 	receive
 	after 100 ->
-		ets:update_counter(?TIMETABLE,elapsed_time,{2,100}),
-		?MODULE:timer(P#tmr{n = P#tmr.n+100, rqs = [statistics(run_queue)|P#tmr.rqs]})
+		actordb_driver:counter_inc(?COUNTER_TIME,100),
+		?MODULE:timer(P#tmr{rqs = [statistics(run_queue)|P#tmr.rqs]})
 	end.
 
 create_mupdaters(0,L) ->
