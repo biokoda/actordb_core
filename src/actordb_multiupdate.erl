@@ -274,7 +274,7 @@ do_multiupdate(P,[#{type := Type1, actor := Actors, flags := _Flags, var := unde
 			do_multiupdate(P,[]);
 		curactor ->
 			case Actors of
-				$* ->
+				{$*,_Where} ->
 					move_over_shards(H#{type := actordb_util:typeatom(Type1)}, P, curactor, actordb_shardtree:all());
 				_ ->
 					case Actors of
@@ -288,7 +288,7 @@ do_multiupdate(P,[#{type := Type1, actor := Actors, flags := _Flags, var := unde
 			do_multiupdate(P,T);
 		{StBin,Varlist} ->
 			case Actors of
-				$* ->
+				{$*,_Where} ->
 					move_over_shards(H#{statements := StBin, type := actordb_util:typeatom(Type1)}, P, Varlist, actordb_shardtree:all());
 				_ ->
 					case Actors of
@@ -356,7 +356,8 @@ move_over_shards(H, P, Varlist, {Shard,_UpperLimit,Nd,Left,Right}) ->
 move_over_shard_actors(Nd, H, Shard, [], 1000, CountAll, P, Varlist, NextShard) when NextShard /= undefined ->
 	move_over_shard_actors(Nd, H, Shard, [],1000, CountAll, P, Varlist, undefined);
 
-move_over_shard_actors(Nd,#{type := Type, statements := [count]} = H, Shard, [], _CountNow, _CountAll, _P, _Varlist, _NextShard) ->
+move_over_shard_actors(Nd,#{actor := {$*,Where},type := Type, statements := [count]} = H, 
+		Shard, [], _CountNow, _CountAll, _P, _Varlist, _NextShard) ->
 	case get({<<"RESULT">>,cols}) of
 		undefined ->
 			put({<<"RESULT">>,cols},{<<"count">>}),
@@ -368,13 +369,13 @@ move_over_shard_actors(Nd,#{type := Type, statements := [count]} = H, Shard, [],
 	{CurCount} = get({<<"RESULT">>,0}),
 	case bkdcore:node_name() == Nd of
 		true ->
-			Count = actordb_shard:count_actors(Shard,Type);
+			Count = actordb_shard:count_actors(Shard,Type,Where);
 		false ->
-			Count = actordb:rpc(Nd,Shard,{actordb_shard,count_actors,[Shard,Type]})
+			Count = actordb:rpc(Nd,Shard,{actordb_shard,count_actors,[Shard,Type,Where]})
 	end,
 	put({<<"RESULT">>,0},{CurCount+Count}),
 	H;
-move_over_shard_actors(Nd,#{type := Type, flags := _Flags, statements := _StBin, iswrite := _IsWrite} = H,
+move_over_shard_actors(Nd,#{actor := {$*,Where},type := Type, flags := _Flags, statements := _StBin, iswrite := _IsWrite} = H,
 				Shard, [], CountNow, CountAll, P, Varlist, Next) ->
 	% If  _StBin=[{list,_}] then do not treat it like a kv type
 	Iskv = actordb_schema:iskv(Type) andalso is_tuple(hd(_StBin)) == false,
@@ -385,9 +386,9 @@ move_over_shard_actors(Nd,#{type := Type, flags := _Flags, statements := _StBin,
 		_ when CountNow == 0; CountNow == 1000 ->
 			case bkdcore:node_name() == Nd of
 				true ->
-					List = actordb_shard:list_actors(Shard,Type,CountAll,1000);
+					List = actordb_shard:list_actors(Shard,Type,Where,CountAll,1000);
 				false ->
-					List = actordb:rpc(Nd,Shard,{actordb_shard,list_actors,[Shard,Type,CountAll,1000]})
+					List = actordb:rpc(Nd,Shard,{actordb_shard,list_actors,[Shard,Type,Where,CountAll,1000]})
 			end,
 			?ADBG("Moving over shard ~p ~p ~p",[Shard,Type,List]),
 			case List of

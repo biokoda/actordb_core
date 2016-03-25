@@ -104,7 +104,7 @@ handle_info(latency_check,P) ->
 			{noreply,P};
 		_ ->
 			Term = term_to_binary({?MODULE,[node(),os:timestamp()]}),
-			_NSent = actordb_sqlite:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
+			actordb_sqlite:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
 			{noreply,P}
 	end;
 handle_info({stop},P) ->

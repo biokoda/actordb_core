@@ -79,7 +79,8 @@ handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
 	{stop, Reason, P};
-handle_info(_, P) ->
+handle_info(M, P) ->
+	?AERR("Invalid msg ~p",[M]),
 	{noreply, P}.
 
 terminate(_, _) ->

@@ -92,13 +92,8 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 									{_,_,Node} = actordb_shardmngr:find_global_shard(Name),
 									parse_statements(BP,T,L,PreparedRows,{Type,[Actor],[{copyfrom,{Node,Name}}|Flags]},[{copy,Name}],false, false);
 								Pragma when Pragma == count; element(1,Pragma) == list ->
-									case split_actor(?GV(BP,canempty),CurUse) of
-										{Type,_Actors,_Flags} ->
-											ok;
-										{Type,_Global,_Col,_Var,_Flags} ->
-											ok
-									end,
-									parse_statements(BP,T,L,PreparedRows,{Type,$*,[]},[Pragma],false,false)
+									{Type,Actors,_Flags} = split_actor(?GV(BP,canempty),CurUse),
+									parse_statements(BP,T,L,PreparedRows,{Type,Actors,[]},[Pragma],false,false)
 							end
 					end;
 				{show,ShowRem} ->
@@ -436,11 +431,11 @@ parse_pragma(Bin) ->
 		<<"EXISTS",_/binary>> ->
 			exists;
 		<<"list",Rem/binary>> ->
-			{list,parse_pragma_list(rem_spaces(Rem), ?LIST_LIMIT, 0)};
+			{list,parse_pragma_list(rem_spaces(Rem), [], ?LIST_LIMIT, 0)};
 		<<"List",Rem/binary>> ->
-			{list,parse_pragma_list(rem_spaces(Rem), ?LIST_LIMIT, 0)};
+			{list,parse_pragma_list(rem_spaces(Rem), [], ?LIST_LIMIT, 0)};
 		<<"LIST",Rem/binary>> ->
-			{list,parse_pragma_list(rem_spaces(Rem), ?LIST_LIMIT, 0)};
+			{list,parse_pragma_list(rem_spaces(Rem), [], ?LIST_LIMIT, 0)};
 		<<"count",_/binary>> ->
 			count;
 		<<"COUNT",_/binary>> ->
@@ -455,7 +450,7 @@ parse_pragma(Bin) ->
 		<<E,X,I,S,T,S,_/binary>> when ?E(E) andalso ?X(X) andalso ?I(I) andalso ?S(S) andalso ?T(T) ->
 			exists;
 		<<L,I,S,T,Rem/binary>> when ?L(L) andalso ?I(I) andalso ?S(S) andalso ?T(T) ->
-			{list,parse_pragma_list(rem_spaces(Rem), ?LIST_LIMIT, 0)};
+			{list,parse_pragma_list(rem_spaces(Rem),[], ?LIST_LIMIT, 0)};
 		<<C,O,U,N,T,_/binary>> when ?C(C) andalso ?O(O) andalso ?U(U) andalso ?N(N) andalso ?T(T) ->
 			count;
 		<<C,O,P,Y,R/binary>> when ?C(C) andalso ?O(O) andalso ?P(P) andalso ?Y(Y) ->
@@ -465,27 +460,30 @@ parse_pragma(Bin) ->
 			undefined
 	end.
 
-parse_pragma_list(<<";",_/binary>>,Limit,Offset) ->
+% list_to_binary(lists:reverse(Where))
+parse_pragma_list(<<";",_/binary>>,_Where,Limit,Offset) ->
 	{Limit,Offset};
-parse_pragma_list(<<L,I,M,I,T," ",Rem/binary>>,Limit,Offset) when ?L(L) andalso ?I(I) andalso ?M(M) 
+parse_pragma_list(<<L,I,M,I,T," ",Rem/binary>>,Where,Limit,Offset) when ?L(L) andalso ?I(I) andalso ?M(M) 
 		andalso ?T(T) ->
 	case count_name(rem_spaces(Rem),0) of
 		Len when Len > 0 ->
 			<<Num:Len/binary,Next/binary>> = rem_spaces(Rem),
-			parse_pragma_list(rem_spaces(Next),butil:toint(Num),Offset);
+			parse_pragma_list(rem_spaces(Next),Where,butil:toint(Num),Offset);
 		_ ->
 			{Limit,Offset}
 	end;
-parse_pragma_list(<<O,F1,F2,S,E,T," ",Rem/binary>>,Limit,Offset) when ?O(O) andalso ?F(F1) andalso 
+parse_pragma_list(<<O,F1,F2,S,E,T," ",Rem/binary>>,Where,Limit,Offset) when ?O(O) andalso ?F(F1) andalso 
 		?F(F2) andalso ?S(S) andalso ?E(E) andalso ?T(T) ->
 	case count_name(rem_spaces(Rem),0) of
 		Len when Len > 0 ->
 			<<Num:Len/binary,Next/binary>> = rem_spaces(Rem),
-			parse_pragma_list(rem_spaces(Next),Limit,butil:toint(Num));
+			parse_pragma_list(rem_spaces(Next),Where,Limit,butil:toint(Num));
 		_ ->
 			{Limit,Offset}
 	end;
-parse_pragma_list(_,L,O) ->
+% parse_pragma_list(<<C,Bin/binary>>, Where, Limit, Offset) ->
+% 	parse_pragma_list(Bin,[C|Where],Limit,Offset);
+parse_pragma_list(_,_Where,L,O) ->
 	{L,O}.
 
 
@@ -751,7 +749,9 @@ split_actor(_,[Type,{K,V},Flags]) ->
 split_actor(CanEmpty,Bin) ->
 	case split_actor(CanEmpty,Bin,<<>>,undefined,[]) of
 		{Type,[<<"*">>],Flags} ->
-			{Type,$*,Flags};
+			{Type,{$*,<<>>},Flags};
+		% {Type,[<<"*",W,H,E,R,E,Rem/binary>>],Flags} when ?W(W) andalso ?H(H) andalso ?E(E) andalso ?E(R) ->
+		% 	{Type,{$*,Rem},Flags};
 		Res ->
 			Res
 	end.
@@ -767,6 +767,14 @@ split_actor(CE,<<"'",Bin/binary>>,Word,T,L) ->
 	split_actor(CE,Bin,Word,T,L);
 split_actor(CE,<<"`",Bin/binary>>,Word,undefined,L) ->
 	split_actor(CE,Bin,Word,undefined,L);
+split_actor(CE,<<"*",Rem/binary>>, Word, Type, L) ->
+	case rem_spaces(Rem) of
+		<<W,H,E,R,E,WR/binary>> when ?W(W) andalso ?H(H) andalso ?E(E) andalso ?R(R) ->
+			[ToEnd,FlagsBin] = binary:split(WR,<<")">>),
+			{Type,{$*,ToEnd},check_flags(FlagsBin,[])};
+		_ ->
+			split_actor(CE,Rem,<<Word/binary,"*">>,Type,L)
+	end;
 split_actor(CE,<<",",Bin/binary>>,Word,Type,L) ->
 	split_actor(CE,Bin,<<>>,Type,[is_not_empty(CE,Word)|L]);
 split_actor(CE,<<")",FlagsBin/binary>>,Word,Type,L) ->

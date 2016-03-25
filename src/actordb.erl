@@ -271,25 +271,25 @@ exec1(P,St,BindingValues)->
 		% Single block, lookup across all actors of type
 		%<<"actor type1(*); {{RESULT}} SELECT * FROM tab;">>
 		%if it does not contains {{result}} it wil return just ok
-		{{[{{ Type, $*, Flags}, false, Statements}],_}, []} ->
+		{{[{{ Type, {$*,Where}, Flags}, false, Statements}],_}, []} ->
 			has_authentication(P,Type,false),
-			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
+			Call = #{type => Type, actor => {$*,Where}, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
-		{{[{{Type, $*, Flags}, false, Statements}],_}, _} ->
+		{{[{{Type, {$*,Where}, Flags}, false, Statements}],_}, _} ->
 			has_authentication(P,Type,false),
-			Call = #{type => Type, actor => $*, flags => Flags, iswrite => false,
+			Call = #{type => Type, actor => {$*,Where}, flags => Flags, iswrite => false,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:multiread([Call]);
 		% Single block, write across all actors of certain type
-		{{[{{Type, $*, Flags}, true, Statements}],_}, []} ->
+		{{[{{Type, {$*,Where}, Flags}, true, Statements}],_}, []} ->
 			has_authentication(P,Type,true),
-			Call = #{type => Type, actor => $*, flags => Flags, iswrite => true,
+			Call = #{type => Type, actor => {$*,Where}, flags => Flags, iswrite => true,
 			statements => Statements, bindingvals => [], var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:exec([Call]);
-		{{[{{Type, $*, Flags}, true, Statements}],_}, _} ->
+		{{[{{Type, {$*,Where}, Flags}, true, Statements}],_}, _} ->
 			has_authentication(P,Type,true),
-			Call = #{type => Type, actor => $*, flags => Flags, iswrite => true,
+			Call = #{type => Type, actor => {$*,Where}, flags => Flags, iswrite => true,
 			statements => Statements, bindingvals => BindingValues, var => undefined, column => undefined, blockvar => undefined},
 			actordb_multiupdate:exec([Call]);
 		%actordb_sqlparse:parse_statements(<<"actor user(denis); SELECT * FROM todos; actor user(ino); SELECT * FROM todos;">>).
