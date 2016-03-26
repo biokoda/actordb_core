@@ -51,9 +51,9 @@ handle_call(stop, _, P) ->
 	{stop, shutdown, stopped, P}.
 
 handle_cast({return_call,_Nd,Time},P) ->
-	Now = os:timestamp(),
-	%?AINF("Latency from=~p, is=~p",[_Nd,timer:now_diff(Now,Time)]),
-	Latency = min(3000,erlang:abs(timer:now_diff(Now,Time)) div 1000),
+	Now = erlang:system_time(micro_seconds),
+	?AINF("Latency from=~p, is=~p",[_Nd,Now - Time]),
+	Latency = min(3000,erlang:abs(Now - Time) div 1000),
 	% Time is received from all nodes. Keep the last received one (highest latency)
 	case lists:keyfind(Time,1,P#dp.interval) of
 		false ->
@@ -103,7 +103,7 @@ handle_info(latency_check,P) ->
 		[] ->
 			{noreply,P};
 		_ ->
-			Term = term_to_binary({?MODULE,[node(),os:timestamp()]}),
+			Term = term_to_binary({?MODULE,[node(),erlang:system_time(micro_seconds)]}),
 			actordb_sqlite:all_tunnel_call([<<(iolist_size(Term)):16>>,Term]),
 			{noreply,P}
 	end;
