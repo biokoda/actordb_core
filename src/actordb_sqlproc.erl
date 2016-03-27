@@ -1464,10 +1464,12 @@ election_timer(doelection2,P) ->
 			actordb_sqlprocutil:empty_queue(P#dp.wasync,P#dp.rasync, P#dp.callqueue,{error,consensus_impossible_atm}),
 			A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
+			R1 = (P#dp.rasync)#ai{callfrom = undefined, wait = undefined},
 			% Give up for now. Do not run elections untill we get a hint from outside.
 			% Hint will come from catchup or a client wanting to execute read/write.
 			actordb_catchup:report(P#dp.actorname,P#dp.actortype),
-			{noreply,P#dp{callqueue = queue:new(),election = undefined,wasync = A1}};
+			{noreply,P#dp{callqueue = queue:new(),election = undefined,
+				wasync = A1,rasync = R1}};
 		_ when Now - P#dp.without_master_since >= 3000+LatencyNow ->
 			actordb_catchup:report(P#dp.actorname,P#dp.actortype),
 			% Give up and wait for hint.
@@ -1485,10 +1487,12 @@ down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLA
 		[P#dp.cbmod,P#dp.actorname,P#dp.actortype,stop]}) end),
 	Me = self(),
 	spawn(fun() -> timer:sleep(10), stop(Me) end),
+	RR = (P#dp.rasync)#ai{callfrom = undefined, wait = undefined},
 	actordb_sqlprocutil:empty_queue(P#dp.wasync,P#dp.rasync, P#dp.callqueue,{error,nocreate}),
 	A1 = (P#dp.wasync)#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
-	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(), wasync = A1}};
+	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(), 
+		wasync = A1, rasync = RR}};
 down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 	actordb_local:actor_mors(master,actordb_conf:node_name()),
 	ReplType = apply(P1#dp.cbmod,cb_replicate_type,[P1#dp.cbstate]),
@@ -1691,8 +1695,12 @@ down_info(PID,_Ref,Reason,P) ->
 
 
 terminate(Reason, P) ->
-	?ADBG("Terminating ~p, ~p",[Reason,P]),
-	% ?DBG("Terminating ~p, ~p",[Reason]),
+	case is_record(P,dp) of
+		true ->
+			?DBG("Terminating ~p",[Reason]);
+		false ->
+			?ADBG("Terminating ~p, ~p",[Reason,P])
+	end,
 	actordb_sqlite:stop(P),
 	distreg:unreg(self()),
 	ok.
