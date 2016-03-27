@@ -612,6 +612,11 @@ store_term(P, VotedFor, CurrentTerm, _EN, _ET) ->
 % store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->
 % 	actordb_sqlite:term_store(P, CurrentTerm, VotedFor).
 
+statequeue(#dp{wasync = #ai{wait = WRef}} = P) when is_reference(WRef) ->
+	% Statequeue may trigger doqueue, which may trigger a write
+	% We must stop executing statequeue now, otherwise an endless loop is created.
+	erlang:send_after(100,self(),statequeue),
+	P;
 statequeue(P) ->
 	case queue:is_empty(P#dp.statequeue) of
 		true ->
@@ -619,6 +624,7 @@ statequeue(P) ->
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.statequeue),
 			{From,Msg} = Call,
+			?DBG("statequeue pop from=~p, msg=~p",[From,Msg]),
 			case actordb_sqlproc:handle_call(Msg,From,P#dp{statequeue = CQ}) of
 				{reply,Res,NP} ->
 					reply(From,Res),

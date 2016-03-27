@@ -300,7 +300,7 @@ handle_call({dbcopy,Msg},CallFrom,P) -> %when element(1,Msg) /= reached_end ->
 				P#dp{activity = actordb_local:actor_activity(P#dp.activity)})
 	end;
 handle_call({state_rw,_} = Msg,From, #dp{wasync = #ai{wait = WRef}} = P) when is_reference(WRef) ->
-	?DBG("Queuing state call, waitingfor=~p",[WRef]),
+	?DBG("Queuing state call, waitingfor=~p, msg=~p",[WRef,Msg]),
 	{noreply,P#dp{statequeue = queue:in_r({From,Msg},P#dp.statequeue)}};
 handle_call({state_rw,What},From,P) ->
 	state_rw_call(What,From,P#dp{activity = actordb_local:actor_activity(P#dp.activity)});
@@ -1260,6 +1260,8 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 	end;
 handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
+handle_info(statequeue,P) ->
+	{noreply,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:statequeue(P))};
 handle_info({hibernate,A},P) ->
 	?DBG("hibernating"),
 	{noreply,P#dp{activity = A},hibernate};

@@ -141,6 +141,7 @@ doconnect(IP, Port, Nd) ->
 			inet:setopts(S,[{nodelay, true}]),
 			case gen_tcp:send(S,conhdr(Nd)) of
 				ok ->
+					?AINF("Opened tunnel to ~p",[Nd]),
 					ok = prim_inet:ignorefd(S,true),
 					{ok,S};
 				_ ->
