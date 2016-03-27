@@ -50,9 +50,11 @@ handle_call(print_info,_,P) ->
 handle_call(stop, _, P) ->
 	{stop, shutdown, stopped, P}.
 
+handle_cast({return_call,_Nd,{MS,S,MiS}},P) ->
+	handle_cast({return_call,_Nd,MS*1000000000000 + S*1000000 + MiS},P);
 handle_cast({return_call,_Nd,Time},P) ->
 	Now = erlang:system_time(micro_seconds),
-	?AINF("Latency from=~p, is=~p",[_Nd,Now - Time]),
+	% ?AINF("Latency from=~p, is=~p",[_Nd,Now - Time]),
 	Latency = min(3000,erlang:abs(Now - Time) div 1000),
 	% Time is received from all nodes. Keep the last received one (highest latency)
 	case lists:keyfind(Time,1,P#dp.interval) of
