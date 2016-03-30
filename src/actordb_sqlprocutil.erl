@@ -1331,14 +1331,18 @@ read_num(P) ->
 % This way if a large DB, replication space is max 10%. Or if small DB, max 5000 pages.
 % Page is 4096 bytes max, but with compression it is usually much smaller.
 checkpoint(#dp{mors = master, follower_indexes = []} = P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
+	?DBG("Single node checkpoint"),
 	actordb_sqlite:checkpoint(P,P#dp.evnum-3),
 	P#dp{last_checkpoint = P#dp.evnum-3};
 checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
+	?DBG("Attempt checkpoint ~p ~p",[P#dp.last_checkpoint, P#dp.evnum]),
 	case P#dp.mors of
 		master ->
 			case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.last_checkpoint andalso F#flw.next_index > 0] of
 				[] ->
 					?DBG("No followers far behind"),
+					Msg = {state_rw,checkpoint},
+					inform_followers(P,Msg),
 					actordb_sqlite:checkpoint(P,P#dp.evnum-3);
 				_ ->
 					% One of the followers is at least 6 events behind
@@ -1348,6 +1352,8 @@ checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 					?DBG("checkpoint allpages=~p, mxpage=~p, max=~p",[AllPages,MxPage,max(MxPages,0.1*MxFract)]),
 					case Diff > max(MxPages,0.1*MxFract) of
 						true ->
+							Msg = {state_rw,checkpoint},
+							inform_followers(P,Msg),
 							actordb_sqlite:checkpoint(P,P#dp.evnum-3);
 						false ->
 							ok
@@ -1360,7 +1366,14 @@ checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 	% This way checkpoint gets executed every 6 writes.
 	P#dp{last_checkpoint = P#dp.evnum};
 checkpoint(P) ->
+	?DBG("Not doing checkpoint ~p ~p",[P#dp.last_checkpoint, P#dp.evnum]),
 	P.
+
+inform_followers(P,Msg) ->
+	[begin
+		bkdcore_rpc:cast(F#flw.node,
+			{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg]})
+	end || F <- P#dp.follower_indexes].
 
 moved_replace(P,Node) ->
 	?INF("Replacing actor with redirect marker to node=~p",[Node]),
