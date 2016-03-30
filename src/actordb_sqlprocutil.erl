@@ -596,13 +596,8 @@ send_wal(P,#flw{file = {iter,_}} = F,HeaderBuf, PageBuf,BufSize) ->
 
 % Go back one entry
 rewind_wal(P) ->
-	actordb_sqlite:wal_rewind(P,P#dp.evnum),
-	Sql = <<"SElECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
-	{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
-	Evnum = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
-	EvTerm = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
-	P#dp{evnum = Evnum, evterm = EvTerm}.
-	% end.
+	{ok,NS,Evnum,EvTerm} = actordb_sqlite:wal_rewind(P,P#dp.evnum),
+	P#dp{evnum = Evnum, evterm = EvTerm, cbstate = NS}.
 
 save_term(P) ->
 	store_term(P,P#dp.voted_for,P#dp.current_term,P#dp.evnum,P#dp.evterm).
@@ -617,6 +612,11 @@ store_term(P, VotedFor, CurrentTerm, _EN, _ET) ->
 % store_term(P,VotedFor,CurrentTerm,_Evnum,_EvTerm) ->
 % 	actordb_sqlite:term_store(P, CurrentTerm, VotedFor).
 
+statequeue(#dp{wasync = #ai{wait = WRef}} = P) when is_reference(WRef) ->
+	% Statequeue may trigger doqueue, which may trigger a write
+	% We must stop executing statequeue now, otherwise an endless loop is created.
+	erlang:send_after(100,self(),statequeue),
+	P;
 statequeue(P) ->
 	case queue:is_empty(P#dp.statequeue) of
 		true ->
@@ -624,6 +624,7 @@ statequeue(P) ->
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.statequeue),
 			{From,Msg} = Call,
+			?DBG("statequeue pop from=~p, msg=~p",[From,Msg]),
 			case actordb_sqlproc:handle_call(Msg,From,P#dp{statequeue = CQ}) of
 				{reply,Res,NP} ->
 					reply(From,Res),
@@ -1004,7 +1005,7 @@ do_cb(#dp{cbinit = false} = P) ->
 			do_cb(P#dp{cbinit = true})
 	end;
 do_cb(P) ->
-	case apply(P#dp.cbmod,cb_write_done,[P#dp.cbstate,P#dp.evnum]) of
+	case apply(P#dp.cbmod,cb_write_done,[P#dp.cbstate,P#dp.evterm,P#dp.evnum]) of
 		{ok,NS} ->
 			P#dp{cbstate = NS};
 		ok ->
@@ -1016,7 +1017,7 @@ election_timer(undefined,undefined) ->
 election_timer(Now,undefined) ->
 	Latency = actordb_latency:latency(),
 	Fixed = max(300,Latency),
-	T = Fixed+random:uniform(Fixed),
+	T = Fixed+rand:uniform(Fixed),
 	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
 	erlang:send_after(T,self(),{doelection,Latency,Now});
 election_timer(Now,T) ->
@@ -1531,7 +1532,8 @@ parse_opts(P,[]) ->
 					ok
 			end,
 			P#dp{dbpath = DbPath, activity = actor_start(P), 
-				netchanges = actordb_local:net_changes(), cbstate = apply(P#dp.cbmod,cb_init_engine,[P#dp.cbstate])};
+				netchanges = actordb_local:net_changes(), 
+				cbstate = apply(P#dp.cbmod,cb_init_engine,[P#dp.cbstate])};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
 	end.
@@ -1791,13 +1793,13 @@ dbcopy_send(Ref,Param) ->
 	Pid ! {Ref,self(),Param},
 	receive
 		{'DOWN',MonRef,_,Pid,Reason} ->
-			erlang:demonitor(MonRef),
+			erlang:demonitor(MonRef,[flush]),
 			{error,Reason};
 		{Ref,Pid,Response} ->
-			erlang:demonitor(MonRef),
+			erlang:demonitor(MonRef,[flush]),
 			Response
 		after 10000 ->
-			erlang:demonitor(MonRef),
+			erlang:demonitor(MonRef,[flush]),
 			{error,timeout}
 	end.
 

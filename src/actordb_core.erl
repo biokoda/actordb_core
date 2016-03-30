@@ -10,8 +10,7 @@ stop() ->
 	actordb_backpressure:inc_callcount(1000000),
 	% Max wait 30s
 	wait_done_queries(30000),
-	application:stop(actordb_core),
-	actordb_election:stop().
+	application:stop(actordb_core).
 stop_complete()	 ->
 	case ets:info(bpcounters,size) == undefined of
 		true ->
@@ -250,6 +249,9 @@ prestart1(Files) ->
 	wthreads => WThreads,
 	rthreads => RdThreads,
 	lmdbsync => LMSync,
+	counters => ?MAXCOUNTERS,
+	timecounter => ?COUNTER_TIME,
+	maxtime => QueryTimeout,
 	nbatch => LMBatch},
 	ok = try_load_driver(DrvInfo),
 	emurmur3:init().

@@ -232,7 +232,7 @@ set_init_state_if_none(N,G,C) ->
 set_init_state(Nodes,Groups,Configs) ->
 	[ok = bkdcore_changecheck:setcfg(butil:tolist(Key),Val) || {Key,Val} <- Configs],
 	bkdcore_changecheck:set_nodes_groups(Nodes,Groups),
-	actordb_election:connect_all(),
+	actordb_local:connect_all(),
 	MG = add_master_group([]),
 	case lists:member(actordb_conf:node_name(),MG) of
 		true ->
@@ -335,7 +335,7 @@ set_global_state(MasterNode,State) ->
 					% application:set_env(kernel,global_groups,GlobGroupCfg),
 					% global_group:sync(),
 					% global:sync(),
-					actordb_election:connect_all(),
+					actordb_local:connect_all(),
 					actordb_local:mod_netchanges(),
 					spawn(fun() ->timer:sleep(500),?ADBG("Nodes: ~p",[nodes()]),
 									start(?STATE_NM_LOCAL,?STATE_TYPE,[{slave,length(nodes()) > 0},{startreason,startup}]) end);
@@ -620,10 +620,10 @@ cb_startstate(Name,Type) ->
 cb_idle(_S) ->
 	ok.
 
-cb_write_done(#st{name = ?STATE_NM_LOCAL} = S,Evnum) ->
+cb_write_done(#st{name = ?STATE_NM_LOCAL} = S,_Term,Evnum) ->
 	?ADBG("cb_write_done ~p",[S#st.name]),
 	{ok,check_timer(S#st{evnum = Evnum})};
-cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,Evnum) ->
+cb_write_done(#st{name = ?STATE_NM_GLOBAL} = S,_Term,Evnum) ->
 	?ADBG("cb_write_done ~p",[S#st.name]),
 	set_global_state(actordb_conf:node_name(), S#st.current_write),
 	NS = check_timer(S#st{current_write = [], evnum = Evnum, am_i_master = true}),
@@ -887,3 +887,5 @@ cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 
 cb_init_engine(S) ->
 	S.
+cb_spawnopts(_) ->
+	[].

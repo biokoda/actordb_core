@@ -37,7 +37,17 @@ init(Path,JournalMode,Thread) ->
 % 	actordb_driver:set_thread_fd(Thread,Fd,Pos,Type).
 
 wal_rewind(P,Evnum) when element(1,P#dp.db) == actordb_driver ->
-	actordb_driver:wal_rewind(P#dp.db,Evnum);
+	R = actordb_driver:wal_rewind(P#dp.db,Evnum),
+	case Evnum > 0 of
+		true ->
+			Sql = <<"SElECT * FROM __adb where id in (",(?EVNUM)/binary,",",(?EVTERM)/binary,");">>,
+			{ok,[{columns,_},{rows,Rows}]} = actordb_sqlite:exec(P#dp.db, Sql,read),
+			EvnumRes = butil:toint(butil:ds_val(?EVNUMI,Rows,0)),
+			EvTermRes = butil:toint(butil:ds_val(?EVTERMI,Rows,0)),
+			{ok,P#dp.cbstate,EvnumRes,EvTermRes};
+		false ->
+			R
+	end;
 wal_rewind(#dp{dbpath = queue} = P,Evnum) ->
 	actordb_queue:cb_wal_rewind(P#dp.cbstate,Evnum);
 wal_rewind(Db,Evnum) when element(1,Db) == actordb_driver ->

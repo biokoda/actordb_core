@@ -22,8 +22,9 @@ start_caller() ->
 start_caller(Username, Password) ->
 	start_caller(Username, Password, <<>>).
 start_caller(Username, Password, Salt1) ->
-	E = ets:new(callerets,[set,private,{heir,whereis(?MODULE),self()}]),
-	ets:update_counter(bpcounters,clients,1),
+	E = ets:new(callerets,[set,protected,{heir,whereis(?MODULE),self()}]),
+	% ets:update_counter(bpcons,clients,),
+	butil:ds_add({client,E},self(),bpcons),
 	Users = actordb_sharedstate:read_global_users(),
 	case Users of
 		nostate ->
@@ -35,13 +36,16 @@ start_caller(Username, Password, Salt1) ->
 	end.
 
 stop_caller(P) ->
+	stop_caller(P,self()).
+stop_caller(P,_Pid) ->
 	Tid = P#caller.ets,
+	butil:ds_rem({client,Tid},bpcons),
 	Size = butil:ds_val(cursize,Tid),
 	Count = butil:ds_val(curcount,Tid),
 	dec_callcount(Count),
 	dec_callsize(Size),
 	ets:delete(Tid),
-	ets:update_counter(bpcounters,clients,-1),
+	% ets:update_counter(bpcounters,clients,-1),
 	ok.
 
 handle_login(E)->
@@ -111,8 +115,9 @@ delval(undefined,_) ->
 %  more than 32MB of queries is waiting to be processed
 %  turn on bp.
 is_enabled() ->
-	L = ets:tab2list(bpcounters),
-	is_enabled(butil:ds_val(global_size,L),butil:ds_val(global_count,L)).
+	% L = ets:tab2list(bpcounters),
+	% is_enabled(butil:ds_val(global_size,L),butil:ds_val(global_count,L)).
+	is_enabled(actordb_driver:get_counter(?COUNTER_SQLSIZE),actordb_driver:get_counter(?COUNTER_REQSNOW)).
 is_enabled(GSize,GCount) ->
 	GSize > 1024*1024*32 orelse GCount > 2000.
 
@@ -144,7 +149,7 @@ sleep_caller(_P) ->
 
 backpressure_proc() ->
 	% low watermark 1MB, 300 calls
-	case ets:info(bpcounters,size) == undefined orelse call_size() > 1024*1024 orelse call_count() > 300 of
+	case ets:info(bpcons,size) == undefined orelse call_size() > 1024*1024 orelse call_count() > 300 of
 		true ->
 			timer:sleep(30),
 			backpressure_proc();
@@ -157,7 +162,7 @@ inc_callcount() ->
 	inc_callcount(1).
 % Global increment
 inc_callcount(N) when is_integer(N) ->
-	ets:update_counter(bpcounters,global_count,N);
+	actordb_driver:counter_inc(?COUNTER_REQSNOW,N);
 % Local increment
 inc_callcount(P) ->
 	ets:update_counter(P#caller.ets,curcount,1).
@@ -165,7 +170,7 @@ dec_callcount() ->
 	dec_callcount(1).
 % Global decrement
 dec_callcount(N) when is_integer(N) ->
-	ets:update_counter(bpcounters,global_count,-N);
+	actordb_driver:counter_inc(?COUNTER_REQSNOW,-N);
 % Local decrement
 dec_callcount(undefined) ->
 	ok;
@@ -173,22 +178,23 @@ dec_callcount(P) ->
 	ets:update_counter(P#caller.ets,curcount,-1).
 
 inc_callsize(N) ->
-	ets:update_counter(bpcounters,global_size,N).
+	actordb_driver:counter_inc(?COUNTER_SQLSIZE,N).
 inc_callsize(P,N) ->
 	ets:update_counter(P#caller.ets,cursize,N).
 dec_callsize(undefined) ->
 	ok;
 dec_callsize(N) ->
-	ets:update_counter(bpcounters,global_size,-N).
+	actordb_driver:counter_inc(?COUNTER_SQLSIZE,-N).
 dec_callsize(P,N) ->
 	ets:update_counter(P#caller.ets,cursize,-N).
 
 call_count() ->
-	butil:ds_val(global_count,bpcounters).
+	actordb_driver:get_counter(?COUNTER_REQSNOW).
 call_size() ->
-	butil:ds_val(global_size,bpcounters).
+	actordb_driver:get_counter(?COUNTER_SQLSIZE).
 nclients() ->
-	butil:ds_val(clients,bpcounters).
+	% butil:ds_val(clients,bpcounters).
+	ets:info(bpcons,size).
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -216,8 +222,8 @@ handle_call(stop, _, P) ->
 handle_cast(_, P) ->
 	{noreply, P}.
 
-handle_info({'ETS-TRANSFER',Tid,_FromPid,_HeirData},P) ->
-	case catch stop_caller(#caller{ets = Tid}) of
+handle_info({'ETS-TRANSFER',Tid,FromPid,_HeirData},P) ->
+	case catch stop_caller(#caller{ets = Tid},FromPid) of
 		ok ->
 			ok;
 		Err ->
@@ -237,12 +243,12 @@ code_change(_, P, _) ->
 	{ok, P}.
 init(_) ->
 	process_flag(trap_exit,true),
-	case ets:info(bpcounters,size) of
+	case ets:info(bpcons,size) of
 		undefined ->
-			ets:new(bpcounters, [{write_concurrency,true},named_table,public,set,{heir,whereis(actordb_sup),<<>>}]),
-			butil:ds_add(global_count,0,bpcounters),
-			butil:ds_add(global_size,0,bpcounters),
-			butil:ds_add(clients,0,bpcounters);
+			ets:new(bpcons, [{write_concurrency,true},named_table,public,set,{heir,whereis(actordb_sup),<<>>}]);
+			% butil:ds_add(global_count,0,bpcounters),
+			% butil:ds_add(global_size,0,bpcounters),
+			% butil:ds_add(clients,0,bpcounters);
 		_ ->
 			ok
 	end,

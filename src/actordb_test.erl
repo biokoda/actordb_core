@@ -1,7 +1,7 @@
 -module(actordb_test).
 -export([batch/0, idtest/0, ins/0, read_timebin/0, 
 	loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0,
-	debug_logging/0, info_logging/0]).
+	debug_logging/0, info_logging/0, counters/0]).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("actordb_sqlproc.hrl").
 -define(SOL_SOCKET, 16#ffff).
@@ -247,9 +247,10 @@ print_times([],_,_) ->
 
 % For quick benchmarks.
 loop(N) ->
-	L = [<<(random:uniform(1000000000)):32,1:32>> || _ <- lists:seq(1,1000)],
+	% L = [<<(rand:uniform(1000000000)):32,1:32>> || _ <- lists:seq(1,1000)],
+	Schs = erlang:system_info(schedulers_online),
 	S = os:timestamp(),
-	loop1(N,L),
+	loop1(N,Schs),
 	timer:now_diff(os:timestamp(),S).
 
 loop1(0,_) ->
@@ -257,8 +258,45 @@ loop1(0,_) ->
 loop1(N,L) ->
 	% actordb_util:varint_enc(1000),
 	% actordb:exec("actor type1("++integer_to_list(N)++"); select * from tab;"),
-	actordb:exec(<<"show schema;">>),
+	% actordb:exec(<<"show schema;">>),
+	% spawn_opt(fun() -> ok end,[{scheduler, ((N rem 1000) rem L) + 1}]),
+	% spawn(fun() -> ok end),
 	loop1(N-1,L).
+
+
+counters() ->
+	% folsom_metrics:new_counter(writes),
+	Pids = [element(1,spawn_monitor(fun() -> counter(0,0) end)) || _N <- lists:seq(1,1000)],
+	receive
+		{'DOWN',_Monitor,_,_PID,Reason} ->
+			exit(Reason)
+	after 20000 ->
+		ok
+	end,
+	[P ! stop || P <- Pids],
+	Ops = rec_counts(0),
+	io:format("ops=~p~n",[Ops]),
+	ok.
+rec_counts(Ops) ->
+	receive
+		{'DOWN',_Monitor,_,_PID,N} ->
+			rec_counts(Ops+N)
+		after 2000 ->
+			Ops
+	end.
+counter(N, V) ->
+	receive
+		stop ->
+			exit(N)
+	after 0 ->
+		% erlang:process_flag(scheduler,(N rem 8) + 1),
+		% actordb_driver:counter_inc(9,N),
+		% actordb_driver:get_counter(9),
+		% erlang:system_time(micro_seconds),
+		% {MS, S, MiS} = os:timestamp(),
+		% V + MS*1000000000000 + S*1000000 + MiS
+		counter(N+1, V)
+	end.
 
 
 % How fast can we insert data to queue.

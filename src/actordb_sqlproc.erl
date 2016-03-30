@@ -230,9 +230,11 @@ start_copylock(Fullname,_,_) ->
 % [{actor,Name},{type,Type},{mod,CallbackModule},{state,CallbackState},
 %  {inactivity_timeout,SecondsOrInfinity},{slave,true/false},{copyfrom,NodeName},{copyreset,{Mod,Func,Args}}]
 start(Opts) ->
-	?ADBG("Starting ~p slave=~p",[butil:ds_vals([actor,type],Opts),butil:ds_val(slave,Opts)]),
+	% ?ADBG("Starting ~p slave=~p",[butil:ds_vals([actor,type],Opts),butil:ds_val(slave,Opts)]),
+	Mod = butil:ds_val(mod,Opts),
+	Name = butil:ds_val(name,Opts),
 	Ref = make_ref(),
-	case gen_server:start(?MODULE, [{start_from,{self(),Ref}}|Opts], []) of
+	case gen_server:start(?MODULE, [{start_from,{self(),Ref}}|Opts], [apply(Mod,cb_spawnopts,[Name])]) of
 		{ok,Pid} ->
 			{ok,Pid};
 		{error,normal} ->
@@ -298,7 +300,7 @@ handle_call({dbcopy,Msg},CallFrom,P) -> %when element(1,Msg) /= reached_end ->
 				P#dp{activity = actordb_local:actor_activity(P#dp.activity)})
 	end;
 handle_call({state_rw,_} = Msg,From, #dp{wasync = #ai{wait = WRef}} = P) when is_reference(WRef) ->
-	?DBG("Queuing state call, waitingfor=~p",[WRef]),
+	?DBG("Queuing state call, waitingfor=~p, msg=~p",[WRef,Msg]),
 	{noreply,P#dp{statequeue = queue:in_r({From,Msg},P#dp.statequeue)}};
 handle_call({state_rw,What},From,P) ->
 	state_rw_call(What,From,P#dp{activity = actordb_local:actor_activity(P#dp.activity)});
@@ -507,7 +509,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 				master ->
 					% {noreply, actordb_sqlprocutil:start_verify(P,false)};
 					?DBG("Executing empty write"),
-					{noreply,write_call(#write{sql = []},undefined,P)};
+					write_call(#write{sql = []},undefined,P);
 				_ ->
 					{noreply,P}
 			end;
@@ -1226,7 +1228,7 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 				evterm = EvTerm, evnum = EvNum,schemavers = NewVers,movedtonode = Moved,
 				wasync = NewAsync}))};
 		{sql_error,{ErrPos,_,_ErrAtom,ErrStr},_} ->
-			actordb_sqlite:rollback(P#dp.db),
+			% actordb_sqlite:rollback(P#dp.db),
 			[batch,undefined|CF1] = From,
 			% Remove cf for last part (#s02, #s01)
 			CF = lists:reverse(tl(lists:reverse(CF1))),
@@ -1258,6 +1260,8 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 	end;
 handle_info(doqueue, P) ->
 	{noreply,actordb_sqlprocutil:doqueue(P)};
+handle_info(statequeue,P) ->
+	{noreply,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:statequeue(P))};
 handle_info({hibernate,A},P) ->
 	?DBG("hibernating"),
 	{noreply,P#dp{activity = A},hibernate};
@@ -1279,6 +1283,8 @@ handle_info({doelection,_LatencyBefore,_TimerFrom} = Msg,P) ->
 	election_timer(Msg,P);
 handle_info(doelection1,P) ->
 	election_timer(doelection1,P);
+handle_info(doelection2,P) ->
+	election_timer(doelection2,P);
 handle_info({forget,Nd},P) ->
 	?INF("Forgetting node ~p",[Nd]),
 	{noreply,P#dp{follower_indexes = lists:keydelete(Nd,#flw.node,P#dp.follower_indexes)}};
@@ -1458,10 +1464,12 @@ election_timer(doelection2,P) ->
 			actordb_sqlprocutil:empty_queue(P#dp.wasync,P#dp.rasync, P#dp.callqueue,{error,consensus_impossible_atm}),
 			A1 = A#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
+			R1 = (P#dp.rasync)#ai{callfrom = undefined, wait = undefined},
 			% Give up for now. Do not run elections untill we get a hint from outside.
 			% Hint will come from catchup or a client wanting to execute read/write.
 			actordb_catchup:report(P#dp.actorname,P#dp.actortype),
-			{noreply,P#dp{callqueue = queue:new(),election = undefined,wasync = A1}};
+			{noreply,P#dp{callqueue = queue:new(),election = undefined,
+				wasync = A1,rasync = R1}};
 		_ when Now - P#dp.without_master_since >= 3000+LatencyNow ->
 			actordb_catchup:report(P#dp.actorname,P#dp.actortype),
 			% Give up and wait for hint.
@@ -1479,10 +1487,12 @@ down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLA
 		[P#dp.cbmod,P#dp.actorname,P#dp.actortype,stop]}) end),
 	Me = self(),
 	spawn(fun() -> timer:sleep(10), stop(Me) end),
+	RR = (P#dp.rasync)#ai{callfrom = undefined, wait = undefined},
 	actordb_sqlprocutil:empty_queue(P#dp.wasync,P#dp.rasync, P#dp.callqueue,{error,nocreate}),
 	A1 = (P#dp.wasync)#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
-	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(), wasync = A1}};
+	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(), 
+		wasync = A1, rasync = RR}};
 down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 	actordb_local:actor_mors(master,actordb_conf:node_name()),
 	ReplType = apply(P1#dp.cbmod,cb_replicate_type,[P1#dp.cbstate]),
@@ -1685,7 +1695,12 @@ down_info(PID,_Ref,Reason,P) ->
 
 
 terminate(Reason, P) ->
-	?DBG("Terminating ~p",[Reason]),
+	case is_record(P,dp) of
+		true ->
+			?DBG("Terminating ~p",[Reason]);
+		false ->
+			?ADBG("Terminating ~p, ~p",[Reason,P])
+	end,
 	actordb_sqlite:stop(P),
 	distreg:unreg(self()),
 	ok.
@@ -1712,8 +1727,7 @@ init(#dp{} = P,_Why) ->
 init([_|_] = Opts) ->
 	% put(opt,Opts),
 	?ADBG("Start opts ~p",[Opts]),
-	% Random needs to be unique per-node, not per-actor.
-	random:seed(actordb_conf:cfgtime()),
+	rand:seed(exs64),
 	Now = actordb_local:elapsed_time(),
 	P1 = #dp{mors = master, callqueue = queue:new(),statequeue = queue:new(), without_master_since = Now},
 	case actordb_sqlprocutil:parse_opts(P1,Opts) of
