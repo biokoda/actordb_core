@@ -1366,7 +1366,7 @@ checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 	% This way checkpoint gets executed every 6 writes.
 	P#dp{last_checkpoint = P#dp.evnum};
 checkpoint(P) ->
-	?DBG("Not doing checkpoint ~p ~p",[P#dp.last_checkpoint, P#dp.evnum]),
+	% ?DBG("Not doing checkpoint ~p ~p",[P#dp.last_checkpoint, P#dp.evnum]),
 	P.
 
 inform_followers(P,Msg) ->
