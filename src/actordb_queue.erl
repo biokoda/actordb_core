@@ -178,8 +178,8 @@ cb_init_engine(S) ->
 % Storage engine callbacks
 % 
 cb_inject_page(#st{written_events = []} = S,Bin,_ReplHeader) ->
-	{ok,WE} = aqdrv:inject(S#st.db, Bin),
-	{ok,S#st{written_events = WE}};
+	ok = aqdrv:inject(S#st.db, Bin),
+	{ok,S#st{written_events = Bin}};
 cb_inject_page(S, Bin, <<Term:64/unsigned-big,Evnum:64/unsigned-big,0:32,1:32>>) ->
 	ok = aqdrv:index_events(S#st.db,S#st.written_events, S#st.indexname, Term, Evnum),
 	cb_inject_page(S#st{written_events = []}, Bin, <<>>).
