@@ -11,6 +11,6 @@
     actordb_catchup,actordb_backpressure,actordb_events, actordb_queue_srv,actordb_dummy,actordb_latency,
     actordb_idgen, actordb_tunnel]},
   {mod, {actordb_core, []}},
-  {applications, [kernel,stdlib,lager,folsom,sasl,os_mon,yamerl,thrift]},
+  {applications, [kernel,stdlib,lager,sasl,os_mon,yamerl,thrift]},
   {start_phases,[]}
  ]}.

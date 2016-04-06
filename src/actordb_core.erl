@@ -103,7 +103,6 @@ prestart() ->
 	application:ensure_all_started(sasl),
 	application:ensure_all_started(os_mon),
 	application:ensure_all_started(yamerl),
-	application:ensure_all_started(folsom),
 	application:ensure_all_started(thrift),
 	application:set_env(bkdcore,usesharedstate,false),
 	case catch actordb_conf:paths() of

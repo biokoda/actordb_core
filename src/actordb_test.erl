@@ -265,7 +265,6 @@ loop1(N,L) ->
 
 
 counters() ->
-	% folsom_metrics:new_counter(writes),
 	Pids = [element(1,spawn_monitor(fun() -> counter(0,0) end)) || _N <- lists:seq(1,1000)],
 	receive
 		{'DOWN',_Monitor,_,_PID,Reason} ->

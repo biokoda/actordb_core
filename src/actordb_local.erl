@@ -74,14 +74,11 @@ subscribe_stat() ->
 % 	gen_server:call(?MODULE,{subscribe_stat,self()}).
 report_read() ->
 	actordb_driver:counter_inc(?COUNTER_READS,1).
-	% (catch folsom_metrics_counter:inc(reads, 1)).
 
 report_write() ->
-	% (catch folsom_metrics_counter:inc(writes, 1)).
 	actordb_driver:counter_inc(?COUNTER_WRITES,1).
 
 get_nreads() ->
-	% case catch folsom_metrics_counter:get_value(reads) of
 	case actordb_driver:get_counter(?COUNTER_READS) of
 		N when is_integer(N) ->
 			N;
@@ -89,7 +86,6 @@ get_nreads() ->
 			0
 	end.
 get_nwrites() ->
-	% case catch folsom_metrics_counter:get_value(writes) of
 	case actordb_driver:get_counter(?COUNTER_WRITES) of
 		N when is_integer(N) ->
 			N;
@@ -412,9 +408,6 @@ init(_) ->
 	end,
 	CurActiv = ets:new(?CUR_ACTIVE, [public,set,{write_concurrency,true},{heir,whereis(actordb_sup),<<>>}]),
 	butil:ds_add(?CUR_ACTIVE,CurActiv,?GLOBAL_INFO),
-
-	% folsom_metrics:new_counter(reads),
-	% folsom_metrics:new_counter(writes),
 
 	butil:ds_add(#actor{pid = 0},actorsalive),
 	case butil:get_os() of
