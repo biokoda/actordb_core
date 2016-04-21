@@ -445,7 +445,7 @@ commit_call(Doit,Id,From,P) ->
 						transactionid = undefined, transactioninfo = undefined,
 						transactioncheckref = undefined})};
 				false when P#dp.follower_indexes == [] ->
-					ok = actordb_sqlite:rollback(P#dp.db),
+					actordb_sqlite:rollback(P#dp.db),
 					{reply,ok,actordb_sqlprocutil:doqueue(P#dp{transactionid = undefined,
 						transactioninfo = undefined,transactioncheckref = undefined})};
 				false ->
@@ -1086,7 +1086,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 						activity = actordb_local:actor_activity(P#dp.activity),
 						callfrom = From, callres = Res})};
 				_Err ->
-					ok = actordb_sqlite:rollback(P#dp.db),
+					actordb_sqlite:rollback(P#dp.db),
 					erlang:demonitor(CheckRef),
 					?DBG("Transaction not ok ~p",[_Err]),
 					{reply,Res,P#dp{transactionid = undefined, 
