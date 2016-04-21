@@ -27,9 +27,11 @@
 % Event Header:
 % <<0x184D2A50,Size:32/unsigned-little, 1, QActorNameSize, QActorName/binary, 
 %   NEvents:32, MapAndDataSize:32, term:64, evnum:64, time:64>>
-% Event table is compressed (lz4 format). Single event in the table is:
+% Event table item:
 % <<EntireLen, SizeName, Name:SizeName/binary, DataType, Size:32/unsigned,UncompressedOffset:32/unsigned>>
-% Event data section is <<Item1:SizeInTable/binary, Item2:SizeInTable:/binary>>.
+% Event data section:
+% <<Item1:SizeInTable/binary, Item2:SizeInTable:/binary>>.
+% Event table is an uncompressed lz4 frame, event data section may or may not be compressed.
 
 % Term store:
 % <<0x184D2A51, Size:32/unsigned-little, 2, QActorNameSize, QActorName/binary,

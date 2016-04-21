@@ -10,7 +10,7 @@
 -export([local_shards_changed/2,shard_moved/3,shard_has_split/3]).
 -include_lib("actordb_core/include/actordb.hrl").
 -include_lib("kernel/include/file.hrl").
-% -compile(export_all).
+-compile(export_all).
 
 start() ->
 	gen_server:start_link({local,?MODULE},?MODULE, [], []).
@@ -39,6 +39,7 @@ reload() ->
 	% [{From,Type,Nd}]
 	movingdone = [],
 	local_shards = [],
+	check_steal = true,
 	badstop = false}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
@@ -179,7 +180,7 @@ handle_info(check_steal,P) ->
 		_ when P#dp.localshards == undefined ->
 			erlang:send_after(1000,self(),check_steal),
 			{noreply,P};
-		_ when length(P#dp.localshards) < ?NUM_SHARDS ->
+		_ when P#dp.check_steal == true ->
 			erlang:send_after(1000,self(),check_steal),
 			{noreply,pick_shards(P)};
 		_ ->
@@ -223,6 +224,8 @@ start_shards(P) ->
 	],
 	P.
 
+node_shardsize(Local) ->
+	lists:foldl(fun({From,To,_},Sum) -> Sum+(To-From) end, 0, Local).
 
 % Called on node without enough shards. Will start stealing shards from other nodes if it can find any.
 pick_shards(P) ->
@@ -232,26 +235,32 @@ pick_shards(P) ->
 	end,P#dp.movingdone,P#dp.localshards),
 	?ADBG("pick_shards done=~p, loc=~p, all=~p",[MD,P#dp.localshards,P#dp.allshards]),
 	pick_shards(P#dp{movingdone = MD},P#dp.allshards,P#dp.localshards).
-pick_shards(P,All,Local) ->
-	case ok of
-		_ when P#dp.shardstoget == [], P#dp.movingdone == [], length(Local) < ?NUM_SHARDS ->
-			?ADBG("Started move shards ~p",[bkdcore:node_name()]),
-			case get_toget() of
-				[_|_] = TGFinal ->
-					ok;
-				_ ->
-					TG = split_shards(All),
-					?AINF("shardstoget candidates ~p",[TG]),
-					TGFinal = try_start_steal(TG)
-			end,
+pick_shards(P,[],_) ->
+	P;
+pick_shards(#dp{shardstoget = [], movingdone = []} = P,All,Local) ->
+	?ADBG("Check move shards ~p",[bkdcore:node_name()]),
+	MySum = node_shardsize(Local),
+	case get_toget() of
+		[_|_] = TGFinal ->
 			start_shards(P#dp{shardstoget = TGFinal});
-		_ when P#dp.shardstoget /= [] ->
-			start_shards(P);
 		_ ->
-			P
-	end.
+			TG = split_shards(All),
+			[{_Nd,NdSize,[{FirstFrom,FirstTo,_}|_]}|_] = TG,
+			case NdSize >= MySum+((FirstTo-FirstFrom) div 2) of
+				true ->
+					?AINF("shardstoget candidates ~p",[TG]),
+					TGFinal = try_start_steal(TG),
+					start_shards(P#dp{shardstoget = TGFinal});
+				false ->
+					P#dp{check_steal = false}
+			end
+	end;
+pick_shards(P,_,_) when P#dp.shardstoget /= [] ->
+	start_shards(P);
+pick_shards(P,_,_) ->
+	P.
 
-try_start_steal([{From,To,Nd}|T]) ->
+try_start_steal([{Nd, _Size, [{From,To,Nd}|_]}|T]) ->
 	SplitPoint = actordb_util:split_point(From,To),
 	case bkdcore:rpc(Nd,actordb_shardmngr,steal_shard,[bkdcore:node_name(),From,Nd]) of
 		ok ->
@@ -268,21 +277,23 @@ try_start_steal([]) ->
 split_shards(L) ->
 	Me = bkdcore:node_name(),
 	Grouped = butil:keygroup(3,[{F,T,Nd} || {F,T,Nd} <- L, Nd /= Me]),
+	% List of nodes with only their largest shards listed.
 	Grouped1 = 
 		[{
 			Node,
 			lists:sum([To - From || {From,To,_} <- NodeShards]),
 			filter_largest(fun filter_shards/2,NodeShards,0,[])
 		} || {Node,NodeShards} <- Grouped],
-	Grouped2 = filter_largest(fun filter_nodes/2,Grouped1,0,[]),
-	extract_shards(Grouped2,5).
+	% List only nodes with the largest shard space.
+	filter_largest(fun filter_nodes/2,Grouped1,0,[]).
+	% extract_shards(Grouped2,5).
 
-extract_shards([],_) ->
-	[];
-extract_shards(_,0) ->
-	[];
-extract_shards([{_Node,_Size,Shards}|T],N) ->
-	[hd(Shards)|extract_shards(T,N-1)].
+% extract_shards([],_) ->
+% 	[];
+% % extract_shards(_,0) ->
+% % 	[];
+% extract_shards([{_Node,_Size,Shards}|T],N) ->
+% 	[hd(Shards)|extract_shards(T,N-1)].
 
 
 filter_nodes({_Node,Size,_},Max) ->

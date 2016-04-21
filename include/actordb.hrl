@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -compile([{parse_transform, lager_transform}]).
--define(NUM_SHARDS,4).
+-define(NUM_SHARDS,12).
 -define(PAGESIZE,4096).
 -define(DEF_CACHE_PAGES,10).
 % -define(NAMESPACE_MAX,134217728).

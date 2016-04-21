@@ -455,13 +455,9 @@ commit_call(Doit,Id,From,P) ->
 					%  Thus this EvNum section of WAL contains pages from failed transaction and
 					%  cleanup of transaction from __transactions.
 					{Tid,Updaterid,_} = P#dp.transactionid,
-					% case Sql of
-					% 	<<"delete">> ->
-					% 		ok;
-					% 	_ ->
-							% actordb_sqlite:exec(P#dp.db,<<"ROLLBACK;">>,P#dp.evterm,P#dp.evnum,<<>>)
-							ok = actordb_sqlite:rollback(P#dp.db),
-					% end,
+					% Do not match on ok. It might fail if this is the actual node on which transaction
+					% failed. It makes no difference if we are redundantly calling rollback again.
+					actordb_sqlite:rollback(P#dp.db),
 					NewSql = <<"DELETE FROM __transactions WHERE tid=",(butil:tobin(Tid))/binary," AND updater=",
 									(butil:tobin(Updaterid))/binary,";">>,
 					write_call(#write{sql = NewSql},From,P#dp{callfrom = undefined,
