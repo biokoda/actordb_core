@@ -398,7 +398,13 @@ move_over_shard_actors(Nd,#{actor := {$*,Where},type := Type, flags := _Flags, s
 				{ok,L} ->
 					move_over_shard_actors(Nd, H, Shard, L, 0, CountAll, P, Varlist, Next);
 				{ok,[],NextShard,NextShardNode} ->
-					move_over_shard_actors(NextShardNode, H, NextShard,[], 0, 0, P, Varlist, undefined);
+					case get({shard_visited,NextShard}) of
+						undefined ->
+							put({shard_visited,NextShard},true),
+							move_over_shard_actors(NextShardNode, H, NextShard,[], 0, 0, P, Varlist, undefined);
+						_ ->
+							H
+					end;
 				{ok,L,NextShard1,NextShardNode1} ->
 					move_over_shard_actors(Nd, H, Shard, L, 0, CountAll, P, Varlist,{NextShard1, NextShardNode1})
 			end;

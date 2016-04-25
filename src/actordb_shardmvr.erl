@@ -197,7 +197,7 @@ terminate(_, _) ->
 code_change(_, P, _) ->
 	{ok, P}.
 init([]) ->
-	erlang:send_after(10000,self(),check_steal),
+	erlang:send_after(2000,self(),check_steal),
 	erlang:send_after(400,self(),can_start),
 	actordb_sharedstate:subscribe_changes(?MODULE),
 	{ok,#dp{}}.
@@ -238,21 +238,24 @@ pick_shards(P) ->
 pick_shards(P,[],_) ->
 	P;
 pick_shards(#dp{shardstoget = [], movingdone = []} = P,All,Local) ->
-	?ADBG("Check move shards ~p",[bkdcore:node_name()]),
+	?ADBG("Check move shards ~p, all=~p",[bkdcore:node_name(), All]),
 	MySum = node_shardsize(Local),
 	case get_toget() of
 		[_|_] = TGFinal ->
 			start_shards(P#dp{shardstoget = TGFinal});
 		_ ->
-			TG = split_shards(All),
-			[{_Nd,NdSize,[{FirstFrom,FirstTo,_}|_]}|_] = TG,
-			case NdSize >= MySum+((FirstTo-FirstFrom) div 2) of
-				true ->
-					?AINF("shardstoget candidates ~p",[TG]),
-					TGFinal = try_start_steal(TG),
-					start_shards(P#dp{shardstoget = TGFinal});
-				false ->
-					P#dp{check_steal = false}
+			case split_shards(All) of
+				[] ->
+					P#dp{check_steal = false};
+				[{_Nd,NdSize,[{FirstFrom,FirstTo,_}|_]}|_] = TG ->
+					case NdSize >= MySum+((FirstTo-FirstFrom) div 2) of
+						true ->
+							?AINF("shardstoget candidates ~p",[TG]),
+							TGFinal = try_start_steal(TG),
+							start_shards(P#dp{shardstoget = TGFinal});
+						false ->
+							P#dp{check_steal = false}
+					end
 			end
 	end;
 pick_shards(P,_,_) when P#dp.shardstoget /= [] ->

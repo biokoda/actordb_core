@@ -468,6 +468,8 @@ commit_call(Doit,Id,From,P) ->
 			{reply,ok,P}
 	end.
 
+state_rw_call(_,_,P) when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->
+	{reply, ok, P};
 state_rw_call(donothing,_From,P) ->
 	{reply,ok,P};
 state_rw_call(recovered,_From,P) ->
@@ -739,7 +741,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 			end,
 			?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election]),
-			{noreply,NP#dp{election = actordb_sqlprocutil:election_timer(Now,P#dp.election)}}
+			{noreply,actordb_sqlprocutil:doqueue(NP#dp{election = actordb_sqlprocutil:election_timer(Now,P#dp.election)})}
 	end;
 state_rw_call({delete,deleted},From,P) ->
 	ok = actordb_sqlite:wal_rewind(P,0),

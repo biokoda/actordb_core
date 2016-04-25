@@ -192,7 +192,7 @@ client() ->
 	ok = actordb_client:test("myuser","mypass"),
 	Param = [[butil:flatnow(),"asdf",3],[butil:flatnow(),"asdf1",4]],
 	{ok,{changes,_,_}} = actordb_client:exec_single_param("ax","type1","insert into tab values (?1,?2,?3);",[create],Param),
-	 {ok,{changes,_,_}} = actordb_client:exec_single_param("ax","type2","insert into asdf (txt) values (?1);",[create],[[{blob,<<1,2,3>>}]]),
+	{ok,{changes,_,_}} = actordb_client:exec_single_param("ax","type2","insert into asdf (txt) values (?1);",[create],[[{blob,<<1,2,3>>}]]),
 	{ok,{false,[Doc|_]}} = actordb_client:exec_single("ax","type2","select * from asdf;",[]),
 	#{id := _, txt := <<1,2,3>>} = Doc,
 	{ok,{false,[#{exists := <<"true">>}]}} = actordb_client:exec_single_param("ax","type2","pragma exists;",[],[]).
