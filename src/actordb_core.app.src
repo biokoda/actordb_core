@@ -4,13 +4,13 @@
 
 {application, actordb_core,
  [{description, "actordb distributed sql database"},
-  {vsn, "0.10.20"},
+  {vsn, "0.10.21"},
   {modules, [
             ]},
   {registered, [actordb_sup,actordb_shardmngr,actordb_shardmvr,actordb_local,
     actordb_catchup,actordb_backpressure,actordb_events, actordb_queue_srv,actordb_dummy,actordb_latency,
     actordb_idgen, actordb_tunnel]},
   {mod, {actordb_core, []}},
-  {applications, [kernel,stdlib,lager,sasl,os_mon,yamerl,thrift]},
+  {applications, [kernel,stdlib,lager,sasl,os_mon,yamerl,thrift,crypto]},
   {start_phases,[]}
  ]}.
