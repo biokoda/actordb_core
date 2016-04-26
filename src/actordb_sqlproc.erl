@@ -468,8 +468,6 @@ commit_call(Doit,Id,From,P) ->
 			{reply,ok,P}
 	end.
 
-state_rw_call(_,_,P) when (P#dp.flags band ?FLAG_STARTLOCK) > 0 ->
-	{reply, ok, P};
 state_rw_call(donothing,_From,P) ->
 	{reply,ok,P};
 state_rw_call(recovered,_From,P) ->

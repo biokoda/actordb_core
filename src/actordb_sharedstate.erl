@@ -597,7 +597,13 @@ cb_path(_,_Name,_Type) ->
 % Start or get pid of slave process for actor (executed on slave nodes in cluster)
 cb_slave_pid(Name,Type) ->
 	cb_slave_pid(Name,Type,[]).
-cb_slave_pid(Name,Type,Opts) ->
+cb_slave_pid(?STATE_NM_GLOBAL,?STATE_TYPE,Opts) ->
+	actordb_sharedstate:start_wait(?STATE_NM_GLOBAL,?STATE_TYPE);
+cb_slave_pid(Name,?STATE_TYPE,Opts) ->
+	start_slave(Name,Opts).
+
+start_slave(Name,Opts) ->
+	Type = ?STATE_TYPE,
 	Actor = {Name,Type},
 	case distreg:whereis(Actor) of
 		undefined ->
@@ -607,6 +613,11 @@ cb_slave_pid(Name,Type,Opts) ->
 		Pid ->
 			{ok,Pid}
 	end.
+
+% have_state() ->
+% 	StPth = actordb_sharedstate:cb_path(1,2,3)++butil:tolist(?STATE_NM_GLOBAL)++"."++butil:tolist(?STATE_TYPE),
+% 	{ok,_Db,SchemaTables,_PageSize} = actordb_sqlite:init(StPth,wal),
+% 	exit(SchemaTables /= []).
 
 cb_candie(_,_,_,_) ->
 	never.
