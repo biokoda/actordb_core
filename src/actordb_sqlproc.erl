@@ -589,7 +589,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			{reply,ok,P#dp{verified = true, inrecovery = AEType == recover, recovery_age = Age}}
 	end;
 % Executed on follower.
-% Appends pages, a single write is split into multiple calls. 
+% Appends pages, a single write is split into multiple calls.
 % Header tells you if this is last call. If we reached header, this means we must have received
 % all preceding calls as well.
 state_rw_call({appendentries_wal,Header,Body,AEType,CallCount},From,P) ->
@@ -875,7 +875,7 @@ read_call1(SafeRead,Sql,Recs,From,P) ->
 			W = P#dp.wasync,
 			NRB = A#ai{wait = ResTuples, callfrom = From, buffer = [], buffer_cf = [], buffer_recs = []},
 			% If we have some writes to do, execute them and once writes are replicated, send read response
-			% If not, use send_empty_ae. 
+			% If not, use send_empty_ae.
 			% Either way we must end up in reply_maybe.
 			case W#ai.buffer of
 				[] ->
@@ -1089,7 +1089,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 					actordb_sqlite:rollback(P#dp.db),
 					erlang:demonitor(CheckRef),
 					?DBG("Transaction not ok ~p",[_Err]),
-					{reply,Res,P#dp{transactionid = undefined, 
+					{reply,Res,P#dp{transactionid = undefined,
 						last_write_at = actordb_local:elapsed_time(),
 						activity = actordb_local:actor_activity(P#dp.activity),
 						evterm = P#dp.current_term}}
@@ -1121,7 +1121,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 				P#dp.db,ComplSql,Records,P#dp.current_term,EvNum,VarHeader)),
 			{noreply,ae_timer(P#dp{callfrom = From,callres = undefined, evterm = P#dp.current_term,evnum = EvNum,
 				last_write_at = actordb_local:elapsed_time(),
-				transactioninfo = {Sql,EvNum+1,NewVers}, 
+				transactioninfo = {Sql,EvNum+1,NewVers},
 				transactioncheckref = CheckRef,force_sync = ForceSync,
 				transactionid = TransactionId})}
 	end.
@@ -1402,7 +1402,7 @@ election_timer(doelection1,P) ->
 							ok
 					end,
 					% Step down as leader.
-					election_timer(doelection2,P#dp{callfrom = undefined, callres = undefined, 
+					election_timer(doelection2,P#dp{callfrom = undefined, callres = undefined,
 						masternode = undefined,masternodedist = undefined,
 						rasync = RR#ai{callfrom = undefined, wait = undefined},
 						verified = false, mors = slave, without_master_since = CallTime});
@@ -1441,7 +1441,7 @@ election_timer(doelection2,P) ->
 					% We had leader, but he is gone
 					?DBG("Leader is gone, leader=~p, election=~p, empty=~p, me=~p",
 						[P#dp.masternode,P#dp.election,Empty,actordb_conf:node_name()]),
-					NP = P#dp{election = undefined,without_master_since = Now, 
+					NP = P#dp{election = undefined,without_master_since = Now,
 						masternode = undefined, masternodedist = undefined},
 					{noreply,actordb_sqlprocutil:start_verify(NP,false)}
 			end;
@@ -1452,7 +1452,7 @@ election_timer(doelection2,P) ->
 			NP = P#dp{election = undefined,without_master_since = Now},
 			{noreply,actordb_sqlprocutil:start_verify(NP,false)};
 		_ when P#dp.election == undefined ->
-			% If election undefined this should be a hint from outside. 
+			% If election undefined this should be a hint from outside.
 			{noreply,actordb_sqlprocutil:start_verify(P,false)};
 		_ when Now - P#dp.without_master_since >= 3000+LatencyNow, Empty == false ->
 			?ERR("Unable to establish leader, responding with error"),
@@ -1475,7 +1475,7 @@ election_timer(doelection2,P) ->
 			{noreply,actordb_sqlprocutil:start_verify(P#dp{election = undefined},false)}
 	end.
 
-down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0 andalso 
+down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLAG_CREATE) == 0 andalso
 		(P#dp.schemavers == undefined orelse P#dp.movedtonode == deleted) ->
 	?DBG("Stopping with nocreate",[]),
 	Nodes = actordb_sqlprocutil:follower_nodes(P#dp.follower_indexes),
@@ -1487,7 +1487,7 @@ down_info(PID,_,{leader,_,_},#dp{election = PID} = P) when (P#dp.flags band ?FLA
 	actordb_sqlprocutil:empty_queue(P#dp.wasync,P#dp.rasync, P#dp.callqueue,{error,nocreate}),
 	A1 = (P#dp.wasync)#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
-	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(), 
+	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(),
 		wasync = A1, rasync = RR}};
 down_info(PID,_Ref,{leader,NewFollowers,AllSynced},#dp{election = PID} = P1) ->
 	actordb_local:actor_mors(master,actordb_conf:node_name()),
@@ -1583,7 +1583,7 @@ down_info(PID,_Ref,Reason,#dp{election = PID} = P) ->
 			Now = actordb_local:elapsed_time(),
 			{noreply,actordb_sqlprocutil:reopen_db(P#dp{
 				election = actordb_sqlprocutil:election_timer(Now,undefined),
-				masternode = undefined, masternodedist = undefined, mors = slave, 
+				masternode = undefined, masternodedist = undefined, mors = slave,
 				without_master_since = Now})};
 		follower ->
 			?DBG("Continue as follower"),
@@ -1825,4 +1825,3 @@ reply(A,B) ->
 % 	[gen_server:reply(F,Msg) || F <- From];
 % reply(From,Msg) ->
 % 	gen_server:reply(From,Msg).
-

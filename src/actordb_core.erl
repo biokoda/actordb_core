@@ -202,7 +202,7 @@ prestart1(Files) ->
 		_ when SchOnline > 8 ->
 			% Limit number of erlang schedulers to leave space for engine threads
 			erlang:system_flag(schedulers_online,6),
-			Paths = length(actordb_conf:paths()),
+			Paths = length(Extra)+1,
 			WThreads = 2,
 			% For every write thread, max 4 read threads, if enough CPU cores avail
 			case min(round(abs(Sch-Paths-6) / Paths), 3) of
