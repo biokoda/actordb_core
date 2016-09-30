@@ -54,6 +54,8 @@ parse_statements(Bin) ->
 	parse_statements(undefined,Bin).
 parse_statements(BP,Bin) ->
 	parse_statements(BP,Bin,undefined).
+parse_statements(BP,Bin,{Type,$*,Flags}) ->
+	parse_statements(BP,Bin,{Type,{$*,<<>>},Flags});
 parse_statements(BP,Bin,Actors) ->
 	L = split_statements(#{},rem_spaces(Bin)),
 	parse_statements(BP,L,[],[],Actors,[],false,false).
