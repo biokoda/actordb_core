@@ -469,10 +469,19 @@ timer(#tmr{rqs = [A,B,C,D,E,F,G,H,I,J,_|_]} = P) ->
 	[actordb_latency:set_run_queue(Mx) || Mx /= P#tmr.mx],
 	timer(#tmr{rqs = [A,B,C,D,E,F,G,H,I,J], mx = Mx});
 timer(P) ->
+	Start = os:timestamp(),
 	receive
 	after 100 ->
+		Stop = os:timestamp(),
+		case timer:now_diff(Stop,Start) > 120000 of
+			true ->
+				?AERR("Scheduler delay ~pms",[timer:now_diff(Stop,Start) div 1000]);
+			_ ->
+				ok
+		end,
 		actordb_driver:counter_inc(?COUNTER_TIME,100),
-		?MODULE:timer(P#tmr{rqs = [statistics(run_queue)|P#tmr.rqs]})
+		RQ = statistics(run_queue),
+		?MODULE:timer(P#tmr{rqs = [RQ|P#tmr.rqs]})
 	end.
 
 create_mupdaters(0,L) ->

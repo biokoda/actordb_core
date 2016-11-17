@@ -9,9 +9,19 @@
 code_change/3,print_info/0]).
 % -compile(export_all).
 % -export([cb_schema/3,cb_path/3,cb_call/3,cb_cast/2,cb_info/2,cb_init/2]).
--export([multiread/1,exec/1,exec/2,get_schema/1,transaction_state/2]).
+-export([multiread/1,exec/1,exec/2,get_schema/1,transaction_state/2,overruled/2]).
 -include_lib("actordb_core/include/actordb.hrl").
 -include_lib("kernel/include/file.hrl").
+
+overruled(Name,Id) ->
+	case distreg:whereis({multiupdate,Name}) of
+		undefined ->
+			start(Name),
+			erlang:yield(),
+			transaction_state(Name,Id);
+		Pid ->
+			gen_server:call(Pid,{overruled,Id})
+	end.
 
 exec(S) ->
 	exec(actordb_local:pick_mupdate(),S).
@@ -22,7 +32,7 @@ exec(Name,S) when is_integer(Name) ->
 			erlang:yield(),
 			exec(Name,S);
 		Pid ->
-			gen_server:call(Pid,{exec,S})
+			gen_server:call(Pid,{exec,S},infinity)
 	end.
 
 start(Name) ->
@@ -61,7 +71,7 @@ print_info() ->
 
 % If node goes down, this updater may be started on another node in cluster.
 % The only operation it will alow is checking transaction state and abandoning any transactions that are incomplete.
--record(dp,{name, currow, confirming, callqueue, curfrom, execproc, curnum = 0,local = true}).
+-record(dp,{name, currow, confirming, callqueue, curfrom, curmsg, execproc, curnum = 0,local = true}).
 -define(R2P(Record), butil:rec2prop(Record, record_info(fields, dp))).
 -define(P2R(Prop), butil:prop2rec(Prop, dp, #dp{}, record_info(fields, dp))).
 
@@ -78,7 +88,16 @@ handle_call({transaction_state,Id},_From,P) ->
 		Err ->
 			{reply,Err,P}
 	end;
-handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
+handle_call({overruled,Id},_From,P) ->
+	case handle_call({transaction_state,Id},undefined,P) of
+		{reply,{ok,0},_} ->
+			true = P#dp.curnum == butil:toint(Id),
+			P#dp.execproc ! overruled;
+		_ ->
+			ok
+	end,
+	{reply, ok, P};
+handle_call({exec,S} = Msg,From,#dp{execproc = undefined, local = true} = P) ->
 	actordb_local:mupdate_busy(P#dp.name,true),
 	case actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => <<"#d07;">>}) of
 	%case actordb_actor:write(sqlname(P),#{flags => [create], statements => <<"#d07;">>}) of
@@ -107,18 +126,23 @@ handle_call({exec,S},From,#dp{execproc = undefined, local = true} = P) ->
 				?ADBG("T Cast: ~p",[TC]),
 				exit({ok,{changes,0,get(nchanges)}});
 			Err ->
-				?AERR("Multiupdate failed ~p",[Err]),
+				?AERR("Multiupdate ~p.'__mupdate__' failed=~p",[P#dp.name, Err]),
 				[actordb:rpcast(NodeName,{actordb_sqlprocutil,transaction_done,[Num,P#dp.name,abandoned]}) || {{node,NodeName},_} <- get()],
 				% commited = -1 means transaction has been abandoned.
 				% Only update if commited=0. This is a safety measure in case node went offline in the meantime and
 				%  other nodes in cluster changed db to failed transaction.
 				% Once commited is set to 1 or -1 it is final.
 				ok = actordb_sqlite:okornot(actordb_actor:write(#{ actor => sqlname(P), flags => [create], statements => abandon_sql(Num)})),
-				exit({error,abandoned})
+				case Err of
+					overruled ->
+						exit({error,overruled});
+					_ ->
+						exit({error,abandoned})
+				end
 		end
 	end),
-	{noreply,P#dp{execproc = Pid, curnum = Num, curfrom = From}};
-handle_call({exec,_,_} = Msg,From,P) ->
+	{noreply,P#dp{execproc = Pid, curnum = Num, curfrom = From, curmsg = Msg}};
+handle_call({exec,_} = Msg,From,P) ->
 	case P#dp.local of
 		false ->
 			{reply, notlocal,P};
@@ -134,6 +158,13 @@ handle_call(stop, _, P) ->
 handle_cast(_, P) ->
 	{noreply, P}.
 
+handle_info({'DOWN',_Monitor,_Ref,PID,{error,overruled}}, #dp{execproc = PID} = P) ->
+	case handle_call(P#dp.curmsg,P#dp.curfrom,P#dp{curfrom = undefined, execproc = undefined, curmsg = undefined}) of
+		{reply,ok,NP1} ->
+			{noreply,NP1};
+		{noreply,NP1} ->
+			{noreply,NP1}
+	end;
 handle_info({'DOWN',_Monitor,_Ref,PID,Result}, #dp{execproc = PID} = P) ->
 	?ADBG("Multiupdate proc dead ~p, waiting list ~p",[Result,not queue:is_empty(P#dp.callqueue)]),
 	actordb_local:mupdate_busy(P#dp.name,false),
@@ -145,16 +176,19 @@ handle_info({'DOWN',_Monitor,_Ref,PID,Result}, #dp{execproc = PID} = P) ->
 			ok;
 		{error,abandoned} ->
 			ok;
+		overruled ->
+			ok;
 		_ ->
-			ok = actordb_sqlite:okornot(actordb_actor:write(#{actor => sqlname(P), flags => [create], statements => abandon_sql(P#dp.curnum)}))
+			ok = actordb_sqlite:okornot(actordb_actor:write(
+				#{actor => sqlname(P), flags => [create], statements => abandon_sql(P#dp.curnum)}))
 	end,
 	case queue:is_empty(P#dp.callqueue) of
 		true ->
-			{noreply,P#dp{curfrom = undefined, execproc = undefined}};
+			{noreply,P#dp{curfrom = undefined, execproc = undefined, curmsg = undefined}};
 		false ->
 			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
 			{From,Msg} = Call,
-			case handle_call(Msg,From,P#dp{curfrom = undefined, callqueue = CQ, execproc = undefined}) of
+			case handle_call(Msg,From,P#dp{curfrom = undefined, callqueue = CQ, execproc = undefined, curmsg = undefined}) of
 				{reply,ok,NP1} ->
 					{noreply,NP1};
 				{noreply,NP1} ->
@@ -519,18 +553,31 @@ do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := Is
 				_ ->
 					Statements = {{P#dp.currow,P#dp.name,bkdcore:node_name()}, Statements1}
 			end,
-			?ADBG("do_actor write ~p ~p",[Actor,Statements]),
+			?ADBG("do_actor ~p.'__mupdate__' write to=~p statements=~p",[P#dp.name,Actor,Statements]),
 			case P#dp.confirming of
 				undefined ->
-					Res = actordb:direct_call(Call#{statements => Statements});
+					{ExecPid,_} = spawn_monitor(fun() -> exit(actordb:direct_call(Call#{statements => Statements})) end);
 				true ->
-					Res = actordb:direct_call(Call#{statements => {{P#dp.currow,P#dp.name,bkdcore:node_name()},commit}});
+					{ExecPid,_} = spawn_monitor(fun() -> 
+						Call1 = Call#{statements => {{P#dp.currow,P#dp.name,bkdcore:node_name()},commit}},
+						exit(actordb:direct_call(Call1)) end);
 				false ->
-					Res = actordb:direct_call(Call#{statements => {{P#dp.currow,P#dp.name,bkdcore:node_name()},abort}})
+					{ExecPid,_} = spawn_monitor(fun() ->
+						Call1 = Call#{statements => {{P#dp.currow,P#dp.name,bkdcore:node_name()},abort}},
+						exit(actordb:direct_call(Call1)) end)
 			end;
 		_ ->
 			?ADBG("do_actor read ~p ~p",[Actor,Statements1]),
-			Res = actordb:direct_call(Call#{ statements => Statements1 })
+			{ExecPid,_} = spawn_monitor(fun() -> 
+				Call1 = Call#{ statements => Statements1 },
+				exit(actordb:direct_call(Call1)) end)
+	end,
+	receive
+		overruled ->
+			Res = undefined,
+			throw(overruled);
+		{'DOWN',_Monitor,_Ref,Pid,Res} when Pid == ExecPid ->
+			ok
 	end,
 	?ADBG("do_actor varlist ~p",[Varlist]),
 	case Res of
@@ -542,9 +589,9 @@ do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := Is
 	% ?ADBG("Res=~p",[Res1]),
 	case Res1 of
 		{sql_error,Str} ->
-			exit({sql_error,Str});
+			throw({sql_error,Str});
 		{sql_error,Str,SqlRes} ->
-			exit({sql_error,Str,SqlRes});
+			throw({sql_error,Str,SqlRes});
 		{ok,[{columns,_},{rows,_}] = L} ->
 			% ?AINF("Res store vars =~p",[{IsMulti,Actor,Varlist,[L]}]),
 			store_vars(IsMulti,Actor,Varlist,[L]);
@@ -560,7 +607,7 @@ do_actor(P,IsMulti,#{type := Type, flags := Flags, actor := Actor, iswrite := Is
 		{error,nocreate} ->
 			ok;
 		_ ->
-			exit(Res)
+			throw(Res)
 	end,
 	?ADBG("do_actor res ~p",[Res]),
 	ok.

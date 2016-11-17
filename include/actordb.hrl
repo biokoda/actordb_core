@@ -23,12 +23,16 @@
 -define(COUNTER_TIME,4).
 
 
+% -define(ADBG(F),lager:debug([$s,$=,$~,$p,$\s|F],[erlang:system_info(scheduler_id)])).
+% -define(ADBG(F,A),lager:debug([$s,$=,$~,$p,$\s|F],[erlang:system_info(scheduler_id)|A])).
 -define(ADBG(F),lager:debug(F)).
 -define(ADBG(F,A),lager:debug(F,A)).
 -define(AINF(F),lager:info(F)).
 -define(AINF(F,A),lager:info(F,A)).
 -define(AERR(F),lager:error(F)).
 -define(AERR(F,A),lager:error(F,A)).
+% -define(AERR(F),lager:error([$s,$=,$~,$p,$\s|F],[erlang:system_info(scheduler_id)])).
+% -define(AERR(F,A),lager:error([$s,$=,$~,$p,$\s|F],[erlang:system_info(scheduler_id)|A])).
 
 % Database Administration Statements
 -record(table, {name, alias}).

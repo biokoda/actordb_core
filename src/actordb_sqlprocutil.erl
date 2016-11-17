@@ -121,7 +121,7 @@ append_wal(P,Header,Bin) ->
 reply_maybe(#dp{callfrom = undefined, callres = undefined} = P) ->
 	doqueue(P);
 reply_maybe(P) ->
-	reply_maybe(P,1,1,P#dp.follower_indexes).
+	reply_maybe(P,1,1,P#dp.followers).
 reply_maybe(P,NReplicated,NNodes,[H|T]) ->
 	case H of
 		_ when H#flw.next_index > P#dp.evnum ->
@@ -145,7 +145,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 			Exec = []
 	end,
 	case NReplicated*2 > NNodes of
-	% case N == length(P#dp.follower_indexes)+1 of
+	% case N == length(P#dp.followers)+1 of
 		% If transaction active or copy/move actor, we can continue operation now because it has been safely replicated.
 		true when P#dp.transactioninfo /= undefined; Exec /= [] ->
 			Me = self(),
@@ -165,7 +165,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					% 				Res = {actordb_conf:node_name(),ok}
 					% 		end;
 					case ok of
-						_ when P#dp.follower_indexes /= [] ->
+						_ when P#dp.followers /= [] ->
 							case Sql of
 								<<"delete">> ->
 									Sql1 = [],
@@ -220,7 +220,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					OrigMsg = IsMove = Msg = Node = NewActor = undefined,
 					From = P#dp.callfrom
 			end,
-			?DBG("Reply transaction=~p res=~p from=~p",[P#dp.transactioninfo,Res,From]),
+			?DBG("Reply transaction=~p, id=~p res=~p from=~p",[P#dp.transactioninfo,P#dp.transactionid,Res,From]),
 			case P#dp.movedtonode of
 				deleted ->
 					actordb_sqlprocutil:delete_actor(P),
@@ -305,7 +305,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 				wasync = BD#ai{nreplies = BD#ai.nreplies + 1}})));
 		false ->
 			% ?DBG("Reply NOT FINAL evnum ~p followers ~p",
-				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.follower_indexes]]),
+				% [P#dp.evnum,[F#flw.next_index || F <- P#dp.followers]]),
 			P
 	end.
 
@@ -317,11 +317,11 @@ create_var_header(P) ->
 	term_to_binary({P#dp.current_term,actordb_conf:node_name(),P#dp.evnum,P#dp.evterm,follower_call_counts(P)}).
 
 follower_call_counts(P) ->
-	[{F#flw.node,{F#flw.match_index,F#flw.match_term}} || F <- P#dp.follower_indexes].
+	[{F#flw.node,{F#flw.match_index,F#flw.match_term}} || F <- P#dp.followers].
 
 
 send_empty_ae(P,<<_/binary>> = Nm) ->
-	send_empty_ae(P,lists:keyfind(Nm,#flw.node,P#dp.follower_indexes));
+	send_empty_ae(P,lists:keyfind(Nm,#flw.node,P#dp.followers));
 send_empty_ae(P,F) ->
 	?DBG("sending empty ae to ~p",[F#flw.node]),
 	bkdcore_rpc:cast(F#flw.node,
@@ -335,6 +335,7 @@ reopen_db(#dp{mors = master} = P) ->
 		_ when P#dp.db == undefined; P#dp.db == queue  ->
 			init_opendb(P);
 		_ ->
+			?DBG("reopen_db"),
 			case actordb_sqlite:exec(P#dp.db,<<"SeLECT * FROM __adb;">>,read) of
 				{ok,[{columns,_},{rows,[_|_] = Rows}]} ->
 					read_db_state(P,Rows);
@@ -427,10 +428,10 @@ set_followers(HaveSchema,P) ->
 		{ok,NS,NL} ->
 			ok
 	end,
-	P#dp{cbstate = NS,follower_indexes = P#dp.follower_indexes ++
+	P#dp{cbstate = NS,followers = P#dp.followers ++
 			[#flw{node = Nd,distname = bkdcore:dist_name(Nd),match_index = 0,
 			next_index = P#dp.evnum+1} || Nd <- NL,
-			lists:keymember(Nd,#flw.node,P#dp.follower_indexes) == false]}.
+			lists:keymember(Nd,#flw.node,P#dp.followers) == false]}.
 
 try_wal_recover(P,F) when F#flw.file /= undefined ->
 	case F#flw.file of
@@ -549,7 +550,7 @@ store_follower(P,NF) when NF#flw.next_index > P#dp.evnum, NF#flw.inrecovery ->
 	bkdcore_rpc:cast(NF#flw.node,{actordb_sqlproc,call_slave,CP}),
 	store_follower(P,NF#flw{inrecovery = false});
 store_follower(P,NF) ->
-	P#dp{follower_indexes = lists:keystore(NF#flw.node,#flw.node,P#dp.follower_indexes,NF)}.
+	P#dp{followers = lists:keystore(NF#flw.node,#flw.node,P#dp.followers,NF)}.
 
 
 % Read until commit set in header.
@@ -723,6 +724,19 @@ net_changes(#dp{wasync = W} = P) ->
 			P#dp{netchanges = actordb_local:net_changes()}
 	end.
 
+smallest_transaction({FromS,Smallest},[{FromH,#write{transaction = Trans} = H}|T],Extracted) when Trans /= undefined ->
+	% ?ADBG("comparing transactions cur=~p, with=~p",[Smallest#write.transaction, Trans]),
+	case element(2,Smallest#write.transaction) > element(2,Trans) of
+		true ->
+			smallest_transaction({FromH,H},T,[{FromS,Smallest}|Extracted]);
+		false ->
+			smallest_transaction({FromS,Smallest},T,[{FromH,H}|Extracted])
+	end;
+smallest_transaction(S,[H|T],E) ->
+	% ?ADBG("Ignoring for smallest compare ~p",[H]),
+	smallest_transaction(S,T,[H|E]);
+smallest_transaction(S,[],E) ->
+	{S,E}.
 
 doqueue(P) ->
 	doqueue(P,[]).
@@ -745,8 +759,10 @@ doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactio
 					case NR > 0 of
 						true ->
 							SkippedNew = Skipped,
-							% Exec directly, this will stop doqueue loop
-							actordb_sqlproc:write_call1(Msg,From,P#dp.schemavers,P#dp{callqueue = CQ});
+							?DBG("Executing transaction ~p",[Msg#write.transaction]),
+							{{FromSmallest,Smallest},Extracted} = smallest_transaction({From,Msg},queue:to_list(CQ),[]),
+							actordb_sqlproc:write_call1(Smallest,FromSmallest,P#dp.schemavers,
+										P#dp{callqueue = queue:from_list(Extracted)});
 						false ->
 							% Not ready to process transaction yet.
 							SkippedNew = [{From,Msg}|Skipped],
@@ -854,6 +870,13 @@ transaction_done(Id,Uid,Result) ->
 		Pid ->
 			exit(Pid,Result)
 	end.
+transaction_overruled(Id,Uid) ->
+	case distreg:whereis({Id,Uid}) of
+		undefined ->
+			ignore;
+		Pid ->
+			Pid ! overruled
+	end.
 
 % Check back with multiupdate actor if transaction has been completed, failed or still running.
 % Every 100ms.
@@ -894,7 +917,13 @@ transaction_checker1(Id,Uid,Node) ->
 	case Res of
 		% Running
 		{ok,0} ->
-			timer:sleep(100),
+			receive
+				overruled ->
+					self() ! overruled,
+					actordb:rpc(Node,Uid,{actordb_multiupdate,overruled,[Uid,Id]})
+			after 100 ->
+				ok
+			end,
 			transaction_checker1(Id,Uid,Node);
 		% Done
 		{ok,1} ->
@@ -1019,14 +1048,13 @@ election_timer(Now,undefined) ->
 	Fixed = max(300,Latency),
 	T = Fixed+rand:uniform(Fixed),
 	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
-	erlang:send_after(T,self(),{doelection,Latency,Now});
-election_timer(Now,T) ->
-	case is_reference(T) andalso erlang:read_timer(T) /= false of
+	{timer, erlang:send_after(T,self(),{doelection,Latency,Now})};
+election_timer(_Now,{election,_,_} = E) ->
+	E;
+election_timer(Now,{timer,T}) ->
+	case erlang:read_timer(T) /= false of
 		true ->
-			T;
-		false when is_pid(T) ->
-			?ADBG("Election pid active"),
-			T;
+			{timer, T};
 		_ ->
 			election_timer(Now,undefined)
 	end.
@@ -1053,7 +1081,7 @@ is_alive(F) ->
 % - delayed: we are waiting for response, it is taking unusually long
 % - dead: node is offline from what we see
 follower_check(P) ->
-	follower_check(P,P#dp.follower_indexes,[],[],[],[]).
+	follower_check(P,P#dp.followers,[],[],[],[]).
 follower_check(P,[F|T],Synced,Waiting,Delayed,Dead) when F#flw.match_index == P#dp.evnum,
 		F#flw.wait_for_response_since == undefined ->
 	follower_check(P,T,[F|Synced],Waiting,Delayed,Dead);
@@ -1072,8 +1100,8 @@ follower_check(P,[F|T],Synced,Waiting,Delayed,Dead) ->
 	Latency = actordb_latency:latency(),
 	case ok of
 		_ when Addr == undefined ->
-			follower_check(P#dp{follower_indexes = 
-				lists:keydelete(F#flw.node,#flw.node,P#dp.follower_indexes)}, T, Synced,Waiting,Delayed,Dead);
+			follower_check(P#dp{followers = 
+				lists:keydelete(F#flw.node,#flw.node,P#dp.followers)}, T, Synced,Waiting,Delayed,Dead);
 		_ when IsAlive == false ->
 			follower_check(P,T,Synced,Waiting,Delayed,[F|Dead]);
 		_ when Wait > (1000+Latency) ->
@@ -1096,26 +1124,24 @@ follower_check_handle(P,_Synced,[],[],[]) ->
 	case ok of
 		_ when P#dp.movedtonode == deleted ->
 			{stop,normal,P};
-		_ when P#dp.flags bor ?FLAG_REPORT_SYNC ->
+		_ when P#dp.flags band ?FLAG_REPORT_SYNC > 0 ->
 			ok = actordb_catchup:synced(P#dp.actorname,P#dp.actortype),
-			{noreply,P#dp{flags = P#dp.flags band (bnot ?FLAG_REPORT_SYNC), election = undefined}};
+			{noreply,P#dp{flags = P#dp.flags band (bnot ?FLAG_REPORT_SYNC), election_timer = undefined}};
 		_ ->
-			{noreply,P#dp{election = undefined}}
+			{noreply,P#dp{election_timer = undefined}}
 	end;
 follower_check_handle(P,_Synced,_Waiting,[],[]) ->
-	{noreply,P#dp{election = election_timer(undefined)}};
+	{noreply,P#dp{election_timer = election_timer(undefined)}};
 % Some nodes are delayed unreasonably long.
 follower_check_handle(P,_Synced,_Waiting,_Delayed,[]) ->
 	?DBG("Have delayed nodes: ~p",[_Delayed]),
-	% {noreply,actordb_sqlproc:write_again(P#dp{election = election_timer(undefined)})};
-	% {noreply,actordb_sqlproc:write_call(#write{sql = []},undefined,P)};
 	self() ! doqueue,
 	Now = actordb_local:elapsed_time(),
 	case Now - P#dp.last_write_at of
 		Diff when Diff > 1000 ->
 			actordb_sqlproc:write_call(#write{sql = []},undefined,P);
 		_ ->
-			{noreply,P#dp{election = election_timer(undefined)}}
+			{noreply,P#dp{election_timer = election_timer(undefined)}}
 	end;
 follower_check_handle(P,Synced,Waiting,Delayed,Dead) ->
 	% Some node is not reponding. Report to catchup.
@@ -1130,7 +1156,7 @@ follower_check_handle(P,Synced,Waiting,Delayed,Dead) ->
 			{noreply,P#dp{verified = false, mors = slave, masternode = undefined,
 				masternodedist = undefined,
 				without_master_since = actordb_local:elapsed_time(),
-				election = election_timer(undefined)}}
+				election_timer = election_timer(undefined)}}
 	end.
 
 
@@ -1142,50 +1168,30 @@ start_verify(P,JustStarted) ->
 		%  not attempt to become candidate for now.
 		_ when P#dp.mors == slave, JustStarted ->
 			P;
-		_ when is_pid(P#dp.election); is_reference(P#dp.election) ->
+		_ when is_tuple(P#dp.election_timer) ->
 			P;
 		_ ->
 			?DBG("Trying to get elected ~p",[P#dp.schemavers]),
 			CurrentTerm = P#dp.current_term+1,
 			Me = actordb_conf:node_name(),
-			E = #election{actor = P#dp.actorname, type = P#dp.actortype, candidate = Me,
-				wait = P#dp.flags band ?FLAG_WAIT_ELECTION > 0, term = CurrentTerm,evnum = P#dp.evnum,
-				evterm = P#dp.evterm, flags = P#dp.flags band (bnot ?FLAG_WAIT_ELECTION),
-				followers = P#dp.follower_indexes, cbmod = P#dp.cbmod},
-			case actordb_election:whois_leader(E) of
-				Result when is_pid(Result); Result == Me ->
-					NP = set_followers(P#dp.schemavers /= undefined,
-						reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me,
-							mors = master, verified = false})),
-					case ok of
-						_ when is_pid(Result) ->
-							Verifypid = Result,
-							erlang:monitor(process,Verifypid),
-							Verifypid ! {set_followers,NP#dp.follower_indexes};
-						_ when is_binary(Result) ->
-							Verifypid = self(),
-							self() ! {'DOWN',make_ref(),process,self(),{leader,P#dp.follower_indexes,false}}
-					end,
-					store_term(P,actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm),
-					NP#dp{election = Verifypid, verified = false};
-				LeaderNode when is_binary(LeaderNode) ->
-					?DBG("Received leader ~p",[LeaderNode]),
-					DistName = bkdcore:dist_name(LeaderNode),
-					case lists:member(DistName,nodes()) of
-						true ->
-							actordb_local:actor_mors(slave,LeaderNode),
-							doqueue(reopen_db(P#dp{masternode = LeaderNode, 
-								election = election_timer(P#dp.election),
-								masternodedist = DistName, mors = slave,
-								callfrom = undefined, callres = undefined,
-								verified = true}));
-						_ ->
-							P#dp{election = election_timer(P#dp.election)}
-					end;
-				Err ->
-					?DBG("Election try result ~p",[Err]),
-					P#dp{election = election_timer(P#dp.election)}
-			end
+			NP = set_followers(P#dp.schemavers /= undefined,
+					reopen_db(P#dp{current_term = CurrentTerm, voted_for = Me,
+						mors = master, verified = false})),
+			Msg = {state_rw,{request_vote,Me,CurrentTerm,P#dp.evnum,P#dp.evterm}},
+			Call = {actordb_sqlproc,call_slave,
+				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg,[{flags,P#dp.flags band (bnot ?FLAG_WAIT_ELECTION)}]]},
+			ElecRef = make_ref(),
+			NF = [Flw#flw{election_rpc_ref = bkdcore_rpc:async_call(ElecRef,Flw#flw.node,Call)} || Flw <- NP#dp.followers],
+			store_term(P,actordb_conf:node_name(),CurrentTerm,P#dp.evnum,P#dp.evterm),
+			TimerDur = max(200,actordb_latency:latency()),
+			case NF of
+				[] ->
+					TimerRef = ElecRef,
+					self() ! {election_timeout, ElecRef};
+				_ ->
+					TimerRef = erlang:send_after(TimerDur,self(),{election_timeout,ElecRef})
+			end,
+			NP#dp{election_timer = {election,TimerRef, ElecRef}, verified = false, followers = NF}
 	end.
 follower_nodes(L) ->
 	[F#flw.node || F <- L].
@@ -1330,7 +1336,7 @@ read_num(P) ->
 % Current formula is max(XPages,X*DBSIZE). Default values: XPages=5000, X=0.1
 % This way if a large DB, replication space is max 10%. Or if small DB, max 5000 pages.
 % Page is 4096 bytes max, but with compression it is usually much smaller.
-checkpoint(#dp{mors = master, follower_indexes = []} = P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
+checkpoint(#dp{mors = master, followers = []} = P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 	?DBG("Single node checkpoint"),
 	actordb_sqlite:checkpoint(P,P#dp.evnum-3),
 	P#dp{last_checkpoint = P#dp.evnum-3};
@@ -1338,7 +1344,7 @@ checkpoint(P) when P#dp.last_checkpoint+6 =< P#dp.evnum ->
 	?DBG("Attempt checkpoint ~p ~p",[P#dp.last_checkpoint, P#dp.evnum]),
 	case P#dp.mors of
 		master ->
-			case [F || F <- P#dp.follower_indexes, F#flw.next_index =< P#dp.last_checkpoint andalso F#flw.next_index > 0] of
+			case [F || F <- P#dp.followers, F#flw.next_index =< P#dp.last_checkpoint andalso F#flw.next_index > 0] of
 				[] ->
 					?DBG("No followers far behind"),
 					Msg = {state_rw,checkpoint},
@@ -1373,7 +1379,7 @@ inform_followers(P,Msg) ->
 	[begin
 		bkdcore_rpc:cast(F#flw.node,
 			{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,Msg]})
-	end || F <- P#dp.follower_indexes].
+	end || F <- P#dp.followers].
 
 moved_replace(P,Node) ->
 	?INF("Replacing actor with redirect marker to node=~p",[Node]),
@@ -1401,22 +1407,22 @@ delete_actor(P) ->
 		_ ->
 			ok
 	end,
-	% ?DBG("Deleted from shard ~p",[P#dp.follower_indexes]),
+	% ?DBG("Deleted from shard ~p",[P#dp.followers]),
 	case P#dp.movedtonode of
 		{moved,Moved} ->
 			moved_replace(P,Moved);
 		_ ->
 			ok = actordb_sqlite:wal_rewind(P#dp.db,0)
 	end,
-	case P#dp.follower_indexes of
+	case P#dp.followers of
 		[] ->
 			ok;
 		_ ->
 			spawn(fun() ->
-			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,call_slave,
+			{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.followers),{actordb_sqlproc,call_slave,
 				[P#dp.cbmod,P#dp.actorname,P#dp.actortype,{state_rw,{delete,P#dp.movedtonode}}]})
 			end)
-	% 		{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.follower_indexes),{actordb_sqlproc,stop,
+	% 		{_,_} = bkdcore_rpc:multicall(follower_nodes(P#dp.followers),{actordb_sqlproc,stop,
 	% 						[{P#dp.actorname,P#dp.actortype}]})
 	end,
 	actordb_sqlite:stop(P).
@@ -1659,7 +1665,7 @@ dbcopy_call({start_receive,Copyfrom,Ref},_,P) ->
 		_ ->
 			{ok,RecvPid} = start_copyrec(P#dp{db = Db, copyfrom = Copyfrom, dbcopyref = Ref}),
 			{reply,ok,P#dp{db = Db, mors = slave,dbcopyref = Ref,
-				copyfrom = Copyfrom, copyproc = RecvPid, election = undefined}}
+				copyfrom = Copyfrom, copyproc = RecvPid, election_timer = undefined}}
 	end;
 dbcopy_call({checksplit,Data},_,P) ->
 	{M,F,A} = Data,
@@ -1698,7 +1704,7 @@ dbcopy_call({unlock,Data},CallFrom,P) ->
 							NP = P#dp{locked = WithoutLock, dbcopy_to = DbCopyTo},
 							case LC#lck.actorname == P#dp.actorname of
 								true ->
-									case lists:keyfind(LC#lck.node,#flw.node,P#dp.follower_indexes) of
+									case lists:keyfind(LC#lck.node,#flw.node,P#dp.followers) of
 										Flw when is_tuple(Flw) ->
 											{noreply,NP1} = actordb_sqlproc:write_call(#write{sql = <<>>},CallFrom,NP),
 											{reply,ok,reply_maybe(store_follower(NP1,

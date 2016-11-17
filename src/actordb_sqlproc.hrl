@@ -4,8 +4,6 @@
 -include_lib("actordb_core/include/actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 
--record(election,{actor, type, candidate, wait, term, evnum, evterm, flags, followers = [], cbmod}).
-
 % since sqlproc gets called so much, logging from here often makes it more difficult to find a bug.
 % -define(NOLOG,1).
 -define(EVNUM,<<"1">>).
@@ -53,7 +51,9 @@
 -record(write,{sql, flags = [], mfa, transaction, records = [], newvers}).
 -record(read,{sql, flags = []}).
 -record(flw,{node, distname, match_index = 0, match_term = 0, next_index = 0,
-	file, wait_for_response_since, last_seen = 0, pagebuf = <<>>, inrecovery = false}).
+	file, wait_for_response_since, last_seen = 0, pagebuf = <<>>, 
+	inrecovery = false, 
+	election_rpc_ref, election_result}).
 
 -record(cpto,{node,pid,ref,ismove,actorname}).
 -record(lck,{ref,pid,ismove,node,time,actorname}).
@@ -87,7 +87,7 @@ evnum, evterm, newvers, moved, fsync}).
 	activity, schemanum,schemavers,flags = 0, netchanges = 0,
 	% Raft parameters  (lastApplied = evnum)
 	% follower_indexes: [#flw,..]
-	current_term = 0,voted_for, follower_indexes = [],
+	current_term = 0,voted_for, followers = [],
 	% evnum of last checkpoint
 	last_checkpoint = 0, force_sync = false,
 	% locked is a list of pids or markers that needs to be empty for actor to be unlocked.
@@ -118,8 +118,8 @@ evnum, evterm, newvers, moved, fsync}).
 	% If local db is being restored, verified will be on false.
 	% Possible values: true, false
 	verified = false,
-	% PID of election process if in progress, time of last seen election otherwise.
-	election,
+	% undefined | {election, TimerRef, ElectionRef} | {timer,Ref}
+	election_timer, 
 	% Path to sqlite file.
 	dbpath,
 	% Which nodes current process is sending dbfile to.
