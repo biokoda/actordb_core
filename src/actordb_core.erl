@@ -241,9 +241,19 @@ prestart1(Files) ->
 			LMSync = 0
 	end,
 
+	case butil:ds_val(sqlite_extensions_folder,ActorParam) of
+		[_|_] = EPth ->
+			ExtFiles = filelib:wildcard(EPth++"/*.dylib")++
+				filelib:wildcard(EPth++"/*.so")++
+				filelib:wildcard(EPth++"/*.dll"),
+			[?AINF("Loading extension: ~p",[EFl]) || EFl <- ExtFiles];
+		_ ->
+			ExtFiles = []
+	end,
 	DrvInfo = #{paths => list_to_tuple(actordb_conf:paths()),
 	staticsqls => actordb_sqlprocutil:static_sqls(),
 	dbsize => parse_size(MaxDbSize),
+	pluginfiles => list_to_tuple(ExtFiles),
 	wthreads => WThreads,
 	rthreads => RdThreads,
 	lmdbsync => LMSync,
