@@ -1110,12 +1110,12 @@ harmless_pragma(W) ->
 			false;
 		<<"FREELIST_COUNT",_/binary>> ->
 			false;
-		<<"page_size",_/binary>> ->
-			false;
-		<<"Page_size",_/binary>> ->
-			false;
-		<<"PAGE_SIZE",_/binary>> ->
-			false;
+		% <<"page_size",_/binary>> ->
+		% 	false;
+		% <<"Page_size",_/binary>> ->
+		% 	false;
+		% <<"PAGE_SIZE",_/binary>> ->
+		% 	false;
 		<<"page_count",_/binary>> ->
 			false;
 		<<"Page_count",_/binary>> ->
