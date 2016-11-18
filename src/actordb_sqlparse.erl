@@ -1000,11 +1000,11 @@ is_write(Bin) ->
 		<<"_Insert ",_/binary>> ->
 			true;
 		<<"pragma ",Rem/binary>> ->
-			{pragma,Rem};
+			harmless_pragma(Rem);
 		<<"Pragma ",Rem/binary>> ->
-			{pragma,Rem};
+			harmless_pragma(Rem);
 		<<"PRAGMA ",Rem/binary>> ->
-			{pragma,Rem};
+			harmless_pragma(Rem);
 		<<"show ",Rem/binary>> ->
 			{show,Rem};
 		<<"Show ",Rem/binary>> ->
@@ -1077,7 +1077,7 @@ is_write(Bin) ->
 		<<R,E,P,L,A,C,E," ",_/binary>> when ?R(R) andalso  ?E(E) andalso ?P(P) andalso ?L(L) andalso ?A(A) andalso ?C(C) ->
 			true;
 		<<P,R,A,G,M,A," ",Rem/binary>> when ?P(P) andalso  ?R(R) andalso ?A(A) andalso ?G(G) andalso ?M(M) ->
-			{pragma,Rem};
+			harmless_pragma(Rem);
 		<<S,H,O,W," ",Rem/binary>> when ?S(S) andalso ?H(H) andalso ?O(O) andalso ?W(W) ->
 			{show,Rem};
 		<<W,I,T,H," ",Rem/binary>> when ?W(W) andalso ?I(I) andalso ?T(T) andalso ?H(H) ->
@@ -1100,6 +1100,42 @@ is_write(Bin) ->
 			skip;
 		_X ->
 			false
+	end.
+
+harmless_pragma(W) ->
+	case rem_spaces(W) of
+		<<"freelist_count",_/binary>> ->
+			false;
+		<<"Freelist_count",_/binary>> ->
+			false;
+		<<"FREELIST_COUNT",_/binary>> ->
+			false;
+		<<"page_size",_/binary>> ->
+			false;
+		<<"Page_size",_/binary>> ->
+			false;
+		<<"PAGE_SIZE",_/binary>> ->
+			false;
+		<<"page_count",_/binary>> ->
+			false;
+		<<"Page_count",_/binary>> ->
+			false;
+		<<"PAGE_COUNT",_/binary>> ->
+			false;
+		<<"table_info",_/binary>> ->
+			false;
+		<<"TABLE_INFO",_/binary>> ->
+			false;
+		<<"index_list",_/binary>> ->
+			false;
+		<<"INDEX_LIST",_/binary>> ->
+			false;
+		<<"index_xinfo",_/binary>> ->
+			false;
+		<<"INDEX_XINFO",_/binary>> ->
+			false;
+		_X ->
+			{pragma, W}
 	end.
 
 % parse_mngmt(Sql) when is_binary(Sql) ->
