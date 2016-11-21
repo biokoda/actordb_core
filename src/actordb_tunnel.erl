@@ -55,7 +55,7 @@ handle_info({tcpfail,Driver,Thread,Pos}, P) ->
 			gen_tcp:close(Sock),
 			Socks = P#dp.sockets,
 			{noreply, P#dp{sockets = Socks#{{Thread, Driver, Pos} => {Type, undefined}}}};
-		{_Type, undefined} ->
+		{_Type, _} ->
 			{noreply, P}
 	end;
 handle_info(reconnect_raft,P) ->
@@ -73,8 +73,23 @@ handle_info({actordb,sharedstate_change},P) ->
 	{Slots, ToConnect} = store_raft_connection(MG,P#dp.slots,[]),
 	{noreply, P#dp{slots = Slots, sockets = connect(Slots, ToConnect,P#dp.sockets)}};
 handle_info({raft_connections,L},P) ->
+	?ADBG("received raft connections"),
 	{Slots,ToConnect} = store_raft_connection(L,P#dp.slots,[]),
 	{noreply, P#dp{slots = Slots, sockets = connect(Slots, ToConnect,P#dp.sockets)}};
+handle_info({'DOWN',_Monitor,_,Pid,Reason}, P) ->
+	case [{K,Type} || {K,{Type,Pd}} <- maps:to_list(P#dp.sockets), Pd == Pid] of
+		[{K,Type}] when element(1,Reason) == connection ->
+			?ADBG("Storing connection"),
+			Sock = element(2,Reason),
+			{ok,Fd} = prim_inet:getfd(Sock),
+			{Thread, Driver, Pos} = K,
+			ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
+			{noreply, P#dp{sockets = (P#dp.sockets)#{K => {Type, Sock}}}};
+		[{K,Type}] ->
+			{noreply, P#dp{sockets = (P#dp.sockets)#{K => {Type, undefined}}}};
+		_Msg ->
+			{noreply,P}
+	end;
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
@@ -94,18 +109,21 @@ init(_) ->
 	% ok = aqdrv:set_tunnel_connector(),
 	{ok,#dp{}}.
 
-check_reconnect(Slots,[{{Thread, Driver, Pos} = K, {Type,undefined}}|T], Sockets) ->
+% 
+check_reconnect(Slots,[{{_Thread, _Driver, Pos} = K, {Type,undefined}}|T], Sockets) ->
 	Nd = element(Pos+1,Slots),
 	{IP,Port} = bkdcore:node_address(Nd),
-	case doconnect(IP, Port, Nd) of
-		{ok, Sock} ->
-			{ok,Fd} = prim_inet:getfd(Sock),
-			?AINF("Reconnected to ~p",[Nd]),
-			ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
-			check_reconnect(Slots,T, Sockets#{K => {Type, Sock}});
-		false ->
-			check_reconnect(Slots,T, Sockets)
-	end;
+	{Pid,_} = spawn_monitor(fun() -> doconnect(IP, Port, Nd) end),
+	check_reconnect(Slots,T, Sockets#{K => {Type, Pid}});
+	% case doconnect(IP, Port, Nd, K) of
+	% 	{ok, Sock} ->
+	% 		{ok,Fd} = prim_inet:getfd(Sock),
+	% 		?AINF("Reconnected to ~p",[Nd]),
+	% 		ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
+	% 		check_reconnect(Slots,T, Sockets#{K => {Type, Sock}});
+	% 	false ->
+	% 		check_reconnect(Slots,T, Sockets)
+	% end;
 check_reconnect(Slots,[_|T], S) ->
 	check_reconnect(Slots,T, S);
 check_reconnect(_,[], S) ->
@@ -122,33 +140,38 @@ connect_threads(Slots, Driver, [Thread|T], {Nd, Pos, Type} = Info, Sockets) ->
 	{IP,Port} = bkdcore:node_address(Nd),
 	Nd = element(Pos+1,Slots),
 	K = {Thread, Driver, Pos},
-	case doconnect(IP, Port, Nd) of
-		{ok, Sock} ->
-			{ok,Fd} = prim_inet:getfd(Sock),
-			ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
-			?AINF("Connected to ~p",[Nd]),
-			connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, Sock}});
-		false ->
-			connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, undefined}})
-	end;
+	% Start = os:timestamp(),
+	{Pid,_} = spawn_monitor(fun() -> doconnect(IP, Port, Nd) end),
+		% {ok, Sock} ->
+		% 	?AINF("Connected"),
+		% 	{ok,Fd} = prim_inet:getfd(Sock),
+		% 	ok = apply(Driver,set_thread_fd,[Thread,Fd,Pos,Type]),
+		% 	?AINF("Connected to ~p, took=~pms",[Nd,timer:now_diff(os:timestamp(),Start) div 1000]),
+		% 	connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, Sock}});
+		% false ->
+	connect_threads(Slots, Driver, T, Info, Sockets#{K => {Type, Pid}});
+	% end;
 connect_threads(_Slots, _Driver,[],_Info,S) ->
 	S.
 
 doconnect(IP, Port, Nd) ->
+	?ADBG("doconnect ~p",[Nd]),
 	case gen_tcp:connect(IP,Port,[{active, false},{packet,4},
 			{keepalive,true},{send_timeout,10000}], 500) of
 		{ok,S} ->
 			inet:setopts(S,[{nodelay, true}]),
 			case gen_tcp:send(S,conhdr(Nd)) of
 				ok ->
-					?AINF("Opened tunnel to ~p",[Nd]),
+					?ADBG("Opened tunnel to ~p",[Nd]),
 					ok = prim_inet:ignorefd(S,true),
-					{ok,S};
-				_ ->
-					false
+					ok = gen_tcp:controlling_process(S,whereis(?MODULE)),
+					exit({connection, S});
+				_Er ->
+					exit(_Er)
 			end;
-		_ERR ->
-			false
+		_Er ->
+			?ADBG("doconnect to=~p failed ~p",[Nd,_Er]),
+			exit(_Er)
 	end.
 
 conhdr(Nd) ->
