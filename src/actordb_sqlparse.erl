@@ -201,7 +201,7 @@ parse_statements(BP,[],L,Prepared,Use,S,IsWrite,GIsWrite) ->
 	end,
 	{lists:reverse([Actor|L]),GIsWrite}.
 
-meta_call(["show schema;"|T],Out) ->
+meta_call(["show schema"++_|T],Out) ->
 	All = [begin
 		Tuple = apply(actordb_schema,Type,[]),
 		lists:reverse([{butil:tobin(Type),Line} || Line <- tuple_to_list(Tuple)])
