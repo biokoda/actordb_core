@@ -38,7 +38,7 @@ status() ->
 		case lists:keyfind({From,Type}, 1, Borders) of
 			false ->
 				[{id, From}, {type, Type}, {size, To-From}, {moving_to, undefined}, {moved_percent,undefined}];
-			{_,{Limit,NewNode,NewShard}} ->
+			{_,{Limit,NewNode,_NewShard}} ->
 				[{id, From}, {type, Type}, {size, To-From}, {moving_to, NewNode}, {moved_percent,((To-Limit) / ((To-From) div 2))*100}]
 		end
 	end || {Type,From,To,_Nd} <- TypedShards].
@@ -232,6 +232,7 @@ handle_call({shard_moved,NewShard,Type,Node},From,P) ->
 handle_call({steal_shard,Nd,Shard,NdToTakeFrom},_From,P) ->
 	?AINF("Steal shard to ~p ~p, beingtaken ~p",[Nd,Shard,P#dp.shardsbeingtaken]),
 	Me = bkdcore:node_name(),
+	NumShards = actordb_sharedstate:read_global(num_shards,?NUM_SHARDS),
 	case lists:keyfind(Shard,1,P#dp.allshards) of
 		{Shard,_,Nd} ->
 			{reply,already_have_it,P};
@@ -248,12 +249,12 @@ handle_call({steal_shard,Nd,Shard,NdToTakeFrom},_From,P) ->
 							?ADBG("Already have shards being taken ~p",[P#dp.shardsbeingtaken]),
 							Doit = false
 					end;
-				_ when NdToTakeFrom == Me, length(P#dp.localshards) >= ?NUM_SHARDS ->
+				_ when NdToTakeFrom == Me, length(P#dp.localshards) >= NumShards ->
 					?ADBG("Take conditions ok if not in prev ~p",[[]]),
 					% Doit = lists:keymember(Shard,1,P#dp.shardsprevtaken) == false;
 					Doit = true;
 				_ when NdToTakeFrom /= Me ->
-					Doit = length([ok || {_,_,Ndx} <- P#dp.allshards,Ndx == Nd]) >= ?NUM_SHARDS andalso
+					Doit = length([ok || {_,_,Ndx} <- P#dp.allshards,Ndx == Nd]) >= NumShards andalso
 								 lists:member(NdToTakeFrom,bkdcore:all_cluster_nodes()), %andalso
 								 %lists:keymember(Shard,1,P#dp.shardsprevtaken) == false,
 					?ADBG("Not taking from me, doit ~p",[Doit]);
@@ -584,7 +585,9 @@ create_shards() ->
 	create_shards(Nodes).
 create_shards(Nodes) ->
 	Len = length(Nodes),
-	Shardsize = ?NAMESPACE_MAX div (Len*(?NUM_SHARDS)),
+	NumShards = actordb_sharedstate:read_global(num_shards,?NUM_SHARDS),
+	?AINF("create_shards with num=~p",[NumShards]),
+	Shardsize = ?NAMESPACE_MAX div (Len*(NumShards)),
 	Shards = lists:reverse([?NAMESPACE_MAX|tl(lists:reverse(lists:seq(0,?NAMESPACE_MAX,Shardsize)))]),
 	assign_shards(Nodes,Shards,[],Nodes).
 

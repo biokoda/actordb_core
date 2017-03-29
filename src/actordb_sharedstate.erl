@@ -690,10 +690,14 @@ check_bckp() ->
 	{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init("globalbckp",wal),
 	case SchemaTables of
 		[] ->
+			?AINF("Did not find globalbckp"),
 			Users = Schema = [],
+			NumShards = ?NUM_SHARDS,
 			Idmax = ?IDMAX_START;
 		_ ->
-			case actordb_sqlite:exec(Db,"select * from state where id in ('idmax','schema.yaml','users');") of
+			% case actordb_sqlite:exec(Db,"select * from state where id 
+				% in ('idmax','schema.yaml','users','shards','num_shards');") of
+			case actordb_sqlite:exec(Db,"select * from state;") of
 				{ok,[{columns,_},{rows,[_|_] = PL}]} ->
 					case butil:ds_val(<<"users">>,PL) of
 						undefined ->
@@ -701,16 +705,23 @@ check_bckp() ->
 						UsersBin ->
 							Users = binary_to_term(base64:decode(UsersBin))
 					end,
+					case butil:ds_val(<<"num_shards">>,PL) of
+						undefined ->
+							NumShards = application:get_env(actordb_core,num_shards,?NUM_SHARDS);
+						_ ->
+							NumShards = binary_to_term(base64:decode(butil:ds_val(<<"num_shards">>,PL)))
+					end,
 					Schema = binary_to_term(base64:decode(butil:ds_val(<<"schema.yaml">>,PL))),
 					Idmax = binary_to_term(base64:decode(butil:ds_val(<<"idmax">>,PL)));
 				_INBCKP ->
 					Users = Schema = [],
+					NumShards = ?NUM_SHARDS,
 					Idmax = ?IDMAX_START
 			end,
 			actordb_sqlite:wal_rewind(Db,0),
 			?AINF("Used idmax from backup, schema=~p, idmax=~p, users=~p",[Schema,Idmax,Users])
 	end,
-	{Schema,Users,Idmax}.
+	{Schema,Users,Idmax,NumShards}.
 
 % Initialize state on slaves (either inactive or part of master group).
 cb_unverified_call(#st{waiting = true, name = ?STATE_NM_GLOBAL} = S,{master_ping,MasterNode,Evnum,State})  ->
@@ -730,7 +741,7 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Misc1,Configs1}) ->
 			{reply,{error,already_started}};
 		true ->
 			% If there is backup, read some data that we should move over
-			{Schema,Users,IdMax} = check_bckp(),
+			{Schema,Users,IdMax,NumShards} = check_bckp(),
 			% If config is being saved again, ignore old data.
 			case butil:ds_val('schema.yaml',Configs1) of
 				NoneSch when NoneSch == []; NoneSch == undefined ->
@@ -751,6 +762,7 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Misc1,Configs1}) ->
 			timer:sleep(100),
 			Sql = [$$,write_sql(nodes,Nodes),
 				   $$,write_sql(groups,Groups),
+				   $$,write_sql(num_shards,NumShards),
 				   $$,write_sql(idmax,IdMax),  % Default idmax or from backup
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Misc],
 				   [[$$,write_sql(Key,Val)] || {Key,Val} <- Configs]],
