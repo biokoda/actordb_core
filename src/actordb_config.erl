@@ -31,16 +31,17 @@ exec_schema(BP,Sql) ->
 			throw({error,db_not_initialized})
 	end,
 
-	% actordb_sqlparse cares about actor statements and leaves sql statements intact.
+% actordb_sqlparse cares about actor statements and leaves sql statements intact.
+
 	case actordb_sqlparse:parse_statements(BP,butil:tobin(Sql)) of
 		{[{{_Type,_,_},_,_Statements}|_] = L1,_} ->
 			L = [case Sub of
 			[<<"kv">>] ->
-				{butil:tolist(Type),[{"type","kv"},{"schema",tol(Statements)}]};
+				{butil:tolist(Type),[{"type","kv"},{"schema",attach_end(tol(Statements))}]};
 			[_|_] ->
-				{butil:tolist(Type),tol(Statements)}
+				{butil:tolist(Type),attach_end(tol(Statements))}
 			end || {{Type,Sub,_},_,Statements} <- L1],
-			
+
 			Existing = actordb_sharedstate:read_global('schema.yaml'),
 			Merged = merge_schema(L,Existing),
 			Parsed = actordb_util:parse_cfg_schema(Merged),
@@ -68,7 +69,7 @@ merge_schema([{Type,Schema}|T],Ex) ->
 	case lists:keyfind(Type,1,Ex) of
 		false ->
 			merge_schema(T,[{Type,Schema}|Ex]);
-		{Type,Old} -> %[{_,_}|_] = 
+		{Type,Old} -> %[{_,_}|_] =
 			% ExSch = butil:ds_val("schema",Old),
 			case Old of
 				[{_,_}|_] ->
@@ -92,6 +93,16 @@ get_schema(Schema) ->
 			NewSch
 	end.
 
+attach_end([X, "END"++_ = END|L]) ->
+	[X++END|attach_end(L)];
+attach_end([X, "end"++_ = END|L]) ->
+	[X++END|attach_end(L)];
+attach_end([X, "End"++_ = END|L]) ->
+	[X++END|attach_end(L)];
+attach_end([X|L]) ->
+	[X|attach_end(L)];
+attach_end([]) ->
+	[].
 tol(Statements) ->
 	[butil:tolist(S) || S <- Statements].
 
@@ -236,7 +247,7 @@ exec1(false,Cmds) ->
 			E
 	end.
 
-% If we get more than one read, we will only process the first. 
+% If we get more than one read, we will only process the first.
 % Getting more than one is a bug.
 % Nodes/groups always return entire node/group list for now.
 do_reads([S|_]) ->
@@ -261,8 +272,8 @@ do_reads([S|_]) ->
 			{ok,[{columns,CR},{rows,Out}]};
 		<<"nodes">> ->
 			% For every node, get group list, create a list of [{NodeName,GroupName}]
-			NL = lists:flatten([[{butil:tobin(Nd),butil:tobin(Grp)} || 
-				Grp <- bkdcore:node_membership(element(1,bkdcore_changecheck:read_node(Nd)))] 
+			NL = lists:flatten([[{butil:tobin(Nd),butil:tobin(Grp)} ||
+				Grp <- bkdcore:node_membership(element(1,bkdcore_changecheck:read_node(Nd)))]
 				|| Nd <- Nodes]),
 			{ok,[{columns,{<<"name">>,<<"group_name">>}},{rows,NL}]};
 		<<"groups">> ->
@@ -340,7 +351,7 @@ insert_to_grpnd(Cmds) ->
 	Grp3 = [
 		{butil:toatom(GName),
 		 [element(1,bkdcore_changecheck:read_node(node_name(Nd))) || {Nd,Name} <- Nodes, Name == GName],
-		 butil:toatom(Type),[]} 
+		 butil:toatom(Type),[]}
 	|| {GName,Type} <- Grp2],
 
 	{Nodes1,Grp3}.
@@ -356,7 +367,7 @@ interpret_writes(Cmds) ->
 	interpret_writes(Cmds,ExistingNodes,ExistingGroups,ExistingShards).
 interpret_writes(Cmds,ExistingNodes,ExistingGroups,ExistingShards) ->
 	ExistingState = actordb_sharedstate:read_global(usrstate,[]),
-	Users = update_users({users,actordb_sharedstate:read_global_users()}, 
+	Users = update_users({users,actordb_sharedstate:read_global_users()},
 		[I || I <- Cmds, element(1,I) == management]),
 	% {InsertNodes,InsertGroups} = insert_to_grpnd(Cmds),
 	% ?AINF("cmds=~p",[Cmds]),
@@ -429,7 +440,7 @@ state_updates([],[U|T],D,L) ->
 		[{set,<<"val">>,To}] when FromKey#key.name == <<"id">> ->
 			ok;
 		_ ->
-			To = undefined,	
+			To = undefined,
 			throw({error,only_val_updatable})
 	end,
 	case select_match(all,Op,FromKey#key.name,FromVal#value.value,L) of
@@ -522,7 +533,7 @@ node_update(Nodes,Groups,[U|T]) ->
 		[{set,<<"name">>,To}] when FromKey#key.name == <<"name">> ->
 			ok;
 		_ ->
-			To = undefined,	
+			To = undefined,
 			throw({error,only_name_updatable})
 	end,
 	From = FromVal#value.value,
@@ -591,7 +602,7 @@ simple_values([[VX|_] = H|T],L) when element(1,VX) == value; element(1,VX) == fu
 simple_values([],L) ->
 	L.
 
-% We can insert with localnode() function. 
+% We can insert with localnode() function.
 node_name({<<"localnode">>,[]}) ->
 	case application:get_env(bkdcore,rpcport) of
 		{ok,Port} ->
@@ -691,15 +702,15 @@ mngmnt_execute0({users,Users},#management{action = grant, data = #permission{
 	conditions = Conditions,
 	account = [#value{name = <<"username">>,value = Username},
 		#value{name = <<"host">>,value = _Host}]}})->
-	
+
 	case On of
 		#table{name = ActorType,alias = ActorType} ->
 			ok;
 		{all,_} ->
 			ActorType = '*'
 	end,
-	case {lists:keyfind(value,1,Conditions), 
-		Conditions -- [read,write], 
+	case {lists:keyfind(value,1,Conditions),
+		Conditions -- [read,write],
 		ActorType == '*' orelse lists:member(butil:toatom(ActorType),actordb:types())} of
 		{false,[],true} ->
 			case [X || {U,_,_} = X <- Users, U == Username] of
@@ -718,7 +729,7 @@ mngmnt_execute0({users,Users},#management{action = grant, data = #permission{
 mngmnt_execute0(_,#management{action = grant, data = _})->
 	throw({error,not_supported});
 
-mngmnt_execute0({users,AllUsers},#management{action = drop, 
+mngmnt_execute0({users,AllUsers},#management{action = drop,
 	data = #account{access =[#value{name = <<"username">>,value = Username},
 	#value{name = <<"host">>,value = _Host}]}}) ->
 	case [U || {U,_,_} <- AllUsers, U == Username] of
@@ -728,7 +739,7 @@ mngmnt_execute0({users,AllUsers},#management{action = drop,
 	end;
 mngmnt_execute0(_,#management{action = drop, data = _}) ->
 	throw({error,not_supported});
-mngmnt_execute0({users,AllUsers},#management{action = rename, 
+mngmnt_execute0({users,AllUsers},#management{action = rename,
 	data = [#account{access = [#value{name = <<"username">>,value = Username},
 	#value{name = <<"host">>,value = _Host}]},
 	#value{name = <<"username">>,value = ToUsername},
@@ -789,10 +800,10 @@ mngmnt_execute0({users,Users},#select{params = Params, tables = [#table{name = <
 	end,
 	Ordered = case Order of
 		undefined ->
-			[#{<<"username">> => Username, <<"rights">> => rights_to_string(Rights)} || 
+			[#{<<"username">> => Username, <<"rights">> => rights_to_string(Rights)} ||
 				{Username,_Pw,Rights} <- FilterdUsers];
 		_ ->
-			MapUsers = [#{<<"username">> => Username, <<"rights">> => rights_to_string(Rights)}|| 
+			MapUsers = [#{<<"username">> => Username, <<"rights">> => rights_to_string(Rights)}||
 				{Username,_Pw,Rights} <- FilterdUsers],
 			lists:sort(fun(U1,U2)->
 				sorting_fun(tuple_g(U1,Order), tuple_g(U2,Order), Order)
@@ -862,7 +873,7 @@ write_user({users,U},Username,Password,Rights) ->
 
 % merge_replace_or_insert(U,{auth,A},ActorType,UserIndex,Sha,Conditions)->
 % 	case lists:filter(fun(X)-> case X of {ActorType,UserIndex,Sha,_} -> true; _ -> false end end, A) of
-% 	[]-> 
+% 	[]->
 % 		{U,{auth,[{ActorType,UserIndex,Sha,Conditions}|A]}};
 % 	Remove ->
 % 		{U,{auth,(A -- Remove) ++ [{ActorType,UserIndex,Sha,Conditions}]}}
@@ -938,7 +949,7 @@ test() ->
 	To = butil:tolist(Tob),
 	ExistingNodes = actordb_sharedstate:read_global(nodes),
 	[{GrpName,[From],cluster,[]}] = ExistingGroups = actordb_sharedstate:read_global(groups),
-	
+
 	UpdSql = ["update nodes set name='",To,"' where name like '",binary:first(From),"%';"],
 	Cmd = cmd([],butil:tobin([UpdSql])),
 	{NewNodesRaw,[{GrpName,NewNodesB,cluster,[]}]} = node_update(ExistingNodes,ExistingGroups,Cmd),
