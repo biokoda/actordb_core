@@ -41,7 +41,6 @@ exec_schema(BP,Sql) ->
 			[_|_] ->
 				{butil:tolist(Type),attach_end(tol(Statements))}
 			end || {{Type,Sub,_},_,Statements} <- L1],
-
 			Existing = actordb_sharedstate:read_global('schema.yaml'),
 			Merged = merge_schema(L,Existing),
 			Parsed = actordb_util:parse_cfg_schema(Merged),
@@ -93,16 +92,38 @@ get_schema(Schema) ->
 			NewSch
 	end.
 
-attach_end([X, "END"++_ = END|L]) ->
-	[X++END|attach_end(L)];
-attach_end([X, "end"++_ = END|L]) ->
-	[X++END|attach_end(L)];
-attach_end([X, "End"++_ = END|L]) ->
-	[X++END|attach_end(L)];
-attach_end([X|L]) ->
-	[X|attach_end(L)];
+attach_end([[C,R,E,A,T,E1|Rem] = ALL |TL]) when ?C(C) andalso ?R(R) andalso ?E(E) andalso
+										 ?A(A) andalso ?T(T) andalso ?E(E1) ->
+	case rem_spaces(Rem) of
+		[T1,R1,I1,G1,G11,E11,R1|_] when ?T(T1) andalso ?R(R1) andalso ?I(I1) andalso ?G(G1) andalso
+								?G(G11) andalso ?E(E11) andalso ?R(R1) ->
+			{Combined,Next} = combine(ALL,TL),
+			[Combined|attach_end(Next)];
+		NT ->
+			[ALL|attach_end(TL)]
+	end;
+attach_end([Line|T]) ->
+	[Line|attach_end(T)];
 attach_end([]) ->
 	[].
+
+rem_spaces([$\s|X]) ->
+	rem_spaces(X);
+rem_spaces([$\n|X]) ->
+	rem_spaces(X);
+rem_spaces([$\r|X]) ->
+	rem_spaces(X);
+rem_spaces([$\t|X]) ->
+	rem_spaces(X);
+rem_spaces(X) ->
+	X.
+
+combine(X,[[E,N,D|_] = END|L]) when ?E(E) andalso ?N(N) andalso ?D(D) ->
+	{X++END,L};
+combine(X,[Row|L]) ->
+	combine(X++Row,L);
+combine(X,[]) ->
+	{X,[]}.
 tol(Statements) ->
 	[butil:tolist(S) || S <- Statements].
 

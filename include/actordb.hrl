@@ -83,3 +83,27 @@
 -type action() :: create | drop | grant | rename | revoke | setpasswd.
 -type account() :: #account{}.
 -type permission() :: #permission{}.
+
+-define(A(A),(A == $a orelse A == $A)).
+-define(B(B),(B == $b orelse B == $B)).
+-define(C(C),(C == $c orelse C == $C)).
+-define(D(D),(D == $d orelse D == $D)).
+-define(E(E),(E == $e orelse E == $E)).
+-define(F(F),(F == $f orelse F == $F)).
+-define(G(G),(G == $g orelse G == $G)).
+-define(H(H),(H == $h orelse H == $H)).
+-define(I(I),(I == $i orelse I == $I)).
+-define(K(K),(K == $k orelse K == $K)).
+-define(L(L),(L == $l orelse L == $L)).
+-define(M(M),(M == $m orelse M == $M)).
+-define(N(N),(N == $n orelse N == $N)).
+-define(O(O),(O == $o orelse O == $O)).
+-define(P(P),(P == $p orelse P == $P)).
+-define(R(R),(R == $r orelse R == $R)).
+-define(S(S),(S == $s orelse S == $S)).
+-define(T(T),(T == $t orelse T == $T)).
+-define(U(U),(U == $u orelse U == $U)).
+-define(V(V),(V == $v orelse V == $V)).
+-define(W(W),(W == $w orelse W == $W)).
+-define(X(X),(X == $x orelse X == $X)).
+-define(Y(Y),(Y == $y orelse Y == $Y)).

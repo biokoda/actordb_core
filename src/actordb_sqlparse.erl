@@ -7,35 +7,12 @@
 -export([split_actor/1,split_actor/2]).
 -include_lib("actordb_core/include/actordb.hrl").
 -define(LIST_LIMIT,30000).
--define(A(A),(A == $a orelse A == $A)).
--define(B(B),(B == $b orelse B == $B)).
--define(C(C),(C == $c orelse C == $C)).
--define(D(D),(D == $d orelse D == $D)).
--define(E(E),(E == $e orelse E == $E)).
--define(F(F),(F == $f orelse F == $F)).
--define(G(G),(G == $g orelse G == $G)).
--define(H(H),(H == $h orelse H == $H)).
--define(I(I),(I == $i orelse I == $I)).
--define(K(K),(K == $k orelse K == $K)).
--define(L(L),(L == $l orelse L == $L)).
--define(M(M),(M == $m orelse M == $M)).
--define(N(N),(N == $n orelse N == $N)).
--define(O(O),(O == $o orelse O == $O)).
--define(P(P),(P == $p orelse P == $P)).
--define(R(R),(R == $r orelse R == $R)).
--define(S(S),(S == $s orelse S == $S)).
--define(T(T),(T == $t orelse T == $T)).
--define(U(U),(U == $u orelse U == $U)).
--define(V(V),(V == $v orelse V == $V)).
--define(W(W),(W == $w orelse W == $W)).
--define(X(X),(X == $x orelse X == $X)).
--define(Y(Y),(Y == $y orelse Y == $Y)).
 -define(GV(P,V),actordb_backpressure:getval(P,V)).
 
 % Organic hand crafted sql parser.
 % Or to be precise an sql segmenter with some additional stuff.
 % It parses actor statements, figures out of this is a write statement, parses
-%  any {{}} script stuff and splits sql statements into a list. 
+%  any {{}} script stuff and splits sql statements into a list.
 
 % Returns: {[{Actors,IsWrite,Statements},..],IsWrite}
 % Actors: {Type,[Actor1,Actor2,Actor3,...],[Flag1,Flag2]} |
@@ -108,7 +85,7 @@ parse_statements(BP,[H|T],L,PreparedRows,CurUse,CurStatements,IsWrite,GIsWrite) 
 							S1 = [{butil:tobin(K),butil:tobin(V)} || {K,V} <- S],
 							[[{columns,{<<"key">>,<<"val">>}},{rows,S1}]];
 						queries ->
-							Sqls = 
+							Sqls =
 								[
 								{Sql}
 								|| Sql <- [butil:ds_val(sql,Ets) || {{client,Ets},_} <- ets:tab2list(bpcons)],
@@ -465,7 +442,7 @@ parse_pragma(Bin) ->
 % list_to_binary(lists:reverse(Where))
 parse_pragma_list(<<";",_/binary>>,_Where,Limit,Offset) ->
 	{Limit,Offset};
-parse_pragma_list(<<L,I,M,I,T," ",Rem/binary>>,Where,Limit,Offset) when ?L(L) andalso ?I(I) andalso ?M(M) 
+parse_pragma_list(<<L,I,M,I,T," ",Rem/binary>>,Where,Limit,Offset) when ?L(L) andalso ?I(I) andalso ?M(M)
 		andalso ?T(T) ->
 	case count_name(rem_spaces(Rem),0) of
 		Len when Len > 0 ->
@@ -474,7 +451,7 @@ parse_pragma_list(<<L,I,M,I,T," ",Rem/binary>>,Where,Limit,Offset) when ?L(L) an
 		_ ->
 			{Limit,Offset}
 	end;
-parse_pragma_list(<<O,F1,F2,S,E,T," ",Rem/binary>>,Where,Limit,Offset) when ?O(O) andalso ?F(F1) andalso 
+parse_pragma_list(<<O,F1,F2,S,E,T," ",Rem/binary>>,Where,Limit,Offset) when ?O(O) andalso ?F(F1) andalso
 		?F(F2) andalso ?S(S) andalso ?E(E) andalso ?T(T) ->
 	case count_name(rem_spaces(Rem),0) of
 		Len when Len > 0 ->
