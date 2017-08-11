@@ -367,7 +367,7 @@ check_timer(S) ->
 	end.
 
 add_master_group(ExistingGroup) ->
-	AllNodes = bkdcore:nodelist(),
+	AllNodes = bkdcore:nodelist_allclusters(),
 	ClusterCandidates = bkdcore:all_cluster_nodes() -- ExistingGroup,
 	case length(ExistingGroup)+length(ClusterCandidates) >= ?MASTER_GROUP_SIZE of
 		true ->
@@ -695,7 +695,7 @@ check_bckp() ->
 			NumShards = ?NUM_SHARDS,
 			Idmax = ?IDMAX_START;
 		_ ->
-			% case actordb_sqlite:exec(Db,"select * from state where id 
+			% case actordb_sqlite:exec(Db,"select * from state where id
 				% in ('idmax','schema.yaml','users','shards','num_shards');") of
 			case actordb_sqlite:exec(Db,"select * from state;") of
 				{ok,[{columns,_},{rows,[_|_] = PL}]} ->
@@ -758,7 +758,7 @@ cb_unverified_call(S,{init_state,Nodes,Groups,Misc1,Configs1}) ->
 			end,
 			set_init_state(Nodes,Groups,Configs),
 			[bkdcore_rpc:cast(Nd,{?MODULE,set_init_state_if_none,[Nodes,Groups,Configs]}) ||
-				Nd <- bkdcore:nodelist(), Nd /= actordb_conf:node_name()],
+				Nd <- bkdcore:nodelist_allclusters(), Nd /= actordb_conf:node_name()],
 			timer:sleep(100),
 			Sql = [$$,write_sql(nodes,Nodes),
 				   $$,write_sql(groups,Groups),
@@ -886,7 +886,7 @@ cb_init(#st{name = ?STATE_NM_GLOBAL} = _S,_EvNum) ->
 	{doread,<<"select * from state;">>}.
 cb_init(S,Evnum,{ok,[{columns,_},{rows,State1}]}) ->
 	State = [{butil:toatom(Key),binary_to_term(base64:decode(Val))} || {Key,Val} <- State1],
-	
+
 	Nodes = butil:ds_val(nodes,State),
 	case Nodes of
 		[_|_] ->
