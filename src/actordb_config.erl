@@ -841,7 +841,7 @@ rights_to_string(Rights) ->
 			{config} ->
 				"root";
 			_ ->
-				[butil:tobin(Type),"=",R]
+				[butil:tobin(Type),"=",butil:tobin(R)]
 		end
 	end || {Type,R} <- Rights],",")).
 
@@ -994,9 +994,3 @@ test() ->
 	ok.
 
 	% ok.
-
-
-
-
-
-

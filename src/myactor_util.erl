@@ -119,7 +119,7 @@ enc_val({blob,V}) when byte_size(V) < 4294967296 ->
 
 floor(Value) ->
 	case trunc(Value) of
-		Trunc when Trunc =< Value -> 
+		Trunc when Trunc =< Value ->
 			Trunc;
 		Trunc when Trunc > Value ->
 			Trunc - 1
@@ -146,7 +146,7 @@ bit(_) ->
 is_actor({Bin,_}) ->
 	is_actor(Bin);
 is_actor(Bin) ->
-	case Bin of 
+	case Bin of
 		<<"actor ",_Rem/binary>> ->
 			true;
 		<<"ACTOR ",_Rem/binary>> ->
@@ -166,7 +166,7 @@ is_actor(Bin) ->
 %% @spec genhash() -> binary()
 %% @doc  Generate a random 20 byte long hash for password encryption.
 genhash() ->    % 20 bytes long id
-	<< <<(nozero(B)):8>> || <<B:8>> <= crypto:rand_bytes(20) >>.
+	<< <<(nozero(B)):8>> || <<B:8>> <= crypto:strong_rand_bytes(20) >>.
 nozero(0) ->
 	1;
 nozero(N) ->
