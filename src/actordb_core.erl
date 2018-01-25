@@ -128,7 +128,19 @@ prestart1(Files) ->
 											BFName ++ ".config"),
 					case file:consult(FName) of
 						{ok, [L]} ->
-							L++Env;
+							lists:flatten([begin
+								case Obj of
+									[Hd|_] when is_integer(Hd) ->
+										case file:consult(Obj) of
+											{ok,[NL]} ->
+												NL;
+											_ ->
+												[]
+										end;
+									_ ->
+										Obj
+								end
+							end || Obj <- L])++Env;
 						_ ->
 						?AERR("Error in config ~p",[FName]),
 						init:stop()
