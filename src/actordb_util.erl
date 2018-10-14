@@ -4,9 +4,9 @@
 
 -module(actordb_util).
 -include_lib("actordb_core/include/actordb.hrl").
--export([hash/1, varint_enc/1, varint_dec/1, 
-	actor_types/0, typeatom/1, wait_for_startup/3, tunnel_bin/2, 
-	actor_path/1, shard_path/1, type_schema/2, createcfg/8, 
+-export([hash/1, varint_enc/1, varint_dec/1,reg_actor/2,
+	actor_types/0, typeatom/1, wait_for_startup/3, tunnel_bin/2,
+	actor_path/1, shard_path/1, type_schema/2, createcfg/8,
 	parse_cfg_schema/1, flatnow/0, split_point/2]).
 
 
@@ -248,6 +248,19 @@ actor_ae_stream(P) ->
 	after 30000 ->
 		distreg:unreg(self()),
 		erlang:send_after(3000,self(),stop)
+	end.
+
+reg_actor(Name,Type) ->
+	LocalShardForReg = actordb_shardmngr:find_local_shard(Name,Type),
+	?ADBG("shard for reg ~p",[LocalShardForReg]),
+	case LocalShardForReg of
+		{redirect,Shard,Node} ->
+			actordb:rpc(Node,Shard,{actordb_shard,reg_actor,[Shard,Name,Type]});
+		undefined ->
+			{Shard,_,Node} = actordb_shardmngr:find_global_shard(Name),
+			actordb:rpc(Node,Shard,{actordb_shard,reg_actor,[Shard,Name,Type]});
+		Shard ->
+			ok = actordb_shard:reg_actor(Shard,Name,Type)
 	end.
 
 % Safety precation. A pid must only belong to a specific actor.

@@ -372,7 +372,7 @@ handle_call(Msg,From,P) ->
 			case ok of
 				_ when P#dp.transactionid == TransactionId ->
 					% Same transaction can write to an actor more than once
-					% Transactions do not use async calls to driver, 
+					% Transactions do not use async calls to driver,
 					% so if we are in the middle of one, we can execute
 					% this write immediately.
 					write_call1(Msg1,From,P#dp.schemavers,P);
@@ -380,7 +380,7 @@ handle_call(Msg,From,P) ->
 					{Tid,Updaterid,_} = P#dp.transactionid,
 					?DBG("Overruling transaction ~p.'__mupdate__', for ~p.'__mupdate__'",
 						[Updaterid,element(2,TransactionId)]),
-					% New transaction has higher priority. 
+					% New transaction has higher priority.
 					% Interrupt it unless already committed.
 					actordb_sqlprocutil:transaction_overruled(Tid,Updaterid),
 					{noreply,timeout(P#dp{callqueue = queue:in_r({From,Msg},P#dp.callqueue)})}
@@ -1781,6 +1781,12 @@ init(#dp{} = P,_Why) ->
 		% 	exit(P#dp.election,reinit);
 		_ ->
 		 	ok
+	end,
+	case {_Why, P#dp.copyfrom} of
+		{copyproc_done, {<<_/binary>> = _Node,<<_/binary>> = ActorName}} ->
+			actordb_util:reg_actor(ActorName,P#dp.actortype);
+		_ ->
+			ok
 	end,
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,Flags},
 		{state,P#dp.cbstate},{slave,P#dp.mors == slave},{wasync,P#dp.wasync},{rasync,P#dp.rasync},
