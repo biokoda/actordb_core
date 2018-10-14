@@ -1783,8 +1783,8 @@ init(#dp{} = P,_Why) ->
 		 	ok
 	end,
 	case {_Why, P#dp.copyfrom} of
-		{copyproc_done, {<<_/binary>> = _Node,<<_/binary>> = ActorName}} ->
-			actordb_util:reg_actor(ActorName,P#dp.actortype);
+		{copyproc_done, {<<_/binary>> = _Node,<<_/binary>> = _ActorName}} ->
+			actordb_util:reg_actor(P#dp.actorname,P#dp.actortype);
 		_ ->
 			ok
 	end,
