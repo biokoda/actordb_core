@@ -1782,12 +1782,6 @@ init(#dp{} = P,_Why) ->
 		_ ->
 		 	ok
 	end,
-	case {_Why, P#dp.copyfrom} of
-		{copyproc_done, {<<_/binary>> = _Node,<<_/binary>> = _ActorName}} ->
-			actordb_util:reg_actor(P#dp.actorname,P#dp.actortype);
-		_ ->
-			ok
-	end,
 	init([{actor,P#dp.actorname},{type,P#dp.actortype},{mod,P#dp.cbmod},{flags,Flags},
 		{state,P#dp.cbstate},{slave,P#dp.mors == slave},{wasync,P#dp.wasync},{rasync,P#dp.rasync},
 		{queue,P#dp.callqueue},{startreason,{reinit,_Why}}]).

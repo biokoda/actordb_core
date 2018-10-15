@@ -75,7 +75,7 @@ read_reply(P,[H|T],Pos,Res) ->
 							{noreply,NP} = actordb_sqlproc:write_call(#write{sql = iolist_to_binary(Write)},
 									From,P#dp{cbstate = NS});
 						{_,_,_} ->
-							{noreply,NP} = 
+							{noreply,NP} =
 								actordb_sqlproc:write_call(#write{mfa = Write},From,P#dp{cbstate = NS})
 					end,
 					read_reply(NP,T,Pos+1,Res);
@@ -246,7 +246,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					ok
 			end,
 			BD = P#dp.wasync,
-			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined, 
+			NP = doqueue(do_cb(P#dp{callfrom = undefined, callres = undefined,
 				rasync = RR#ai{wait = undefined, callfrom = undefined},
 				wasync = BD#ai{nreplies = BD#ai.nreplies + 1},
 				schemavers = NewVers})),
@@ -300,7 +300,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 			read_reply(P, RR#ai.callfrom, 1, RR#ai.wait),
 			actordb_sqlite:replication_done(P),
 			doqueue(checkpoint(do_cb(P#dp{movedtonode = Moved, callfrom = undefined, callres = undefined,
-				force_sync = false, 
+				force_sync = false,
 				rasync = RR#ai{wait = undefined, callfrom = undefined},
 				wasync = BD#ai{nreplies = BD#ai.nreplies + 1}})));
 		false ->
@@ -1100,7 +1100,7 @@ follower_check(P,[F|T],Synced,Waiting,Delayed,Dead) ->
 	Latency = actordb_latency:latency(),
 	case ok of
 		_ when Addr == undefined ->
-			follower_check(P#dp{followers = 
+			follower_check(P#dp{followers =
 				lists:keydelete(F#flw.node,#flw.node,P#dp.followers)}, T, Synced,Waiting,Delayed,Dead);
 		_ when IsAlive == false ->
 			follower_check(P,T,Synced,Waiting,Delayed,[F|Dead]);
@@ -1151,7 +1151,7 @@ follower_check_handle(P,Synced,Waiting,Delayed,Dead) ->
 			% We can still continue.
 			follower_check_handle(P,Synced,Waiting,Delayed,[]);
 		false ->
-			% We can not continue. Step down. 
+			% We can not continue. Step down.
 			% Any pending writes/reads will return error, unless nodes come back online fast enough.
 			{noreply,P#dp{verified = false, mors = slave, masternode = undefined,
 				masternodedist = undefined,
@@ -1550,8 +1550,8 @@ parse_opts(P,[]) ->
 				DbPath ->
 					ok
 			end,
-			P#dp{dbpath = DbPath, activity = actor_start(P), 
-				netchanges = actordb_local:net_changes(), 
+			P#dp{dbpath = DbPath, activity = actor_start(P),
+				netchanges = actordb_local:net_changes(),
 				cbstate = apply(P#dp.cbmod,cb_init_engine,[P#dp.cbstate])};
 		name_exists ->
 			{registered,distreg:whereis(Name)}
@@ -1934,6 +1934,12 @@ dbcopy_receive(Home,P,CurStatus,ChildNodes) ->
 							Source ! {Ref,self(),ok},
 							case Origin of
 								original ->
+									case P#dp.copyfrom of
+										{<<_/binary>> = _Node,<<_/binary>> = _ActorName} ->
+											ok = actordb_util:reg_actor(P#dp.actorname,P#dp.actortype);
+										_ ->
+											ok
+									end,
 									% callback_unlock(Home,Evnum,Evterm,P);
 									exit(unlock);
 								_ ->
