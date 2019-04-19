@@ -1459,7 +1459,7 @@ election_timer(doelection2,P) ->
 		_ when P#dp.masternode /= undefined, P#dp.masternode /= Me ->
 			% We are follower and masternode is set. This means leader sent us at least one AE.
 			% Is connection active?
-			case bkdcore_rpc:is_connected(P#dp.masternode) of
+			case bkdcore_rpc:is_connected(P#dp.masternode) andalso lists:member(P#dp.masternodedist, nodes()) of
 				true ->
 					?DBG("Election timeout, do nothing, leader=~p",[P#dp.masternode]),
 					{noreply,P#dp{without_master_since = undefined}};
