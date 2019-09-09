@@ -544,6 +544,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			end,
 			actordb_local:actor_mors(slave,LeaderNode),
 			NP = P#dp{masternode = LeaderNode,without_master_since = undefined,
+			masternode_since = actordb_local:elapsed_time(),
 			masternodedist = bkdcore:dist_name(LeaderNode),
 			rasync = RR#ai{callfrom = undefined, wait = undefined},
 			callfrom = undefined, callres = undefined,verified = true},
@@ -565,6 +566,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 				voted_for = undefined,callfrom = undefined, callres = undefined,
 				rasync = RR#ai{callfrom = undefined, wait = undefined},
 				masternode = LeaderNode,without_master_since = undefined,
+				masternode_since = actordb_local:elapsed_time(),
 				masternodedist = bkdcore:dist_name(LeaderNode),
 				current_term = Term},
 			state_rw_call(What,From,
@@ -588,14 +590,15 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",
 				[AEType,{Term,P#dp.current_term}]),
 			NP = P#dp{current_term = Term,voted_for = undefined,
-			masternode = LeaderNode, without_master_since = undefined,verified = true,
+			masternode = LeaderNode, without_master_since = undefined,verified = true, 
+			masternode_since = actordb_local:elapsed_time(),
 			masternodedist = bkdcore:dist_name(LeaderNode)},
 			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(NP)));
 		_ when AEType == empty ->
 			?DBG("AE start, ok for empty"),
 			reply(From,ok),
 			actordb_sqlprocutil:ae_respond(P,LeaderNode,true,PrevEvnum,AEType,CallCount),
-			{noreply,P#dp{verified = true}};
+			{noreply,P#dp{verified = true, masternode_since = actordb_local:elapsed_time()}};
 		% Ok, now it will start receiving wal pages
 		_ ->
 			case AEType == recover of
@@ -607,7 +610,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 					Age = P#dp.recovery_age,
 					?DBG("AE start ok from ~p",[LeaderNode])
 			end,
-			{reply,ok,P#dp{verified = true, inrecovery = AEType == recover, recovery_age = Age}}
+			{reply,ok,P#dp{verified = true, masternode_since = actordb_local:elapsed_time(), inrecovery = AEType == recover, recovery_age = Age}}
 	end;
 % Executed on follower.
 % Appends pages, a single write is split into multiple calls.
@@ -720,7 +723,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 			case ok of
 				% Candidates term is lower than current_term, ignore.
 				_ when NewTerm < P#dp.current_term ->
-					DoElection = (P#dp.mors == master andalso P#dp.verified == true),
+					DoElection = true, %(P#dp.mors == master andalso P#dp.verified == true),
 					reply(From,{outofdate,actordb_conf:node_name(),P#dp.current_term,{P#dp.evnum,P#dp.evterm}}),
 					NP = P;
 				% We've already seen this term, only vote yes if we have not voted
@@ -735,7 +738,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 							current_term = NewTerm,
 							election_timer = actordb_sqlprocutil:election_timer(Now,P#dp.election_timer)});
 						true ->
-							DoElection = (P#dp.mors == master andalso P#dp.verified == true),
+							DoElection = true,% (P#dp.mors == master andalso P#dp.verified == true),
 							reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 							NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm});
 						false ->
@@ -753,7 +756,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
 				_ ->
-					DoElection = (P#dp.mors == master andalso P#dp.verified == true),
+					DoElection = true,% (P#dp.mors == master andalso P#dp.verified == true),
 					reply(From,{outofdate,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = undefined, current_term = NewTerm,
 						election_timer = actordb_sqlprocutil:election_timer(Now,P#dp.election_timer)})
@@ -1459,7 +1462,7 @@ election_timer(doelection2,P) ->
 		_ when P#dp.masternode /= undefined, P#dp.masternode /= Me ->
 			% We are follower and masternode is set. This means leader sent us at least one AE.
 			% Is connection active?
-			case bkdcore_rpc:is_connected(P#dp.masternode) of
+			case bkdcore_rpc:is_connected(P#dp.masternode) andalso Now - P#dp.masternode_since < 2000 of
 				true ->
 					?DBG("Election timeout, do nothing, leader=~p",[P#dp.masternode]),
 					{noreply,P#dp{without_master_since = undefined}};
@@ -1584,6 +1587,7 @@ elected_leader(P1, AllSynced) ->
 	ReplType = apply(P1#dp.cbmod,cb_replicate_type,[P1#dp.cbstate]),
 	P = actordb_sqlprocutil:reopen_db(P1#dp{mors = master, election_timer = undefined,
 		masternode = actordb_conf:node_name(),
+		masternode_since = actordb_local:elapsed_time(),
 		without_master_since = undefined,
 		masternodedist = bkdcore:dist_name(actordb_conf:node_name()),
 		flags = P1#dp.flags band (bnot ?FLAG_WAIT_ELECTION),

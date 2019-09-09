@@ -427,6 +427,7 @@ handle_info(readshards,P) ->
 	end;
 	% set_shard_border(Shard,Type,Limit,NewNode) ->
 handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
+	?ADBG("getstate ~p",[Result]),
 	case Result of
 		{GlobalShards,Local1} ->
 			case Local1 of
@@ -444,10 +445,10 @@ handle_info({'DOWN',_Monitor,_,PID,Result},#dp{getstatepid = PID} = P) ->
 					{noreply,P#dp{allshards = GlobalShards,getstatepid = undefined, 
 						shardsbeingtaken = P#dp.shardsbeingtaken++Local, dirty = false}};
 				_G->
-					{noreply,getstate(P#dp{shardsbeingtaken = P#dp.shardsbeingtaken++Local})}
+					{noreply,getstate(P#dp{getstatepid = undefined, shardsbeingtaken = P#dp.shardsbeingtaken++Local})}
 			end;
 		_X ->
-			{noreply,getstate(P)}
+			{noreply,getstate(P#dp{getstatepid = undefined})}
 	end;
 handle_info({'DOWN',_Monitor,_,PID,Result},P) ->
 	?ADBG("Shard dead ~p ~p~n",[PID,Result]),
@@ -531,6 +532,16 @@ async_getstate() ->
 		_ ->
 			ok
 	end,
+	Home = self(),
+	spawn(fun() ->
+		erlang:monitor(process,Home),
+		receive
+			{'DOWN',_Monitor,_,_PID,_Result} ->
+				ok
+			after 1000 ->
+				exit(Home,nostate)
+		end
+	end),
 	case actordb_sharedstate:read_cluster([<<"shardsbeingtaken,">>,bkdcore:node_name()]) of
 		undefined ->
 			exit({Global,[]});

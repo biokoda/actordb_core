@@ -131,7 +131,7 @@ evnum, evterm, newvers, moved, fsync}).
 	% If node is sending us a complete copy of db, this identifies the operation
 	dbcopyref,
 	% Where is master sqlproc.
-	masternode, masternodedist, without_master_since,
+	masternode, masternodedist, without_master_since, masternode_since = 0,
 	% If db has been moved completely over to a new node. All calls will be redirected to that node.
 	% Once this has been set, db files will be deleted on process timeout.
 	movedtonode,
