@@ -717,9 +717,10 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 				true
 		end,
 	Follower = lists:keyfind(Candidate,#flw.node,P#dp.followers),
+	DistFollower = bkdcore:dist_name(Candidate),
 	Now = actordb_local:elapsed_time(),
 	case Follower of
-		false when P#dp.mors == master ->
+		false when P#dp.mors == master, DistFollower /= undefined ->
 			?DBG("Adding node to follower list ~p",[Candidate]),
 			state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Candidate}));
 		_ ->
@@ -753,6 +754,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 				% New candidates term is higher than ours, is he as up to date?
 				_ when Uptodate ->
 					DoElection = false,
+					?DBG("Stepping down after voting on another master"),
 					reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 					NP = actordb_sqlprocutil:save_term(P#dp{mors = slave, verified = false, 
 						masternode = undefined,masternodedist = undefined,
