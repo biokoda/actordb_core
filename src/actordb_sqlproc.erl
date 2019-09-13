@@ -656,12 +656,15 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 				% What we thought was follower is ahead of us and we need to step down
 				false when P#dp.current_term < CurrentTerm ->
 					?DBG("My term is out of date {His,Mine}=~p",[{CurrentTerm,P#dp.current_term}]),
-					{reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
-						P#dp{mors = slave,current_term = CurrentTerm,
-							election_timer = actordb_sqlprocutil:election_timer(Now,P#dp.election_timer),
-							masternode = undefined, without_master_since = Now,
-							masternodedist = undefined,
-							voted_for = undefined, followers = []}))};
+					{reply, ok, P#dp{masternode = undefined, without_master_since = Now,
+						masternodedist = undefined, verified = false,
+						current_term = CurrentTerm,election_timer = actordb_sqlprocutil:election_timer(Now,undefined)}};
+					% {reply,ok,actordb_sqlprocutil:reopen_db(actordb_sqlprocutil:save_term(
+					% 	P#dp{mors = slave,current_term = CurrentTerm,
+					% 		election_timer = actordb_sqlprocutil:election_timer(Now,P#dp.election_timer),
+					% 		masternode = undefined, without_master_since = Now,
+					% 		masternodedist = undefined,
+					% 		voted_for = undefined, followers = []}))};
 				false when NFlw#flw.match_index == P#dp.evnum ->
 					% Follower is up to date. He replied false. Maybe our term was too old.
 					{reply,ok,actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:store_follower(P,NFlw))};
@@ -751,7 +754,10 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 				_ when Uptodate ->
 					DoElection = false,
 					reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
-					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
+					NP = actordb_sqlprocutil:save_term(P#dp{mors = slave, verified = false, 
+						masternode = undefined,masternodedist = undefined,
+						without_master_since = actordb_local:elapsed_time(),
+						voted_for = Candidate, current_term = NewTerm,
 					election_timer = actordb_sqlprocutil:election_timer(Now,P#dp.election_timer)});
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
@@ -1733,7 +1739,7 @@ down_info(PID,_Ref,Reason,#dp{copyproc = PID} = P) ->
 down_info(PID,_Ref,Reason,P) ->
 	case lists:keyfind(PID,#cpto.pid,P#dp.dbcopy_to) of
 		false ->
-			?DBG("downmsg, verify maybe? ~p",[P#dp.election_timer]),
+			?DBG("downmsg, verify maybe? ~p ~p ~p",[P#dp.election_timer,PID,Reason]),
 			case apply(P#dp.cbmod,cb_info,[{'DOWN',_Ref,process,PID,Reason},P#dp.cbstate]) of
 				{noreply,S} ->
 					{noreply,P#dp{cbstate = S}};

@@ -112,7 +112,8 @@ init(_) ->
 % 
 check_reconnect(Slots,[{{_Thread, _Driver, Pos} = K, {Type,undefined}}|T], Sockets) ->
 	Nd = element(Pos+1,Slots),
-	{IP,Port} = bkdcore:node_address(Nd),
+	{IP,_Port} = bkdcore:node_address(Nd),
+	Port = getport(Nd),
 	{Pid,_} = spawn_monitor(fun() -> doconnect(IP, Port, Nd) end),
 	check_reconnect(Slots,T, Sockets#{K => {Type, Pid}});
 	% case doconnect(IP, Port, Nd, K) of
@@ -137,7 +138,8 @@ connect(_,[],S) ->
 	S.
 
 connect_threads(Slots, Driver, [Thread|T], {Nd, Pos, Type} = Info, Sockets) ->
-	{IP,Port} = bkdcore:node_address(Nd),
+	{IP,_Port} = bkdcore:node_address(Nd),
+	Port = getport(Nd),
 	Nd = element(Pos+1,Slots),
 	K = {Thread, Driver, Pos},
 	% Start = os:timestamp(),
@@ -153,6 +155,15 @@ connect_threads(Slots, Driver, [Thread|T], {Nd, Pos, Type} = Info, Sockets) ->
 	% end;
 connect_threads(_Slots, _Driver,[],_Info,S) ->
 	S.
+
+getport(Nd) ->
+	case application:get_env(actordb_core, pmd) of
+		{ok,_Obj} ->
+			actordb_pmd:node_to_port(Nd) + 1;
+		_ ->
+			{_,Port} = bkdcore:node_address(Nd),
+			Port
+	end.
 
 doconnect(IP, Port, Nd) ->
 	?ADBG("doconnect ~p",[Nd]),
