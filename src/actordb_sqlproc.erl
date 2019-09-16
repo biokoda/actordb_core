@@ -500,19 +500,22 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 	% Start sets parameters. There may not be any wal append calls after if empty write.
 	% AEType = [head,empty,recover]
 	?DBG("AE start ~p {PrevEvnum,PrevTerm}=~p leader=~p",[AEType, {PrevEvnum,PrevTerm},LeaderNode]),
+	RecoveryAge = actordb_local:elapsed_time() - P#dp.recovery_age,
 	case ok of
-		_ when P#dp.inrecovery, AEType == head ->
-			?DBG("Ignoring head because inrecovery"),
+		_ when P#dp.inrecovery andalso RecoveryAge > 2000 andalso AEType == head ->
+			% ?DBG("Ignoring head because inrecovery"),
 			% Reply may have gotten lost or leader could have changed.
-			case actordb_local:elapsed_time() - P#dp.recovery_age > 2000 of
-				true ->
+			% case RecoveryAge > 2000 of
+			% 	true ->
 					?ERR("Recovery mode timeout",[]),
 					state_rw_call(What,From,P#dp{inrecovery = false});
-				false ->
-					{reply,false,P}
-			end;
+			% 	false ->
+			% 		% actordb_sqlprocutil:ae_respond(P,LeaderNode,wrongstate,PrevEvnum,AEType,CallCount),
+			% 		{reply,false,P}
+			% end;
 		_ when is_pid(P#dp.copyproc) ->
 			?DBG("Ignoring AE because copy in progress"),
+			% actordb_sqlprocutil:ae_respond(P,LeaderNode,wrongstate,PrevEvnum,AEType,CallCount),
 			{reply,false,P};
 		_ when Term < P#dp.current_term ->
 			?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
@@ -957,7 +960,7 @@ write_call(Msg,From,#dp{flags = F} = P) when F band ?TIMEOUT_PENDING == 0 ->
 write_call(#write{mfa = MFA, sql = Sql} = Msg,From,P) ->
 	A = P#dp.wasync,
 	ForceSync =  A#ai.buffer_fsync or lists:member(fsync,Msg#write.flags),
-	?DBG("writecall evnum_prewrite=~p,term=~p writeinfo=~p",[P#dp.evnum,P#dp.current_term,{MFA,Sql}]),
+	?DBG("writecall evnum_prewrite=~p,term=~p writeinfo=~p, from=~p",[P#dp.evnum,P#dp.current_term,{MFA,Sql},From]),
 	case Sql of
 		delete ->
 			A1 = A#ai{buffer = [<<"INSERT OR REPLACE INTO __adb (id,val) VALUES (?1,?2);">>|A#ai.buffer],
