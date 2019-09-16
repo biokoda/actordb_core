@@ -1289,7 +1289,8 @@ handle_info({Ref,Res1}, #dp{wasync = #ai{wait = Ref} = BD} = P) when is_referenc
 			handle_info(doqueue,actordb_sqlprocutil:statequeue(P#dp{wasync = NewAsync1}))
 	end;
 % Async election vote result.
-handle_info({{Ref,_,_Nd}, Msg}, P) when element(3,P#dp.election_timer) == Ref ->
+handle_info({{Ref,MonRef,_Nd}, Msg}, P) when element(3,P#dp.election_timer) == Ref ->
+	erlang:demonitor(MonRef,[flush]),
 	?DBG("received vote result from ~p, res=~p",[_Nd,element(1,Msg)]),
 	election_vote(Msg,P);
 handle_info(doqueue, P) ->
@@ -1422,14 +1423,14 @@ election_timer(doelection1,P) ->
 			% More than a second after write is finished (and sent to followers)
 			case Now - CallTime > 1000+LatencyNow of
 				true when Noops == 0 ->
-					?ERR("Write is taking long to reach consensus"),
+					?ERR("Write is taking long to reach consensus ~p",[P#dp.callfrom]),
 					% Try an empty write.
 					{noreply,P#dp{callat = {CallTime,1}, election_timer = actordb_sqlprocutil:election_timer(undefined)}};
 				true when Noops == 1 ->
 					?ERR("Still have not reached consensus"),
 					{noreply,P#dp{callat = {CallTime,2}, election_timer = actordb_sqlprocutil:election_timer(undefined)}};
 				true when Noops == 2 ->
-					?ERR("Write abandon with consensus_timeout"),
+					?ERR("Write abandon with consensus_timeout ~p",[P#dp.callfrom]),
 					reply(P#dp.callfrom,{error,consensus_timeout}),
 					RR = P#dp.rasync,
 					case RR#ai.callfrom of
