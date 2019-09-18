@@ -324,11 +324,17 @@ send_empty_ae(P,<<_/binary>> = Nm) ->
 	send_empty_ae(P,lists:keyfind(Nm,#flw.node,P#dp.followers));
 send_empty_ae(P,F) ->
 	?DBG("sending empty ae to ~p",[F#flw.node]),
-	bkdcore_rpc:cast(F#flw.node,
+	case [C || C <- P#dp.dbcopy_to, C#cpto.node == F#flw.node, C#cpto.actorname == P#dp.actorname] of
+		[] ->
+			bkdcore_rpc:cast(F#flw.node,
 			{actordb_sqlproc,call_slave,[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
 			 {state_rw,{appendentries_start,P#dp.current_term,actordb_conf:node_name(),
 			 F#flw.match_index,F#flw.match_term,empty,{F#flw.match_index,F#flw.match_term}}}]}),
-	F#flw{wait_for_response_since = actordb_local:elapsed_time()}.
+			F#flw{wait_for_response_since = actordb_local:elapsed_time()};
+		_ ->
+			?DBG("dbcopy active to node"),
+			F
+	end.
 
 reopen_db(#dp{mors = master} = P) ->
 	case ok of
@@ -467,8 +473,8 @@ try_wal_recover(P,F) ->
 			{false,P,F}
 	end.
 
-continue_maybe(P,F,true) ->
-	store_follower(P,F);
+% continue_maybe(P,F,true) ->
+% 	store_follower(P,F);
 continue_maybe(P,F,SuccessHead) ->
 	% Check if follower behind
 	?DBG("Continue maybe ~p {MyEvnum,NextIndex}=~p havefile=~p",
@@ -743,110 +749,125 @@ doqueue(P) ->
 % Execute queued calls and execute reads/writes. handle_call just batched r/w's together.
 doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactionid = undefined,locked = [],
 		wasync = #ai{wait = undefined, nreplies = NR}} = P, Skipped) ->
-	case queue:is_empty(P#dp.callqueue) of
-		true ->
-			case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
-				{ok,NS} ->
-					exec_reads(net_changes(appendqueue(P#dp{cbstate = NS},Skipped)));
+	NetChanges = actordb_local:net_changes(),
+	case ok of
+		_ when NetChanges /= P#dp.netchanges ->
+			?DBG("Rerun election due to net change"),
+			Now = actordb_local:elapsed_time(),
+			Interval = election_timer_interval(),
+			case P#dp.election_timer of
+				undefined when Now - P#dp.last_vote_event > Interval*2 ->
+					self() ! doelection,
+					P#dp{verified = false, netchanges = NetChanges};
 				_ ->
-					exec_reads(net_changes(appendqueue(P,Skipped)))
+					P#dp{verified = false, netchanges = NetChanges, election_timer = election_timer(P#dp.election_timer)}
 			end;
-		false ->
-			{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
-			{From,Msg} = Call,
-			Res = case Msg of
-				#write{} when Msg#write.transaction /= undefined ->
-					case NR > 0 of
-						true ->
+		_ ->
+			case queue:is_empty(P#dp.callqueue) of
+				true ->
+					case apply(P#dp.cbmod,cb_idle,[P#dp.cbstate]) of
+						{ok,NS} ->
+							exec_reads(net_changes(appendqueue(P#dp{cbstate = NS},Skipped)));
+						_ ->
+							exec_reads(net_changes(appendqueue(P,Skipped)))
+					end;
+				false ->
+					{{value,Call},CQ} = queue:out_r(P#dp.callqueue),
+					{From,Msg} = Call,
+					Res = case Msg of
+						#write{} when Msg#write.transaction /= undefined ->
+							case NR > 0 of
+								true ->
+									SkippedNew = Skipped,
+									?DBG("Executing transaction ~p",[Msg#write.transaction]),
+									{{FromSmallest,Smallest},Extracted} = smallest_transaction({From,Msg},queue:to_list(CQ),[]),
+									actordb_sqlproc:write_call1(Smallest,FromSmallest,P#dp.schemavers,
+												P#dp{callqueue = queue:from_list(Extracted)});
+								false ->
+									% Not ready to process transaction yet.
+									SkippedNew = [{From,Msg}|Skipped],
+									{noreply,P#dp{callqueue = CQ}}
+							end;
+						#write{} ->
 							SkippedNew = Skipped,
-							?DBG("Executing transaction ~p",[Msg#write.transaction]),
-							{{FromSmallest,Smallest},Extracted} = smallest_transaction({From,Msg},queue:to_list(CQ),[]),
-							actordb_sqlproc:write_call1(Smallest,FromSmallest,P#dp.schemavers,
-										P#dp{callqueue = queue:from_list(Extracted)});
-						false ->
-							% Not ready to process transaction yet.
-							SkippedNew = [{From,Msg}|Skipped],
-							{noreply,P#dp{callqueue = CQ}}
-					end;
-				#write{} ->
-					SkippedNew = Skipped,
-					actordb_sqlproc:write_call(Msg,From,P#dp{callqueue = CQ});
-				#read{} ->
-					SkippedNew = Skipped,
-					actordb_sqlproc:read_call(Msg,From,P#dp{callqueue = CQ});
-				{move,NewShard,Node,CopyReset,CbState} ->
-					SkippedNew = Skipped,
-					?INF("Received move call to=~p",[{NewShard,Node}]),
-					% Call to move this actor to another cluster.
-					% First store the intent to move with all needed data.
-					% This way even if a node chrashes, the actor will attempt to move on next startup.
-					% When write done, reply to caller and start with move process (in ..util:reply_maybe.
-					Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
-							(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,CbState})))/binary,"');">>,
-					actordb_sqlproc:write_call(#write{sql = Sql},{exec,From,{move,Node}},
-						actordb_sqlprocutil:set_followers(true,P#dp{callqueue = CQ}));
-				{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
-					SkippedNew = Skipped,
-					% Similar to above. Both have just insert and not insert and replace because
-					%  we can only do one move/split at a time. It makes no sense to do both at the same time.
-					% So rely on DB to return error for these conflicting calls.
-					SplitBin = term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,CbState}),
-					Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
-							(base64:encode(SplitBin))/binary,"');">>,
-					% Split is called when shards are moving around (nodes were added).
-					% If different number of nodes in cluster, we need
-					%  to have an updated list of nodes.
-					actordb_sqlproc:write_call(#write{sql = Sql},{exec,From,{split,MFA,Node,OldActor,NewActor}},
-						actordb_sqlprocutil:set_followers(true,P#dp{callqueue = CQ}));
-				{copy,{Node,OldActor,NewActor}} ->
-					SkippedNew = Skipped,
-					Ref = make_ref(),
-					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
-									{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
-						ok ->
-							dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P#dp{callqueue = CQ});
-						Err ->
-							{reply, Err,P#dp{callqueue = CQ}}
-					end;
-				report_synced ->
-					SkippedNew = Skipped,
-					{reply,ok,P#dp{callqueue = CQ, flags = P#dp.flags bor ?FLAG_REPORT_SYNC}};
-				delete ->
-					SkippedNew = Skipped,
-					{reply,ok,P#dp{movedtonode = deleted, callqueue = CQ}};
-				stop ->
-					SkippedNew = Skipped,
-					?DBG("Received stop call"),
-					{stop, stopped, P};
-				noop ->
-					SkippedNew = Skipped,
-					{reply, noop, P#dp{callqueue = CQ}};
-				Msg ->
-					SkippedNew = Skipped,
-					% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
-					case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
-						{write,Sql,NS} ->
-							actordb_sqlproc:write_call(#write{sql = Sql},From,P#dp{cbstate = NS, callqueue = CQ});
-						{reply,Resp,S} ->
-							{reply,Resp,P#dp{cbstate = S, callqueue = CQ}};
-						{reply,Resp} ->
-							{reply,Resp,P#dp{callqueue = CQ}}
+							actordb_sqlproc:write_call(Msg,From,P#dp{callqueue = CQ});
+						#read{} ->
+							SkippedNew = Skipped,
+							actordb_sqlproc:read_call(Msg,From,P#dp{callqueue = CQ});
+						{move,NewShard,Node,CopyReset,CbState} ->
+							SkippedNew = Skipped,
+							?INF("Received move call to=~p",[{NewShard,Node}]),
+							% Call to move this actor to another cluster.
+							% First store the intent to move with all needed data.
+							% This way even if a node chrashes, the actor will attempt to move on next startup.
+							% When write done, reply to caller and start with move process (in ..util:reply_maybe.
+							Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
+									(base64:encode(term_to_binary({{move,NewShard,Node},CopyReset,CbState})))/binary,"');">>,
+							actordb_sqlproc:write_call(#write{sql = Sql},{exec,From,{move,Node}},
+								actordb_sqlprocutil:set_followers(true,P#dp{callqueue = CQ}));
+						{split,MFA,Node,OldActor,NewActor,CopyReset,CbState} ->
+							SkippedNew = Skipped,
+							% Similar to above. Both have just insert and not insert and replace because
+							%  we can only do one move/split at a time. It makes no sense to do both at the same time.
+							% So rely on DB to return error for these conflicting calls.
+							SplitBin = term_to_binary({{split,MFA,Node,OldActor,NewActor},CopyReset,CbState}),
+							Sql = <<"$INSERT INTO __adb (id,val) VALUES (",?COPYFROM/binary,",'",
+									(base64:encode(SplitBin))/binary,"');">>,
+							% Split is called when shards are moving around (nodes were added).
+							% If different number of nodes in cluster, we need
+							%  to have an updated list of nodes.
+							actordb_sqlproc:write_call(#write{sql = Sql},{exec,From,{split,MFA,Node,OldActor,NewActor}},
+								actordb_sqlprocutil:set_followers(true,P#dp{callqueue = CQ}));
+						{copy,{Node,OldActor,NewActor}} ->
+							SkippedNew = Skipped,
+							Ref = make_ref(),
+							case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+											{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
+								ok ->
+									dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P#dp{callqueue = CQ});
+								Err ->
+									{reply, Err,P#dp{callqueue = CQ}}
+							end;
+						report_synced ->
+							SkippedNew = Skipped,
+							{reply,ok,P#dp{callqueue = CQ, flags = P#dp.flags bor ?FLAG_REPORT_SYNC}};
+						delete ->
+							SkippedNew = Skipped,
+							{reply,ok,P#dp{movedtonode = deleted, callqueue = CQ}};
+						stop ->
+							SkippedNew = Skipped,
+							?DBG("Received stop call"),
+							{stop, stopped, P};
+						noop ->
+							SkippedNew = Skipped,
+							{reply, noop, P#dp{callqueue = CQ}};
+						Msg ->
+							SkippedNew = Skipped,
+							% ?DBG("cb_call ~p",[{P#dp.cbmod,Msg}]),
+							case apply(P#dp.cbmod,cb_call,[Msg,From,P#dp.cbstate]) of
+								{write,Sql,NS} ->
+									actordb_sqlproc:write_call(#write{sql = Sql},From,P#dp{cbstate = NS, callqueue = CQ});
+								{reply,Resp,S} ->
+									{reply,Resp,P#dp{cbstate = S, callqueue = CQ}};
+								{reply,Resp} ->
+									{reply,Resp,P#dp{callqueue = CQ}}
+							end
+					end,
+					case Res of
+						{noreply,NP} ->
+							doqueue(NP,SkippedNew);
+						{noreply,NP,_} ->
+							doqueue(NP,SkippedNew);
+						{reply,X,NP} ->
+							reply(From,X),
+							doqueue(NP,SkippedNew);
+						{reply,X,NP,_} ->
+							reply(From,X),
+							doqueue(NP,SkippedNew);
+						{stop,_,NP} ->
+							self() ! stop,
+							NP
 					end
-			end,
-			case Res of
-				{noreply,NP} ->
-					doqueue(NP,SkippedNew);
-				{noreply,NP,_} ->
-					doqueue(NP,SkippedNew);
-				{reply,X,NP} ->
-					reply(From,X),
-					doqueue(NP,SkippedNew);
-				{reply,X,NP,_} ->
-					reply(From,X),
-					doqueue(NP,SkippedNew);
-				{stop,_,NP} ->
-					self() ! stop,
-					NP
 			end
 	end;
 doqueue(P,[]) ->
@@ -1041,12 +1062,17 @@ do_cb(P) ->
 			P
 	end.
 
+election_timer_interval() ->
+	election_timer_interval(actordb_latency:latency()).
+election_timer_interval(Latency) ->
+	max(300,Latency).
+
 election_timer(undefined,undefined) ->
 	election_timer(actordb_local:elapsed_time(),undefined);
 election_timer(Now,undefined) ->
 	Latency = actordb_latency:latency(),
-	Fixed = max(300,Latency),
-	T = Fixed+rand:uniform(Fixed),
+	Fixed = election_timer_interval(),
+	T = (Fixed div 2) + rand:uniform(Fixed),
 	?ADBG("Relection try in ~p, replication latency ~p",[T,Latency]),
 	{timer, erlang:send_after(T,self(),{doelection,Latency,Now})};
 election_timer(_Now,{election,_,_} = E) ->
@@ -1974,6 +2000,8 @@ callback_unlock(P) ->
 	DBC = {dbcopy,{unlock,P#dp.dbcopyref}},
 	case rpc(Node,{actordb_sqlproc,call,[{ActorName,P#dp.actortype},[],DBC,P#dp.cbmod,onlylocal]}) of
 		ok ->
+			ok;
+		false ->
 			ok;
 		{ok,_} ->
 			ok;

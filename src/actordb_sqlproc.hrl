@@ -119,7 +119,8 @@ evnum, evterm, newvers, moved, fsync}).
 	% Possible values: true, false
 	verified = false,
 	% undefined | {election, TimerRef, ElectionRef} | {timer,Ref}
-	election_timer, 
+	election_timer,
+	last_vote_event = 0,
 	% Path to sqlite file.
 	dbpath,
 	% Which nodes current process is sending dbfile to.

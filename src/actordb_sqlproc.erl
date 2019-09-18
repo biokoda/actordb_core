@@ -549,6 +549,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			NP = P#dp{masternode = LeaderNode,without_master_since = undefined,
 			masternode_since = actordb_local:elapsed_time(),
 			masternodedist = bkdcore:dist_name(LeaderNode),
+			netchanges = actordb_local:net_changes(),
 			rasync = RR#ai{callfrom = undefined, wait = undefined},
 			callfrom = undefined, callres = undefined,verified = true},
 			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP)));
@@ -761,7 +762,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 					reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
 					NP = actordb_sqlprocutil:save_term(P#dp{mors = slave, verified = false, 
 						masternode = undefined,masternodedist = undefined,
-						without_master_since = actordb_local:elapsed_time(),
+						without_master_since = Now,
 						voted_for = Candidate, current_term = NewTerm,
 					election_timer = actordb_sqlprocutil:election_timer(Now,P#dp.election_timer)});
 				% Higher term, but not as up to date. We can not vote for him.
@@ -774,7 +775,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 			end,
 			?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election_timer]),
-			{noreply,actordb_sqlprocutil:doqueue(NP#dp{election_timer =
+			{noreply,actordb_sqlprocutil:doqueue(NP#dp{last_vote_event = Now, election_timer =
 				actordb_sqlprocutil:election_timer(Now,P#dp.election_timer)})}
 	end;
 state_rw_call({delete,deleted},From,P) ->
@@ -1427,8 +1428,9 @@ election_timer(doelection1,P) ->
 			case Now - CallTime > 1000+LatencyNow of
 				true when Noops == 0 ->
 					?ERR("Write is taking long to reach consensus ~p",[P#dp.callfrom]),
-					% Try an empty write.
-					{noreply,P#dp{callat = {CallTime,1}, election_timer = actordb_sqlprocutil:election_timer(undefined)}};
+					NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- P#dp.followers],
+					{noreply,P#dp{callat = {CallTime,1}, election_timer = actordb_sqlprocutil:election_timer(undefined),
+						followers = NewFollowers1}};
 				true when Noops == 1 ->
 					?ERR("Still have not reached consensus"),
 					{noreply,P#dp{callat = {CallTime,2}, election_timer = actordb_sqlprocutil:election_timer(undefined)}};
@@ -1523,11 +1525,15 @@ election_vote({What,Node,_HisLatestTerm,{Num,Term}}, P) ->
 	NFL = lists:keystore(Node,#flw.node, P#dp.followers,NF),
 	case count_votes(P,NFL, true,1,0) of
 		% If elected with majority continue processing.
-		{AllSynced, NVotes, 0} when NVotes*2 > ClusterSize ->
-			elected_leader(cleanup_results(P#dp{followers = NFL, election_timer = undefined}), AllSynced);
+		{AllSynced, NVotes, Missing} when NVotes*2 > ClusterSize ->
+			?DBG("Election successfull, nvotes=~p missing=~p",[NVotes, Missing]),
+			NP = P#dp{followers = NFL, election_timer = undefined, 
+			netchanges = actordb_local:net_changes(),
+			last_vote_event = actordb_local:elapsed_time()},
+			elected_leader(cleanup_results(NP), AllSynced);
 		% If not wait for election timeout to decide what to do.
 		_ ->
-			{noreply, P#dp{followers = NFL}}
+			{noreply, P#dp{followers = NFL, last_vote_event = actordb_local:elapsed_time()}}
 	end;
 election_vote(Err,P) ->
 	?ERR("election_vote response error=~p",[Err]),

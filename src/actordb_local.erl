@@ -39,6 +39,7 @@ connect_all() ->
 net_changes() ->
 	butil:ds_val(netchanges,?GLOBAL_INFO).
 mod_netchanges() ->
+	?ADBG("mod_netchanges"),
 	ets:update_counter(?GLOBAL_INFO,netchanges,1).
 % ActorDB rarely cares about actual time. It mostly just cares how long something took and even that
 %  in relatively large chunks. 
