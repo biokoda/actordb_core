@@ -120,6 +120,7 @@ evnum, evterm, newvers, moved, fsync}).
 	verified = false,
 	% undefined | {election, TimerRef, ElectionRef} | {timer,Ref}
 	election_timer,
+	% Last productive vote event (vote response or vote yes for a candidate)
 	last_vote_event = 0,
 	% Path to sqlite file.
 	dbpath,

@@ -550,6 +550,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			masternode_since = actordb_local:elapsed_time(),
 			masternodedist = bkdcore:dist_name(LeaderNode),
 			netchanges = actordb_local:net_changes(),
+			election_timer = undefined,
 			rasync = RR#ai{callfrom = undefined, wait = undefined},
 			callfrom = undefined, callres = undefined,verified = true},
 			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP)));
@@ -570,6 +571,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 				voted_for = undefined,callfrom = undefined, callres = undefined,
 				rasync = RR#ai{callfrom = undefined, wait = undefined},
 				masternode = LeaderNode,without_master_since = undefined,
+				netchanges = actordb_local:net_changes(),
 				masternode_since = actordb_local:elapsed_time(),
 				masternodedist = bkdcore:dist_name(LeaderNode),
 				current_term = Term},
@@ -595,6 +597,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 				[AEType,{Term,P#dp.current_term}]),
 			NP = P#dp{current_term = Term,voted_for = undefined,
 			masternode = LeaderNode, without_master_since = undefined,verified = true, 
+			netchanges = actordb_local:net_changes(),
 			masternode_since = actordb_local:elapsed_time(),
 			masternodedist = bkdcore:dist_name(LeaderNode)},
 			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:save_term(NP)));
@@ -630,7 +633,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 		false ->
 			?DBG("Adding node to follower list ~p",[Node]),
 			state_rw_call(What,From,actordb_sqlprocutil:store_follower(P,#flw{node = Node}));
-		_ when (not (AEType == head andalso Success)) andalso
+		_ when %(not (AEType == head andalso Success)) andalso
 				(SentIndex /= Follower#flw.match_index orelse
 				SentTerm /= Follower#flw.match_term orelse P#dp.verified == false) ->
 			% We can get responses from AE calls which are out of date. This is why the other node always sends
@@ -763,8 +766,9 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 					NP = actordb_sqlprocutil:save_term(P#dp{mors = slave, verified = false, 
 						masternode = undefined,masternodedist = undefined,
 						without_master_since = Now,
+						last_vote_event = Now,
 						voted_for = Candidate, current_term = NewTerm,
-					election_timer = actordb_sqlprocutil:election_timer(Now,P#dp.election_timer)});
+					election_timer = actordb_sqlprocutil:election_timer(Now,undefined)});
 				% Higher term, but not as up to date. We can not vote for him.
 				% We do have to remember new term index though.
 				_ ->
@@ -775,7 +779,7 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 			end,
 			?DBG("Doing election after request_vote? ~p, mors=~p, verified=~p, election=~p",
 					[DoElection,P#dp.mors,P#dp.verified,P#dp.election_timer]),
-			{noreply,actordb_sqlprocutil:doqueue(NP#dp{last_vote_event = Now, election_timer =
+			{noreply,actordb_sqlprocutil:doqueue(NP#dp{election_timer =
 				actordb_sqlprocutil:election_timer(Now,P#dp.election_timer)})}
 	end;
 state_rw_call({delete,deleted},From,P) ->
@@ -1403,12 +1407,15 @@ handle_info(_Msg,P) ->
 
 election_timer({doelection,LatencyBefore,_TimerFrom},P) ->
 	LatencyNow = actordb_latency:latency(),
+	Now = actordb_local:elapsed_time(),
+	Interval = actordb_sqlprocutil:election_timer_interval(),
 	% Delay if latency significantly increased since start of timer.
 	% But only if more than 100ms latency. Which should mean significant load or bad network which
 	%  from here means same thing.
-	case LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100 of
+	case (LatencyNow > (LatencyBefore*1.5) andalso LatencyNow > 100) orelse (Now - P#dp.last_vote_event < Interval) of
 		true ->
 			{noreply,P#dp{election_timer = actordb_sqlprocutil:election_timer(undefined),
+				last_vote_event = 0,
 				activity = actordb_local:actor_activity(P#dp.activity)}};
 		false ->
 			% Clear out msg queue first.
@@ -1528,7 +1535,6 @@ election_vote({What,Node,_HisLatestTerm,{Num,Term}}, P) ->
 		{AllSynced, NVotes, Missing} when NVotes*2 > ClusterSize ->
 			?DBG("Election successfull, nvotes=~p missing=~p",[NVotes, Missing]),
 			NP = P#dp{followers = NFL, election_timer = undefined, 
-			netchanges = actordb_local:net_changes(),
 			last_vote_event = actordb_local:elapsed_time()},
 			elected_leader(cleanup_results(NP), AllSynced);
 		% If not wait for election timeout to decide what to do.
@@ -1599,6 +1605,7 @@ elected_leader(P, _AllSynced) when (P#dp.flags band ?FLAG_CREATE) == 0 andalso
 	A1 = (P#dp.wasync)#ai{buffer = [], buffer_recs = [], buffer_cf = [],
 				buffer_nv = undefined, buffer_moved = undefined},
 	{noreply,P#dp{movedtonode = deleted, verified = true, callqueue = queue:new(),
+		netchanges = actordb_local:net_changes(),
 		wasync = A1, rasync = RR}};
 elected_leader(P1, AllSynced) ->
 	actordb_local:actor_mors(master,actordb_conf:node_name()),
@@ -1655,7 +1662,8 @@ elected_leader(P1, AllSynced) ->
 	%  - It can also happen that both transaction active and actor move is active. Sqls will be combined.
 	%  - Otherwise just empty sql, which still means an increment for evnum and evterm in __adb.
 	NP1 = P#dp{verified = true,copyreset = CopyReset,movedtonode = Moved,
-		cbstate = CbState, schemavers = SchemaVers, cbinit = CbInit},
+		cbstate = CbState, schemavers = SchemaVers, cbinit = CbInit,
+		netchanges = actordb_local:net_changes()},
 	{NP,Sql,AdbRecords,Callfrom} =
 		actordb_sqlprocutil:post_election_sql(NP1,Transaction,CopyFrom,[],P#dp.callfrom),
 	% If nothing to store and all nodes synced, send an empty AE.
@@ -1664,15 +1672,14 @@ elected_leader(P1, AllSynced) ->
 			?DBG("Nodes synced, no followers"),
 			W = NP#dp.wasync,
 			{noreply,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:do_cb(
-				NP#dp{followers = [],netchanges = actordb_local:net_changes(),
+				NP#dp{followers = [],
 				wasync = W#ai{nreplies = W#ai.nreplies+1}}))};
 		true when AllSynced ->
 			?DBG("Nodes synced, running empty AE."),
 			NewFollowers1 = [actordb_sqlprocutil:send_empty_ae(P,NF) || NF <- P#dp.followers],
 			W = NP#dp.wasync,
 			{noreply,actordb_sqlprocutil:doqueue(ae_timer(NP#dp{callres = ok,followers = NewFollowers1,
-				wasync = W#ai{nreplies = W#ai.nreplies+1},
-				netchanges = actordb_local:net_changes()}))};
+				wasync = W#ai{nreplies = W#ai.nreplies+1}}))};
 		_ ->
 			?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, vers ~p",
 				[P#dp.followers,P#dp.evterm,P#dp.current_term,NP#dp.schemavers]),

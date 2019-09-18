@@ -270,7 +270,7 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					end
 			end;
 		true ->
-			?DBG("Reply ok ~p",[{P#dp.callfrom,P#dp.callres}]),
+			?DBG("Reply ok ~p ~p",[{P#dp.callfrom,P#dp.callres},{NReplicated*2, NNodes}]),
 			BD = P#dp.wasync,
 			RR = P#dp.rasync,
 			case P#dp.movedtonode of
