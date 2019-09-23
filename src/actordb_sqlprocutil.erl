@@ -750,6 +750,7 @@ doqueue(P) ->
 doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactionid = undefined,locked = [],
 		wasync = #ai{wait = undefined, nreplies = NR}} = P, Skipped) ->
 	NetChanges = actordb_local:net_changes(),
+	% ?DBG("doqueue"),
 	case ok of
 		_ when NetChanges /= P#dp.netchanges ->
 			?DBG("Rerun election due to net change"),

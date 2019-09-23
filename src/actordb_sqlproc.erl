@@ -114,6 +114,7 @@ call(Name,Flags,Msg,Start,IsRedirect) ->
 call(Name,Flags,Msg,Start,IsRedirect,Pid) ->
 	% If call returns redirect, this is slave node not master node.
 	% test_mon_calls(Name,Msg),
+	% ?ADBG("Call ~p",[Msg]),
 	case catch gen_server:call(Pid,Msg,infinity) of
 		{redirect,Node} when is_binary(Node) ->
 			% test_mon_stop(),
