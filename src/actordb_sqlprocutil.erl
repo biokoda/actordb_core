@@ -933,7 +933,13 @@ transaction_checker(Id,Uid,Node) ->
 					exit(Result)
 			end
 	end.
-transaction_checker1(Id,Uid,Node) ->
+transaction_checker1(Id,Uid,Node1) ->
+	case bkdcore:node_address(Node1) of
+		undefined ->
+			Node = actordb_conf:node_name();
+		_ ->
+			Node = Node1
+	end,
 	Res = actordb:rpc(Node,Uid,{actordb_multiupdate,transaction_state,[Uid,Id]}),
 	?ADBG("transaction_check ~p ~p",[{Id,Uid,Node},Res]),
 	case Res of

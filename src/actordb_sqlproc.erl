@@ -759,6 +759,12 @@ state_rw_call({request_vote,Candidate,NewTerm,LastEvnum,LastTerm} = What,From,P)
 							reply(From,AV),
 							NP = P
 					end;
+				_ when Uptodate, P#dp.masternode == Candidate ->
+					DoElection = false,
+					?DBG("Voting yes for same master as before"),
+					reply(From,{true,actordb_conf:node_name(),NewTerm,{P#dp.evnum,P#dp.evterm}}),
+					NP = actordb_sqlprocutil:save_term(P#dp{voted_for = Candidate, current_term = NewTerm,
+						election_timer = actordb_sqlprocutil:election_timer(Now,P#dp.election_timer)});
 				% New candidates term is higher than ours, is he as up to date?
 				_ when Uptodate ->
 					DoElection = false,
@@ -847,6 +853,7 @@ read_call(#read{sql = {[exists],_}},_From,#dp{mors = master} = P) ->
 read_call(Msg,From,#dp{flags = F} = P) when (F band ?TIMEOUT_PENDING) == 0 ->
 	read_call(Msg,From,timeout(P));
 read_call(Msg,From,#dp{mors = master, rasync = AR} = P) ->
+	?DBG("read_call ~p",[Msg]),
 	Safe = AR#ai.safe_read or lists:member(safe,Msg#read.flags),
 	case Msg#read.sql of
 		{Mod,Func,Args} ->
@@ -1682,13 +1689,19 @@ elected_leader(P1, AllSynced) ->
 			{noreply,actordb_sqlprocutil:doqueue(ae_timer(NP#dp{callres = ok,followers = NewFollowers1,
 				wasync = W#ai{nreplies = W#ai.nreplies+1}}))};
 		_ ->
-			?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, vers ~p",
-				[P#dp.followers,P#dp.evterm,P#dp.current_term,NP#dp.schemavers]),
+			?DBG("Running post election write on nodes ~p, evterm=~p, curterm=~p, vers ~p, trans=~p",
+				[P#dp.followers,P#dp.evterm,P#dp.current_term,NP#dp.schemavers, NP#dp.transactionid]),
 			W = #write{sql = Sql, transaction = NP#dp.transactionid,records = AdbRecords},
 			Now = actordb_local:elapsed_time(),
 			% Since we won election nodes are accessible.
 			Followers = [F#flw{last_seen = Now} || F <- P#dp.followers],
-			write_call(W,Callfrom, NP#dp{followers = Followers})
+			% write_call1(#write{sql = Sql,transaction = undefined} = W,From,NewVers,P) -
+			case NP#dp.transactionid of
+				undefined ->
+					write_call(W,Callfrom, NP#dp{followers = Followers});
+				_ ->
+					write_call1(W,Callfrom, NP#dp.schemavers, NP#dp{followers = Followers})
+			end
 	end.
 
 
