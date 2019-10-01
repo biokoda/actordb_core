@@ -1148,7 +1148,7 @@ write_call1(#write{sql = Sql1, transaction = {Tid,Updaterid,Node} = TransactionI
 			case P#dp.transactionid of
 				TransactionId when Sql1 /= delete ->
 					% Rollback prev version of sql.
-					ok = actordb_sqlite:rollback(P#dp.db),
+					actordb_sqlite:rollback(P#dp.db),
 					{OldSql,_EvNum,_} = P#dp.transactioninfo,
 					% Combine prev sql with new one.
 					Sql = iolist_to_binary([OldSql,Sql1]);
