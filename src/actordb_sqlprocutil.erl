@@ -386,7 +386,7 @@ init_opendb(P) ->
 			read_db_state(NP);
 		[] ->
 			?DBG("Opening NO schema",[]),
-			set_followers(false,NP)
+			set_followers(false,NP#dp{evterm = 0, evnum = 0})
 	end.
 
 read_db_state(P) when element(1,P#dp.db) == actordb_driver ->
