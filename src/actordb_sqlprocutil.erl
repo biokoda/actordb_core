@@ -1603,7 +1603,7 @@ parse_opts(P,[]) ->
 %
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-check_locks(P,[H|T],L) when is_tuple(H#lck.time) ->
+check_locks(P,[H|T],L) when is_number(H#lck.time) ->
 	case actordb_local:elapsed_time()-H#lck.time > 3000 of
 		true ->
 			?ERR("Abandoned lock ~p ~p ~p",[P#dp.actorname,H#lck.node,H#lck.ref]),

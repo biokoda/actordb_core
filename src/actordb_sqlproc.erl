@@ -1199,6 +1199,7 @@ handle_cast({diepls,_Reason},P) ->
 			{noreply,P}
 	end;
 handle_cast(print_info,P) ->
+	?AINF("locks=~p wwait=~p",[P#dp.locked,(P#dp.wasync)#ai.wait]),
 	?AINF("~p~n",[?R2P(P)]),
 	{noreply,P};
 handle_cast(Msg,#dp{mors = master, verified = true} = P) ->
