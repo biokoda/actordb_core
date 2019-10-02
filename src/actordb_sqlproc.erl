@@ -1836,7 +1836,6 @@ init(#dp{} = P,_Why) ->
 init([_|_] = Opts) ->
 	% put(opt,Opts),
 	?ADBG("Start opts ~p",[Opts]),
-	?AWARN("hello"),
 	rand:seed(exs64),
 	Now = actordb_local:elapsed_time(),
 	P1 = #dp{mors = master, callqueue = queue:new(),statequeue = queue:new(), without_master_since = Now},
