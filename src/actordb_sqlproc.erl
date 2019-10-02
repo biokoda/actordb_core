@@ -559,7 +559,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			state_rw_call(What,From,actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP)));
 		% This node is candidate or leader but someone with newer term is sending us log
 		_ when P#dp.mors == master ->
-			?ERR("AE start, stepping down as leader ~p ~p",
+			?WARN("AE start, stepping down as leader ~p ~p",
 					[AEType,{Term,P#dp.current_term}]),
 			reply(P#dp.callfrom,{redirect,LeaderNode}),
 			RR = P#dp.rasync,
@@ -581,7 +581,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			state_rw_call(What,From,
 				actordb_sqlprocutil:save_term(actordb_sqlprocutil:doqueue(actordb_sqlprocutil:reopen_db(NP))));
 		_ when P#dp.evnum /= PrevEvnum; P#dp.evterm /= PrevTerm ->
-			?ERR("AE start failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
+			?WARN("AE start failed, evnum evterm do not match, type=~p, {MyEvnum,MyTerm}=~p, {InNum,InTerm}=~p",
 						[AEType,{P#dp.evnum,P#dp.evterm},{PrevEvnum,PrevTerm}]),
 			case ok of
 				% Node is conflicted, delete last entry
@@ -596,7 +596,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			actordb_sqlprocutil:ae_respond(NP,LeaderNode,false,PrevEvnum,AEType,CallCount),
 			{noreply,NP};
 		_ when Term > P#dp.current_term ->
-			?ERR("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",
+			?WARN("AE start, my term out of date type=~p {InTerm,MyTerm}=~p",
 				[AEType,{Term,P#dp.current_term}]),
 			NP = P#dp{current_term = Term,voted_for = undefined,
 			masternode = LeaderNode, without_master_since = undefined,verified = true, 

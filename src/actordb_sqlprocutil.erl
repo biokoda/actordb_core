@@ -1659,7 +1659,7 @@ check_cpy_exists(P,Node,Ref,ActorName,IsMove) ->
 	L = [case ok of
 		_ when I#cpto.ref == Ref ->
 			I;
-		_ when I#cpto.node == Node, I#cpto.actorname = ActorName, I#cpto.ismove == IsMove ->
+		_ when I#cpto.node == Node, I#cpto.actorname == ActorName, I#cpto.ismove == IsMove ->
 			I;
 		_ ->
 			false
