@@ -31,6 +31,8 @@
 -define(AINF(F,A),lager:info(F,A)).
 -define(AERR(F),lager:error(F)).
 -define(AERR(F,A),lager:error(F,A)).
+-define(AWARN(F,A), lager:warning(F,A)).
+-define(AWARN(F), lager:warning(F)).
 % -define(AERR(F),lager:error([$s,$=,$~,$p,$\s|F],[erlang:system_info(scheduler_id)])).
 % -define(AERR(F,A),lager:error([$s,$=,$~,$p,$\s|F],[erlang:system_info(scheduler_id)|A])).
 

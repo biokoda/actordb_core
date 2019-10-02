@@ -390,9 +390,14 @@ init_opendb(P) ->
 	end.
 
 read_db_state(P) when element(1,P#dp.db) == actordb_driver ->
-	{ok,[{columns,_},{rows,[_|_] = Rows}]} = actordb_sqlite:exec(P#dp.db,
-			<<"sELECT * FROM __adb;">>,read),
-	read_db_state(P,Rows);
+	case actordb_sqlite:exec(P#dp.db, <<"sELECT * FROM __adb;">>,read) of
+		{ok,[{columns,_},{rows,Rows}]} ->
+			read_db_state(P,Rows);
+		{sql_error,{0,[],corrupt,_},_} ->
+			?ERR("Sqlite corrupted, needs to be restored"),
+			actordb_sqlite:wal_rewind(P#dp.db,0),
+			set_followers(false, P#dp{evterm = 0, evnum = 0})
+	end;
 read_db_state(#dp{db = queue} = P) ->
 	{_,_,_InProg,_MxPage,_AllPages,Term,Evnum}
 		= actordb_queue:cb_actor_info(P#dp.cbstate),
@@ -435,7 +440,7 @@ set_followers(HaveSchema,P) ->
 			ok
 	end,
 	P#dp{cbstate = NS,followers = P#dp.followers ++
-			[#flw{node = Nd,distname = bkdcore:dist_name(Nd),match_index = 0,
+			[#flw{node = Nd,distname = bkdcore:dist_name(Nd),match_index = 0, %Should it be evnum?
 			next_index = P#dp.evnum+1} || Nd <- NL,
 			lists:keymember(Nd,#flw.node,P#dp.followers) == false]}.
 
@@ -1650,6 +1655,22 @@ retry_copy(P) ->
 			P
 	end.
 
+check_cpy_exists(P,Node,Ref,ActorName,IsMove) ->
+	L = [case ok of
+		_ when I#cpto.ref == Ref ->
+			I;
+		_ when I#cpto.node == Node, I#cpto.actorname = ActorName, I#cpto.ismove == IsMove ->
+			I;
+		_ ->
+			false
+	end || I <- P#dp.dbcopy_to],
+	case [I || I <- L, is_tuple(I)] of
+		[] ->
+			false;
+		[First|_] ->
+			First
+	end.
+
 % Initialize call on node that is source of copy
 dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 	% Send database to another node.
@@ -1658,7 +1679,8 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 	?DBG("senddb myname, remotename ~p info ~p, copyto already ~p",
 			[ActornameToCopyto,{Node,Ref,IsMove},P#dp.dbcopy_to]),
 	Me = self(),
-	case lists:keyfind(Ref,#cpto.ref,P#dp.dbcopy_to) of
+	% case lists:keyfind(Ref,#cpto.ref,P#dp.dbcopy_to) of
+	case check_cpy_exists(P, Node, Ref, ActornameToCopyto, IsMove) of
 		false ->
 			Db = P#dp.db,
 			{Pid,_} = spawn_monitor(fun() ->
@@ -1667,9 +1689,9 @@ dbcopy_call({send_db,{Node,Ref,IsMove,ActornameToCopyto}},_CallFrom,P) ->
 			{reply,{ok,Ref},P#dp{db = Db,
 					dbcopy_to = [#cpto{node = Node, pid = Pid, ref = Ref, ismove = IsMove,
 					actorname = ActornameToCopyto}|P#dp.dbcopy_to]}};
-		{_,_Pid,Ref,_} ->
-			?DBG("senddb already exists with same ref!"),
-			{reply,{ok,Ref},P}
+		Existing ->
+			?DBG("senddb already exists"),
+			{reply,{ok,Existing#cpto.ref},P}
 	end;
 dbcopy_call({reached_end,{FromPid,Ref,Evnum}},_,P) ->
 	erlang:send_after(1000,self(),check_locks),

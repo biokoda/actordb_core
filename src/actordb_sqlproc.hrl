@@ -150,6 +150,8 @@ evnum, evterm, newvers, moved, fsync}).
 -define(INF(F,A),lager:info([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A])).
 -define(ERR(F),lager:error([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype])).
 -define(ERR(F,A),lager:error([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A])).
+-define(WARN(F,A),lager:warning([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A])).
+-define(WARN(F),lager:warning([$~,$p,$.,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype])).
 % -define(DBG(F),lager:debug([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype]),put(lines,[{?MODULE,?LINE}|get(lines)])).
 % -define(DBG(F,A),lager:debug([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype|A]),put(lines,[{?MODULE,?LINE}|get(lines)])).
 % -define(INF(F),lager:info([$~,$p,$-,$~,$p,$\s|F],[P#dp.actorname,P#dp.actortype]),put(lines,[{?MODULE,?LINE}|get(lines)])).
@@ -163,4 +165,6 @@ evnum, evterm, newvers, moved, fsync}).
 -define(INF(F,A),ok).
 -define(ERR(F),ok).
 -define(ERR(F,A),ok).
+-define(WARN(F),ok).
+-define(WARN(F,A),ok).
 -endif.
