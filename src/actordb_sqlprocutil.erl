@@ -255,18 +255,23 @@ reply_maybe(P,NReplicated,NNodes,[]) ->
 					checkpoint(NP);
 				_ ->
 					Ref = make_ref(),
-					RpcParam = [{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
-						{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod],
-					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,RpcParam}) of
-						ok ->
-							?DBG("dbcopy call ok"),
-							{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
-							NP1;
-						Err ->
-							?DBG("dbcopy call retry_later=~p",[Err]),
-							erlang:send_after(3000,self(),retry_copy),
-							% Unable to start copy/move operation. Store it for later.
-							NP#dp{copylater = {actordb_local:elapsed_time(),OrigMsg}}
+					case check_cpy_exists(P,Node,Ref,NewActor,IsMove) of
+						false ->
+							RpcParam = [{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+								{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod],
+							case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,RpcParam}) of
+								ok ->
+									?DBG("dbcopy call ok"),
+									{reply,_,NP1} = dbcopy_call({send_db,{Node,Ref,IsMove,NewActor}},From,NP),
+									NP1;
+								Err ->
+									?DBG("dbcopy call retry_later=~p",[Err]),
+									erlang:send_after(3000,self(),retry_copy),
+									% Unable to start copy/move operation. Store it for later.
+									NP#dp{copylater = {actordb_local:elapsed_time(),OrigMsg}}
+							end;
+						_ ->
+							P
 					end
 			end;
 		true ->
@@ -478,8 +483,8 @@ try_wal_recover(P,F) ->
 			{false,P,F}
 	end.
 
-% continue_maybe(P,F,true) ->
-% 	store_follower(P,F);
+continue_maybe(P,F,true) ->
+	store_follower(P,F);
 continue_maybe(P,F,SuccessHead) ->
 	% Check if follower behind
 	?DBG("Continue maybe ~p {MyEvnum,NextIndex}=~p havefile=~p",
@@ -492,16 +497,22 @@ continue_maybe(P,F,SuccessHead) ->
 				{false,NP,_} ->
 					?DBG("sending entire db to ~p",[F#flw.node]),
 					Ref = make_ref(),
-					case bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,
-										[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
-										{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
-						ok ->
-							Send = {send_db,{F#flw.node,Ref,false,P#dp.actorname}},
-							{reply,_,NP1} = dbcopy_call(Send,undefined,NP),
-							NP1;
-						_Err ->
-							?ERR("Error sending db ~p",[_Err]),
-							NP
+					case check_cpy_exists(P,F#flw.node,Ref,P#dp.actorname,false) of
+						false ->
+							case bkdcore:rpc(F#flw.node,{actordb_sqlproc,call_slave,
+												[P#dp.cbmod,P#dp.actorname,P#dp.actortype,
+												{dbcopy,{start_receive,actordb_conf:node_name(),Ref}}]}) of
+								ok ->
+									Send = {send_db,{F#flw.node,Ref,false,P#dp.actorname}},
+									{reply,_,NP1} = dbcopy_call(Send,undefined,NP),
+									NP1;
+								_Err ->
+									?ERR("Error sending db ~p",[_Err]),
+									NP
+							end;
+						_ ->
+							?DBG("Copy already exists"),
+							P
 					end
 			end;
 		true ->
@@ -827,12 +838,17 @@ doqueue(#dp{verified = true,callres = undefined, callfrom = undefined,transactio
 						{copy,{Node,OldActor,NewActor}} ->
 							SkippedNew = Skipped,
 							Ref = make_ref(),
-							case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
-											{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
-								ok ->
-									dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P#dp{callqueue = CQ});
-								Err ->
-									{reply, Err,P#dp{callqueue = CQ}}
+							case check_cpy_exists(P,Node,Ref,NewActor,false) of
+								false ->
+									case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+													{dbcopy,{start_receive,{actordb_conf:node_name(),OldActor},Ref}},P#dp.cbmod]}) of
+										ok ->
+											dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P#dp{callqueue = CQ});
+										Err ->
+											{reply, Err,P#dp{callqueue = CQ}}
+									end;
+								_ ->
+									dbcopy_call({send_db,{Node,Ref,false,NewActor}},From,P#dp{callqueue = CQ})
 							end;
 						report_synced ->
 							SkippedNew = Skipped,
@@ -1637,17 +1653,22 @@ retry_copy(P) ->
 					Msg = {split,MFA,actordb_conf:node_name(),OldActor,NewActor}
 			end,
 			Ref = make_ref(),
-			case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
-					{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
-				ok ->
-					?INF("Retry copy now"),
-					SDB = {send_db,{Node,Ref,IsMove,NewActor}},
-					{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call(SDB,undefined,P),
-					NP1#dp{copylater = undefined};
-				Err ->
-					?INF("retry_copy in 3s, err=~p",[Err]),
-					erlang:send_after(3000,self(),retry_copy),
-					P#dp{copylater = {actordb_local:elapsed_time(),Copy}}
+			case check_cpy_exists(P,Node,Ref,NewActor,IsMove) of
+				false ->
+					case actordb:rpc(Node,NewActor,{actordb_sqlproc,call,[{NewActor,P#dp.actortype},[{lockinfo,wait},lock],
+							{dbcopy,{start_receive,Msg,Ref}},P#dp.cbmod]}) of
+						ok ->
+							?INF("Retry copy now"),
+							SDB = {send_db,{Node,Ref,IsMove,NewActor}},
+							{reply,_,NP1} = actordb_sqlprocutil:dbcopy_call(SDB,undefined,P),
+							NP1#dp{copylater = undefined};
+						Err ->
+							?INF("retry_copy in 3s, err=~p",[Err]),
+							erlang:send_after(3000,self(),retry_copy),
+							P#dp{copylater = {actordb_local:elapsed_time(),Copy}}
+					end;
+				_ ->
+					P
 			end;
 		false ->
 			?INF("retry_copy in 3s",[]),

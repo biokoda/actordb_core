@@ -659,7 +659,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 				true ->
 					reply(From,ok),
 					NP = actordb_sqlprocutil:reply_maybe(actordb_sqlprocutil:continue_maybe(
-						P,NFlw,AEType == head orelse AEType == empty)),
+						P,NFlw,AEType == head)), %orelse AEType == empty
 					?DBG("AE response for node ~p, followers=~p",
 						[Node,[{F#flw.node,F#flw.match_index,F#flw.match_term,F#flw.next_index} || F <- NP#dp.followers]]),
 					{noreply,NP};
