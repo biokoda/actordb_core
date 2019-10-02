@@ -521,7 +521,7 @@ state_rw_call({appendentries_start,Term,LeaderNode,PrevEvnum,PrevTerm,AEType,Cal
 			% actordb_sqlprocutil:ae_respond(P,LeaderNode,wrongstate,PrevEvnum,AEType,CallCount),
 			{reply,false,P};
 		_ when Term < P#dp.current_term ->
-			?ERR("AE start, input term too old ~p {InTerm,MyTerm}=~p",
+			?WARN("AE start, input term too old ~p {InTerm,MyTerm}=~p",
 					[AEType,{Term,P#dp.current_term}]),
 			reply(From,false),
 			actordb_sqlprocutil:ae_respond(P,LeaderNode,false,PrevEvnum,AEType,CallCount),
@@ -654,7 +654,7 @@ state_rw_call({appendentries_response,Node,CurrentTerm,Success,
 			case Success of
 				% An earlier response.
 				_ when P#dp.mors == slave ->
-					?ERR("Received AE response after stepping down"),
+					?WARN("Received AE response after stepping down"),
 					{reply,ok,P};
 				true ->
 					reply(From,ok),
