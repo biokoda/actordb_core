@@ -935,6 +935,11 @@ start_transaction_checker(Id,Uid,Node) ->
 transaction_checker(Id,Uid,Node) ->
 	case distreg:reg({Id,Uid}) of
 		ok ->
+			Executor = self(),
+			spawn(fun() -> 
+				erlang:monitor(process,Executor), 
+				checker_mon(resolve_node(Node), Uid)
+			end),
 			transaction_checker1(Id,Uid,Node);
 		_ ->
 			% If process already exists, attach to it and exit with the same exit signal
@@ -954,13 +959,16 @@ transaction_checker(Id,Uid,Node) ->
 					exit(Result)
 			end
 	end.
+checker_mon(Node,Uid) ->
+	receive 
+		{'DOWN',_Monitor,_Ref,_,_} ->
+			ok
+	after 10000 ->
+		actordb:rpc(Node,Uid,{actordb_multiupdate,stop,[Uid]}),
+		checker_mon(Node,Uid)
+	end.
 transaction_checker1(Id,Uid,Node1) ->
-	case bkdcore:node_address(Node1) of
-		undefined ->
-			Node = actordb_conf:node_name();
-		_ ->
-			Node = Node1
-	end,
+	Node = resolve_node(Node1),
 	Res = actordb:rpc(Node,Uid,{actordb_multiupdate,transaction_state,[Uid,Id]}),
 	?ADBG("transaction_check ~p ~p",[{Id,Uid,Node},Res]),
 	case Res of
@@ -983,7 +991,13 @@ transaction_checker1(Id,Uid,Node1) ->
 		_ ->
 			transaction_checker1(Id,Uid,Node)
 	end.
-
+resolve_node(Node1) ->
+	case bkdcore:node_address(Node1) of
+		undefined ->
+			actordb_conf:node_name();
+		_ ->
+			Node1
+	end.
 
 check_redirect(P,Copyfrom) ->
 	case Copyfrom of

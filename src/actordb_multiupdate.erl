@@ -32,7 +32,13 @@ exec(Name,S) when is_integer(Name) ->
 			erlang:yield(),
 			exec(Name,S);
 		Pid ->
-			gen_server:call(Pid,{exec,S},infinity)
+			case (catch gen_server:call(Pid,{exec,S}, 7000)) of
+				{'EXIT',{timeout,_}} ->
+					Pid ! {stop,timeout},
+					{error,timeout};
+				R ->
+					R
+			end
 	end.
 
 start(Name) ->
@@ -80,6 +86,8 @@ sqlname(P) ->
 
 handle_call({transaction_state,Id},_From,P) ->
 	case actordb_actor:read(#{actor => sqlname(P), flags => [create], statements => {<<"#d06;">>,[[[butil:toint(Id)]]]}}) of
+		{ok,[{columns,_},{rows,[{_,0}]}]} when P#dp.execproc == undefined ->
+			{stop,normal,P};
 		{ok,[{columns,_},{rows,[{_,Commited}]}]} ->
 			{reply,{ok,Commited},P};
 		{ok,[_,{rows,[]}]} ->
@@ -89,6 +97,7 @@ handle_call({transaction_state,Id},_From,P) ->
 			{reply,Err,P}
 	end;
 handle_call({overruled,Id},_From,P) ->
+	?ADBG("Mutliupdate call overruled"),
 	case handle_call({transaction_state,Id},undefined,P) of
 		{reply,{ok,0},_} ->
 			true = P#dp.curnum == butil:toint(Id),
@@ -108,6 +117,15 @@ handle_call({exec,S} = Msg,From,#dp{execproc = undefined, local = true} = P) ->
 	end,
 
 	{Pid,_} = spawn_monitor(fun() ->
+		Executor = self(),
+		spawn(fun() -> erlang:monitor(process,Executor), 
+			receive 
+			{'DOWN',_Monitor,_Ref,_,_} ->
+				ok
+			after 7000 ->
+				exit(Executor,timeout)
+			end
+		end),
 		% Send sql
 		put(nchanges,0),
 		case catch do_multiupdate(P#dp{currow = Num},S) of
@@ -153,12 +171,13 @@ handle_call(print_info,_,P) ->
 	io:format("~p~n",[?R2P(P)]),
 	{reply,ok,P};
 handle_call(stop, _, P) ->
-	{stop, shutdown, stopped, P}.
+	handle_info({stop},P).
 
 handle_cast(_, P) ->
 	{noreply, P}.
 
 handle_info({'DOWN',_Monitor,_Ref,PID,{error,overruled}}, #dp{execproc = PID} = P) ->
+	?ADBG("Multiupdate overruled"),
 	case handle_call(P#dp.curmsg,P#dp.curfrom,P#dp{curfrom = undefined, execproc = undefined, curmsg = undefined}) of
 		{reply,ok,NP1} ->
 			{noreply,NP1};
@@ -206,6 +225,12 @@ handle_info(timeout,P) ->
 handle_info({stop},P) ->
 	handle_info({stop,noreason},P);
 handle_info({stop,Reason},P) ->
+	case P#dp.execproc of
+		undefined ->
+			ok;
+		Pid ->
+			exit(Executor,gen_server_stop)
+	end,
 	{stop, Reason, P};
 handle_info(_, P) ->
 	{noreply, P}.
