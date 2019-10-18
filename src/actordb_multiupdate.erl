@@ -229,7 +229,7 @@ handle_info({stop,Reason},P) ->
 		undefined ->
 			ok;
 		Pid ->
-			exit(Executor,gen_server_stop)
+			exit(Pid,gen_server_stop)
 	end,
 	{stop, Reason, P};
 handle_info(_, P) ->
