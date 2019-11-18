@@ -371,8 +371,14 @@ reopen_db(P) ->
 init_opendb(P) ->
 	case P#dp.db of
 		undefined when P#dp.dbpath /= queue ->
-			{ok,Db,SchemaTables,_PageSize} = actordb_sqlite:init(P#dp.dbpath,wal),
-			NP = P#dp{db = Db};
+			case actordb_sqlite:init(P#dp.dbpath,wal) of
+				{ok,Db,SchemaTables,_PageSize} ->
+					NP = P#dp{db = Db};
+				{error,{ok,Db,{error,{0,[],corrupt,"database disk image is malformed"}}}} ->
+					SchemaTables = [],
+					actordb_sqlite:wal_rewind(Db,0),
+					NP = P#dp{db = Db}
+			end;
 		undefined ->
 			SchemaTables = [ok || actordb_queue:cb_actor_info(P#dp.cbstate) /= undefined],
 			NP = P#dp{db = queue};
