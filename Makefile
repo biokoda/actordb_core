@@ -3,15 +3,15 @@
 all: deps compile
 
 compile: deps
-	./rebar compile
+	rebar3 compile
 
 deps:
-	./rebar get-deps
+	rebar3 get-deps
 
 clean:
-	./rebar clean
+	rebar3 clean
 
 distclean: clean
-	./rebar delete-deps
+	rebar3 delete-deps
 
 
