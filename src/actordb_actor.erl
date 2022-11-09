@@ -4,7 +4,7 @@
 
 -module(actordb_actor).
 -compile(export_all).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 %
 % Implements actor on top of actordb_sqlproc
 %
