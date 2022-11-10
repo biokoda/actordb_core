@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 -module(actordb_sqlprocutil).
 -compile(export_all).
--include_lib("actordb_sqlproc.hrl").
+-include("actordb_sqlproc.hrl").
 
 
 static_sqls() ->

@@ -13,7 +13,7 @@
 		 cb_redirected_call/4,cb_write_done/3,cb_unverified_call/2,cb_replicate_type/1,
 		 newshard_steal_done/3,origin_steal_done/4,cb_candie/4,cb_checkmoved/2,cb_startstate/2, 
 		 cb_init_engine/1, cb_spawnopts/1]).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -define(META_NEXT_SHARD,$1).
 -define(META_NEXT_SHARD_NODE,$2).
 -define(META_CLEANUP_PRE,$3).

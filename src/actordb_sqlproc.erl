@@ -9,7 +9,7 @@
 -export([read/4,write/4,call/4,call/5,diepls/2,try_actornum/3]).
 -export([call_slave/4,call_slave/5,start_copylock/2]). %call_master/4,call_master/5
 -export([write_call/3, write_call1/4, read_call/3, read_call1/5]).
--include_lib("actordb_sqlproc.hrl").
+-include("actordb_sqlproc.hrl").
 
 % Read actor number without creating actor.
 try_actornum(Name,Type,CbMod) ->

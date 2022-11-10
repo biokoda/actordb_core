@@ -12,7 +12,7 @@
 	get_shard_borders/0, status/0]).
 % for testing
 -export([create_shards/1]).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 -define(BORDERETS,shardborders).
 % -compile(export_all).

@@ -3,7 +3,7 @@
 	loop/1, wal_test/1, q_test/1, q_test/2, client/0, varint/0,
 	debug_logging/0, info_logging/0, counters/0]).
 -include_lib("eunit/include/eunit.hrl").
--include_lib("actordb_sqlproc.hrl").
+-include("actordb_sqlproc.hrl").
 -define(SOL_SOCKET, 16#ffff).
 -define(SO_REUSEPORT, 16#0200).
 % misc internal tests

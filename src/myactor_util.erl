@@ -7,7 +7,7 @@
 
 -module(myactor_util).
 
--include_lib("myactor.hrl").
+-include("myactor.hrl").
 
 -compile(export_all).
 

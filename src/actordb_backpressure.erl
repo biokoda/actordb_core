@@ -9,7 +9,7 @@
 			inc_callsize/1,dec_callsize/1,inc_callsize/2,dec_callsize/2,
 			save/3,getval/2,delval/2,has_authentication/3]).
 -define(LAGERDBG,true).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 
 -record(caller,{ets, login, auth = []}).
 start_caller() ->

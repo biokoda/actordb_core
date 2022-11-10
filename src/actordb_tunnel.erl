@@ -5,7 +5,7 @@
 -behaviour(gen_server).
 -export([start/0,stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 -export([]).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 
 
 % Every write thread in actordb_driver uses a TCP "tunnel" to replicate data.

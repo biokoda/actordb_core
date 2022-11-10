@@ -13,7 +13,7 @@
 % Ref age
 -export([net_changes/0,mod_netchanges/0, elapsed_time/0, timer/1]).
 -define(LAGERDBG,true).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -define(MB,1024*1024).
 -define(GB,1024*1024*1024).
 % Stores net changes, current and previous active table.

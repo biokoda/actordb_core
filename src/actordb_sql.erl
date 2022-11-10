@@ -15,7 +15,7 @@
 
 
 
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 
 -spec file(file:name()) -> any().
 file(Filename) -> case file:read_file(Filename) of {ok,Bin} -> parse(Bin); Err -> Err end.

@@ -3,7 +3,6 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 -module(actordb_sharedstate).
 -compile(export_all).
-% -include_lib("actordb_core/include/actordb.hrl").
 -include("actordb_sqlproc.hrl").
 -define(GLOBALETS,globalets).
 -define(MASTER_GROUP_SIZE,7).

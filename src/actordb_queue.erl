@@ -4,7 +4,7 @@
 
 -module(actordb_queue).
 -compile(export_all).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -define(TYPE_EVENT,1).
 -define(TYPE_STATE,2).
 

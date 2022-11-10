@@ -1,6 +1,6 @@
 -module(actordb_core).
 -export([start/0, start/2, stop/0, stop/1, stop_complete/0, start_ready/0, prestart/0]).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 
 % manually closes all open db handles

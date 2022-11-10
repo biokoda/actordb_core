@@ -9,7 +9,7 @@
 %%  ```
 
 -module(myactor_static).
--include_lib("myactor.hrl").
+-include("myactor.hrl").
 -compile(export_all).
 
 show_variables() ->

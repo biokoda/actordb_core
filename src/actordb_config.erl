@@ -3,7 +3,7 @@
 % file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 -module(actordb_config).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -export([exec/1, exec/2, exec_schema/1, exec_schema/2]).
 -export([lte/2, gte/2,lt/2,gt/2,eq/2,neq/2]).
 -export([cmd/2]).

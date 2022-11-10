@@ -6,7 +6,7 @@
 -export([latency/0]).
 -export([start/0,stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3,print_info/0]).
 -export([tunnel_callback/2, return_call/2, set_run_queue/1]).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 
 % Replication requires some fixed timing values. But those are dangerous in real world. 
 % What if nodes are far apart? What if network conditions are bad? What if node is overloaded?

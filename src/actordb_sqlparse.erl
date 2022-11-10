@@ -5,7 +5,7 @@
 % -compile(export_all).
 -export([parse_statements/1,parse_statements/2,parse_statements/3,check_flags/2]).
 -export([split_actor/1,split_actor/2]).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -define(LIST_LIMIT,30000).
 -define(GV(P,V),actordb_backpressure:getval(P,V)).
 

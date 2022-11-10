@@ -7,7 +7,7 @@
 		 handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([report/2,synced/2]).
 -export([synced_local/2]). % internal
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -define(ETS,catchup_actors).
 -compile(export_all).
 

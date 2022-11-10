@@ -8,7 +8,7 @@
 -export([start/0, stop/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([print_info/0,reload/0,deser_prop/1]).
 -export([local_shards_changed/2,shard_moved/3,shard_has_split/3]).
--include_lib("actordb_core/include/actordb.hrl").
+-include("actordb.hrl").
 -include_lib("kernel/include/file.hrl").
 -compile(export_all).
 
